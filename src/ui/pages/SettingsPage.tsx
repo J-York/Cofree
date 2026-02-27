@@ -1,14 +1,14 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/ui/pages/SettingsPage.tsx
- * Milestone: 1
- * Task: 1.3
+ * Milestone: 2.5
+ * Task: 2.5.4
  * Status: Completed
  * Owner: Codex-GPT-5
  * Last Modified: 2026-02-27
- * Description: Settings page for API key persistence and LiteLLM model config.
+ * Description: Settings page for API key persistence, LiteLLM model config, and workspace selection.
  */
-
+import { invoke } from "@tauri-apps/api/core";
 import { type ReactElement, useEffect, useMemo, useState } from "react";
 import {
   MODEL_PROVIDERS,
@@ -18,6 +18,11 @@ import {
 } from "../../lib/litellm";
 import { type AppSettings, maskApiKey } from "../../lib/settingsStore";
 
+interface WorkspaceInfo {
+  git_branch?: string;
+  repo_name?: string;
+}
+
 interface SettingsPageProps {
   settings: AppSettings;
   onSave: (settings: AppSettings) => void;
@@ -26,6 +31,35 @@ interface SettingsPageProps {
 export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElement {
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [saveMessage, setSaveMessage] = useState<string>("");
+  const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string>("");
+
+  const loadWorkspaceInfo = async (path: string) => {
+    if (!path) {
+      setWorkspaceInfo(null);
+      setWorkspaceError("");
+      return;
+    }
+    try {
+      const isGitRepo = await invoke<boolean>("validate_git_repo", { path });
+      if (isGitRepo) {
+        const info = await invoke<WorkspaceInfo>("get_workspace_info", { path });
+        setWorkspaceInfo(info);
+        setWorkspaceError("");
+      } else {
+        setWorkspaceInfo(null);
+        setWorkspaceError("选择的目录不是一个有效的 Git 仓库");
+      }
+    } catch (error) {
+      console.error("Failed to load workspace info:", error);
+      setWorkspaceInfo(null);
+      setWorkspaceError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  useEffect(() => {
+    loadWorkspaceInfo(draft.workspacePath || "");
+  }, [draft.workspacePath]);
 
   useEffect(() => {
     setDraft(settings);
@@ -49,6 +83,20 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
     setSaveMessage("设置已保存到本地存储。敏感动作仍需审批门确认。");
   };
 
+  const handleSelectWorkspace = async () => {
+    try {
+      const path = await invoke<string | null>("select_workspace_folder");
+      if (path) {
+        const updatedDraft = { ...draft, workspacePath: path };
+        setDraft(updatedDraft);
+        onSave(updatedDraft);
+      }
+    } catch (error) {
+      console.error("Failed to select workspace:", error);
+      setWorkspaceError("选择工作区失败: " + (error instanceof Error ? error.message : String(error)));
+    }
+  };
+
   const runtimeConfig = createLiteLLMClientConfig(draft);
 
   return (
@@ -56,6 +104,30 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
       <article className="panel-card">
         <h2>设置</h2>
         <p className="status-note">用于 Milestone 1 的 API Key 与 LiteLLM 多模型配置。</p>
+      </article>
+
+      <article className="panel-card page-stack">
+        <h2>工作区设置</h2>
+        <div className="inline-row">
+          <div style={{ flex: 1 }}>
+            <p className="status-note" style={{ margin: 0, fontSize: "1.1em", color: "var(--text-1)" }}>
+              {draft.workspacePath || "未选择工作区"}
+            </p>
+            {workspaceInfo && (
+              <p className="status-note" style={{ margin: "0.5rem 0 0 0" }}>
+                📦 {workspaceInfo.repo_name} | 🌿 {workspaceInfo.git_branch}
+              </p>
+            )}
+            {workspaceError && (
+              <p className="status-note" style={{ margin: "0.5rem 0 0 0", color: "var(--color-error)" }}>
+                ⚠️ {workspaceError}
+              </p>
+            )}
+          </div>
+          <button className="button" onClick={handleSelectWorkspace} type="button">
+            选择工作区
+          </button>
+        </div>
       </article>
 
       <article className="panel-card page-stack">

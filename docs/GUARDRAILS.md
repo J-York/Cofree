@@ -38,7 +38,7 @@ v0.1 建议最小集（可随实现调整，但必须有文档同步）：
 - git_stage / git_commit / git_checkout_branch (Gate C)
 
 ## 4. 文件系统边界
-- 必须限定 workspace root（用户选择的项目根目录）
+- 必须限定 workspace root（用户在设置页选择的项目根目录，系统启动时不自动假定当前目录为工作区）
 - 默认禁止访问：`~/.ssh`、`~/.config`、系统目录、Keychain
 - 允许访问：workspace 内的源代码与配置（可按扩展名/目录做进一步限制）
 

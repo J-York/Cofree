@@ -1,8 +1,8 @@
 # Cofree 开发进度追踪（必须实时维护）
 
-**Last Updated**: 2026-02-27 14:50 CST by Codex-GPT-5  
-**当前 Milestone**：2 - 服务员对话 + 计划生成（Completed）  
-**Next Task**：Milestone 3.1 HITL 审批状态机骨架（planning → executing → human_review → done）
+**Last Updated**: 2026-02-27 15:30 CST by Sisyphus
+**当前 Milestone**: 2.5 - Workspace 工作区支持（Completed）
+**Next Task**: Milestone 3.1 HITL 审批状态机骨架（planning → executing → human_review → done）
 
 ## Milestone 0: 项目初始化与文档（Completed）
 - [x] 创建仓库 & 初始化文档包
@@ -48,6 +48,23 @@
 - 未实现任何写文件、命令执行、git 写操作入口；
 - 待审批动作全部仅展示，不提供执行按钮。
 
+## Milestone 2.5: Workspace 工作区支持（Completed）
+- [x] 2.5.1 Rust Tauri 命令：workspace 选择、验证、信息获取（select_workspace_folder, validate_git_repo, get_workspace_info）
+- [x] 2.5.2 Rust Tauri 命令：workspace 范围内文件操作（read_workspace_file, list_workspace_files，含路径遍历保护）
+- [x] 2.5.3 Rust Tauri 命令：workspace 范围内只读 git 操作（git_status_workspace, git_diff_workspace）
+- [x] 2.5.4 设置页 workspace 选择 UI（文件夹选择器 + 当前 workspace 显示 + git 验证状态）
+- [x] 2.5.5 聊天页 workspace 上下文显示 + 未选择 workspace 时阻断聊天
+- [x] 2.5.6 更新文档：PRD/MVP/GUARDRAILS 添加 workspace 概念
+- [x] 2.5.7 扩展 AppSettings 和 OrchestrationPlan 类型以包含 workspacePath
+
+**Acceptance Criteria for Milestone 2.5**:
+- [x] 用户可在设置页选择本地 Git 仓库文件夹作为工作区
+- [x] 系统验证选择的文件夹是否为有效 Git 仓库，并显示仓库名和分支
+- [x] 聊天页显示当前工作区路径，未选择时阻断聊天并提示
+- [x] 所有文件和 git 操作限定在选定的 workspace 内，具备路径遍历保护
+- [x] 前端构建通过（`pnpm build`），TypeScript 类型检查通过
+- [x] 文档已更新，明确 workspace 为用户选择而非启动目录
+
 **更新规则**（所有开发者必须遵守）：
 1. 每次完成一个子任务 → 立即编辑本文件，打钩 + 更新时间 + 签名
 2. Git commit 必须包含 `progress:` 前缀，例如 `progress: complete 1.1 tauri skeleton`
@@ -59,6 +76,7 @@
 - 2026-02-27: Tauri/Rust 完整联调受本地代理与依赖下载限制阻塞（需可用 crates/pnpm 源与 Xcode）。
 - 2026-02-27: 完成 Milestone 2 全量实现：LiteLLM 流式消费、结构化计划生成、Pending 动作列表、local-only 阻断、LLM 最小审计日志。
 - 2026-02-27: 构建校验通过（`npm run build`），确认 Milestone 2 阶段无写盘/命令/git 写副作用。
+- 2026-02-27: 完成 Milestone 2.5 全量实现：workspace 文件夹选择、Git 仓库验证、workspace 范围内文件/git 只读操作、设置页和聊天页 UI 集成、路径遍历保护。
 
 ## Docs Update Log
 - 2026-02-27: Add MVP scope, guardrails, security/privacy, git support docs; update PRD/Roadmap/Architecture to lightweight diff (`jsdiff` + `diff2html`) and clarify non-goals.

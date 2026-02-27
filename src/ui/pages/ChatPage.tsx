@@ -1,8 +1,8 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/ui/pages/ChatPage.tsx
- * Milestone: 2
- * Task: 2.1
+ * Milestone: 2.5
+ * Task: 2.5.5
  * Status: Completed
  * Owner: Codex-GPT-5
  * Last Modified: 2026-02-27
@@ -30,6 +30,8 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const localOnlyBlocked = !settings.allowCloudModels && !isLocalProvider(settings.provider);
+  const noWorkspaceSelected = !settings.workspacePath;
+  const chatBlocked = localOnlyBlocked || noWorkspaceSelected;
 
   const handleCancel = (): void => {
     abortControllerRef.current?.abort();
@@ -88,8 +90,26 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     }
   };
 
+  const formatWorkspacePath = (path: string): string => {
+    if (!path) return "";
+    return path;
+  };
+
   return (
     <div className="page-stack">
+      {/* Workspace Status Bar */}
+      <div className="status-note" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem', padding: '0.5rem', background: 'var(--color-bg-secondary, #f5f5f5)', borderRadius: '4px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span style={{ fontSize: '1.2em' }}>📁</span>
+          <span style={{ fontWeight: 'bold' }}>当前工作区:</span>
+          {settings.workspacePath ? (
+            <span style={{ fontFamily: 'monospace' }}>{formatWorkspacePath(settings.workspacePath)}</span>
+          ) : (
+            <span style={{ color: 'var(--color-error, #d32f2f)', fontWeight: 'bold' }}>未选择工作区</span>
+          )}
+        </div>
+      </div>
+
       <article className="panel-card">
         <h2>点单区</h2>
         <p className="status-note">
@@ -98,6 +118,11 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
         {localOnlyBlocked ? (
           <p className="status-error">
             Local-only 已开启，当前 provider 不是本地模型。请到设置页切换到 Ollama。
+          </p>
+        ) : null}
+        {noWorkspaceSelected ? (
+          <p className="status-error">
+            请先在设置页选择工作区（Git 仓库文件夹）
           </p>
         ) : null}
         <textarea
@@ -109,7 +134,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
         <div className="actions">
           <button
             className="button"
-            disabled={isStreaming || !prompt.trim() || localOnlyBlocked}
+            disabled={isStreaming || !prompt.trim() || chatBlocked}
             onClick={() => {
               void handleSubmit();
             }}

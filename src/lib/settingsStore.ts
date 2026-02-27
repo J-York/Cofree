@@ -22,6 +22,7 @@ export interface AppSettings {
   maxSnippetLines: 200 | 500 | 2000;
   sendRelativePathOnly: boolean;
   lastSavedAt: string | null;
+  workspacePath: string;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -32,7 +33,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   allowCloudModels: true,
   maxSnippetLines: 500,
   sendRelativePathOnly: true,
-  lastSavedAt: null
+  lastSavedAt: null,
+  workspacePath: "",
 };
 
 export function loadSettings(): AppSettings {

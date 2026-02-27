@@ -35,4 +35,5 @@ export interface OrchestrationPlan {
   prompt: string;
   steps: PlanStep[];
   proposedActions: ActionProposal[];
+  workspacePath?: string;
 }
