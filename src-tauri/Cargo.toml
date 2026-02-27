@@ -1,0 +1,21 @@
+[package]
+name = "cofree"
+version = "0.1.0"
+description = "Cofree desktop shell"
+authors = ["Cofree Team"]
+license = "MIT"
+repository = "https://github.com/cofree/cofree"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

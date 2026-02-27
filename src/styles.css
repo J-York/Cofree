@@ -1,0 +1,176 @@
+/**
+ * Cofree - AI Programming Cafe
+ * File: src/styles.css
+ * Milestone: 1
+ * Task: 1.1
+ * Status: Completed
+ * Owner: Codex-GPT-5
+ * Last Modified: 2026-02-27
+ * Description: Shared styles for Milestone 1 shell and pages.
+ */
+
+:root {
+  color-scheme: light;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  line-height: 1.5;
+  color: #0f172a;
+  background: linear-gradient(120deg, #f6f6f2, #f4ebe1 55%, #e9e7f8);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.app-shell {
+  margin: 0 auto;
+  max-width: 1040px;
+  display: grid;
+  gap: 16px;
+}
+
+.app-header {
+  background: #ffffffcc;
+  border: 1px solid #d6d3d1;
+  border-radius: 16px;
+  padding: 16px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.app-header h1 {
+  margin: 2px 0 0;
+}
+
+.kicker {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #78716c;
+}
+
+.runtime-pill {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid #d4d4d8;
+  font-size: 13px;
+  background: #fff;
+}
+
+.tab-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.tab-button {
+  border: 1px solid #d6d3d1;
+  border-radius: 10px;
+  background: #ffffffcc;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.tab-button[aria-selected="true"] {
+  background: #1d4ed8;
+  color: #fff;
+  border-color: #1d4ed8;
+}
+
+.app-panel {
+  border: 1px solid #d6d3d1;
+  border-radius: 16px;
+  background: #ffffffd9;
+  padding: 16px;
+}
+
+.page-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.panel-card {
+  border: 1px solid #e7e5e4;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fff;
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  border: 1px solid #d6d3d1;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.textarea {
+  min-height: 88px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.button {
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.button.secondary {
+  background: #fff;
+  color: #111827;
+  border-color: #d6d3d1;
+}
+
+.inline-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.status-note {
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+}
+
+.plan-item {
+  margin: 0;
+  padding-left: 18px;
+}
+
+@media (max-width: 720px) {
+  #root {
+    padding: 14px;
+  }
+
+  .app-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .inline-row {
+    grid-template-columns: 1fr;
+  }
+}
