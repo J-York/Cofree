@@ -1,12 +1,12 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/orchestrator/types.ts
- * Milestone: 1
- * Task: 1.2
+ * Milestone: 2
+ * Task: 2.2
  * Status: Completed
  * Owner: Codex-GPT-5
  * Last Modified: 2026-02-27
- * Description: Shared types for orchestration planning output.
+ * Description: Shared types for orchestration planning output and pending gated actions.
  */
 
 import type { AgentRole } from "../agents/defaultAgents";
@@ -20,6 +20,8 @@ export interface ActionProposal {
   type: SensitiveActionType;
   description: string;
   gateRequired: true;
+  status: "pending";
+  executed: false;
 }
 
 export interface PlanStep {

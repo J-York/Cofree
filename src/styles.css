@@ -1,12 +1,12 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/styles.css
- * Milestone: 1
- * Task: 1.1
+ * Milestone: 2
+ * Task: 2.3
  * Status: Completed
  * Owner: Codex-GPT-5
  * Last Modified: 2026-02-27
- * Description: Shared styles for Milestone 1 shell and pages.
+ * Description: Shared styles for milestone shell, streaming chat, and pending action list.
  */
 
 :root {
@@ -136,6 +136,11 @@ body {
   color: #fff;
 }
 
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .button.secondary {
   background: #fff;
   color: #111827;
@@ -154,9 +159,56 @@ body {
   font-size: 13px;
 }
 
+.status-error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 13px;
+}
+
 .plan-item {
   margin: 0;
   padding-left: 18px;
+}
+
+.stream-output {
+  margin: 0;
+  min-height: 120px;
+  max-height: 320px;
+  overflow: auto;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+  white-space: pre-wrap;
+  font-family: "SF Mono", "Fira Code", "Menlo", monospace;
+  font-size: 13px;
+}
+
+.action-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.action-item {
+  border: 1px solid #e7e5e4;
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.pending-pill {
+  border: 1px solid #94a3b8;
+  background: #f8fafc;
+  color: #334155;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 @media (max-width: 720px) {

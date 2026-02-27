@@ -1,12 +1,12 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/App.tsx
- * Milestone: 1
- * Task: 1.1
+ * Milestone: 2
+ * Task: 2.1
  * Status: Completed
  * Owner: Codex-GPT-5
  * Last Modified: 2026-02-27
- * Description: App shell with milestone-1 navigation and page wiring.
+ * Description: App shell with milestone-2 wiring for streaming planning.
  */
 
 import { type ReactElement, useMemo, useState } from "react";
@@ -45,7 +45,7 @@ export default function App(): ReactElement {
     <main className="app-shell">
       <header className="app-header">
         <div>
-          <p className="kicker">Milestone 1</p>
+          <p className="kicker">Milestone 2</p>
           <h1>Cofree</h1>
         </div>
         <p className="runtime-pill">Active Runtime: {runtimeSummary}</p>
@@ -54,7 +54,7 @@ export default function App(): ReactElement {
       <NavTabs activeTab={activeTab} onTabChange={setActiveTab} />
 
       <section className="app-panel">
-        {activeTab === "chat" ? <ChatPage /> : null}
+        {activeTab === "chat" ? <ChatPage settings={settings} /> : null}
         {activeTab === "kitchen" ? <KitchenPage /> : null}
         {activeTab === "settings" ? (
           <SettingsPage settings={settings} onSave={handleSaveSettings} />

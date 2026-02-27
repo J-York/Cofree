@@ -1,12 +1,12 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/orchestrator/mockOrchestrator.ts
- * Milestone: 1
- * Task: 1.2
+ * Milestone: 2
+ * Task: 2.2
  * Status: Completed
  * Owner: Codex-GPT-5
  * Last Modified: 2026-02-27
- * Description: Milestone 1 mock orchestration that returns plan + gated actions.
+ * Description: Mock orchestration helper that returns a pending-only plan.
  */
 
 import type { OrchestrationPlan } from "./types";
@@ -43,19 +43,25 @@ export function draftPlanFromPrompt(prompt: string): OrchestrationPlan {
         id: "gate-apply",
         type: "apply_patch",
         description: "Apply generated patch to workspace",
-        gateRequired: true
+        gateRequired: true,
+        status: "pending",
+        executed: false
       },
       {
         id: "gate-command",
         type: "run_command",
         description: "Run allowlisted validation command",
-        gateRequired: true
+        gateRequired: true,
+        status: "pending",
+        executed: false
       },
       {
         id: "gate-git",
         type: "git_write",
         description: "Stage and commit approved workspace changes",
-        gateRequired: true
+        gateRequired: true,
+        status: "pending",
+        executed: false
       }
     ]
   };
