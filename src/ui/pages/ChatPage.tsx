@@ -585,11 +585,22 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
       const nextPlan = await approveAction(runningPlan, actionId, settings.workspacePath);
       handlePlanUpdate(messageId, () => nextPlan);
       setSessionNote(`动作 ${actionId} 已执行 · 状态：${nextPlan.state}`);
-      const executed = nextPlan.proposedActions.find((a) => a.id === actionId);
-      if (executed?.executionResult) {
-        const resultStr = executed.executionResult.success ? "成功" : "失败";
-        const sysPrompt = `[系统通知] 动作 ${executed.type} 执行${resultStr}。结果：\n${executed.executionResult.message}\n请继续完成任务或向用户汇报。`;
+      
+      // Check if there are any remaining pending actions
+      const hasPending = nextPlan.proposedActions.some(a => a.status === "pending");
+
+      if (!hasPending) {
+        // Once no more pending actions exist, send ONE summary message to LLM.
+        const summaryLines = nextPlan.proposedActions.map(a => {
+          if (a.status === "rejected") return `[${a.type}] 用户拒绝了执行。原因：${a.executionResult?.message || "无"}`;
+          if (!a.executionResult) return `[${a.type}] 状态异常未执行`;
+          const resStr = a.executionResult.success ? "成功" : "失败";
+          return `[${a.type}] 执行${resStr}。结果：\n${a.executionResult.message}`;
+        });
+        const sysPrompt = `[系统通知] 计划中的所有审批动作已处理完毕。结果汇总：\n\n${summaryLines.join('\n\n')}\n\n请继续完成任务或向用户汇报。`;
         setTimeout(() => void runChatCycle(sysPrompt), 100);
+      } else {
+        setSessionNote(`动作已执行，还有待审批动作`);
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error || "动作执行失败");
@@ -603,8 +614,30 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const handleRejectAction = (messageId: string, actionId: string): void => {
     const reason = window.prompt("请输入 Reject 原因", "Need refinement");
     if (reason === null) return;
-    handlePlanUpdate(messageId, (p) => rejectAction(p, actionId, reason));
+    let newPlan: OrchestrationPlan | null = null;
+    handlePlanUpdate(messageId, (p) => {
+      newPlan = rejectAction(p, actionId, reason);
+      return newPlan;
+    });
     setSessionNote(`动作 ${actionId} 已拒绝`);
+
+    // Defer the check so that handlePlanUpdate completes synchronously
+    setTimeout(() => {
+      if (newPlan) {
+        const plan = newPlan as OrchestrationPlan;
+        const hasPending = plan.proposedActions.some(a => a.status === "pending");
+        if (!hasPending) {
+          const summaryLines = plan.proposedActions.map(a => {
+            if (a.status === "rejected") return `[${a.type}] 用户拒绝了执行。原因：${a.executionResult?.message || "无"}`;
+            if (!a.executionResult) return `[${a.type}] 状态异常未执行`;
+            const resStr = a.executionResult.success ? "成功" : "失败";
+            return `[${a.type}] 执行${resStr}。结果：\n${a.executionResult.message}`;
+          });
+          const sysPrompt = `[系统通知] 计划中的所有审批动作已处理完毕。结果汇总：\n\n${summaryLines.join('\n\n')}\n\n请继续完成任务或向用户汇报。`;
+          runChatCycle(sysPrompt);
+        }
+      }
+    }, 100);
   };
 
   const handleCommentAction = (messageId: string, actionId: string): void => {
