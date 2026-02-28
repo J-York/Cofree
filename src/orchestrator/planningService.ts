@@ -330,7 +330,7 @@ function sanitizeConversationHistory(
       content: message.content.trim()
     }))
     .filter((message) => Boolean(message.content))
-    .slice(-16);
+    .slice(-40);
 }
 
 function inputLengthOf(messages: LiteLLMMessage[]): number {
