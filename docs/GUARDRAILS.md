@@ -20,23 +20,26 @@
 
 ### Gate B：Execute Command（命令执行）
 - 输入：命令字符串 + 工作目录 + 预期目的说明
-- UI：展示风险提示（读写磁盘/网络/安装依赖）
+- UI：展示风险提示（读写磁盘/网络/安装依赖/危险系统命令）
+- 机制：移除后端硬编码的命令白名单（即所有系统命令均支持调用），完全依赖此审批门进行风险管控
 - 通过后动作：执行命令并捕获 stdout/stderr/exit code
-
 ### Gate C：Git Write（git 写操作）
 - 输入：将要执行的操作（create branch / stage / commit）
 - UI：展示受影响文件列表、commit message 预览
 - 通过后动作：执行 git 写操作
 
-## 3. Tool Allowlist（工具白名单）
-v0.1 建议最小集（可随实现调整，但必须有文档同步）：
-- read_file / list_files
-- create_patch (in-memory)
-- apply_patch (Gate A)
-- run_command (Gate B)
-- git_status / git_diff (read-only)
-- git_stage / git_commit / git_checkout_branch (Gate C)
+## 3. Tool Allowlist（机制调整）
+v0.1 不再在后端对具体系统命令做白名单硬校验。所有的写操作风险管控全面收束于：
+- **人工审批门（HITL）**
+- 工作区路径边界限制
 
+支持的核心 Agent 能力集：
+- `read_file` / `list_files`
+- `create_patch` (in-memory)
+- `apply_patch` (Gate A)
+- `run_command` (Gate B - 全量命令支持，仅受限系统底层权限与工作区路径)
+- `git_status` / `git_diff` (read-only)
+- `git_stage` / `git_commit` / `git_checkout_branch` (Gate C)
 ## 4. 文件系统边界
 - 必须限定 workspace root（用户在设置页选择的项目根目录，系统启动时不自动假定当前目录为工作区）
 - 默认禁止访问：`~/.ssh`、`~/.config`、系统目录、Keychain

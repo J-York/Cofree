@@ -413,19 +413,6 @@ fn parse_patch_files(patch: &str) -> Vec<String> {
     files.into_iter().collect()
 }
 
-fn is_allowlisted_command(command: &str) -> bool {
-    matches!(
-        command.trim(),
-        "pnpm build"
-            | "pnpm test"
-            | "npm run build"
-            | "npm test"
-            | "cargo check"
-            | "cargo test"
-            | "bun test"
-    )
-}
-
 fn run_git_capture_output(workspace: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
@@ -879,10 +866,6 @@ fn run_workspace_command(
     if command_trimmed.is_empty() {
         return Err("命令不能为空".to_string());
     }
-    if !is_allowlisted_command(&command_trimmed) {
-        return Err(format!("命令不在 allowlist: {}", command_trimmed));
-    }
-
     let max_timeout = timeout_ms.unwrap_or(120_000).clamp(1_000, 600_000);
     let timeout = Duration::from_millis(max_timeout);
 
