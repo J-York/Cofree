@@ -166,6 +166,23 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
           </div>
 
           <div className="field">
+            <label className="field-label">Max Context Tokens</label>
+            <input
+              type="number"
+              className="input"
+              placeholder="Default: 128000"
+              value={draft.maxContextTokens || ""}
+              onChange={(e) =>
+                setDraft((p) => ({
+                  ...p,
+                  maxContextTokens: Number(e.target.value) || 128000,
+                }))
+              }
+            />
+            <span className="field-hint" style={{ fontSize: "11px", color: "var(--text-3)", marginTop: "4px", display: "block" }}>Used for truncating chat history</span>
+          </div>
+
+          <div className="field">
             <label className="field-label">Path Egress Mode</label>
             <select
               className="select"

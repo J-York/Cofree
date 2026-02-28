@@ -317,20 +317,53 @@ function normalizeMessageContent(content: unknown): string {
   return "";
 }
 
+// 粗略估计 Token 数量：中英文混排时大致 1 个汉字≈1-2 token，英文字符数/4≈token。
+// 这里简单使用字符串长度来做保守估算，假设平均 1 token ≈ 2.5 字符。
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 2.5);
+}
+
 function sanitizeConversationHistory(
-  conversationHistory: RunPlanningSessionInput["conversationHistory"]
+  conversationHistory: RunPlanningSessionInput["conversationHistory"],
+  maxTokens: number
 ): LiteLLMMessage[] {
   if (!conversationHistory?.length) {
     return [];
   }
 
-  return conversationHistory
+  const validMessages = conversationHistory
     .map((message) => ({
       role: message.role,
       content: message.content.trim()
     }))
-    .filter((message) => Boolean(message.content))
-    .slice(-40);
+    .filter((message) => Boolean(message.content));
+
+  // 如果用户未设置或异常，回退到 128k 默认限制 (128000 * 2.5 = 320000 字符)
+  const limitTokens = maxTokens > 0 ? maxTokens : 128000;
+  const bufferTokens = 8000; // 留给 System Prompt 和当前回复的空间
+  const maxAllowedTokens = limitTokens - bufferTokens;
+
+  let currentTokens = 0;
+  const selectedMessages: LiteLLMMessage[] = [];
+
+  // 从新到旧遍历，保留尽可能多的最近消息
+  for (let i = validMessages.length - 1; i >= 0; i--) {
+    const msg = validMessages[i];
+    const tokens = estimateTokens(msg.content);
+    if (currentTokens + tokens > maxAllowedTokens) {
+      // 如果单条消息就超大，但已经是最新的一条，或者为了防止上下文截断过严：
+      // 插入一条系统提示，要求 LLM 注意上下文已被截断或需要压缩。
+      selectedMessages.unshift({
+        role: "system",
+        content: "[系统提示] 之前的对话历史由于达到上下文长度限制已被截断。请基于现有的最新信息继续工作。"
+      });
+      break;
+    }
+    selectedMessages.unshift(msg);
+    currentTokens += tokens;
+  }
+
+  return selectedMessages;
 }
 
 function inputLengthOf(messages: LiteLLMMessage[]): number {
@@ -1050,7 +1083,8 @@ export async function runPlanningSession(
   }
 
   assertLocalOnlyPolicy(input.settings);
-  const historyMessages = sanitizeConversationHistory(input.conversationHistory);
+  const maxTokens = input.settings.maxContextTokens || 128000;
+  const historyMessages = sanitizeConversationHistory(input.conversationHistory, maxTokens);
 
   try {
     const loopResult = await runNativeToolCallingLoop(

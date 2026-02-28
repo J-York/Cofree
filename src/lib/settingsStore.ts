@@ -20,6 +20,7 @@ export interface AppSettings {
   model: string;
   allowCloudModels: boolean;
   maxSnippetLines: 200 | 500 | 2000;
+  maxContextTokens: number;
   sendRelativePathOnly: boolean;
   lastSavedAt: string | null;
   workspacePath: string;
@@ -32,6 +33,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   model: defaultModelForProvider("openai"),
   allowCloudModels: true,
   maxSnippetLines: 500,
+  maxContextTokens: 128000,
   sendRelativePathOnly: true,
   lastSavedAt: null,
   workspacePath: "",
