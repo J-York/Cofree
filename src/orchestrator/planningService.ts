@@ -21,7 +21,7 @@ import {
 } from "../lib/litellm";
 import type { AppSettings } from "../lib/settingsStore";
 import type { ActionProposal, OrchestrationPlan, PlanStep } from "./types";
-const MAX_TOOL_LOOP_TURNS = 6;
+const MAX_TOOL_LOOP_TURNS = 15;
 const MAX_LIST_ENTRIES = 120;
 const MAX_FILE_PREVIEW_CHARS = 4000;
 const MAX_TOOL_RESULT_PREVIEW = 400;

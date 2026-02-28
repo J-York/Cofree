@@ -114,6 +114,24 @@ export function formatModelRef(providerId: string, model: string): string {
   return `${providerId}/${model}`;
 }
 
+export function parseModelRef(modelRef: string): { provider: string; model: string } {
+  const trimmed = modelRef.trim();
+  const slashIndex = trimmed.indexOf("/");
+  
+  if (slashIndex > 0) {
+    return {
+      provider: trimmed.substring(0, slashIndex),
+      model: trimmed.substring(slashIndex + 1)
+    };
+  }
+  
+  return {
+    provider: "",
+    model: trimmed
+  };
+}
+
+
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/$/, "");
 }
@@ -212,13 +230,20 @@ export async function postLiteLLMChatCompletions(
   settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey">,
   body: Record<string, unknown>
 ): Promise<LiteLLMHttpResponse> {
+  const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  
   try {
     return await invoke<LiteLLMHttpResponse>("post_litellm_chat_completions", {
       baseUrl: settings.liteLLMBaseUrl,
       apiKey: settings.apiKey,
       body
     });
-  } catch (_error) {
+  } catch (error) {
+    // If we're in Tauri, don't fallback to browser fetch (which will fail with CORS).
+    // Throw the real Rust error so the user sees the actual problem.
+    if (isTauri) {
+      throw error;
+    }
     // Fallback to frontend fetch for non-Tauri environments.
   }
 
@@ -244,7 +269,7 @@ export async function postLiteLLMChatCompletions(
         endpoint
       };
     } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
+      errors.push(String(error || "Unknown error"));
     }
   }
 
@@ -254,6 +279,8 @@ export async function postLiteLLMChatCompletions(
 export async function fetchLiteLLMModelIds(
   settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey">
 ): Promise<string[]> {
+  const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  
   try {
     const viaTauri = await invoke<string[]>("fetch_litellm_models", {
       baseUrl: settings.liteLLMBaseUrl,
@@ -265,16 +292,19 @@ export async function fetchLiteLLMModelIds(
     if (normalized.length) {
       return normalized;
     }
-  } catch (_error) {
+  } catch (error) {
+    // If we're in Tauri, don't fallback to browser fetch (which will fail with CORS).
+    // Throw the real Rust error so the user sees the actual problem.
+    if (isTauri) {
+      throw error;
+    }
     // Fallback to frontend fetch for non-Tauri environments.
   }
-
   const normalizedBaseUrl = normalizeBaseUrl(settings.liteLLMBaseUrl);
   const endpoints = [`${normalizedBaseUrl}/models`];
   if (!normalizedBaseUrl.endsWith("/v1")) {
     endpoints.push(`${normalizedBaseUrl}/v1/models`);
   }
-
   const errors: string[] = [];
   for (const endpoint of endpoints) {
     try {
@@ -282,7 +312,6 @@ export async function fetchLiteLLMModelIds(
         method: "GET",
         headers: createAuthHeaders(settings.apiKey)
       });
-
       const payload = (await response.json().catch(() => null)) as unknown;
       if (!response.ok) {
         const detail = extractErrorMessage(payload);
@@ -291,25 +320,20 @@ export async function fetchLiteLLMModelIds(
           : `拉取模型失败（${response.status}）`;
         throw new Error(message);
       }
-
       const modelIds = Array.from(
         new Set(extractModelEntries(payload).map(extractModelId).filter((id): id is string => Boolean(id)))
       ).sort((left, right) => left.localeCompare(right));
-
       if (modelIds.length) {
         return modelIds;
       }
-
       throw new Error("未获取到可用模型。");
     } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
+      errors.push(String(error || "Unknown error"));
     }
   }
-
   if (errors.length > 0) {
     throw new Error(errors.join(" | "));
   }
-
   throw new Error("未获取到可用模型，请确认 LiteLLM 已正确配置。");
 }
 

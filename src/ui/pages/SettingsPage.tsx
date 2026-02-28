@@ -1,18 +1,6 @@
-/**
- * Cofree - AI Programming Cafe
- * File: src/ui/pages/SettingsPage.tsx
- * Milestone: 2.5
- * Task: 2.5.4
- * Status: Completed
- * Owner: Codex-GPT-5
- * Last Modified: 2026-02-27
- * Description: Settings page for API key persistence, LiteLLM model config, and workspace selection.
- */
 import { invoke } from "@tauri-apps/api/core";
 import { type ReactElement, useEffect, useState } from "react";
-import {
-  createLiteLLMClientConfig,
-  } from "../../lib/litellm";
+import { createLiteLLMClientConfig, formatModelRef, parseModelRef } from "../../lib/litellm";
 import { type AppSettings, maskApiKey } from "../../lib/settingsStore";
 
 interface WorkspaceInfo {
@@ -32,11 +20,7 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
   const [workspaceError, setWorkspaceError] = useState<string>("");
 
   const loadWorkspaceInfo = async (path: string) => {
-    if (!path) {
-      setWorkspaceInfo(null);
-      setWorkspaceError("");
-      return;
-    }
+    if (!path) { setWorkspaceInfo(null); setWorkspaceError(""); return; }
     try {
       const isGitRepo = await invoke<boolean>("validate_git_repo", { path });
       if (isGitRepo) {
@@ -48,35 +32,35 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
         setWorkspaceError("选择的目录不是一个有效的 Git 仓库");
       }
     } catch (error) {
-      console.error("Failed to load workspace info:", error);
       setWorkspaceInfo(null);
       setWorkspaceError(error instanceof Error ? error.message : String(error));
     }
   };
 
-  useEffect(() => {
-    loadWorkspaceInfo(draft.workspacePath || "");
-  }, [draft.workspacePath]);
-
-  useEffect(() => {
-    setDraft(settings);
-  }, [settings]);
+  useEffect(() => { void loadWorkspaceInfo(draft.workspacePath || ""); }, [draft.workspacePath]);
+  useEffect(() => { setDraft(settings); }, [settings]);
 
   const handleSave = (): void => {
-    onSave(draft);
-    setSaveMessage("设置已保存到本地存储。敏感动作仍需审批门确认。");
+    const parsed = parseModelRef(draft.model);
+    const normalized = {
+      ...draft,
+      provider: parsed.provider || draft.provider,
+      model: parsed.model || draft.model
+    };
+    onSave(normalized);
+    setSaveMessage("已保存");
+    setTimeout(() => setSaveMessage(""), 3000);
   };
 
   const handleSelectWorkspace = async () => {
     try {
       const path = await invoke<string | null>("select_workspace_folder");
       if (path) {
-        const updatedDraft = { ...draft, workspacePath: path };
-        setDraft(updatedDraft);
-        onSave(updatedDraft);
+        const updated = { ...draft, workspacePath: path };
+        setDraft(updated);
+        onSave(updated);
       }
     } catch (error) {
-      console.error("Failed to select workspace:", error);
       setWorkspaceError("选择工作区失败: " + (error instanceof Error ? error.message : String(error)));
     }
   };
@@ -84,87 +68,94 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
   const runtimeConfig = createLiteLLMClientConfig(draft);
 
   return (
-    <div className="page-stack">
-      <article className="panel-card">
-        <h2>设置</h2>
-        <p className="status-note">用于 Milestone 1 的 API Key 与 LiteLLM 多模型配置。</p>
-      </article>
+    <div className="page-content">
+      <div className="page-header">
+        <h1 className="page-title">设置</h1>
+        <p className="page-subtitle">API 密钥、模型配置与工作区管理</p>
+      </div>
 
-      <article className="panel-card page-stack">
-        <h2>工作区设置</h2>
-        <div className="inline-row">
-          <div style={{ flex: 1 }}>
-            <p className="status-note" style={{ margin: 0, fontSize: "1.1em", color: "var(--text-1)" }}>
+      {/* Workspace */}
+      <div className="card">
+        <p className="card-title">工作区</p>
+        <div className="workspace-card">
+          <div className="workspace-icon">📁</div>
+          <div className="workspace-info">
+            <p className="workspace-path">
               {draft.workspacePath || "未选择工作区"}
             </p>
             {workspaceInfo && (
-              <p className="status-note" style={{ margin: "0.5rem 0 0 0" }}>
-                📦 {workspaceInfo.repo_name} | 🌿 {workspaceInfo.git_branch}
+              <p className="workspace-meta">
+                📦 {workspaceInfo.repo_name} &nbsp;·&nbsp; 🌿 {workspaceInfo.git_branch}
               </p>
             )}
             {workspaceError && (
-              <p className="status-note" style={{ margin: "0.5rem 0 0 0", color: "var(--color-error)" }}>
-                ⚠️ {workspaceError}
+              <p className="workspace-meta" style={{ color: "var(--color-error)" }}>
+                ⚠ {workspaceError}
               </p>
             )}
           </div>
-          <button className="button" onClick={handleSelectWorkspace} type="button">
-            选择工作区
+          <button className="btn btn-ghost btn-sm" onClick={handleSelectWorkspace} type="button">
+            选择目录
           </button>
         </div>
-      </article>
+      </div>
 
-      <article className="panel-card page-stack">
-        <label>
-          LiteLLM Base URL
+      {/* Model config */}
+      <div className="card settings-section">
+        <p className="settings-section-title">模型配置</p>
+
+        <div className="field">
+          <label className="field-label">LiteLLM Base URL</label>
           <input
             className="input"
             value={draft.liteLLMBaseUrl}
-            onChange={(event) =>
-              setDraft((previous) => ({ ...previous, liteLLMBaseUrl: event.target.value }))
-            }
+            onChange={(e) => setDraft((p) => ({ ...p, liteLLMBaseUrl: e.target.value }))}
             placeholder="http://localhost:4000"
             type="text"
           />
-        </label>
+        </div>
 
-        <label>
-          API Key
+        <div className="field">
+          <label className="field-label">API Key</label>
           <input
             className="input"
             value={draft.apiKey}
-            onChange={(event) =>
-              setDraft((previous) => ({ ...previous, apiKey: event.target.value.trim() }))
-            }
+            onChange={(e) => setDraft((p) => ({ ...p, apiKey: e.target.value.trim() }))}
             placeholder="sk-..."
             type="password"
           />
-        </label>
-
-        <div className="inline-row">
-          <label>
-            Model Name
-            <input
-              className="input"
-              value={draft.model}
-              onChange={(event) =>
-                setDraft((previous) => ({ ...previous, model: event.target.value }))
-              }
-              placeholder="e.g. openai/gpt-4o"
-              type="text"
-            />
-          </label>
+          <div className="api-key-display">{maskApiKey(draft.apiKey)}</div>
         </div>
-        <div className="inline-row">
-          <label>
-            Max snippet lines
+
+        <div className="field">
+          <label className="field-label">Model Name</label>
+          <input
+            className="input"
+            value={formatModelRef(draft.provider, draft.model)}
+            onChange={(e) => {
+              const input = e.target.value;
+              const parsed = parseModelRef(input);
+              setDraft((p) => ({
+                ...p,
+                provider: parsed.provider || p.provider,
+                model: parsed.model
+              }));
+            }}
+            placeholder="e.g. openai/gpt-4o"
+            type="text"
+          />
+        </div>
+
+        <div className="grid-2">
+          <div className="field">
+            <label className="field-label">Max Snippet Lines</label>
             <select
               className="select"
               value={draft.maxSnippetLines}
-              onChange={(event) =>
-                setDraft((previous) => ({
-                  ...previous,
-                  maxSnippetLines: Number(event.target.value) as AppSettings["maxSnippetLines"]
+              onChange={(e) =>
+                setDraft((p) => ({
+                  ...p,
+                  maxSnippetLines: Number(e.target.value) as AppSettings["maxSnippetLines"],
                 }))
               }
             >
@@ -172,57 +163,57 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
               <option value={500}>500</option>
               <option value={2000}>2000</option>
             </select>
-          </label>
+          </div>
 
-          <label>
-            Path egress mode
+          <div className="field">
+            <label className="field-label">Path Egress Mode</label>
             <select
               className="select"
               value={draft.sendRelativePathOnly ? "relative" : "full"}
-              onChange={(event) =>
-                setDraft((previous) => ({
-                  ...previous,
-                  sendRelativePathOnly: event.target.value === "relative"
-                }))
+              onChange={(e) =>
+                setDraft((p) => ({ ...p, sendRelativePathOnly: e.target.value === "relative" }))
               }
             >
               <option value="relative">Relative only (default)</option>
               <option value="full">Allow full path</option>
             </select>
-          </label>
+          </div>
         </div>
 
-        <label>
+        <label className="checkbox-row">
           <input
-            checked={draft.allowCloudModels}
-            onChange={(event) =>
-              setDraft((previous) => ({ ...previous, allowCloudModels: event.target.checked }))
-            }
             type="checkbox"
+            checked={draft.allowCloudModels}
+            onChange={(e) => setDraft((p) => ({ ...p, allowCloudModels: e.target.checked }))}
           />
-          {" "}Allow cloud models
+          <span className="checkbox-label">允许云端模型</span>
         </label>
+      </div>
 
-        <div className="actions">
-          <button className="button" onClick={handleSave} type="button">
-            保存设置
-          </button>
-          <button
-            className="button secondary"
-            onClick={() => {
-              setDraft(settings);
-              setSaveMessage("已重置到最近保存版本。");
-            }}
-            type="button"
-          >
-            重置
-          </button>
+      {/* Runtime info */}
+      <div className="card card-sm">
+        <p className="card-title">运行时信息</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <div className="api-key-display">Endpoint: {runtimeConfig.endpoint}</div>
         </div>
+      </div>
 
-        <p className="status-note">当前 API Key：{maskApiKey(draft.apiKey)}</p>
-        <p className="status-note">LiteLLM Endpoint：{runtimeConfig.endpoint}</p>
-        {saveMessage ? <p className="status-note">{saveMessage}</p> : null}
-      </article>
+      {/* Actions */}
+      <div className="btn-row">
+        <button className="btn btn-primary" onClick={handleSave} type="button">
+          保存设置
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={() => { setDraft(settings); setSaveMessage("已重置"); setTimeout(() => setSaveMessage(""), 2000); }}
+          type="button"
+        >
+          重置
+        </button>
+        {saveMessage && (
+          <span className="save-feedback">✓ {saveMessage}</span>
+        )}
+      </div>
     </div>
   );
 }

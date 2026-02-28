@@ -21,6 +21,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
+use dirs;
 
 static CHECKPOINT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -132,14 +133,17 @@ fn canonicalize_workspace_root(workspace_path: &str) -> Result<PathBuf, String> 
         .map_err(|e| format!("Invalid workspace path: {}", e))
 }
 
+fn cofree_home_dir() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| "无法获取用户主目录".to_string())?;
+    Ok(home.join(".cofree"))
+}
+
 fn sqlite_db_path() -> Result<PathBuf, String> {
-    let root = std::env::current_dir().map_err(|e| format!("读取当前目录失败: {}", e))?;
-    Ok(root.join(".cofree").join("checkpoints.db"))
+    Ok(cofree_home_dir()?.join("checkpoints.db"))
 }
 
 fn snapshots_root_dir() -> Result<PathBuf, String> {
-    let root = std::env::current_dir().map_err(|e| format!("读取当前目录失败: {}", e))?;
-    Ok(root.join(".cofree").join("snapshots"))
+    Ok(cofree_home_dir()?.join("snapshots"))
 }
 
 fn now_timestamp() -> String {
