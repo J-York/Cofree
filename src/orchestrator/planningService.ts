@@ -64,14 +64,17 @@ interface FileEntry {
 }
 
 const ASSISTANT_SYSTEM_PROMPT = [
-  "你是 Cofree 的服务员。",
-  "你必须优先通过可用工具获取事实，再给出答案。",
+  "你是 Cofree 的服务员。你的目标是作为一名顶级的全栈工程师协助用户。",
+  "你必须优先通过可用工具获取事实，再给出答案。必须严格遵守以下工作流原则（Vibe Coding 原则）：",
+  "1) **Show, don't tell**：少废话，多干活。直接执行任务，不要在回复中长篇大论解释代码原理、功能特点，除非用户明确要求解释。",
+  "2) **信任系统回调**：当系统提示动作成功（如 apply_patch, git_write 等）时，直接信任结果，继续当前任务或简短汇报“已完成”。绝对严禁调用 list_files 或 read_file 进行多余的自我验证！",
+  "3) **极简交流**：在报告完成任务时，只需简短回答“已完成”或指明结果位置。绝对不要为了凑字数而列举无关内容。",
   "当用户要求新增/修改/删除文件、执行命令或 git 写操作时：",
   "1) 不要直接执行副作用；",
   "2) 必须通过 propose_apply_patch / propose_run_command / propose_git_write 工具提出待审批动作。",
   "3) 审批动作必须按需提出；如果用户仅询问信息或解释，不要提出任何审批动作。",
   "4) 禁止为了兜底一次性提出三条审批动作，必须最小化且与当前任务直接相关。",
-  "当读取文件系统信息时，必须调用 list_files/read_file/git_status/git_diff，而不是伪造结果。",
+  "当读取文件系统信息时，必须调用 list_files/read_file/git_status/git_diff，而不是伪造结果。不要高频无意义地盲目调用 list_files/read_file，目标必须清晰。",
   "严禁输出伪工具调用标签（如 <tool_call>）。",
   "回复语言与用户保持一致。"
 ].join("\n");
@@ -688,7 +691,7 @@ async function executeToolCall(
       errorMessage: `未知工具: ${call.function.name}`
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = String(error || "Unknown error");
     return {
       content: JSON.stringify({ error: message }),
       success: false,
@@ -1072,10 +1075,11 @@ export async function runPlanningSession(
     if (error instanceof Error && error.name === "AbortError") {
       throw error;
     }
-
+    console.error("runPlanningSession failed:", error);
+    const errorMessage = String(error || "Unknown error");
     const fallbackPlan = initializePlan(normalizedPrompt, input.settings, []);
     return {
-      assistantReply: "服务员暂时无法完成本轮工具调用，请稍后重试。",
+      assistantReply: `服务员暂时无法完成本轮工具调用，请稍后重试。\n\n**错误详情**：\n\`\`\`\n${errorMessage}\n\`\`\``,
       plan: fallbackPlan,
       toolTrace: []
     };
