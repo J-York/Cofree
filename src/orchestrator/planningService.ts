@@ -880,6 +880,15 @@ async function runNativeToolCallingLoop(
         content: toolResult.content
       });
     }
+
+    if (proposedActions.length > 0) {
+      return {
+        assistantReply: completion.assistantMessage.content.trim(),
+        requestRecords,
+        proposedActions,
+        toolTrace
+      };
+    }
   }
 
   return {
