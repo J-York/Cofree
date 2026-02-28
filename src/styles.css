@@ -283,10 +283,75 @@ body {
 
 .chat-text {
   margin: 0;
-  white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-primary);
   line-height: 1.6;
+}
+
+.chat-markdown p {
+  margin-top: 0;
+  margin-bottom: 0.5em;
+}
+
+.chat-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown pre {
+  background: var(--bg-tertiary);
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  overflow-x: auto;
+  font-family: var(--font-family-mono);
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+.chat-markdown code {
+  font-family: var(--font-family-mono);
+  background: var(--bg-tertiary);
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  font-size: 0.9em;
+}
+
+.chat-markdown pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.think-block {
+  margin: 8px 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.think-summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  user-select: none;
+  outline: none;
+}
+
+.think-summary:hover {
+  color: var(--text-primary);
+}
+
+.think-content {
+  padding: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.think-content p:last-child {
+  margin-bottom: 0;
 }
 
 .inline-plan {

@@ -25,10 +25,12 @@ import {
   rejectAction,
   updateActionPayload
 } from "../../orchestrator/hitlService";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   getChatSessionId,
-  resetChatSessionId,
   loadLatestWorkflowCheckpoint,
+  resetChatSessionId,
   saveWorkflowCheckpoint
 } from "../../orchestrator/checkpointStore";
 import { runPlanningSession, type ToolExecutionTrace } from "../../orchestrator/planningService";
@@ -80,6 +82,57 @@ function markActionExecutionError(
     state: "human_review",
     proposedActions: nextActions
   };
+}
+function renderMessageContent(content: string, isStreaming: boolean, role: string) {
+  if (!content && isStreaming && role === "assistant") {
+    return <p className="chat-text">正在等待首个 token...</p>;
+  }
+
+  const parts: { type: "text" | "think"; content: string; isStreaming: boolean }[] = [];
+  let remaining = content;
+
+  while (remaining.length > 0) {
+    const startIndex = remaining.indexOf("<think>");
+    if (startIndex === -1) {
+      parts.push({ type: "text", content: remaining, isStreaming: false });
+      break;
+    }
+
+    if (startIndex > 0) {
+      parts.push({ type: "text", content: remaining.slice(0, startIndex), isStreaming: false });
+    }
+
+    const endIndex = remaining.indexOf("</think>", startIndex + 7);
+    if (endIndex === -1) {
+      parts.push({ type: "think", content: remaining.slice(startIndex + 7), isStreaming: true });
+      break;
+    } else {
+      parts.push({ type: "think", content: remaining.slice(startIndex + 7, endIndex), isStreaming: false });
+      remaining = remaining.slice(endIndex + 8);
+    }
+  }
+
+  return (
+    <div className="chat-content-container">
+      {parts.map((part, index) => {
+        if (part.type === "think") {
+          return (
+            <details key={index} className="think-block" open={part.isStreaming}>
+              <summary className="think-summary">思考过程...</summary>
+              <div className="think-content chat-text">
+                <Markdown remarkPlugins={[remarkGfm]}>{part.content}</Markdown>
+              </div>
+            </details>
+          );
+        }
+        return (
+          <div key={index} className="chat-markdown chat-text">
+            <Markdown remarkPlugins={[remarkGfm]}>{part.content}</Markdown>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export function ChatPage({ settings }: ChatPageProps): ReactElement {
@@ -177,45 +230,58 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     };
   }, []);
 
-  const handleSubmit = async (): Promise<void> => {
-    const normalizedPrompt = prompt.trim();
-    if (!normalizedPrompt || isStreaming) {
+  const runChatCycle = async (promptText: string): Promise<void> => {
+    if (!promptText || isStreaming) {
       return;
     }
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
-    const historyForModel = messages.map((message) => ({
-      role: message.role,
-      content: message.content
-    }));
-    const userMessage: ChatMessageRecord = {
-      id: createMessageId("user"),
-      role: "user",
-      content: normalizedPrompt,
-      createdAt: new Date().toISOString(),
-      plan: null
-    };
-    const assistantMessageId = createMessageId("assistant");
-    const assistantPlaceholder: ChatMessageRecord = {
-      id: assistantMessageId,
-      role: "assistant",
-      content: "",
-      createdAt: new Date().toISOString(),
-      plan: null
-    };
+
+    // Use function form of setMessages to guarantee we get the absolutely latest history,
+    // which is critical for automatic continuation where state might not have rendered yet.
+    let finalHistory: ChatMessageRecord[] = [];
+    let userMessageId = "";
+    let assistantMessageId = "";
+
+    setMessages((previous) => {
+      const historyForModel = previous.map((message) => ({
+        role: message.role,
+        content: message.content
+      }));
+      finalHistory = historyForModel as any;
+
+      userMessageId = createMessageId("user");
+      assistantMessageId = createMessageId("assistant");
+      
+      const userMessage: ChatMessageRecord = {
+        id: userMessageId,
+        role: "user",
+        content: promptText,
+        createdAt: new Date().toISOString(),
+        plan: null
+      };
+      
+      const assistantPlaceholder: ChatMessageRecord = {
+        id: assistantMessageId,
+        role: "assistant",
+        content: "",
+        createdAt: new Date().toISOString(),
+        plan: null
+      };
+
+      return [...previous, userMessage, assistantPlaceholder];
+    });
 
     setIsStreaming(true);
-    setPrompt("");
-    setMessages((previous) => [...previous, userMessage, assistantPlaceholder]);
     setErrorMessage("");
     setSessionNote("服务员正在回复...");
 
     try {
       const result = await runPlanningSession({
-        prompt: normalizedPrompt,
+        prompt: promptText,
         settings,
-        conversationHistory: historyForModel,
+        conversationHistory: finalHistory,
         signal: controller.signal,
         onAssistantChunk: (chunk) => {
           setMessages((previous) =>
@@ -279,6 +345,15 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     }
   };
 
+  const handleSubmit = async (): Promise<void> => {
+    const normalizedPrompt = prompt.trim();
+    if (!normalizedPrompt || isStreaming) {
+      return;
+    }
+    setPrompt("");
+    await runChatCycle(normalizedPrompt);
+  };
+
   const handlePlanUpdate = (
     messageId: string,
     updater: (plan: OrchestrationPlan) => OrchestrationPlan
@@ -329,6 +404,17 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
       const nextPlan = await approveAction(runningPlan, actionId, settings.workspacePath);
       handlePlanUpdate(messageId, () => nextPlan);
       setSessionNote(`动作 ${actionId} 已执行，当前状态：${nextPlan.state}`);
+
+      const executedAction = nextPlan.proposedActions.find(a => a.id === actionId);
+      if (executedAction && executedAction.executionResult) {
+        const resultString = executedAction.executionResult.success ? "成功" : "失败";
+        const message = executedAction.executionResult.message;
+        const systemPrompt = `[系统通知] 动作 ${executedAction.type} 用户已审批并执行${resultString}。执行结果：\n${message}\n请根据结果继续完成任务，或向用户汇报。`;
+        // Fire continuation asynchronously so we don't block the UI update
+        setTimeout(() => {
+          void runChatCycle(systemPrompt);
+        }, 100);
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : "动作执行失败";
       handlePlanUpdate(messageId, (currentPlan) => markActionExecutionError(currentPlan, actionId, reason));
@@ -430,10 +516,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                     {message.role === "user" ? "你" : "服务员"}
                     {formatTime(message.createdAt) ? ` · ${formatTime(message.createdAt)}` : ""}
                   </p>
-                  <p className="chat-text">
-                    {message.content ||
-                      (isStreaming && message.role === "assistant" ? "正在等待首个 token..." : "")}
-                  </p>
+                  {renderMessageContent(message.content, isStreaming, message.role)}
                   {message.role === "assistant" && message.toolTrace?.length ? (
                     <div className="tool-trace">
                       <p className="status-note">Tool Calls: {message.toolTrace.length}</p>
