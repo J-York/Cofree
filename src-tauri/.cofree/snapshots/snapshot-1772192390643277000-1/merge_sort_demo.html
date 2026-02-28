@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>归并排序可视化演示</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+        }
+        
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            padding: 12px 25px;
+            font-size: 16px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #5a6fd6;
+            transform: translateY(-2px);
+        }
+        
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+        
+        .btn-secondary:hover {
+            background: #e0e0e0;
+            transform: translateY(-2px);
+        }
+        
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #218838;
+            transform: translateY(-2px);
+        }
+        
+        input[type="number"] {
+            padding: 12px;
+            font-size: 16px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            width: 150px;
+        }
+        
+        .array-container {
+            display: flex;
+            justify-content: center;
+            align-items: flex-end;
+            height: 400px;
+            gap: 8px;
+            margin: 30px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        
+        .array-element {
+            width: 50px;
+            background: linear-gradient(to top, #667eea, #764ba2);
+            color: white;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            padding-bottom: 8px;
+            font-weight: bold;
+            border-radius: 8px 8px 0 0;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+        
+        .array-element.comparing {
+            background: linear-gradient(to top, #ff6b6b, #ee5a5a);
+            transform: scale(1.05);
+        }
+        
+        .array-element.merged {
+            background: linear-gradient(to top, #28a745, #218838);
+        }
+        
+        .array-element.divided {
+            background: linear-gradient(to top, #ffc107, #ff9800);
+        }
+        
+        .info-panel {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+        
+        .info-panel h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+        
+        .info-text {
+            color: #666;
+            line-height: 1.6;
+        }
+        
+        .step-info {
+            text-align: center;
+            font-size: 18px;
+            color: #667eea;
+            font-weight: bold;
+            margin: 20px 0;
+            min-height: 30px;
+        }
+        
+        .code-block {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin-top: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔀 归并排序可视化演示</h1>
+        
+        <div class="controls">
+            <input type="number" id="arraySize" min="5" max="20" value="8" placeholder="数组大小">
+            <button class="btn-secondary" onclick="generateArray()">生成新数组</button>
+            <button class="btn-primary" onclick="startMergeSort()">开始排序</button>
+            <button class="btn-success" onclick="resetArray()">重置</button>
+        </div>
+        
+        <div class="step-info" id="stepInfo">点击"开始排序"查看归并排序过程</div>
+        
+        <div class="array-container" id="arrayContainer"></div>
+        
+        <div class="info-panel">
+            <h3>📚 算法说明</h3>
+            <div class="info-text">
+                <p><strong>归并排序</strong>是一种采用分治法策略的排序算法。</p>
+                <p><strong>基本思想：</strong></p>
+                <ol style="margin-left: 20px; margin-top: 10px;">
+                    <li>将数组分成两半</li>
+                    <li>递归地对两半分别排序</li>
+                    <li>合并两个有序的子数组</li>
+                </ol>
+                <p style="margin-top: 10px;"><strong>时间复杂度：</strong>O(n log n) &nbsp;|&nbsp; <strong>空间复杂度：</strong>O(n)</p>
+            </div>
+        </div>
+        
+        <div class="code-block">
+def merge_sort(arr):
+    if len(arr) <= 1:
+        return arr
+    
+    mid = len(arr) // 2
+    left = merge_sort(arr[:mid])
+    right = merge_sort(arr[mid:])
+    
+    return merge(left, right)
+
+def merge(left, right):
+    result = []
+    i = j = 0
+    
+    while i < len(left) and j < len(right):
+        if left[i] <= right[j]:
+            result.append(left[i])
+            i += 1
+        else:
+            result.append(right[j])
+            j += 1
+    
+    result.extend(left[i:])
+    result.extend(right[j:])
+    return result
+        </div>
+    </div>
+
+    <script>
+        let array = [];
+        let isSorting = false;
+        
+        function generateArray() {
+            if (isSorting) return;
+            
+            const size = parseInt(document.getElementById('arraySize').value);
+            array = [];
+            for (let i = 0; i < size; i++) {
+                array.push(Math.floor(Math.random() * 80) + 20);
+            }
+            renderArray();
+            document.getElementById('stepInfo').textContent = '新数组已生成，点击"开始排序"';
+        }
+        
+        function renderArray(highlightIndices = [], state = 'normal') {
+            const container = document.getElementById('arrayContainer');
+            container.innerHTML = '';
+            
+            array.forEach((value, index) => {
+                const element = document.createElement('div');
+                element.className = 'array-element';
+                element.style.height = `${value * 4}px`;
+                element.textContent = value;
+                
+                if (highlightIndices.includes(index)) {
+                    if (state === 'comparing') {
+                        element.classList.add('comparing');
+                    } else if (state === 'merged') {
+                        element.classList.add('merged');
+                    } else if (state === 'divided') {
+                        element.classList.add('divided');
+                    }
+                }
+                
+                container.appendChild(element);
+            });
+        }
+        
+        function resetArray() {
+            if (isSorting) return;
+            generateArray();
+        }
+        
+        async function startMergeSort() {
+            if (isSorting) return;
+            isSorting = true;
+            
+            try {
+                await mergeSortVisual(0, array.length - 1);
+                document.getElementById('stepInfo').textContent = '✅ 排序完成！';
+                renderArray([], 'merged');
+            } catch (e) {
+                console.error(e);
+            } finally {
+                isSorting = false;
+            }
+        }
+        
+        async function mergeSortVisual(left, right) {
+            if (left >= right) return;
+            
+            const mid = Math.floor((left + right) / 2);
+            
+            document.getElementById('stepInfo').textContent = `分割: [${left}-${right}] → [${left}-${mid}] + [${mid+1}-${right}]`;
+            renderArray(Array.from({length: right - left + 1}, (_, i) => left + i), 'divided');
+            await sleep(800);
+            
+            await mergeSortVisual(left, mid);
+            await mergeSortVisual(mid + 1, right);
+            
+            document.getElementById('stepInfo').textContent = `合并: [${left}-${mid}] + [${mid+1}-${right}]`;
+            await mergeVisual(left, mid, right);
+        }
+        
+        async function mergeVisual(left, mid, right) {
+            const leftArr = array.slice(left, mid + 1);
+            const rightArr = array.slice(mid + 1, right + 1);
+            
+            let i = 0, j = 0, k = left;
+            
+            while (i < leftArr.length && j < rightArr.length) {
+                renderArray([left + i, mid + 1 + j], 'comparing');
+                document.getElementById('stepInfo').textContent = `比较: ${leftArr[i]} vs ${rightArr[j]}`;
+                await sleep(500);
+                
+                if (leftArr[i] <= rightArr[j]) {
+                    array[k] = leftArr[i];
+                    i++;
+                } else {
+                    array[k] = rightArr[j];
+                    j++;
+                }
+                k++;
+                renderArray();
+                await sleep(300);
+            }
+            
+            while (i < leftArr.length) {
+                array[k] = leftArr[i];
+                i++;
+                k++;
+                renderArray();
+                await sleep(200);
+            }
+            
+            while (j < rightArr.length) {
+                array[k] = rightArr[j];
+                j++;
+                k++;
+                renderArray();
+                await sleep(200);
+            }
+            
+            renderArray(Array.from({length: right - left + 1}, (_, idx) => left + idx), 'merged');
+            await sleep(500);
+        }
+        
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+        
+        // 初始化
+        generateArray();
+    </script>
+</body>
+</html>

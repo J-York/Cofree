@@ -6,7 +6,7 @@
  * Status: Completed
  * Owner: Codex-GPT-5
  * Last Modified: 2026-02-27
- * Description: App shell with milestone-2 wiring for streaming planning.
+ * Description: App shell with milestone-3 wiring for HITL approvals and guarded actions.
  */
 
 import { type ReactElement, useMemo, useState } from "react";
@@ -45,7 +45,7 @@ export default function App(): ReactElement {
     <main className="app-shell">
       <header className="app-header">
         <div>
-          <p className="kicker">Milestone 2</p>
+          <p className="kicker">Milestone 3</p>
           <h1>Cofree</h1>
         </div>
         <p className="runtime-pill">Active Runtime: {runtimeSummary}</p>

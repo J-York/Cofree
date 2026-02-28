@@ -9,13 +9,10 @@
  * Description: Settings page for API key persistence, LiteLLM model config, and workspace selection.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import {
-  MODEL_PROVIDERS,
   createLiteLLMClientConfig,
-  defaultModelForProvider,
-  listModelsByProvider
-} from "../../lib/litellm";
+  } from "../../lib/litellm";
 import { type AppSettings, maskApiKey } from "../../lib/settingsStore";
 
 interface WorkspaceInfo {
@@ -64,19 +61,6 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
   useEffect(() => {
     setDraft(settings);
   }, [settings]);
-
-  const availableModels = useMemo(
-    () => listModelsByProvider(draft.provider),
-    [draft.provider]
-  );
-
-  const handleProviderChange = (provider: string): void => {
-    setDraft((previous) => ({
-      ...previous,
-      provider,
-      model: defaultModelForProvider(provider)
-    }));
-  };
 
   const handleSave = (): void => {
     onSave(draft);
@@ -159,38 +143,18 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
 
         <div className="inline-row">
           <label>
-            Provider
-            <select
-              className="select"
-              value={draft.provider}
-              onChange={(event) => handleProviderChange(event.target.value)}
-            >
-              {MODEL_PROVIDERS.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Model
-            <select
-              className="select"
+            Model Name
+            <input
+              className="input"
               value={draft.model}
               onChange={(event) =>
                 setDraft((previous) => ({ ...previous, model: event.target.value }))
               }
-            >
-              {availableModels.map((model) => (
-                <option key={model} value={model}>
-                  {model}
-                </option>
-              ))}
-            </select>
+              placeholder="e.g. openai/gpt-4o"
+              type="text"
+            />
           </label>
         </div>
-
         <div className="inline-row">
           <label>
             Max snippet lines

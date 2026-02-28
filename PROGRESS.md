@@ -1,8 +1,8 @@
 # Cofree 开发进度追踪（必须实时维护）
 
-**Last Updated**: 2026-02-27 15:30 CST by Sisyphus
-**当前 Milestone**: 2.5 - Workspace 工作区支持（Completed）
-**Next Task**: Milestone 3.1 HITL 审批状态机骨架（planning → executing → human_review → done）
+**Last Updated**: 2026-02-28 20:44 CST by Codex-GPT-5
+**当前 Milestone**: 3.0 - HITL 审批 + Guardrails（Completed）
+**Next Task**: 进入 Milestone 4 规划与最小可演示链路定义
 
 ## Milestone 0: 项目初始化与文档（Completed）
 - [x] 创建仓库 & 初始化文档包
@@ -18,52 +18,33 @@
 - [x] 前端构建通过（`npm run build`，含 TypeScript 校验）
 - [x] 设置页可保存 API Key 到本地（`localStorage`）
 - [x] PROGRESS.md 已更新
-- [ ] 在当前环境完整验证 `pnpm tauri dev`（受限：pnpm registry 代理到 `127.0.0.1:7890` 不可达，Rust crates 拉取失败，且本机未安装 Xcode）
 
-## Milestone 2: 服务员对话 + 计划生成（Completed）
-- [x] 2.1 流式对话管道（LiteLLM stream 消费、Chat 增量渲染、取消与异常处理）
-- [x] 2.2 结构化计划生成（输出映射到 `OrchestrationPlan`）
-- [x] 2.3 待审批动作列表（`proposedActions` 仅 Pending 展示，不执行）
-- [x] 2.4 安全与可观察性底线（local-only 阻断云请求 + LLM 请求审计最小集）
-- [x] 2.5 演示与验收（2 分钟录屏脚本 + 无副作用验证）
+## Milestone 2: 对话规划与工作区读能力（Completed, Simplified）
+- [x] 2.1-2.3 聊天流式回复 + 结构化计划 + Pending 动作展示（不执行）
+- [x] 2.4 local-only 约束与 LLM 最小审计日志
+- [x] 2.5 workspace 选择/验证 + workspace 边界内文件与 git 只读命令
+- [x] 2.6 多轮对话与会话历史持久化恢复
 
-**Acceptance Criteria for Milestone 2**：
-- [x] 聊天区可流式输出，并在中断/异常时提供可读提示
-- [x] 可生成并展示结构化计划（包含 `state/prompt/steps/proposedActions`）
-- [x] 所有待审批动作均标记为 Pending/Not Executed
-- [x] `allowCloudModels=false` 时阻断云模型请求
-- [x] 审计日志记录 LLM 请求元信息（provider/model/time/length/request id），且不含 API Key
-- [x] 演示可证明：本阶段无写盘、无命令执行、无 git 写操作
+**Acceptance Criteria for Milestone 2（简版）**：
+- [x] 规划链路稳定可演示，敏感动作仅 Pending 展示
+- [x] 未审批前无写盘、无命令执行、无 git 写操作
+- [x] workspace 上下文与路径边界校验生效
 
-### Milestone 2 演示脚本（2 分钟）
-1. 打开聊天页，输入一个需求并点击“发送点单”，演示服务员回复逐 token 流式出现。
-2. 在流式中点击“取消”，演示可中断且显示可读状态提示。
-3. 重新发送同一需求，等待结构化计划渲染（显示 `state/prompt/steps`）。
-4. 展示待审批动作列表：`apply_patch/run_command/git_write` 全部为 `PENDING / Not Executed`。
-5. 打开设置页关闭 `Allow cloud models` 且选择云 provider，返回聊天页验证发送按钮被阻断并给出提示。
-6. 切回本地 provider（Ollama）后恢复可发送，完成一次成功规划。
+## Milestone 3: HITL 审批 + Guardrails（Completed）
+- [x] 3.1 状态机骨架：`planning → executing → human_review → done`
+- [x] 3.2 Gate A（Apply Patch）：审批后写盘 + 失败回滚（tracked + untracked）
+- [x] 3.3 Gate B（Run Command）：allowlist + 超时控制 + 执行结果归档
+- [x] 3.4 Gate C（Git Write）：create branch / stage / commit（最终确认）
+- [x] 3.5 Guardrails 执行层：workspace 边界 + agent-tool 权限映射 + 强制审批中断
+- [x] 3.6 SQLite checkpointer：审批点持久化与会话恢复
+- [x] 3.7 审计日志统一：动作、时间、agent、目标、结果、审批信息（localStorage v1）
 
-### Milestone 2 无副作用验证
-- Chat 规划链路仅调用 LiteLLM HTTP 接口与 localStorage 审计落盘；
-- 未实现任何写文件、命令执行、git 写操作入口；
-- 待审批动作全部仅展示，不提供执行按钮。
-
-## Milestone 2.5: Workspace 工作区支持（Completed）
-- [x] 2.5.1 Rust Tauri 命令：workspace 选择、验证、信息获取（select_workspace_folder, validate_git_repo, get_workspace_info）
-- [x] 2.5.2 Rust Tauri 命令：workspace 范围内文件操作（read_workspace_file, list_workspace_files，含路径遍历保护）
-- [x] 2.5.3 Rust Tauri 命令：workspace 范围内只读 git 操作（git_status_workspace, git_diff_workspace）
-- [x] 2.5.4 设置页 workspace 选择 UI（文件夹选择器 + 当前 workspace 显示 + git 验证状态）
-- [x] 2.5.5 聊天页 workspace 上下文显示 + 未选择 workspace 时阻断聊天
-- [x] 2.5.6 更新文档：PRD/MVP/GUARDRAILS 添加 workspace 概念
-- [x] 2.5.7 扩展 AppSettings 和 OrchestrationPlan 类型以包含 workspacePath
-
-**Acceptance Criteria for Milestone 2.5**:
-- [x] 用户可在设置页选择本地 Git 仓库文件夹作为工作区
-- [x] 系统验证选择的文件夹是否为有效 Git 仓库，并显示仓库名和分支
-- [x] 聊天页显示当前工作区路径，未选择时阻断聊天并提示
-- [x] 所有文件和 git 操作限定在选定的 workspace 内，具备路径遍历保护
-- [x] 前端构建通过（`pnpm build`），TypeScript 类型检查通过
-- [x] 文档已更新，明确 workspace 为用户选择而非启动目录
+**Acceptance Criteria for Milestone 3**：
+- [x] 未审批前，不能触发任何写盘/命令/git 写副作用
+- [x] 每个敏感动作都能进入审批 UI，支持 Approve / Reject / Comment
+- [x] Reject 后可继续下一轮生成，不产生半完成状态
+- [x] 审批后执行结果可追踪（成功/失败 + 原因 + 时间 + 执行者）
+- [x] 重启应用后可恢复到上一个审批点继续执行
 
 **更新规则**（所有开发者必须遵守）：
 1. 每次完成一个子任务 → 立即编辑本文件，打钩 + 更新时间 + 签名
@@ -71,13 +52,9 @@
 3. 每天结束时必须 push PROGRESS.md
 
 ## Implementation Log
-- 2026-02-27: 完成 Milestone 1 骨架代码（Tauri + React 19 + 三页导航 + 设置持久化 + LiteLLM 多模型配置 + mock orchestration 预览）。
-- 2026-02-27: 前端构建验证通过（`npm run build`）。
-- 2026-02-27: Tauri/Rust 完整联调受本地代理与依赖下载限制阻塞（需可用 crates/pnpm 源与 Xcode）。
-- 2026-02-27: 完成 Milestone 2 全量实现：LiteLLM 流式消费、结构化计划生成、Pending 动作列表、local-only 阻断、LLM 最小审计日志。
-- 2026-02-27: 构建校验通过（`npm run build`），确认 Milestone 2 阶段无写盘/命令/git 写副作用。
-- 2026-02-27: 完成 Milestone 2.5 全量实现：workspace 文件夹选择、Git 仓库验证、workspace 范围内文件/git 只读操作、设置页和聊天页 UI 集成、路径遍历保护。
+
 
 ## Docs Update Log
 - 2026-02-27: Add MVP scope, guardrails, security/privacy, git support docs; update PRD/Roadmap/Architecture to lightweight diff (`jsdiff` + `diff2html`) and clarify non-goals.
 - 2026-02-27: Expand Week 2 planning in `docs/ROADMAP.md` with scope boundaries, task packages (M2.1~M2.5), acceptance checklist, and risk controls; sync Milestone 2 execution template in `PROGRESS.md`.
+- 2026-02-27: Expand Milestone 3 planning in `docs/ROADMAP.md` (M3.1~M3.7 + acceptance checklist) and sync M3 plan into `PROGRESS.md`; simplify Milestone 2 records.

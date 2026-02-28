@@ -15,14 +15,59 @@ export type WorkflowState = "planning" | "executing" | "human_review" | "done";
 
 export type SensitiveActionType = "apply_patch" | "run_command" | "git_write";
 
-export interface ActionProposal {
+export type ActionStatus = "pending" | "running" | "completed" | "failed" | "rejected";
+
+export interface ActionExecutionResult {
+  success: boolean;
+  message: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ApplyPatchPayload {
+  patch: string;
+}
+
+export interface RunCommandPayload {
+  command: string;
+  timeoutMs: number;
+}
+
+export interface GitWritePayload {
+  operation: "stage" | "commit" | "checkout_branch";
+  message: string;
+  branchName: string;
+  allowEmpty: boolean;
+}
+
+interface ActionProposalBase {
   id: string;
-  type: SensitiveActionType;
   description: string;
   gateRequired: true;
-  status: "pending";
-  executed: false;
+  status: ActionStatus;
+  executed: boolean;
+  executionResult?: ActionExecutionResult;
 }
+
+export interface ApplyPatchActionProposal extends ActionProposalBase {
+  type: "apply_patch";
+  payload: ApplyPatchPayload;
+}
+
+export interface RunCommandActionProposal extends ActionProposalBase {
+  type: "run_command";
+  payload: RunCommandPayload;
+}
+
+export interface GitWriteActionProposal extends ActionProposalBase {
+  type: "git_write";
+  payload: GitWritePayload;
+}
+
+export type ActionProposal =
+  | ApplyPatchActionProposal
+  | RunCommandActionProposal
+  | GitWriteActionProposal;
 
 export interface PlanStep {
   id: string;

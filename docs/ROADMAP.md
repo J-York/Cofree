@@ -12,10 +12,14 @@
 - 生成“待审批动作列表”（不执行）
 
 **Week 3-4**：Milestone 3 - HITL 审批 + Guardrails（核心风险燃尽）
-- LangGraph 工作流：planning → executing → human_review → done
-- 所有敏感动作走 Approval Gate（写文件/命令/git 写操作）
-- 本地持久化（SQLite checkpointer）+ 可恢复会话
-- 审计日志（动作、时间、agent、结果）
+- 目标交付物：可演示的端到端 HITL 审批流（至少覆盖 Gate A/B/C 各一次）
+- M3.1 状态机骨架：LangGraph 工作流 `planning → executing → human_review → done`
+- M3.2 Gate A（Apply Patch）：统一 patch 结构、审批后写盘、失败可回滚
+- M3.3 Gate B（Run Command）：命令 allowlist、超时控制、stdout/stderr/exit code 归档
+- M3.4 Gate C（Git Write）：create branch / stage / commit（最终确认）
+- M3.5 Guardrails 执行层：workspace 边界校验、agent-tool 权限映射、敏感动作强制中断审批
+- M3.6 会话持久化：SQLite checkpointer + 从审批点恢复
+- M3.7 审计链路：统一动作日志结构（动作、时间、agent、目标、结果、审批人）+ 本地导出
 
 **Week 5**：Milestone 4 - 轻量可视化 diff（v0.1 版本）
 - `jsdiff` + `diff2html` 并排只读 diff

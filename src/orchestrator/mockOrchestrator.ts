@@ -10,6 +10,7 @@
  */
 
 import type { OrchestrationPlan } from "./types";
+import { inferSensitiveActions } from "./actionInference";
 
 function createPlanSteps(prompt: string): OrchestrationPlan["steps"] {
   return [
@@ -33,36 +34,12 @@ function createPlanSteps(prompt: string): OrchestrationPlan["steps"] {
 
 export function draftPlanFromPrompt(prompt: string): OrchestrationPlan {
   const normalized = prompt.trim() || "实现用户提出的功能";
+  const steps = createPlanSteps(normalized);
 
   return {
     state: "planning",
     prompt: normalized,
-    steps: createPlanSteps(normalized),
-    proposedActions: [
-      {
-        id: "gate-apply",
-        type: "apply_patch",
-        description: "Apply generated patch to workspace",
-        gateRequired: true,
-        status: "pending",
-        executed: false
-      },
-      {
-        id: "gate-command",
-        type: "run_command",
-        description: "Run allowlisted validation command",
-        gateRequired: true,
-        status: "pending",
-        executed: false
-      },
-      {
-        id: "gate-git",
-        type: "git_write",
-        description: "Stage and commit approved workspace changes",
-        gateRequired: true,
-        status: "pending",
-        executed: false
-      }
-    ]
+    steps,
+    proposedActions: inferSensitiveActions(normalized)
   };
 }
