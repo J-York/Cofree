@@ -14,7 +14,24 @@ import type { OrchestrationPlan } from "./types";
 import { normalizeOrchestrationPlan } from "./planGuards";
 import type { ToolErrorCategory, ToolExecutionTrace } from "./planningService";
 
-export const CHAT_SESSION_ID = "default-chat-session";
+const CHAT_SESSION_KEY = "cofree.chat.session.v1";
+
+export function getChatSessionId(): string {
+  if (typeof window === "undefined") return "default-chat-session";
+  let sessionId = window.localStorage.getItem(CHAT_SESSION_KEY);
+  if (!sessionId) {
+    sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    window.localStorage.setItem(CHAT_SESSION_KEY, sessionId);
+  }
+  return sessionId;
+}
+
+export function resetChatSessionId(): string {
+  if (typeof window === "undefined") return "default-chat-session";
+  const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  window.localStorage.setItem(CHAT_SESSION_KEY, sessionId);
+  return sessionId;
+}
 
 interface CheckpointRecord {
   checkpoint_id: string;

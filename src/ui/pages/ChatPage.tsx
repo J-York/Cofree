@@ -26,7 +26,8 @@ import {
   updateActionPayload
 } from "../../orchestrator/hitlService";
 import {
-  CHAT_SESSION_ID,
+  getChatSessionId,
+  resetChatSessionId,
   loadLatestWorkflowCheckpoint,
   saveWorkflowCheckpoint
 } from "../../orchestrator/checkpointStore";
@@ -132,7 +133,8 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
 
     const restoreCheckpoint = async (): Promise<void> => {
       try {
-        const latest = await loadLatestWorkflowCheckpoint(CHAT_SESSION_ID);
+        const currentSessionId = getChatSessionId();
+        const latest = await loadLatestWorkflowCheckpoint(currentSessionId);
         if (!latest || cancelled) {
           return;
         }
@@ -240,7 +242,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
       );
       const hasSensitiveActions = result.plan.proposedActions.length > 0;
       void saveWorkflowCheckpoint(
-        CHAT_SESSION_ID,
+        getChatSessionId(),
         assistantMessageId,
         result.plan,
         result.toolTrace
@@ -299,7 +301,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     );
 
     if (updatedPlan) {
-      void saveWorkflowCheckpoint(CHAT_SESSION_ID, messageId, updatedPlan, currentTrace).catch(
+      void saveWorkflowCheckpoint(getChatSessionId(), messageId, updatedPlan, currentTrace).catch(
         (error) => {
           const message = error instanceof Error ? error.message : "审批点持久化失败";
           setSessionNote(`审批点未保存：${message}`);
@@ -361,6 +363,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     }
 
     clearChatHistory();
+    resetChatSessionId();
     setMessages([]);
     setErrorMessage("");
     setSessionNote("会话历史已清空。");
