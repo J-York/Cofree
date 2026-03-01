@@ -42,11 +42,19 @@ function isToolErrorCategory(value: unknown): value is ToolErrorCategory {
     value === "workspace" ||
     value === "permission" ||
     value === "timeout" ||
+    value === "guardrail" ||
     value === "allowlist" ||
     value === "transport" ||
     value === "tool_not_found" ||
     value === "unknown"
   );
+}
+
+function normalizeToolErrorCategory(value: unknown): ToolErrorCategory | undefined {
+  if (value === "allowlist") {
+    return "guardrail";
+  }
+  return isToolErrorCategory(value) ? value : undefined;
 }
 
 function normalizeToolTrace(value: unknown): ToolExecutionTrace[] {
@@ -83,7 +91,7 @@ function normalizeToolTrace(value: unknown): ToolExecutionTrace[] {
       attempts: record.attempts,
       status: record.status,
       retried: record.retried,
-      errorCategory: isToolErrorCategory(record.errorCategory) ? record.errorCategory : undefined,
+      errorCategory: normalizeToolErrorCategory(record.errorCategory),
       errorMessage: typeof record.errorMessage === "string" ? record.errorMessage : undefined,
       resultPreview: typeof record.resultPreview === "string" ? record.resultPreview : undefined
     });
@@ -149,7 +157,11 @@ export function saveChatHistory(messages: ChatMessageRecord[]): void {
     return;
   }
 
-  const trimmedMessages = messages.slice(-80);
+  const trimmedMessages = messages.slice(-80).map((message) => ({
+    ...message,
+    plan: null,
+    toolTrace: []
+  }));
   window.localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(trimmedMessages));
 }
 

@@ -9,6 +9,8 @@
  * Description: Minimal local audit logging for LLM request metadata.
  */
 
+import { redactSensitiveText, sanitizeForPersistence } from "./redaction";
+
 const AUDIT_LOG_STORAGE_KEY = "cofree.audit.llm.v1";
 const ACTION_AUDIT_LOG_STORAGE_KEY = "cofree.audit.actions.v1";
 const MAX_AUDIT_RECORDS = 200;
@@ -109,7 +111,13 @@ export function recordLLMAudit(record: LLMAuditRecord): void {
     return;
   }
 
-  const next = [record, ...readLLMAuditRecords()].slice(0, MAX_AUDIT_RECORDS);
+  const safeRecord: LLMAuditRecord = {
+    ...record,
+    requestId: redactSensitiveText(record.requestId, 120),
+    provider: redactSensitiveText(record.provider, 80),
+    model: redactSensitiveText(record.model, 120)
+  };
+  const next = [safeRecord, ...readLLMAuditRecords()].slice(0, MAX_AUDIT_RECORDS);
   window.localStorage.setItem(AUDIT_LOG_STORAGE_KEY, JSON.stringify({ records: next }));
 }
 
@@ -126,6 +134,15 @@ export function recordSensitiveActionAudit(record: SensitiveActionAuditRecord): 
     return;
   }
 
-  const next = [record, ...readSensitiveActionAuditRecords()].slice(0, MAX_AUDIT_RECORDS);
+  const safeRecord: SensitiveActionAuditRecord = {
+    ...record,
+    actionId: redactSensitiveText(record.actionId, 120),
+    actionType: redactSensitiveText(record.actionType, 60),
+    reason: redactSensitiveText(record.reason, 400),
+    workspacePath: redactSensitiveText(record.workspacePath, 200),
+    details: (sanitizeForPersistence(record.details) as Record<string, unknown>) ?? {}
+  };
+
+  const next = [safeRecord, ...readSensitiveActionAuditRecords()].slice(0, MAX_AUDIT_RECORDS);
   window.localStorage.setItem(ACTION_AUDIT_LOG_STORAGE_KEY, JSON.stringify({ records: next }));
 }
