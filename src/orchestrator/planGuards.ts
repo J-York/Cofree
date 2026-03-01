@@ -102,41 +102,70 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
     };
   }
 
+  // Backward compatibility: convert run_command to shell
   if (record.type === "run_command") {
+    const command = asString(payload.command, "pnpm");
+    const args = Array.isArray(payload.args)
+      ? payload.args.map((arg) => typeof arg === "string" ? arg : "").filter(Boolean)
+      : ["build"];
+    const shellCommand = [command, ...args].join(" ");
     return {
       id,
-      type: "run_command",
+      type: "shell",
       description,
       gateRequired: true,
       status,
       executed,
       executionResult,
       payload: {
-        command: asString(payload.command, "pnpm build"),
+        shell: shellCommand,
         timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000))
       }
     };
   }
 
+  // Backward compatibility: convert git_write to shell
   if (record.type === "git_write") {
-    const operationCandidate = asString(payload.operation, "stage");
-    const operation =
-      operationCandidate === "commit" || operationCandidate === "checkout_branch"
-        ? operationCandidate
-        : "stage";
+    const operation = asString(payload.operation, "stage");
+    const message = asString(payload.message, "chore: apply approved changes");
+    const branchName = asString(payload.branchName, "cofree/m3-approved");
+
+    let shellCommand = "";
+    if (operation === "stage") {
+      shellCommand = "git add .";
+    } else if (operation === "commit") {
+      shellCommand = `git commit -m "${message.replace(/"/g, '\\"')}"`;
+    } else if (operation === "checkout_branch") {
+      shellCommand = `git checkout -b ${branchName}`;
+    }
+
     return {
       id,
-      type: "git_write",
+      type: "shell",
       description,
       gateRequired: true,
       status,
       executed,
       executionResult,
       payload: {
-        operation,
-        message: asString(payload.message, "chore: apply approved changes"),
-        branchName: asString(payload.branchName, "cofree/m3-approved"),
-        allowEmpty: asBoolean(payload.allowEmpty, false)
+        shell: shellCommand,
+        timeoutMs: 120000
+      }
+    };
+  }
+
+  if (record.type === "shell") {
+    return {
+      id,
+      type: "shell",
+      description,
+      gateRequired: true,
+      status,
+      executed,
+      executionResult,
+      payload: {
+        shell: asString(payload.shell, "pnpm build"),
+        timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000))
       }
     };
   }

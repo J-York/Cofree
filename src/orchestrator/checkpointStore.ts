@@ -11,6 +11,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { OrchestrationPlan } from "./types";
+import { redactSensitiveText, sanitizeForPersistence } from "../lib/redaction";
 import { normalizeOrchestrationPlan } from "./planGuards";
 import type { ToolErrorCategory, ToolExecutionTrace } from "./planningService";
 
@@ -48,6 +49,68 @@ interface RecoveryResult {
   checkpoint: CheckpointRecord | null;
 }
 
+function sanitizeToolTraceForCheckpoint(toolTrace: ToolExecutionTrace[]): ToolExecutionTrace[] {
+  return toolTrace.slice(-20).map((trace) => ({
+    ...trace,
+    arguments: redactSensitiveText(trace.arguments, 240),
+    errorMessage: trace.errorMessage ? redactSensitiveText(trace.errorMessage, 240) : undefined,
+    resultPreview: trace.resultPreview ? redactSensitiveText(trace.resultPreview, 240) : undefined
+  }));
+}
+
+function sanitizePlanForCheckpoint(plan: OrchestrationPlan): OrchestrationPlan {
+  return {
+    ...plan,
+    prompt: redactSensitiveText(plan.prompt, 400),
+    proposedActions: plan.proposedActions.map((action) => {
+      const shouldRetainPatchBody =
+        action.type === "apply_patch" &&
+        (action.status === "pending" || action.status === "running" || action.status === "failed");
+
+      if (action.type === "apply_patch") {
+        return {
+          ...action,
+          executionResult: action.executionResult
+            ? {
+                ...action.executionResult,
+                message: redactSensitiveText(action.executionResult.message, 240),
+                metadata: (sanitizeForPersistence(action.executionResult.metadata) as
+                  | Record<string, unknown>
+                  | undefined)
+              }
+            : undefined,
+          payload: {
+            patch: shouldRetainPatchBody
+              ? action.payload.patch
+              : `[[redacted patch body; original length=${action.payload.patch.length}]]`
+          }
+        };
+      }
+
+      if (action.type === "shell") {
+        return {
+          ...action,
+          executionResult: action.executionResult
+            ? {
+                ...action.executionResult,
+                message: redactSensitiveText(action.executionResult.message, 240),
+                metadata: (sanitizeForPersistence(action.executionResult.metadata) as
+                  | Record<string, unknown>
+                  | undefined)
+              }
+            : undefined,
+          payload: {
+            ...action.payload,
+            shell: redactSensitiveText(action.payload.shell, 240)
+          }
+        };
+      }
+
+      return action;
+    })
+  };
+}
+
 export interface WorkflowCheckpointPayload {
   plan: OrchestrationPlan;
   toolTrace?: ToolExecutionTrace[];
@@ -59,11 +122,19 @@ function isToolErrorCategory(value: unknown): value is ToolErrorCategory {
     value === "workspace" ||
     value === "permission" ||
     value === "timeout" ||
+    value === "guardrail" ||
     value === "allowlist" ||
     value === "transport" ||
     value === "tool_not_found" ||
     value === "unknown"
   );
+}
+
+function normalizeToolErrorCategory(value: unknown): ToolErrorCategory | undefined {
+  if (value === "allowlist") {
+    return "guardrail";
+  }
+  return isToolErrorCategory(value) ? value : undefined;
 }
 
 function normalizeToolTrace(value: unknown): ToolExecutionTrace[] {
@@ -99,7 +170,7 @@ function normalizeToolTrace(value: unknown): ToolExecutionTrace[] {
       attempts: record.attempts,
       status: record.status,
       retried: record.retried,
-      errorCategory: isToolErrorCategory(record.errorCategory) ? record.errorCategory : undefined,
+      errorCategory: normalizeToolErrorCategory(record.errorCategory),
       errorMessage: typeof record.errorMessage === "string" ? record.errorMessage : undefined,
       resultPreview: typeof record.resultPreview === "string" ? record.resultPreview : undefined
     });
@@ -118,7 +189,10 @@ export async function saveWorkflowCheckpoint(
   plan: OrchestrationPlan,
   toolTrace: ToolExecutionTrace[] = []
 ): Promise<void> {
-  const payload: WorkflowCheckpointPayload = { plan, toolTrace };
+  const payload: WorkflowCheckpointPayload = {
+    plan: sanitizePlanForCheckpoint(plan),
+    toolTrace: sanitizeToolTraceForCheckpoint(toolTrace)
+  };
   await invoke("save_workflow_checkpoint", {
     sessionId,
     messageId,

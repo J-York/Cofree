@@ -5,7 +5,7 @@
  * Task: 3.5
  * Status: In Progress
  * Owner: Codex-GPT-5
- * Last Modified: 2026-02-28
+ * Last Modified: 2026-03-01
  * Description: Native tool-calling orchestration loop with explicit HITL gate generation.
  */
 
@@ -26,6 +26,9 @@ const MAX_LIST_ENTRIES = 120;
 const MAX_FILE_PREVIEW_CHARS = 4000;
 const MAX_TOOL_RESULT_PREVIEW = 400;
 const MAX_TOOL_RETRY = 2;
+const MAX_PATCH_REPAIR_ROUNDS = 1;
+const MAX_CREATE_HINT_REPAIR_ROUNDS = 1;
+const MAX_MULTI_ARTIFACT_REMINDER_ROUNDS = 2;
 
 interface ToolCallRecord {
   id: string;
@@ -63,22 +66,42 @@ interface FileEntry {
   modified: number;
 }
 
+interface PatchApplyResult {
+  success: boolean;
+  message: string;
+  files: string[];
+}
+
 const ASSISTANT_SYSTEM_PROMPT = [
   "你是 Cofree 的服务员。你的目标是作为一名顶级的全栈工程师协助用户。",
   "你必须优先通过可用工具获取事实，再给出答案。必须严格遵守以下工作流原则（Vibe Coding 原则）：",
   "1) **Show, don't tell**：少废话，多干活。直接执行任务，不要在回复中长篇大论解释代码原理、功能特点，除非用户明确要求解释。",
-  "2) **信任系统回调**：当系统提示动作成功（如 apply_patch, git_write 等）时，直接信任结果，继续当前任务或简短汇报“已完成”。绝对严禁调用 list_files 或 read_file 进行多余的自我验证！",
-  "3) **极简交流**：在报告完成任务时，只需简短回答“已完成”或指明结果位置。绝对不要为了凑字数而列举无关内容。",
+  "2) **信任系统回调**：当系统提示动作成功（如 apply_patch, shell 等）时，直接信任结果并继续执行。不要做无意义重复读取；但在 patch/编辑失败后，允许有针对性地重新读取相关片段并修复。",
+  "3) **极简交流**：在报告完成任务时，只需简短回答\u201C已完成\u201D或指明结果位置。绝对不要为了凑字数而列举无关内容。",
   "当用户要求新增/修改/删除文件、执行命令或 git 写操作时：",
   "1) 不要直接执行副作用；",
-  "2) 必须通过 propose_apply_patch / propose_run_command / propose_git_write 工具提出待审批动作。",
-  "3) 审批动作必须按需提出；如果用户仅询问信息或解释，不要提出任何审批动作。",
+  "2) 必须通过当前已暴露的 propose_* 工具提出待审批动作（不要假设未暴露工具可用）。",
+  "2.1) 单文件、小中型改动优先用 propose_file_edit；它支持 replace / insert / delete / create，也支持 line/start_line/end_line 按行定位，系统会自动把编辑转换为 patch。",
+  "2.2) 仅在明确需要 raw diff/patch 时使用 propose_apply_patch，并确保 patch 是合法 unified diff。",
+  "2.3) 如果目标是执行任何命令（构建、测试、删除、git 操作等），使用 propose_shell。命令将显示给用户审批后执行。",
+  "2.4) 如果收到 patch 预检失败反馈，优先重新读取必要片段后修正，并在一次自动修复重试内完成。",
+  "**重要**：调用 propose_* 工具后，立即停止生成文本。不要预测审批结果，不要说\"用户未批准\"或\"等待用户批准\"等话。系统会自动处理审批流程并在执行后通知你结果。",
+  "3) 如果用户仅在询问信息或解释且不需要落盘，不要提出审批动作。",
   "4) 禁止为了兜底一次性提出三条审批动作，必须最小化且与当前任务直接相关。",
-  "当读取文件系统信息时，必须调用 list_files/read_file/git_status/git_diff，而不是伪造结果。不要高频无意义地盲目调用 list_files/read_file，目标必须清晰。",
+  "",
+  "## 工具选择关键规则",
+  "- **创建新文件**：必须使用 propose_file_edit，设置 operation='create'、relative_path 和 content。绝对不要用 cat/echo 重定向。",
+  "- **删除文件/目录**：使用 propose_shell，shell='rm -r <路径>' 或 'rm <文件>'。",
+  "- **命令执行**：使用 propose_shell，可以使用完整 shell 语法（管道、重定向、&& 等）。示例：propose_shell(shell='npm install && npm test')。",
+  "- **Git 操作**：使用 propose_shell，shell='git add .' 或 'git commit -m \"message\"' 或 'git checkout -b branch'。",
+  "- **propose_file_edit 的 relative_path 是必填参数**，所有操作都必须提供。",
+  "- **replace 操作**必须提供 search（要替换的原文）或 start_line/end_line（行范围）。如果文件不存在，请改用 operation='create'。",
+  "- 当工具调用失败时，仔细阅读错误信息并调整参数重试，而不是盲目切换工具。",
+  "",
+  "当读取文件系统信息时，必须调用 list_files/read_file/git_status/git_diff，而不是伪造结果。读取大文件时优先使用 read_file 的 start_line/end_line 参数按片段读取。",
   "严禁输出伪工具调用标签（如 <tool_call>）。",
   "回复语言与用户保持一致。"
 ].join("\n");
-
 const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
   {
     type: "function",
@@ -101,7 +124,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     type: "function",
     function: {
       name: "read_file",
-      description: "Read a text file content by workspace-relative path.",
+      description: "Read a text file content by workspace-relative path, optionally by line range.",
       parameters: {
         type: "object",
         required: ["relative_path"],
@@ -109,7 +132,18 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
         properties: {
           relative_path: {
             type: "string",
+            minLength: 1,
             description: "Workspace-relative file path."
+          },
+          start_line: {
+            type: "number",
+            minimum: 1,
+            description: "Optional 1-based start line for partial read."
+          },
+          end_line: {
+            type: "number",
+            minimum: 1,
+            description: "Optional 1-based end line for partial read."
           }
         }
       }
@@ -149,7 +183,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "propose_apply_patch",
       description:
-        "Propose a write action by submitting unified diff patch for HITL approval (does not execute).",
+        "Advanced raw patch path. Propose a write action by submitting unified diff patch for HITL approval (does not execute). Use only when explicit patch/diff is requested or structured edits cannot express the task.\n\nMinimal example:\ndiff --git a/src/foo.ts b/src/foo.ts\n--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1,3 +1,3 @@\n-old line\n+new line",
       parameters: {
         type: "object",
         required: ["patch"],
@@ -157,7 +191,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
         properties: {
           patch: {
             type: "string",
-            description: "Unified diff patch content."
+            description: "Unified diff patch content. MUST include 'diff --git' header. For new files: 'diff --git a/file b/file' then '--- /dev/null' and '+++ b/file'. For edits: 'diff --git a/file b/file' then '--- a/file' and '+++ b/file'. For delete-file patches: include 'deleted file mode 100644', then '--- a/file' and '+++ /dev/null'."
           },
           description: {
             type: "string",
@@ -170,24 +204,80 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
   {
     type: "function",
     function: {
-      name: "propose_run_command",
+      name: "propose_file_edit",
       description:
-        "Propose a command execution action for HITL approval (does not execute). Command must be allowlisted at execution time.",
+        "Propose deterministic single-file text edit. Supports replace/insert/delete/create operations. System will generate and validate patch for HITL approval.\n\nUsage examples:\n- Create new file: {relative_path:'src/foo.ts', operation:'create', content:'...'}\n- Replace by search: {relative_path:'src/foo.ts', search:'old text', replace:'new text'}\n- Replace by line range: {relative_path:'src/foo.ts', start_line:10, end_line:15, content:'replacement'}\n- Insert after line: {relative_path:'src/foo.ts', operation:'insert', line:5, content:'new line'}\n- Delete snippet: {relative_path:'src/foo.ts', operation:'delete', search:'text to remove'}\n\nIMPORTANT: relative_path is REQUIRED for all operations.",
       parameters: {
         type: "object",
-        required: ["command"],
+        required: ["relative_path"],
         additionalProperties: false,
         properties: {
-          command: {
-            type: "string"
+          relative_path: {
+            type: "string",
+            minLength: 1,
+            description: "Workspace-relative file path."
           },
-          timeout_ms: {
+          operation: {
+            type: "string",
+            enum: ["replace", "insert", "delete", "create"],
+            description:
+              "Edit operation. Defaults to 'replace' for backward compatibility."
+          },
+          search: {
+            type: "string",
+            description:
+              "For replace/delete-in-file: exact snippet to find. For backward-compatible insert, may be used as anchor."
+          },
+          replace: {
+            type: "string",
+            description:
+              "For replace: replacement text. For backward-compatible insert/create, may be used as inserted/content text."
+          },
+          anchor: {
+            type: "string",
+            description: "For insert: exact anchor snippet in file."
+          },
+          line: {
             type: "number",
-            minimum: 1000,
-            maximum: 600000
+            minimum: 1,
+            description: "For insert: 1-based target line used as insertion anchor."
+          },
+          start_line: {
+            type: "number",
+            minimum: 1,
+            description: "For replace/delete: optional 1-based start line of the target range."
+          },
+          end_line: {
+            type: "number",
+            minimum: 1,
+            description: "For replace/delete: optional 1-based end line of the target range."
+          },
+          content: {
+            type: "string",
+            description: "For insert/create: inserted or full file content."
+          },
+          position: {
+            type: "string",
+            enum: ["before", "after"],
+            description: "For insert: insert before or after anchor. Defaults to 'after'."
+          },
+          replace_all: {
+            type: "boolean",
+            description:
+              "For replace: replace all matches. For backward compatibility, also used as generic apply_all flag."
+          },
+          apply_all: {
+            type: "boolean",
+            description: "For replace/insert/delete-in-file: apply operation to all matches."
+          },
+          overwrite: {
+            type: "boolean",
+            description:
+              "For create: when true and file already exists, update file content instead of failing."
           },
           description: {
-            type: "string"
+            type: "string",
+            description: "Optional short description for reviewers."
           }
         }
       }
@@ -196,35 +286,286 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
   {
     type: "function",
     function: {
-      name: "propose_git_write",
+      name: "propose_shell",
       description:
-        "Propose git write action for HITL approval (does not execute). Supported operations: stage/commit/checkout_branch.",
+        "Propose a shell command execution action for HITL approval (does not execute). Supports full shell syntax including pipes, redirects, and chaining.\n\nExamples:\n- propose_shell(shell='npm install && npm test')\n- propose_shell(shell='rm -r old_dir')\n- propose_shell(shell='git add . && git commit -m \"Update\"')\n- propose_shell(shell='cargo build --release')\n\nThe command will be shown to the user for approval before execution.",
       parameters: {
         type: "object",
-        required: ["operation"],
+        required: ["shell"],
         additionalProperties: false,
         properties: {
-          operation: {
+          shell: {
             type: "string",
-            enum: ["stage", "commit", "checkout_branch"]
+            minLength: 1,
+            description: "Full shell command string. Can use pipes (|), redirects (>, <), chaining (&&, ;), variables ($VAR), etc."
           },
-          message: {
-            type: "string"
-          },
-          branch_name: {
-            type: "string"
-          },
-          allow_empty: {
-            type: "boolean"
+          timeout_ms: {
+            type: "number",
+            minimum: 1000,
+            maximum: 600000,
+            description: "Optional execution timeout in milliseconds. Defaults to 120000 (2 minutes)."
           },
           description: {
-            type: "string"
+            type: "string",
+            description: "Optional short description for reviewers."
           }
         }
       }
     }
   }
 ];
+
+type ToolRoutingMode =
+  | "read_only"
+  | "structured_edit"
+  | "explicit_patch"
+  | "delete_file"
+  | "shell_command"
+  | "summary_only";
+
+export type PlanningSessionPhase = "default" | "post_action_summary";
+
+interface ToolRoutingPolicy {
+  mode: ToolRoutingMode;
+  reason: string;
+  toolNames: string[];
+}
+
+const READ_ONLY_TOOL_NAMES = ["list_files", "read_file", "git_status", "git_diff"];
+const PATCH_INTENT_HINTS = ["patch", "diff", "unified diff", "hunk", "补丁", "差异", "diff 格式"];
+const COMMAND_INTENT_HINTS = [
+  "运行",
+  "执行",
+  "命令",
+  "测试",
+  "构建",
+  "编译",
+  "lint",
+  "验证",
+  "run ",
+  "execute",
+  "command",
+  "test",
+  "build",
+  "compile",
+  "check",
+  "validate",
+  "pnpm ",
+  "npm ",
+  "cargo ",
+  "bun ",
+  "pytest"
+];
+const WRITE_INTENT_HINTS = [
+  "新增",
+  "新建",
+  "创建",
+  "生成",
+  "修改",
+  "修复",
+  "编辑",
+  "重构",
+  "更新",
+  "实现",
+  "写入",
+  "replace",
+  "insert",
+  "delete",
+  "create file",
+  "new file",
+  "modify",
+  "change",
+  "edit",
+  "write ",
+  "fix",
+  "refactor",
+  "update"
+];
+
+function includesAnyHint(text: string, hints: string[]): boolean {
+  return hints.some((hint) => text.includes(hint));
+}
+
+function hasPromptCommandIntent(prompt: string): boolean {
+  const lower = prompt.toLowerCase();
+  return includesAnyHint(lower, COMMAND_INTENT_HINTS);
+}
+
+function hasPromptWriteIntent(prompt: string): boolean {
+  const lower = prompt.toLowerCase();
+  if (includesAnyHint(lower, WRITE_INTENT_HINTS)) {
+    return true;
+  }
+
+  if (/(写|创建|生成|新建).{0,8}(脚本|文件|代码)/.test(prompt)) {
+    return true;
+  }
+  if (/(write|create|generate).{0,16}(script|file|code)/i.test(prompt)) {
+    return true;
+  }
+
+  return false;
+}
+
+function hasExplicitPatchIntent(prompt: string): boolean {
+  const lower = prompt.toLowerCase();
+  return includesAnyHint(lower, PATCH_INTENT_HINTS);
+}
+
+function hasWholeFileDeleteIntent(prompt: string): boolean {
+  const lower = prompt.toLowerCase();
+  if (/\brm\s+[^\s]+\b/.test(lower)) {
+    return true;
+  }
+  if (/(delete|remove)\s+(the\s+)?file/.test(lower)) {
+    return true;
+  }
+
+  const mentionsDelete =
+    prompt.includes("删除") || prompt.includes("删掉") || prompt.includes("移除");
+  const mentionsFile = prompt.includes("文件") || /\.[a-z0-9]{1,8}\b/i.test(prompt);
+  const mentionsInFileScope =
+    prompt.includes("行") ||
+    prompt.includes("片段") ||
+    prompt.includes("内容") ||
+    prompt.includes("函数") ||
+    prompt.includes("变量");
+
+  return mentionsDelete && mentionsFile && !mentionsInFileScope;
+}
+
+function estimateRequestedArtifactCount(prompt: string): number {
+  const normalized = prompt.trim();
+  if (!normalized) {
+    return 0;
+  }
+
+  const segments = normalized
+    .split(/(?:\s+and\s+|\s+plus\s+|以及|并且|还有|和|，|,|；|;)/i)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  const artifactPattern = /(?:\.py\b|\.html\b|python|html|脚本|页面|网页|文件)/i;
+  const explicitCount = segments.filter((segment) => artifactPattern.test(segment)).length;
+  if (explicitCount > 0) {
+    return explicitCount;
+  }
+
+  return artifactPattern.test(normalized) ? 1 : 0;
+}
+
+function collectPatchedFiles(patch: string): string[] {
+  const files = new Set<string>();
+  for (const rawLine of patch.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const diffMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (diffMatch) {
+      if (diffMatch[1] && diffMatch[1] !== "/dev/null") {
+        files.add(diffMatch[1]);
+      }
+      if (diffMatch[2] && diffMatch[2] !== "/dev/null") {
+        files.add(diffMatch[2]);
+      }
+      continue;
+    }
+
+    const plusMatch = line.match(/^\+\+\+\s+b\/(.+)$/);
+    if (plusMatch?.[1]) {
+      files.add(plusMatch[1]);
+    }
+  }
+
+  return Array.from(files);
+}
+
+function countPlannedArtifacts(actions: ActionProposal[]): number {
+  const artifacts = new Set<string>();
+
+  for (const action of actions) {
+    if (action.type === "apply_patch") {
+      const patchFiles = collectPatchedFiles(action.payload.patch);
+      if (patchFiles.length > 0) {
+        patchFiles.forEach((file) => artifacts.add(`file:${file}`));
+        continue;
+      }
+    }
+
+    artifacts.add(`action:${action.id}`);
+  }
+
+  return artifacts.size;
+}
+
+function selectToolDefinitions(toolNames: string[]): LiteLLMToolDefinition[] {
+  const enabled = new Set(toolNames);
+  return TOOL_DEFINITIONS.filter((tool) => enabled.has(tool.function.name));
+}
+
+function inferToolRoutingPolicy(
+  prompt: string,
+  phase: PlanningSessionPhase = "default"
+): ToolRoutingPolicy {
+  if (phase === "post_action_summary") {
+    return {
+      mode: "summary_only",
+      reason: "当前处于审批结果汇报阶段，仅允许基于已知结果生成总结。",
+      toolNames: []
+    };
+  }
+
+  const writeIntent = hasPromptWriteIntent(prompt);
+  const commandIntent = hasPromptCommandIntent(prompt);
+  const gitIntent = hasExplicitGitIntent(prompt);
+  const patchIntent = hasExplicitPatchIntent(prompt);
+  const deleteFileIntent = hasWholeFileDeleteIntent(prompt);
+
+  const toolNames = new Set<string>(READ_ONLY_TOOL_NAMES);
+
+  // When any write/patch/delete/command/git intent is detected, expose ALL write tools
+  // so the LLM can choose the most appropriate one.
+  const anyWriteIntent = writeIntent || patchIntent || deleteFileIntent || commandIntent || gitIntent;
+
+  if (anyWriteIntent) {
+    toolNames.add("propose_file_edit");
+    toolNames.add("propose_apply_patch");
+    toolNames.add("propose_shell");
+  }
+
+  if (deleteFileIntent) {
+    return {
+      mode: "delete_file",
+      reason: "检测到整文件删除意图，优先走 shell rm 路径。",
+      toolNames: Array.from(toolNames)
+    };
+  }
+  if (patchIntent) {
+    return {
+      mode: "explicit_patch",
+      reason: "检测到显式 patch/diff 意图，优先走 raw patch 路径。",
+      toolNames: Array.from(toolNames)
+    };
+  }
+  if (writeIntent) {
+    return {
+      mode: "structured_edit",
+      reason: "检测到代码修改意图，优先走结构化文件编辑路径。",
+      toolNames: Array.from(toolNames)
+    };
+  }
+  if (commandIntent || gitIntent) {
+    return {
+      mode: "shell_command",
+      reason: "检测到命令/git 执行意图。",
+      toolNames: Array.from(toolNames)
+    };
+  }
+
+  return {
+    mode: "read_only",
+    reason: "未检测到写入/命令意图，保持只读工具集。",
+    toolNames: Array.from(toolNames)
+  };
+}
 
 export class LocalOnlyPolicyError extends Error {
   constructor(message: string) {
@@ -236,10 +577,12 @@ export class LocalOnlyPolicyError extends Error {
 export interface RunPlanningSessionInput {
   prompt: string;
   settings: AppSettings;
+  phase?: PlanningSessionPhase;
   conversationHistory?: Array<{
     role: "user" | "assistant";
     content: string;
   }>;
+  internalSystemNote?: string;
   signal?: AbortSignal;
   onAssistantChunk?: (chunk: string) => void;
 }
@@ -263,6 +606,7 @@ export type ToolErrorCategory =
   | "timeout"
   | "allowlist"
   | "transport"
+  | "guardrail"
   | "tool_not_found"
   | "unknown";
 
@@ -449,6 +793,177 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function normalizeOptionalPositiveInt(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : null;
+}
+
+function countOccurrences(content: string, snippet: string): number {
+  if (!snippet) {
+    return 0;
+  }
+
+  let total = 0;
+  let offset = 0;
+  while (offset <= content.length) {
+    const index = content.indexOf(snippet, offset);
+    if (index < 0) {
+      break;
+    }
+    total += 1;
+    offset = index + Math.max(1, snippet.length);
+  }
+  return total;
+}
+
+function splitPatchLines(content: string): {
+  lines: string[];
+  hasTrailingNewline: boolean;
+} {
+  if (!content.length) {
+    return {
+      lines: [],
+      hasTrailingNewline: false
+    };
+  }
+
+  const hasTrailingNewline = content.endsWith("\n");
+  const body = hasTrailingNewline ? content.slice(0, -1) : content;
+
+  return {
+    lines: body.length > 0 ? body.split("\n") : [""],
+    hasTrailingNewline
+  };
+}
+
+function splitContentSegments(content: string): string[] {
+  if (!content.length) {
+    return [];
+  }
+
+  const segments: string[] = [];
+  let start = 0;
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] === "\n") {
+      segments.push(content.slice(start, index + 1));
+      start = index + 1;
+    }
+  }
+  if (start < content.length) {
+    segments.push(content.slice(start));
+  }
+  return segments;
+}
+
+function replaceByLineRange(
+  content: string,
+  startLine: number,
+  endLine: number,
+  replacement: string
+): string {
+  const segments = splitContentSegments(content);
+  if (!segments.length) {
+    throw new Error("文件为空，无法按行定位编辑。");
+  }
+  if (startLine < 1 || endLine < 1 || startLine > endLine) {
+    throw new Error("非法行号范围。");
+  }
+  if (startLine > segments.length || endLine > segments.length) {
+    throw new Error(`行号超出文件范围（总行数 ${segments.length}）。`);
+  }
+
+  return (
+    segments.slice(0, startLine - 1).join("") +
+    replacement +
+    segments.slice(endLine).join("")
+  );
+}
+
+function insertByLine(content: string, line: number, insertContent: string, position: "before" | "after"): string {
+  const segments = splitContentSegments(content);
+  if (!segments.length) {
+    throw new Error("文件为空，无法按行定位插入。");
+  }
+  if (line < 1 || line > segments.length) {
+    throw new Error(`line 超出文件范围（总行数 ${segments.length}）。`);
+  }
+
+  const insertionIndex = position === "before" ? line - 1 : line;
+  return (
+    segments.slice(0, insertionIndex).join("") +
+    insertContent +
+    segments.slice(insertionIndex).join("")
+  );
+}
+
+function formatUnifiedRange(start: number, count: number): string {
+  if (count === 1) {
+    return `${start}`;
+  }
+  return `${start},${count}`;
+}
+
+function buildReplacementPatch(relativePath: string, before: string, after: string): string {
+  if (before === after) {
+    throw new Error("编辑结果为空，未产生文件变更。");
+  }
+
+  const previous = splitPatchLines(before);
+  const next = splitPatchLines(after);
+  const previousCount = previous.lines.length;
+  const nextCount = next.lines.length;
+  const previousStart = previousCount > 0 ? 1 : 0;
+  const nextStart = nextCount > 0 ? 1 : 0;
+  const hunkLines: string[] = [];
+
+  for (const line of previous.lines) {
+    hunkLines.push(`-${line}`);
+  }
+  if (previous.lines.length > 0 && !previous.hasTrailingNewline) {
+    hunkLines.push("\\ No newline at end of file");
+  }
+
+  for (const line of next.lines) {
+    hunkLines.push(`+${line}`);
+  }
+  if (next.lines.length > 0 && !next.hasTrailingNewline) {
+    hunkLines.push("\\ No newline at end of file");
+  }
+
+  return [
+    `diff --git a/${relativePath} b/${relativePath}`,
+    `--- a/${relativePath}`,
+    `+++ b/${relativePath}`,
+    `@@ -${formatUnifiedRange(previousStart, previousCount)} +${formatUnifiedRange(nextStart, nextCount)} @@`,
+    ...hunkLines
+  ].join("\n") + "\n";
+}
+
+function buildCreateFilePatch(relativePath: string, content: string): string {
+  const next = splitPatchLines(content);
+  if (next.lines.length < 1) {
+    throw new Error("create 操作要求 content 至少包含一行。");
+  }
+
+  const hunkLines = next.lines.map((line) => `+${line}`);
+  if (!next.hasTrailingNewline) {
+    hunkLines.push("\\ No newline at end of file");
+  }
+
+  return [
+    `diff --git a/${relativePath} b/${relativePath}`,
+    "new file mode 100644",
+    "--- /dev/null",
+    `+++ b/${relativePath}`,
+    `@@ -0,0 +${formatUnifiedRange(1, next.lines.length)} @@`,
+    ...hunkLines
+  ].join("\n") + "\n";
+}
+
 function createActionId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 }
@@ -459,14 +974,43 @@ function nowIso(): string {
 
 function classifyToolError(message: string): ToolErrorCategory {
   const lower = message.toLowerCase();
-  if (lower.includes("不能为空") || lower.includes("invalid json") || lower.includes("arguments")) {
+  if (
+    lower.includes("不能为空") ||
+    lower.includes("invalid json") ||
+    lower.includes("arguments") ||
+    lower.includes("未找到") ||
+    lower.includes("出现多次") ||
+    lower.includes("预检失败") ||
+    lower.includes("已存在") ||
+    lower.includes("未产生文件变更") ||
+    lower.includes("不支持的 file edit") ||
+    lower.includes("行号") ||
+    lower.includes("文件为空") ||
+    lower.includes("invalid target path") ||
+    lower.includes("no such file or directory") ||
+    lower.includes("line 超出")
+  ) {
     return "validation";
   }
   if (lower.includes("未选择工作区") || lower.includes("workspace")) {
     return "workspace";
   }
-  if (lower.includes("allowlist")) {
-    return "allowlist";
+  if (
+    lower.includes("allowlist") ||
+    lower.includes("guardrail") ||
+    lower.includes("shell 控制符") ||
+    lower.includes("工作区越界路径") ||
+    lower.includes("受限目录") ||
+    lower.includes("命中被禁止的可执行程序") ||
+    lower.includes("命中高风险关键字") ||
+    lower.includes("解释器内联执行") ||
+    lower.includes("propose_apply_patch") ||
+    lower.includes("直接改文件")
+  ) {
+    return "guardrail";
+  }
+  if (lower.includes("patch does not apply") || lower.includes("corrupt patch")) {
+    return "validation";
   }
   if (lower.includes("timed out") || lower.includes("超时")) {
     return "timeout";
@@ -558,6 +1102,8 @@ async function executeToolCall(
 
     if (call.function.name === "read_file") {
       const relativePath = normalizeRelativePath(args.relative_path);
+      const startLine = normalizeOptionalPositiveInt(args.start_line);
+      const endLine = normalizeOptionalPositiveInt(args.end_line);
       if (!relativePath) {
         const message = "relative_path 不能为空";
         return {
@@ -567,15 +1113,28 @@ async function executeToolCall(
           errorMessage: message
         };
       }
+      if (startLine && endLine && startLine > endLine) {
+        const message = "start_line 不能大于 end_line";
+        return {
+          content: JSON.stringify({ error: message }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message
+        };
+      }
       const content = await invoke<string>("read_workspace_file", {
         workspacePath: safeWorkspace,
-        relativePath
+        relativePath,
+        startLine,
+        endLine
       });
       const trimmed = content.slice(0, MAX_FILE_PREVIEW_CHARS);
       return {
         content: JSON.stringify({
           ok: true,
           relative_path: relativePath,
+          start_line: startLine,
+          end_line: endLine,
           content_preview: trimmed,
           truncated: content.length > trimmed.length
         }),
@@ -629,6 +1188,22 @@ async function executeToolCall(
           errorMessage: message
         };
       }
+      const preflight = await invoke<PatchApplyResult>("check_workspace_patch", {
+        workspacePath: safeWorkspace,
+        patch
+      });
+      if (!preflight.success) {
+        const message = `Patch 预检失败: ${preflight.message}`;
+        return {
+          content: JSON.stringify({
+            error: message,
+            files: preflight.files
+          }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message
+        };
+      }
       const action: ActionProposal = {
         id: createActionId("gate-a-apply-patch"),
         type: "apply_patch",
@@ -645,17 +1220,349 @@ async function executeToolCall(
           ok: true,
           action_type: "apply_patch",
           action_id: action.id,
-          patch_length: patch.length
+          patch_length: patch.length,
+          files: preflight.files
         }),
         success: true,
         proposedAction: action
       };
     }
 
-    if (call.function.name === "propose_run_command") {
-      const command = asString(args.command).trim();
-      if (!command) {
-        const message = "command 不能为空";
+    if (call.function.name === "propose_file_edit") {
+      const relativePath = normalizeRelativePath(args.relative_path);
+      const operationRaw = asString(args.operation, "replace").trim().toLowerCase();
+      const operation = operationRaw || "replace";
+      const applyAll = asBoolean(args.apply_all, asBoolean(args.replace_all, false));
+      const positionCandidate = asString(args.position, "after").trim().toLowerCase();
+      const insertPosition = positionCandidate === "before" ? "before" : "after";
+      const line = normalizeOptionalPositiveInt(args.line);
+      const startLine = normalizeOptionalPositiveInt(args.start_line);
+      const endLine = normalizeOptionalPositiveInt(args.end_line);
+      if (!relativePath) {
+        const message = "relative_path 不能为空";
+        return {
+          content: JSON.stringify({ error: message }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message
+        };
+      }
+      let patch = "";
+      const responseMeta: Record<string, unknown> = {
+        mode: "file_edit",
+        operation,
+        relative_path: relativePath,
+        apply_all: applyAll
+      };
+      if (line) {
+        responseMeta.line = line;
+      }
+      if (startLine) {
+        responseMeta.start_line = startLine;
+      }
+      if (endLine) {
+        responseMeta.end_line = endLine;
+      }
+
+      if (endLine && !startLine) {
+        const message = "提供 end_line 时必须同时提供 start_line";
+        return {
+          content: JSON.stringify({ error: message }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message
+        };
+      }
+      if (startLine && endLine && startLine > endLine) {
+        const message = "start_line 不能大于 end_line";
+        return {
+          content: JSON.stringify({ error: message }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message
+        };
+      }
+
+      if (operation === "create") {
+        const createContent = asString(args.content, asString(args.replace));
+        const overwrite = asBoolean(args.overwrite, false);
+        if (!createContent) {
+          const message = "create 操作要求 content 非空";
+          return {
+            content: JSON.stringify({ error: message }),
+            success: false,
+            errorCategory: "validation",
+            errorMessage: message
+          };
+        }
+
+        let existingContent: string | null = null;
+        try {
+          existingContent = await invoke<string>("read_workspace_file", {
+            workspacePath: safeWorkspace,
+            relativePath
+          });
+        } catch (_error) {
+          existingContent = null;
+        }
+
+        if (existingContent !== null && !overwrite) {
+          const message = `目标文件已存在: ${relativePath}（如需覆盖请设置 overwrite=true）`;
+          return {
+            content: JSON.stringify({ error: message }),
+            success: false,
+            errorCategory: "validation",
+            errorMessage: message
+          };
+        }
+
+        patch =
+          existingContent === null
+            ? buildCreateFilePatch(relativePath, createContent)
+            : buildReplacementPatch(relativePath, existingContent, createContent);
+        responseMeta.created = existingContent === null;
+        responseMeta.overwrite = overwrite;
+      } else {
+        let original = "";
+        let fileExists = true;
+        try {
+          original = await invoke<string>("read_workspace_file", {
+            workspacePath: safeWorkspace,
+            relativePath
+          });
+        } catch (_readError) {
+          fileExists = false;
+          // File doesn't exist — auto-detect as create intent
+          const createContent = asString(args.content, asString(args.replace));
+          if (createContent) {
+            patch = buildCreateFilePatch(relativePath, createContent);
+            responseMeta.auto_create = true;
+            responseMeta.operation = "create";
+          } else {
+            const message = `文件不存在: ${relativePath}。若要创建新文件，请使用 operation='create' 并提供 content 参数`;
+            return {
+              content: JSON.stringify({ error: message }),
+              success: false,
+              errorCategory: "validation",
+              errorMessage: message
+            };
+          }
+        }
+        if (!patch && fileExists) {
+        let nextContent = original;
+
+        if (operation === "replace") {
+          if (startLine) {
+            const replacement = asString(args.content, asString(args.replace));
+            nextContent = replaceByLineRange(original, startLine, endLine ?? startLine, replacement);
+            responseMeta.selection_mode = "line_range";
+          } else {
+            const search = asString(args.search);
+            const replace = asString(args.replace);
+            if (!search) {
+              const message = "replace 操作要求 search 非空，或提供 start_line/end_line。若要创建新文件，请改用 operation='create' 并提供 content 参数";
+              return {
+                content: JSON.stringify({ error: message }),
+                success: false,
+                errorCategory: "validation",
+                errorMessage: message
+              };
+            }
+            const hits = countOccurrences(original, search);
+            if (hits < 1) {
+              const message = `search 片段未找到: ${relativePath}`;
+              return {
+                content: JSON.stringify({ error: message }),
+                success: false,
+                errorCategory: "validation",
+                errorMessage: message
+              };
+            }
+            if (!applyAll && hits > 1) {
+              const message = `search 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
+              return {
+                content: JSON.stringify({ error: message }),
+                success: false,
+                errorCategory: "validation",
+                errorMessage: message
+              };
+            }
+
+            nextContent = applyAll
+              ? original.split(search).join(replace)
+              : original.replace(search, replace);
+            responseMeta.matched = hits;
+          }
+        } else if (operation === "insert") {
+          const insertContent = asString(args.content, asString(args.replace));
+          if (!insertContent) {
+            const message = "insert 操作要求 content 非空";
+            return {
+              content: JSON.stringify({ error: message }),
+              success: false,
+              errorCategory: "validation",
+              errorMessage: message
+            };
+          }
+          if (line) {
+            nextContent = insertByLine(original, line, insertContent, insertPosition);
+            responseMeta.selection_mode = "line_anchor";
+            responseMeta.position = insertPosition;
+          } else {
+            const anchor = asString(args.anchor, asString(args.search));
+            if (!anchor) {
+              const message = "insert 操作要求 anchor 非空，或提供 line";
+              return {
+                content: JSON.stringify({ error: message }),
+                success: false,
+                errorCategory: "validation",
+                errorMessage: message
+              };
+            }
+            const hits = countOccurrences(original, anchor);
+            if (hits < 1) {
+              const message = `anchor 片段未找到: ${relativePath}`;
+              return {
+                content: JSON.stringify({ error: message }),
+                success: false,
+                errorCategory: "validation",
+                errorMessage: message
+              };
+            }
+            if (!applyAll && hits > 1) {
+              const message = `anchor 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
+              return {
+                content: JSON.stringify({ error: message }),
+                success: false,
+                errorCategory: "validation",
+                errorMessage: message
+              };
+            }
+
+            const anchored =
+              insertPosition === "before"
+                ? `${insertContent}${anchor}`
+                : `${anchor}${insertContent}`;
+            nextContent = applyAll
+              ? original.split(anchor).join(anchored)
+              : original.replace(anchor, anchored);
+            responseMeta.matched = hits;
+            responseMeta.position = insertPosition;
+          }
+        } else if (operation === "delete") {
+          if (startLine) {
+            nextContent = replaceByLineRange(original, startLine, endLine ?? startLine, "");
+            responseMeta.selection_mode = "line_range";
+          } else {
+            const search = asString(args.search, asString(args.anchor));
+          if (!search) {
+            const message =
+              "delete 操作要求 search 非空，或提供 start_line/end_line。若目标是删除整个文件，请改用 propose_run_command 执行 rm <relative_path>。";
+            return {
+              content: JSON.stringify({ error: message }),
+              success: false,
+              errorCategory: "validation",
+                errorMessage: message
+              };
+            }
+            const hits = countOccurrences(original, search);
+            if (hits < 1) {
+              const message = `search 片段未找到: ${relativePath}`;
+              return {
+                content: JSON.stringify({ error: message }),
+                success: false,
+                errorCategory: "validation",
+                errorMessage: message
+              };
+            }
+            if (!applyAll && hits > 1) {
+              const message = `search 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
+              return {
+                content: JSON.stringify({ error: message }),
+                success: false,
+                errorCategory: "validation",
+                errorMessage: message
+              };
+            }
+
+            nextContent = applyAll
+              ? original.split(search).join("")
+              : original.replace(search, "");
+            responseMeta.matched = hits;
+          }
+        } else {
+          const message = `不支持的 file edit operation: ${operation}`;
+          return {
+            content: JSON.stringify({ error: message }),
+            success: false,
+            errorCategory: "validation",
+            errorMessage: message
+          };
+        }
+
+        patch = buildReplacementPatch(relativePath, original, nextContent);
+        } // end if (!patch && fileExists)
+      }
+
+      const preflight = await invoke<PatchApplyResult>("check_workspace_patch", {
+        workspacePath: safeWorkspace,
+        patch
+      });
+      if (!preflight.success) {
+        const message = `Patch 预检失败: ${preflight.message}`;
+        return {
+          content: JSON.stringify({
+            error: message,
+            files: preflight.files
+          }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message
+        };
+      }
+
+      const action: ActionProposal = {
+        id: createActionId("gate-a-apply-patch"),
+        type: "apply_patch",
+        description: asString(
+          args.description,
+          `Apply structured edit for ${relativePath} (Gate A)`
+        ),
+        gateRequired: true,
+        status: "pending",
+        executed: false,
+        payload: {
+          patch
+        }
+      };
+      return {
+        content: JSON.stringify({
+          ok: true,
+          action_type: "apply_patch",
+          action_id: action.id,
+          patch_length: patch.length,
+          files: preflight.files,
+          ...responseMeta
+        }),
+        success: true,
+        proposedAction: action
+      };
+    }
+
+    if (call.function.name === "propose_shell") {
+      const shell = asString(args.shell).trim();
+      if (!shell) {
+        const message = "shell 命令不能为空";
+        return {
+          content: JSON.stringify({ error: message }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message
+        };
+      }
+      const timeout = Math.max(1000, Math.min(600000, asNumber(args.timeout_ms, 120000)));
+      if (timeout < 1000 || timeout > 600000) {
+        const message = "timeout_ms 必须在 1000-600000 之间";
         return {
           content: JSON.stringify({ error: message }),
           success: false,
@@ -664,53 +1571,23 @@ async function executeToolCall(
         };
       }
       const action: ActionProposal = {
-        id: createActionId("gate-b-run-command"),
-        type: "run_command",
-        description: asString(args.description, "Run allowlisted validation command (Gate B)"),
+        id: createActionId("gate-shell"),
+        type: "shell",
+        description: asString(args.description, "Execute shell command (Gate)"),
         gateRequired: true,
         status: "pending",
         executed: false,
         payload: {
-          command,
-          timeoutMs: Math.max(1000, Math.min(600000, asNumber(args.timeout_ms, 120000)))
+          shell,
+          timeoutMs: timeout
         }
       };
       return {
         content: JSON.stringify({
           ok: true,
-          action_type: "run_command",
+          action_type: "shell",
           action_id: action.id,
-          command
-        }),
-        success: true,
-        proposedAction: action
-      };
-    }
-
-    if (call.function.name === "propose_git_write") {
-      const operation = asString(args.operation, "stage");
-      const normalizedOperation =
-        operation === "commit" || operation === "checkout_branch" ? operation : "stage";
-      const action: ActionProposal = {
-        id: createActionId("gate-c-git-write"),
-        type: "git_write",
-        description: asString(args.description, "Stage/commit approved changes (Gate C)"),
-        gateRequired: true,
-        status: "pending",
-        executed: false,
-        payload: {
-          operation: normalizedOperation,
-          message: asString(args.message, "chore: apply approved changes"),
-          branchName: asString(args.branch_name, "cofree/m3-approved"),
-          allowEmpty: asBoolean(args.allow_empty, false)
-        }
-      };
-      return {
-        content: JSON.stringify({
-          ok: true,
-          action_type: "git_write",
-          action_id: action.id,
-          operation: normalizedOperation
+          shell
         }),
         success: true,
         proposedAction: action
@@ -806,6 +1683,7 @@ async function executeToolCallWithRetry(
 async function requestToolCompletion(
   messages: LiteLLMMessage[],
   settings: AppSettings,
+  activeTools: LiteLLMToolDefinition[],
   signal?: AbortSignal
 ): Promise<{
   assistantMessage: LiteLLMMessage;
@@ -819,7 +1697,7 @@ async function requestToolCompletion(
   const body = createLiteLLMRequestBody(messages, settings, {
     stream: false,
     temperature: 0.1,
-    tools: TOOL_DEFINITIONS,
+    tools: activeTools,
     toolChoice: "auto"
   });
 
@@ -860,7 +1738,9 @@ async function requestToolCompletion(
 async function runNativeToolCallingLoop(
   prompt: string,
   settings: AppSettings,
+  phase: PlanningSessionPhase,
   conversationHistory: LiteLLMMessage[],
+  internalSystemNote?: string,
   signal?: AbortSignal,
   onAssistantChunk?: (chunk: string) => void
 ): Promise<{
@@ -869,10 +1749,27 @@ async function runNativeToolCallingLoop(
   proposedActions: ActionProposal[];
   toolTrace: ToolExecutionTrace[];
 }> {
-  const runtimeContext = createRuntimeContextPrompt(settings);
+  const routingPolicy = inferToolRoutingPolicy(prompt, phase);
+  const activeTools = selectToolDefinitions(routingPolicy.toolNames);
+  const shellAvailable = routingPolicy.toolNames.includes("propose_shell");
+  const patchRepairInstruction =
+    routingPolicy.mode === "explicit_patch"
+      ? "请读取必要文件片段后，重新调用 propose_apply_patch。"
+      : "请读取必要文件片段后，重新调用 propose_file_edit。";
+  const createPathRepairInstruction = shellAvailable
+    ? "若目标是新建文件，请调用 propose_file_edit 并设置 operation='create'；若目录不存在，可先调用 propose_shell 执行 mkdir -p <目录>。"
+    : "若目标是新建文件，请调用 propose_file_edit 并设置 operation='create'；并优先选择已存在目录下的 relative_path。";
+  const runtimeContext = createRuntimeContextPrompt(settings, routingPolicy);
+  const requestedArtifactCount =
+    phase === "default" && routingPolicy.mode !== "read_only"
+      ? estimateRequestedArtifactCount(prompt)
+      : 0;
   const messages: LiteLLMMessage[] = [
     { role: "system", content: ASSISTANT_SYSTEM_PROMPT },
     { role: "system", content: runtimeContext },
+    ...(internalSystemNote?.trim()
+      ? [{ role: "system" as const, content: internalSystemNote.trim() }]
+      : []),
     ...conversationHistory,
     { role: "user", content: prompt }
   ];
@@ -880,9 +1777,12 @@ async function runNativeToolCallingLoop(
   const requestRecords: RequestRecord[] = [];
   const proposedActions: ActionProposal[] = [];
   const toolTrace: ToolExecutionTrace[] = [];
+  let patchRepairRounds = 0;
+  let createHintRepairRounds = 0;
+  let multiArtifactReminderRounds = 0;
 
   for (let turn = 0; turn < MAX_TOOL_LOOP_TURNS; turn += 1) {
-    const completion = await requestToolCompletion(messages, settings, signal);
+    const completion = await requestToolCompletion(messages, settings, activeTools, signal);
     requestRecords.push(completion.requestRecord);
     messages.push(completion.assistantMessage);
 
@@ -897,12 +1797,32 @@ async function runNativeToolCallingLoop(
       };
     }
 
+    let patchPreflightFailure: string | null = null;
+    let createPathUsageFailure: string | null = null;
     for (const toolCall of completion.toolCalls) {
       const { result: toolResult, trace } = await executeToolCallWithRetry(
         toolCall,
         settings.workspacePath
       );
       toolTrace.push(trace);
+      if (
+        toolResult.success === false &&
+        toolResult.errorCategory === "validation" &&
+        (toolCall.function.name === "propose_apply_patch" ||
+          toolCall.function.name === "propose_file_edit") &&
+        (toolResult.errorMessage ?? "").includes("Patch 预检失败")
+      ) {
+        patchPreflightFailure = toolResult.errorMessage ?? "Patch 预检失败";
+      }
+      if (
+        toolResult.success === false &&
+        toolResult.errorCategory === "validation" &&
+        toolCall.function.name === "propose_file_edit" &&
+        ((toolResult.errorMessage ?? "").toLowerCase().includes("invalid target path") ||
+          (toolResult.errorMessage ?? "").toLowerCase().includes("no such file or directory"))
+      ) {
+        createPathUsageFailure = toolResult.errorMessage ?? "目标路径不存在";
+      }
       if (toolResult.proposedAction) {
         proposedActions.push(toolResult.proposedAction);
       }
@@ -912,6 +1832,62 @@ async function runNativeToolCallingLoop(
         name: toolCall.function.name,
         content: toolResult.content
       });
+    }
+
+    if (
+      !proposedActions.length &&
+      patchPreflightFailure &&
+      patchRepairRounds < MAX_PATCH_REPAIR_ROUNDS
+    ) {
+      patchRepairRounds += 1;
+      messages.push({
+        role: "system",
+        content: [
+          "系统提示：上一轮 patch 预检失败。",
+          `错误信息：${patchPreflightFailure}`,
+          patchRepairInstruction,
+          "仅允许一次自动修复重试，并保持最小改动。"
+        ].join("\n")
+      });
+      continue;
+    }
+
+    if (
+      !proposedActions.length &&
+      createPathUsageFailure &&
+      createHintRepairRounds < MAX_CREATE_HINT_REPAIR_ROUNDS
+    ) {
+      createHintRepairRounds += 1;
+      messages.push({
+        role: "system",
+        content: [
+          "系统提示：检测到文件创建路径问题。",
+          `错误信息：${createPathUsageFailure}`,
+          createPathRepairInstruction
+        ].join("\n")
+      });
+      continue;
+    }
+
+    if (requestedArtifactCount > 1) {
+      const plannedArtifacts = countPlannedArtifacts(proposedActions);
+      if (
+        plannedArtifacts > 0 &&
+        plannedArtifacts < requestedArtifactCount &&
+        multiArtifactReminderRounds < MAX_MULTI_ARTIFACT_REMINDER_ROUNDS
+      ) {
+        multiArtifactReminderRounds += 1;
+        messages.push({
+          role: "system",
+          content: [
+            "系统提示：用户请求包含多个交付物。",
+            `当前已提出 ${plannedArtifacts} 个交付物相关动作，目标至少 ${requestedArtifactCount} 个。`,
+            "请继续提出剩余缺失交付物的审批动作；不要重复已有动作。",
+            "仅在所有请求交付物都已覆盖，或确实无法继续时，才停止工具调用。"
+          ].join("\n")
+        });
+        continue;
+      }
     }
 
     if (proposedActions.length > 0) {
@@ -953,12 +1929,12 @@ function sanitizeStepsFromPrompt(prompt: string): PlanStep[] {
   ];
 }
 
-function buildProposedActions(prompt: string, fromTools: ActionProposal[]): ActionProposal[] {
+function buildProposedActions(fromTools: ActionProposal[]): ActionProposal[] {
   const uniqueActions: ActionProposal[] = [];
   const seen = new Set<string>();
 
   for (const action of fromTools) {
-    const validationError = validateProposedAction(action, prompt);
+    const validationError = validateProposedAction(action);
     if (validationError) {
       continue;
     }
@@ -1006,13 +1982,11 @@ function actionFingerprint(action: ActionProposal): string {
   if (action.type === "apply_patch") {
     return `${action.type}:${action.payload.patch.trim()}`;
   }
-  if (action.type === "run_command") {
-    return `${action.type}:${action.payload.command.trim()}:${action.payload.timeoutMs}`;
-  }
-  return `${action.type}:${action.payload.operation}:${action.payload.branchName}:${action.payload.message}:${action.payload.allowEmpty}`;
+  // action.type === "shell"
+  return `${action.type}:${action.payload.shell.trim()}:${action.payload.timeoutMs}`;
 }
 
-function validateProposedAction(action: ActionProposal, prompt: string): string | null {
+function validateProposedAction(action: ActionProposal): string | null {
   if (action.type === "apply_patch") {
     if (!action.payload.patch.trim()) {
       return "patch 不能为空";
@@ -1020,9 +1994,9 @@ function validateProposedAction(action: ActionProposal, prompt: string): string 
     return null;
   }
 
-  if (action.type === "run_command") {
-    if (!action.payload.command.trim()) {
-      return "command 不能为空";
+  if (action.type === "shell") {
+    if (!action.payload.shell.trim()) {
+      return "shell 命令不能为空";
     }
     if (action.payload.timeoutMs < 1000 || action.payload.timeoutMs > 600000) {
       return "timeout 超出范围";
@@ -1030,19 +2004,10 @@ function validateProposedAction(action: ActionProposal, prompt: string): string 
     return null;
   }
 
-  if (!hasExplicitGitIntent(prompt)) {
-    return "未检测到明确 git 意图";
-  }
-  if (!action.payload.message.trim()) {
-    return "git message 不能为空";
-  }
-  if (!action.payload.branchName.trim()) {
-    return "branch 不能为空";
-  }
   return null;
 }
 
-function createRuntimeContextPrompt(settings: AppSettings): string {
+function createRuntimeContextPrompt(settings: AppSettings, routingPolicy: ToolRoutingPolicy): string {
   const workspacePath = settings.workspacePath.trim();
   const workspaceLine = workspacePath
     ? `当前工作区: ${workspacePath}`
@@ -1055,11 +2020,68 @@ function createRuntimeContextPrompt(settings: AppSettings): string {
   return [
     "运行时上下文：",
     workspaceLine,
+    `本轮工具路由模式: ${routingPolicy.mode}`,
+    `路由原因: ${routingPolicy.reason}`,
+    `本轮可用工具: [${routingPolicy.toolNames.join(", ")}]`,
+    routingPolicy.mode === "summary_only"
+      ? "当前阶段只允许基于系统已知结果做总结，禁止提出新的审批动作或重复声明能力限制。"
+      : "当前阶段可按需读取事实或提出待审批动作。",
     "可用角色与能力：",
     ...agentLines,
     "Guardrails: 默认只读；未经审批不得执行写盘/命令/git 写操作。",
     "如需文件系统信息，必须通过已定义工具调用，不得臆测。"
   ].join("\n");
+}
+
+function containsCapabilityDenial(text: string): boolean {
+  const corpus = text.toLowerCase();
+  const hints = [
+    "只读",
+    "read-only",
+    "无法执行文件创建",
+    "当前工具路由模式为只读",
+    "仅支持 [list_files, read_file, git_status, git_diff]"
+  ];
+  return hints.some((hint) => corpus.includes(hint.toLowerCase()));
+}
+
+function reconcileAssistantReply(params: {
+  assistantReply: string;
+  phase: PlanningSessionPhase;
+  proposedActions: ActionProposal[];
+  toolTrace: ToolExecutionTrace[];
+}): string {
+  const { assistantReply, phase, proposedActions, toolTrace } = params;
+  const normalized = assistantReply.trim();
+
+  if (!normalized) {
+    if (proposedActions.length > 0) {
+      return "已生成待审批动作，请查看下方审批卡片。";
+    }
+    if (phase === "post_action_summary") {
+      return "审批动作已处理完毕，结果已同步到上方记录。";
+    }
+    return normalized;
+  }
+
+  if (!containsCapabilityDenial(normalized)) {
+    return normalized;
+  }
+
+  const hasSuccessfulToolCall = toolTrace.some((trace) => trace.status === "success");
+  if (!hasSuccessfulToolCall && phase !== "post_action_summary") {
+    return normalized;
+  }
+
+  if (proposedActions.length > 0) {
+    return "已生成待审批动作，请查看下方审批卡片。";
+  }
+
+  if (phase === "post_action_summary") {
+    return "审批动作已处理完毕，结果已同步到上方记录。";
+  }
+
+  return normalized;
 }
 
 function assertLocalOnlyPolicy(settings: AppSettings): void {
@@ -1083,6 +2105,7 @@ export async function runPlanningSession(
   }
 
   assertLocalOnlyPolicy(input.settings);
+  const phase = input.phase ?? "default";
   const maxTokens = input.settings.maxContextTokens || 128000;
   const historyMessages = sanitizeConversationHistory(input.conversationHistory, maxTokens);
 
@@ -1090,7 +2113,9 @@ export async function runPlanningSession(
     const loopResult = await runNativeToolCallingLoop(
       normalizedPrompt,
       input.settings,
+      phase,
       historyMessages,
+      input.internalSystemNote,
       input.signal,
       input.onAssistantChunk
     );
@@ -1106,11 +2131,17 @@ export async function runPlanningSession(
       });
     }
 
-    const proposedActions = buildProposedActions(normalizedPrompt, loopResult.proposedActions);
+    const proposedActions = buildProposedActions(loopResult.proposedActions);
     const plan = initializePlan(normalizedPrompt, input.settings, proposedActions);
+    const assistantReply = reconcileAssistantReply({
+      assistantReply: loopResult.assistantReply,
+      phase,
+      proposedActions,
+      toolTrace: loopResult.toolTrace
+    });
 
     return {
-      assistantReply: loopResult.assistantReply,
+      assistantReply,
       plan,
       toolTrace: loopResult.toolTrace
     };

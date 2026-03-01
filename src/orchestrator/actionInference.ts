@@ -79,7 +79,7 @@ const PATCH_HINTS = [
   "rename"
 ];
 
-const COMMAND_HINTS = [
+const SHELL_HINTS = [
   "运行",
   "执行",
   "命令",
@@ -100,10 +100,7 @@ const COMMAND_HINTS = [
   "npm",
   "cargo",
   "bun",
-  "pytest"
-];
-
-const GIT_HINTS = [
+  "pytest",
   "git",
   "commit",
   "stage",
@@ -135,8 +132,7 @@ export function inferSensitiveActions(prompt: string): ActionProposal[] {
   const corpus = buildIntentCorpus(normalizedPrompt);
 
   const needsPatch = hasWriteIntent(normalizedPrompt) || includesAnyKeyword(corpus, PATCH_HINTS);
-  const needsCommand = includesAnyKeyword(corpus, COMMAND_HINTS);
-  const needsGitWrite = includesAnyKeyword(corpus, GIT_HINTS);
+  const needsShell = includesAnyKeyword(corpus, SHELL_HINTS);
 
   const actions: ActionProposal[] = [];
 
@@ -154,34 +150,17 @@ export function inferSensitiveActions(prompt: string): ActionProposal[] {
     });
   }
 
-  if (needsCommand) {
+  if (needsShell) {
     actions.push({
-      id: "gate-b-run-command",
-      type: "run_command",
-      description: "Run allowlisted validation command (Gate B)",
+      id: "gate-b-shell",
+      type: "shell",
+      description: "Run shell command (Gate B)",
       gateRequired: true,
       status: "pending",
       executed: false,
       payload: {
-        command: "pnpm build",
+        shell: "pnpm build",
         timeoutMs: 120000
-      }
-    });
-  }
-
-  if (needsGitWrite) {
-    actions.push({
-      id: "gate-c-git-write",
-      type: "git_write",
-      description: "Stage/commit approved changes (Gate C)",
-      gateRequired: true,
-      status: "pending",
-      executed: false,
-      payload: {
-        operation: "stage",
-        message: `chore: ${normalizedPrompt.slice(0, 72)}`,
-        branchName: "cofree/m3-approved",
-        allowEmpty: false
       }
     });
   }

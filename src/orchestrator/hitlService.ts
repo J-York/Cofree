@@ -5,7 +5,7 @@
  * Task: 3.1
  * Status: In Progress
  * Owner: Codex-GPT-5
- * Last Modified: 2026-02-27
+ * Last Modified: 2026-03-01
  * Description: Human-in-the-loop approval utilities and guarded action execution.
  */
 
@@ -27,9 +27,7 @@ interface PatchApplyResult {
 interface SnapshotResult {
   success: boolean;
   snapshot_id: string;
-  status: string;
-  diff: string;
-  untracked_files: string[];
+  files: string[];
 }
 
 interface CommandExecutionResult {
@@ -39,14 +37,6 @@ interface CommandExecutionResult {
   status: number;
   stdout: string;
   stderr: string;
-}
-
-interface GitWriteResult {
-  success: boolean;
-  operation: string;
-  message: string;
-  branch?: string;
-  commit_oid?: string;
 }
 
 function nowIso(): string {
@@ -180,15 +170,13 @@ export function updateActionPayload(
       };
     }
 
-    if (action.type === "run_command") {
+    if (action.type === "shell") {
       return {
         ...action,
         payload: {
           ...action.payload,
-          command:
-            typeof payloadPatch.command === "string"
-              ? payloadPatch.command
-              : action.payload.command,
+          shell:
+            typeof payloadPatch.shell === "string" ? payloadPatch.shell : action.payload.shell,
           timeoutMs:
             typeof payloadPatch.timeoutMs === "number"
               ? payloadPatch.timeoutMs
@@ -197,28 +185,7 @@ export function updateActionPayload(
       };
     }
 
-    return {
-      ...action,
-      payload: {
-        ...action.payload,
-        operation:
-          typeof payloadPatch.operation === "string"
-            ? (payloadPatch.operation as typeof action.payload.operation)
-            : action.payload.operation,
-        message:
-          typeof payloadPatch.message === "string"
-            ? payloadPatch.message
-            : action.payload.message,
-        branchName:
-          typeof payloadPatch.branchName === "string"
-            ? payloadPatch.branchName
-            : action.payload.branchName,
-        allowEmpty:
-          typeof payloadPatch.allowEmpty === "boolean"
-            ? payloadPatch.allowEmpty
-            : action.payload.allowEmpty
-      }
-    };
+    return action;
   });
 
   return {
@@ -245,62 +212,59 @@ export async function approveAction(
   let result: ActionExecutionResult;
 
   if (action.type === "apply_patch") {
-    const snapshot = await invoke<SnapshotResult>("create_workspace_snapshot", {
-      workspacePath
-    });
-    const payload = await invoke<PatchApplyResult>("apply_workspace_patch", {
+    const preflight = await invoke<PatchApplyResult>("check_workspace_patch", {
       workspacePath,
       patch: action.payload.patch
     });
-    if (!payload.success && snapshot.success) {
-      const rollback = await invoke<PatchApplyResult>("restore_workspace_snapshot", {
-        workspacePath,
-        diff: snapshot.diff,
-        snapshotId: snapshot.snapshot_id
+    if (!preflight.success) {
+      result = createExecutionResult(false, `Patch 预检失败: ${preflight.message}`, {
+        files: preflight.files
       });
-      result = createExecutionResult(
-        false,
-        `${payload.message}${rollback.success ? "（已自动回滚）" : "（自动回滚失败）"}`,
-        {
+    } else {
+      const snapshot = await invoke<SnapshotResult>("create_workspace_snapshot", {
+        workspacePath,
+        patch: action.payload.patch
+      });
+      const payload = await invoke<PatchApplyResult>("apply_workspace_patch", {
+        workspacePath,
+        patch: action.payload.patch
+      });
+      if (!payload.success && snapshot.success) {
+        const rollback = await invoke<PatchApplyResult>("restore_workspace_snapshot", {
+          workspacePath,
+          snapshotId: snapshot.snapshot_id
+        });
+        result = createExecutionResult(
+          false,
+          `${payload.message}${rollback.success ? "（已自动回滚）" : "（自动回滚失败）"}`,
+          {
+            files: payload.files,
+            snapshotId: snapshot.snapshot_id,
+            snapshotFiles: snapshot.files,
+            rollbackSuccess: rollback.success,
+            rollbackMessage: rollback.message
+          }
+        );
+      } else {
+        result = createExecutionResult(payload.success, payload.message, {
           files: payload.files,
           snapshotId: snapshot.snapshot_id,
-          snapshotUntrackedFiles: snapshot.untracked_files,
-          rollbackSuccess: rollback.success,
-          rollbackMessage: rollback.message
-        }
-      );
-    } else {
-      result = createExecutionResult(payload.success, payload.message, {
-        files: payload.files,
-        snapshotId: snapshot.snapshot_id,
-        snapshotUntrackedFiles: snapshot.untracked_files
-      });
+          snapshotFiles: snapshot.files
+        });
+      }
     }
-  } else if (action.type === "run_command") {
-    const payload = await invoke<CommandExecutionResult>("run_workspace_command", {
+  } else {
+    const payload = await invoke<CommandExecutionResult>("run_shell_command", {
       workspacePath,
-      command: action.payload.command,
+      shell: action.payload.shell,
       timeoutMs: action.payload.timeoutMs
     });
     result = createExecutionResult(payload.success, payload.success ? "命令执行成功" : "命令执行失败", {
-      command: payload.command,
+      command: action.payload.shell,
       timedOut: payload.timed_out,
       status: payload.status,
       stdout: payload.stdout,
       stderr: payload.stderr
-    });
-  } else {
-    const payload = await invoke<GitWriteResult>("git_write_workspace", {
-      workspacePath,
-      operation: action.payload.operation,
-      message: action.payload.message,
-      branchName: action.payload.branchName,
-      allowEmpty: action.payload.allowEmpty
-    });
-    result = createExecutionResult(payload.success, payload.message, {
-      operation: payload.operation,
-      branch: payload.branch ?? null,
-      commitOid: payload.commit_oid ?? null
     });
   }
 

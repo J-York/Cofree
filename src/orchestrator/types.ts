@@ -5,7 +5,7 @@
  * Task: 2.2
  * Status: Completed
  * Owner: Codex-GPT-5
- * Last Modified: 2026-02-27
+ * Last Modified: 2026-03-01
  * Description: Shared types for orchestration planning output and pending gated actions.
  */
 
@@ -13,7 +13,7 @@ import type { AgentRole } from "../agents/defaultAgents";
 
 export type WorkflowState = "planning" | "executing" | "human_review" | "done";
 
-export type SensitiveActionType = "apply_patch" | "run_command" | "git_write";
+export type SensitiveActionType = "apply_patch" | "shell";
 
 export type ActionStatus = "pending" | "running" | "completed" | "failed" | "rejected";
 
@@ -28,16 +28,9 @@ export interface ApplyPatchPayload {
   patch: string;
 }
 
-export interface RunCommandPayload {
-  command: string;
+export interface ShellPayload {
+  shell: string;
   timeoutMs: number;
-}
-
-export interface GitWritePayload {
-  operation: "stage" | "commit" | "checkout_branch";
-  message: string;
-  branchName: string;
-  allowEmpty: boolean;
 }
 
 interface ActionProposalBase {
@@ -54,20 +47,14 @@ export interface ApplyPatchActionProposal extends ActionProposalBase {
   payload: ApplyPatchPayload;
 }
 
-export interface RunCommandActionProposal extends ActionProposalBase {
-  type: "run_command";
-  payload: RunCommandPayload;
-}
-
-export interface GitWriteActionProposal extends ActionProposalBase {
-  type: "git_write";
-  payload: GitWritePayload;
+export interface ShellActionProposal extends ActionProposalBase {
+  type: "shell";
+  payload: ShellPayload;
 }
 
 export type ActionProposal =
   | ApplyPatchActionProposal
-  | RunCommandActionProposal
-  | GitWriteActionProposal;
+  | ShellActionProposal;
 
 export interface PlanStep {
   id: string;
