@@ -1041,6 +1041,180 @@ details[open] .think-summary::before { transform: rotate(90deg); }
 
 .action-textarea { min-height: 100px; }
 
+.patch-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+}
+
+.patch-summary-kpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.patch-kpi {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--border-1);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.patch-kpi-add {
+  color: #166534;
+  background: rgba(134, 239, 172, 0.18);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+
+.patch-kpi-del {
+  color: #991b1b;
+  background: rgba(252, 165, 165, 0.16);
+  border-color: rgba(239, 68, 68, 0.18);
+}
+
+.patch-summary-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.patch-summary-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-sm);
+  background: rgba(255,255,255,0.45);
+}
+
+.patch-summary-file code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-1);
+  word-break: break-all;
+}
+
+.patch-summary-file-stats {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.patch-summary-empty,
+.patch-summary-more,
+.patch-preview-note {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.patch-preview {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  background: #fbfcfd;
+}
+
+.patch-line {
+  padding: 3px 10px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.04);
+}
+
+.patch-line:last-child {
+  border-bottom: none;
+}
+
+.patch-line code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.patch-line.file {
+  background: rgba(226, 232, 240, 0.55);
+  color: #0f172a;
+}
+
+.patch-line.meta {
+  background: rgba(241, 245, 249, 0.7);
+  color: #475569;
+}
+
+.patch-line.hunk {
+  background: rgba(191, 219, 254, 0.25);
+  color: #1d4ed8;
+}
+
+.patch-line.add {
+  background: rgba(220, 252, 231, 0.55);
+  color: #166534;
+}
+
+.patch-line.remove {
+  background: rgba(254, 226, 226, 0.6);
+  color: #991b1b;
+}
+
+.patch-line.context {
+  background: transparent;
+  color: var(--text-2);
+}
+
+.patch-raw-details {
+  border: 1px dashed var(--border-1);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.35);
+}
+
+.patch-raw-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.patch-raw-details[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.action-command-preview {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
 .action-footer {
   display: flex;
   align-items: center;

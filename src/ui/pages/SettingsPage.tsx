@@ -10,7 +10,7 @@ interface WorkspaceInfo {
 
 interface SettingsPageProps {
   settings: AppSettings;
-  onSave: (settings: AppSettings) => void;
+  onSave: (settings: AppSettings) => Promise<void>;
 }
 
 export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElement {
@@ -40,16 +40,21 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
   useEffect(() => { void loadWorkspaceInfo(draft.workspacePath || ""); }, [draft.workspacePath]);
   useEffect(() => { setDraft(settings); }, [settings]);
 
-  const handleSave = (): void => {
+  const handleSave = async (): Promise<void> => {
     const parsed = parseModelRef(draft.model);
     const normalized = {
       ...draft,
       provider: parsed.provider || draft.provider,
       model: parsed.model || draft.model
     };
-    onSave(normalized);
-    setSaveMessage("已保存");
-    setTimeout(() => setSaveMessage(""), 3000);
+    try {
+      await onSave(normalized);
+      setSaveMessage("已保存");
+      setTimeout(() => setSaveMessage(""), 3000);
+    } catch (error) {
+      setSaveMessage(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      setTimeout(() => setSaveMessage(""), 4000);
+    }
   };
 
   const handleSelectWorkspace = async () => {
@@ -58,7 +63,7 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
       if (path) {
         const updated = { ...draft, workspacePath: path };
         setDraft(updated);
-        onSave(updated);
+        await onSave(updated);
       }
     } catch (error) {
       setWorkspaceError("选择工作区失败: " + (error instanceof Error ? error.message : String(error)));
@@ -217,7 +222,7 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
 
       {/* Actions */}
       <div className="btn-row">
-        <button className="btn btn-primary" onClick={handleSave} type="button">
+        <button className="btn btn-primary" onClick={() => void handleSave()} type="button">
           保存设置
         </button>
         <button
