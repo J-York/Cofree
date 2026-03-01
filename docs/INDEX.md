@@ -8,7 +8,7 @@
 - [MVP](./MVP.md) — 黄金路径与非目标（范围锁定）
 - [Architecture](./ARCHITECTURE.md) — 技术选型与模块边界
 - [Roadmap](./ROADMAP.md) — 8 周里程碑（可演示产物）
-- [Guardrails](./GUARDRAILS.md) — 工具白名单 + 审批门 + 审计/回滚
+- [Guardrails](./GUARDRAILS.md) — 工具 Guardrails + 审批门 + 审计/回滚
 - [Security & Privacy](./SECURITY_PRIVACY.md) — Data Egress Policy + Key 存储 + 日志约束
 - [Git Support](./GIT_SUPPORT.md) — Git 支持矩阵与失败 UX
 - [Development Guidelines](./DEVELOPMENT_GUIDELINES.md) — 协作规范（进度同步、文件头注释等）

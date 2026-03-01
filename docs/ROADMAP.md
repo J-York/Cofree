@@ -15,7 +15,7 @@
 - 目标交付物：可演示的端到端 HITL 审批流（至少覆盖 Gate A/B/C 各一次）
 - M3.1 状态机骨架：LangGraph 工作流 `planning → executing → human_review → done`
 - M3.2 Gate A（Apply Patch）：统一 patch 结构、审批后写盘、失败可回滚
-- M3.3 Gate B（Run Command）：命令 allowlist、超时控制、stdout/stderr/exit code 归档
+- M3.3 Gate B（Run Command）：结构化命令执行、runtime guardrails、超时控制、stdout/stderr/exit code 归档
 - M3.4 Gate C（Git Write）：create branch / stage / commit（最终确认）
 - M3.5 Guardrails 执行层：workspace 边界校验、agent-tool 权限映射、敏感动作强制中断审批
 - M3.6 会话持久化：SQLite checkpointer + 从审批点恢复

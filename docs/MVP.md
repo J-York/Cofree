@@ -7,7 +7,7 @@
 
 ## 1. MVP 定义（一句话）
 给定一个用户选择的本地 Git 仓库文件夹（工作区），Cofree 能：
-**点单 → 生成计划 → 生成 patch（不落盘）→ 可视化只读 diff 审批 → 应用 patch →（可选）运行 allowlisted 命令 → Git commit（最终确认）**。
+**点单 → 生成计划 → 生成 patch（不落盘）→ 可视化只读 diff 审批 → 应用 patch →（可选）运行经运行时护栏检查的命令 → Git commit（最终确认）**。
 
 ## 2. Golden Journey A：从点单到 Commit
 **前置条件**：用户在设置页选择一个本地 Git 仓库文件夹作为工作区；已配置模型 API Key（或启用本地模型）。
@@ -20,7 +20,7 @@
 4) UI 打开 diff 审批窗口（只读并排）
 5) 用户对 diff 执行：Approve / Reject / Comment
 6) 只有在 Approve 后，系统才允许写盘：apply patch
-7)（可选）运行 allowlisted 命令（例如 `pnpm test`）；每条命令必须经过审批
+7)（可选）运行经运行时护栏检查的命令（例如 `pnpm test`）；每条命令必须经过审批
 8) Git commit：展示将被提交的变更与 commit message，用户确认后执行
 
 **成功标准**：完成一次可录屏演示（2 分钟），并能在日志中看到完整审计轨迹。
@@ -34,7 +34,7 @@
 **成功标准**：不会产生“半应用”的工作区状态；能从会话持久化中恢复。
 
 ## 4. 非目标（v0.1 不承诺）
-- 不承诺强隔离 OS sandbox（v0.1 是 guardrails：白名单 + 审批门 + 审计）
+- 不承诺强隔离 OS sandbox（v0.1 是 guardrails：审批门 + runtime guardrails + 审计）
 - 不承诺复杂 Git 场景：submodules、LFS、rebase/merge 冲突自动解决、二进制文件 diff
 - 不承诺任意多 agent 的自由编排（调酒台拖拽）
 - 不承诺 Monaco diff 编辑/合并能力（先只读审批）

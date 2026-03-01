@@ -15,7 +15,7 @@
 ## 3. 功能列表 & Priority
 
 > 说明：为了保证 MVP 可交付性，v0.1 以“可审计的黄金路径”为核心：
-> **生成 patch（不落盘）→ 可视化只读 diff 审批（Approve/Reject/Comment）→ 应用 patch →（可选）运行 allowlisted 命令 → Git commit（最终确认）**。
+> **生成 patch（不落盘）→ 可视化只读 diff 审批（Approve/Reject/Comment）→ 应用 patch →（可选）运行经运行时护栏检查的命令 → Git commit（最终确认）**。
 >
 > v0.1 默认采用轻量 diff（`jsdiff` + `diff2html`）实现并排只读审批；Monaco Diff 作为后续升级项。
 
@@ -23,7 +23,7 @@
 - 服务员 + 3 专家（Planner / Coder / Tester）
 - 可视化 diff 审批（只读并排，`jsdiff` + `diff2html`）
 - 自定义专家（JSON 配置：模型/提示词/工具集/权限边界）
-- Guardrails（工具白名单 + 文件读写边界 + 强制审批门 + 审计日志）
+- Guardrails（工具 runtime guardrails + 文件读写边界 + 强制审批门 + 审计日志）
 
 ### P1（有则更好）
 - 厨房仪表盘（实时状态：每个专家在做什么、正在等待什么审批）
