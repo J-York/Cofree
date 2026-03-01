@@ -6,16 +6,19 @@ on:
       - 'v*' # 触发条件：推送 v 开头的 tag（如 v0.1.0）
   workflow_dispatch: # 允许手动触发
 
+permissions:
+  contents: write
+
 jobs:
   release:
     strategy:
       fail-fast: false
       matrix:
         platform:
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-darwin
             bundles: dmg,app
-          - os: macos-latest
+          - os: macos-13
             target: x86_64-apple-darwin
             bundles: dmg,app
           - os: windows-latest
@@ -49,12 +52,12 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: Install dependencies (macOS)
-        if: matrix.platform.os == 'macos-latest'
+        if: startsWith(matrix.platform.os, 'macos-')
         run: |
           rustup target add ${{ matrix.platform.target }}
 
       - name: Install OpenSSL (macOS)
-        if: matrix.platform.os == 'macos-latest'
+        if: startsWith(matrix.platform.os, 'macos-')
         run: brew install openssl@3
 
       - name: Install frontend dependencies
