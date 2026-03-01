@@ -1,0 +1,81 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*' # 触发条件：推送 v 开头的 tag（如 v0.1.0）
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg,app
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            bundles: dmg,app
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: msi,nsis
+
+    runs-on: ${{ matrix.platform.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install dependencies (macOS)
+        if: matrix.platform.os == 'macos-latest'
+        run: |
+          rustup target add ${{ matrix.platform.target }}
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Cofree ${{ github.ref_name }}'
+          releaseBody: |
+            ## Cofree ${{ github.ref_name }}
+            
+            ### 下载说明
+            - **macOS (Apple Silicon)**：下载 `*_aarch64.dmg`
+            - **macOS (Intel)**：下载 `*_x64.dmg`
+            - **Windows**：下载 `.msi` 或 `-setup.exe`
+            
+            ### 安装说明
+            详见 [BUILD.md](https://github.com/J-York/Cofree/blob/main/docs/BUILD.md)
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.platform.target }} --bundles ${{ matrix.platform.bundles }}

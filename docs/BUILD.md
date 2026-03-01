@@ -24,6 +24,87 @@
 - 在 Windows 上只能打包 Windows 应用
 - 需要在对应平台上分别执行打包命令
 
+## 自动化构建（GitHub Actions）
+
+### 什么是 GitHub Actions
+
+GitHub Actions 是 GitHub 官方提供的免费 CI/CD 服务：
+- **公共仓库**：完全免费，无限分钟
+- **私有仓库**：每月 2000 分钟免费额度
+- **真实环境**：提供 macOS、Windows、Linux 虚拟机
+- **并行构建**：可同时在多个平台上打包
+
+### 自动发布流程
+
+本项目已配置 GitHub Actions 工作流（`.github/workflows/release.yml`），实现：
+
+1. **触发方式**
+   - 推送 `v*` 格式的 tag（如 `v0.1.0`）
+   - 或在 GitHub Actions 页面手动触发
+
+2. **自动构建**
+   - macOS (Apple Silicon) - 生成 `.dmg` 和 `.app`
+   - macOS (Intel) - 生成 `.dmg` 和 `.app`
+   - Windows - 生成 `.msi` 和 `.exe`
+
+3. **自动发布**
+   - 创建 GitHub Release 草稿
+   - 上传所有平台的安装包
+   - 附带下载说明
+
+### 如何发布新版本
+
+```bash
+# 1. 更新版本号（3 个文件）
+# - package.json
+# - src-tauri/tauri.conf.json
+# - src-tauri/Cargo.toml
+
+# 2. 提交更改
+git add .
+git commit -m "chore: bump version to 0.2.0"
+
+# 3. 创建并推送 tag
+git tag v0.2.0
+git push origin v0.2.0
+
+# 4. GitHub Actions 自动开始构建
+# 访问 https://github.com/J-York/Cofree/actions 查看进度
+
+# 5. 构建完成后，在 Releases 页面编辑并发布
+# https://github.com/J-York/Cofree/releases
+```
+
+### 构建时间
+
+- **首次构建**：约 15-25 分钟（需要编译 Rust 依赖）
+- **后续构建**：约 5-10 分钟（使用缓存）
+- **3 个平台并行**：总耗时取决于最慢的平台
+
+### 手动触发构建
+
+如果不想创建 tag，可以手动触发：
+
+1. 访问 https://github.com/J-York/Cofree/actions
+2. 选择 "Release Build" 工作流
+3. 点击 "Run workflow" 按钮
+4. 选择分支并运行
+
+### 故障排查
+
+**构建失败**：
+- 查看 Actions 日志：https://github.com/J-York/Cofree/actions
+- 常见原因：依赖安装失败、编译错误、配置错误
+
+**Release 未创建**：
+- 确认 tag 格式正确（必须以 `v` 开头）
+- 检查 `GITHUB_TOKEN` 权限（默认已配置）
+
+## 本地打包
+
+如果需要本地打包（不使用 GitHub Actions）：
+
+
 ## 打包命令
 
 ### 开发模式
