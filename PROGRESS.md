@@ -1,6 +1,6 @@
 # Cofree 开发进度追踪（必须实时维护）
 
-**Last Updated**: 2026-02-28 20:44 CST by Codex-GPT-5
+**Last Updated**: 2026-03-01 02:03 CST by Codex-GPT-5
 **当前 Milestone**: 3.0 - HITL 审批 + Guardrails（Completed）
 **Next Task**: 进入 Milestone 4 规划与最小可演示链路定义
 
@@ -52,6 +52,7 @@
 3. 每天结束时必须 push PROGRESS.md
 
 ## Implementation Log
+- 2026-03-01: Improve edit reliability by adding `propose_file_edit` with structured single-file ops (`replace/insert/delete/create`) plus line-based targeting (`line` / `start_line` / `end_line`) that auto-generate patch, add patch preflight (`check_workspace_patch`) before proposal/approval apply, add one-shot automatic patch-repair retry loop, add one-shot auto-hint loops for whole-file delete (`propose_run_command` + `rm <relative_path>`) and missing create paths (`operation='create'`), dynamically route each request to a reduced tool set (read-only / structured edit / explicit patch / delete-file / command / git), and upgrade HITL apply-patch UI to show structured summary + colored diff preview with raw patch collapsed by default.
 
 
 ## Docs Update Log
