@@ -1,6 +1,12 @@
-import { type ReactElement, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
 import { defaultModelForProvider, formatModelRef } from "./lib/litellm";
-import { type AppSettings, loadSettings, saveSettings } from "./lib/settingsStore";
+import {
+  type AppSettings,
+  loadSecureApiKey,
+  loadSettings,
+  saveSecureApiKey,
+  saveSettings
+} from "./lib/settingsStore";
 import { type AppTab } from "./ui/components/NavTabs";
 import { ChatPage } from "./ui/pages/ChatPage";
 import { KitchenPage } from "./ui/pages/KitchenPage";
@@ -21,10 +27,26 @@ export default function App(): ReactElement {
     return formatModelRef(settings.provider, settings.model);
   }, [settings.allowCloudModels, settings.model, settings.provider]);
 
-  const handleSaveSettings = (nextSettings: AppSettings): void => {
+  useEffect(() => {
+    let cancelled = false;
+    const hydrate = async () => {
+      const apiKey = await loadSecureApiKey();
+      if (cancelled) {
+        return;
+      }
+      setSettings((current) => (current.apiKey === apiKey ? current : { ...current, apiKey }));
+    };
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSaveSettings = async (nextSettings: AppSettings): Promise<void> => {
     const normalizedModel =
       nextSettings.model.trim() || defaultModelForProvider(nextSettings.provider);
     const normalized: AppSettings = { ...nextSettings, model: normalizedModel };
+    await saveSecureApiKey(normalized.apiKey);
     saveSettings(normalized);
     setSettings(normalized);
   };
