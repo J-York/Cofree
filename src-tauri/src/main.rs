@@ -5,13 +5,13 @@
  * Task: 2.5.3
  * Status: Completed
  * Owner: Sisyphus-Junior
- * Last Modified: 2026-02-27
+ * Last Modified: 2026-03-01
  * Description: Tauri entrypoint with workspace folder selection, validation, file operations, git operations, and info retrieval commands.
  */
 
 use reqwest::header::ACCEPT;
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 use dirs;
 
 static CHECKPOINT_COUNTER: AtomicU64 = AtomicU64::new(0);
+const KEYCHAIN_SERVICE_NAME: &str = "dev.cofree.app";
+const KEYCHAIN_ACCOUNT_NAME: &str = "litellm-api-key";
 
 #[derive(Clone, Serialize)]
 struct AppHealth {
@@ -81,21 +83,22 @@ struct CommandExecutionResult {
 }
 
 #[derive(Clone, Serialize)]
-struct GitWriteResult {
-    success: bool,
-    operation: String,
-    message: String,
-    branch: Option<String>,
-    commit_oid: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
 struct SnapshotResult {
     success: bool,
     snapshot_id: String,
-    status: String,
-    diff: String,
-    untracked_files: Vec<String>,
+    files: Vec<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct SnapshotFileRecord {
+    path: String,
+    existed: bool,
+    backup_path: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct SnapshotManifest {
+    files: Vec<SnapshotFileRecord>,
 }
 
 #[derive(Clone, Serialize)]
@@ -117,6 +120,91 @@ struct RecoveryResult {
 
 fn normalize_base_url(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_string()
+}
+
+fn load_secure_api_key_macos() -> Result<String, String> {
+    let output = Command::new("security")
+        .args([
+            "find-generic-password",
+            "-a",
+            KEYCHAIN_ACCOUNT_NAME,
+            "-s",
+            KEYCHAIN_SERVICE_NAME,
+            "-w",
+        ])
+        .output()
+        .map_err(|e| format!("读取 Keychain 失败: {}", e))?;
+
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("could not be found") {
+        Ok(String::new())
+    } else {
+        Err(stderr.trim().to_string())
+    }
+}
+
+fn save_secure_api_key_macos(api_key: &str) -> Result<(), String> {
+    if api_key.trim().is_empty() {
+        let _ = Command::new("security")
+            .args([
+                "delete-generic-password",
+                "-a",
+                KEYCHAIN_ACCOUNT_NAME,
+                "-s",
+                KEYCHAIN_SERVICE_NAME,
+            ])
+            .output();
+        return Ok(());
+    }
+
+    let output = Command::new("security")
+        .args([
+            "add-generic-password",
+            "-a",
+            KEYCHAIN_ACCOUNT_NAME,
+            "-s",
+            KEYCHAIN_SERVICE_NAME,
+            "-w",
+            api_key.trim(),
+            "-U",
+        ])
+        .output()
+        .map_err(|e| format!("写入 Keychain 失败: {}", e))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[tauri::command]
+fn load_secure_api_key() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        load_secure_api_key_macos()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(String::new())
+    }
+}
+
+#[tauri::command]
+fn save_secure_api_key(api_key: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        save_secure_api_key_macos(&api_key)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = api_key;
+        Ok(())
+    }
 }
 
 fn canonicalize_workspace_root(workspace_path: &str) -> Result<PathBuf, String> {
@@ -407,8 +495,43 @@ fn validate_workspace_path(workspace_path: &str, relative_path: &str) -> Result<
 fn parse_patch_files(patch: &str) -> Vec<String> {
     let mut files = BTreeSet::new();
     for line in patch.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            for token in rest.split_whitespace().take(2) {
+                let normalized = token
+                    .strip_prefix("a/")
+                    .or_else(|| token.strip_prefix("b/"))
+                    .unwrap_or(token)
+                    .trim();
+                if !normalized.is_empty() && normalized != "/dev/null" {
+                    files.insert(normalized.to_string());
+                }
+            }
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("--- ") {
+            let raw = path.trim();
+            let trimmed = raw
+                .strip_prefix("a/")
+                .or_else(|| raw.strip_prefix("b/"))
+                .unwrap_or(raw);
+            if !trimmed.is_empty() && trimmed != "/dev/null" {
+                files.insert(trimmed.to_string());
+            }
+            continue;
+        }
         if let Some(path) = line.strip_prefix("+++ b/") {
             let trimmed = path.trim();
+            if !trimmed.is_empty() && trimmed != "/dev/null" {
+                files.insert(trimmed.to_string());
+            }
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("+++ ") {
+            let raw = path.trim();
+            let trimmed = raw
+                .strip_prefix("a/")
+                .or_else(|| raw.strip_prefix("b/"))
+                .unwrap_or(raw);
             if !trimmed.is_empty() && trimmed != "/dev/null" {
                 files.insert(trimmed.to_string());
             }
@@ -417,31 +540,16 @@ fn parse_patch_files(patch: &str) -> Vec<String> {
     files.into_iter().collect()
 }
 
-fn run_git_capture_output(workspace: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+fn git_has_head(workspace: &Path) -> bool {
+    Command::new("git")
         .arg("-C")
         .arg(workspace)
-        .args(args)
-        .output()
-        .map_err(|e| format!("执行 git {:?} 失败: {}", args, e))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-fn run_git_expect_success(workspace: &Path, args: &[&str]) -> Result<(), String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(args)
-        .output()
-        .map_err(|e| format!("执行 git {:?} 失败: {}", args, e))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    Ok(())
+        .args(["rev-parse", "--verify", "HEAD"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn sanitize_relative_path(relative_path: &str) -> Option<PathBuf> {
@@ -466,107 +574,129 @@ fn sanitize_relative_path(relative_path: &str) -> Option<PathBuf> {
     }
 }
 
-fn list_untracked_files(workspace: &Path) -> Result<Vec<String>, String> {
-    let output = run_git_capture_output(workspace, &["ls-files", "--others", "--exclude-standard"])?;
-    let mut files = BTreeSet::new();
-    for raw_line in output.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(path) = sanitize_relative_path(line) {
-            files.insert(path.to_string_lossy().to_string());
-        }
-    }
-    Ok(files.into_iter().collect())
-}
-
-fn copy_untracked_to_snapshot(
+fn snapshot_patch_files(
     workspace: &Path,
     snapshot_dir: &Path,
-    untracked_files: &[String],
-) -> Result<(), String> {
-    for relative in untracked_files {
+    files: &[String],
+) -> Result<Vec<SnapshotFileRecord>, String> {
+    let mut records = Vec::new();
+
+    for relative in files {
         let Some(sanitized) = sanitize_relative_path(relative) else {
             continue;
         };
-        let source = workspace.join(&sanitized);
-        if !source.is_file() {
-            continue;
-        }
-        let destination = snapshot_dir.join(&sanitized);
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("创建快照目录失败: {}", e))?;
-        }
-        fs::copy(&source, &destination).map_err(|e| {
-            format!(
-                "复制 untracked 文件到快照失败: {} -> {} ({})",
-                source.display(),
-                destination.display(),
-                e
-            )
-        })?;
-    }
-    Ok(())
-}
+        let relative_string = sanitized.to_string_lossy().to_string();
+        let target = workspace.join(&sanitized);
 
-fn restore_untracked_from_snapshot(workspace: &Path, snapshot_dir: &Path) -> Result<usize, String> {
-    if !snapshot_dir.exists() {
-        return Ok(0);
-    }
-
-    let mut restored = 0usize;
-    let mut stack = vec![snapshot_dir.to_path_buf()];
-    while let Some(directory) = stack.pop() {
-        let entries = fs::read_dir(&directory)
-            .map_err(|e| format!("读取快照目录失败: {} ({})", directory.display(), e))?;
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("读取快照文件失败: {}", e))?;
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
+        if target.exists() {
+            if !target.is_file() {
+                return Err(format!("暂不支持为目录创建文件快照: {}", relative_string));
             }
 
-            if !path.is_file() {
-                continue;
+            let backup_relative = PathBuf::from("files").join(&sanitized);
+            let backup_path = snapshot_dir.join(&backup_relative);
+            if let Some(parent) = backup_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("创建快照目录失败: {}", e))?;
             }
-
-            let relative = path
-                .strip_prefix(snapshot_dir)
-                .map_err(|e| format!("计算快照相对路径失败: {}", e))?;
-            let target = workspace.join(relative);
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent).map_err(|e| format!("创建恢复目录失败: {}", e))?;
-            }
-            fs::copy(&path, &target).map_err(|e| {
+            fs::copy(&target, &backup_path).map_err(|e| {
                 format!(
-                    "恢复 untracked 文件失败: {} -> {} ({})",
-                    path.display(),
+                    "复制文件快照失败: {} -> {} ({})",
                     target.display(),
+                    backup_path.display(),
                     e
                 )
             })?;
-            restored += 1;
+            records.push(SnapshotFileRecord {
+                path: relative_string,
+                existed: true,
+                backup_path: Some(backup_relative.to_string_lossy().to_string()),
+            });
+        } else {
+            records.push(SnapshotFileRecord {
+                path: relative_string,
+                existed: false,
+                backup_path: None,
+            });
         }
     }
 
-    Ok(restored)
+    Ok(records)
+}
+
+fn load_snapshot_manifest(snapshot_path: &Path) -> Result<SnapshotManifest, String> {
+    let manifest_path = snapshot_path.join("manifest.json");
+    let content = fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("读取快照清单失败: {} ({})", manifest_path.display(), e))?;
+    serde_json::from_str::<SnapshotManifest>(&content)
+        .map_err(|e| format!("解析快照清单失败: {}", e))
+}
+
+/// Minimal safety check — only blocks catastrophic/irreversible commands.
+/// All other safety is handled by HITL (human-in-the-loop) approval.
+fn validate_shell_safety(shell: &str) -> Result<(), String> {
+    let lowered = shell.to_lowercase();
+    let blocked_patterns = [
+        "rm -rf /",
+        "rm -rf /*",
+        "mkfs",
+        "shutdown",
+        "reboot",
+        ":(){:|:&};:",
+    ];
+    if blocked_patterns.iter().any(|pattern| lowered.contains(pattern)) {
+        return Err("命令命中高风险关键字（系统级破坏性命令），已拒绝执行".to_string());
+    }
+    Ok(())
 }
 
 /// Reads file content from workspace with path validation
 /// Validates that the file path is within the workspace boundary
 #[tauri::command]
-fn read_workspace_file(workspace_path: String, relative_path: String) -> Result<String, String> {
+fn read_workspace_file(
+    workspace_path: String,
+    relative_path: String,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) -> Result<String, String> {
     let file_path = validate_workspace_path(&workspace_path, &relative_path)?;
     
     // Verify it's a file, not a directory
     if !file_path.is_file() {
         return Err("Path is not a file".to_string());
     }
-    
-    fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))
+
+    let content = fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+
+    if start_line.is_none() && end_line.is_none() {
+        return Ok(content);
+    }
+
+    let segments: Vec<&str> = content.split_inclusive('\n').collect();
+    let total_lines = if content.is_empty() { 0 } else { segments.len() };
+    if total_lines == 0 {
+        return Ok(String::new());
+    }
+
+    let start = start_line.unwrap_or(1).max(1);
+    let requested_end = end_line.unwrap_or(total_lines).max(1);
+    if start > requested_end {
+        return Err("start_line 不能大于 end_line".to_string());
+    }
+    if start > total_lines {
+        return Err(format!(
+            "start_line 超出文件范围: {} > {}",
+            start, total_lines
+        ));
+    }
+
+    let bounded_end = requested_end.min(total_lines);
+    let mut result = String::new();
+    for chunk in &segments[(start - 1)..bounded_end] {
+        result.push_str(chunk);
+    }
+
+    Ok(result)
 }
 
 /// Lists files and directories in workspace path (single level)
@@ -668,65 +798,86 @@ fn git_status_workspace(workspace_path: String) -> Result<GitStatus, String> {
 /// If file_path is Some, returns diff for that specific file
 #[tauri::command]
 fn git_diff_workspace(workspace_path: String, file_path: Option<String>) -> Result<String, String> {
-    let repo = git2::Repository::open(&workspace_path)
-        .map_err(|e| format!("Failed to open git repository: {}", e))?;
-    
-    // Get the HEAD tree for comparison
-    let head = repo.head()
-        .map_err(|e| format!("Failed to get HEAD: {}", e))?;
-    
-    let head_tree = head.peel_to_tree()
-        .map_err(|e| format!("Failed to get HEAD tree: {}", e))?;
-    
-    // Create diff between HEAD and working directory
-    let diff = repo.diff_tree_to_workdir(Some(&head_tree), None)
-        .map_err(|e| format!("Failed to create diff: {}", e))?;
-    
-    let mut diff_str = String::new();
-    
-    // Iterate through diff deltas
-    for delta in diff.deltas() {
-        let patch_path = delta.new_file().path()
-            .and_then(|p| p.to_str())
-            .unwrap_or("");
-        
-        // Skip if specific file requested and doesn't match
-        if let Some(ref file) = file_path {
-            if patch_path != file {
-                continue;
-            }
-        }
-        
-        // Add delta header
-        diff_str.push_str(&format!("diff --git a/{} b/{}\n", patch_path, patch_path));
-        diff_str.push_str(&format!("index {}..{}\n", 
-            delta.old_file().id().to_string()[..7].to_string(),
-            delta.new_file().id().to_string()[..7].to_string()));
-        diff_str.push_str(&format!("--- a/{}\n", patch_path));
-        diff_str.push_str(&format!("+++ b/{}\n", patch_path));
+    let workspace = canonicalize_workspace_root(&workspace_path)?;
+    let mut args = vec!["diff", "--no-ext-diff"];
+    if git_has_head(&workspace) {
+        args.push("HEAD");
     }
-    
-    Ok(diff_str)
+
+    let sanitized_file = if let Some(raw_file) = file_path {
+        Some(
+            sanitize_relative_path(&raw_file)
+                .ok_or_else(|| "file_path 非法".to_string())?
+                .to_string_lossy()
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
+    let mut command = Command::new("git");
+    command.arg("-C").arg(&workspace).args(&args);
+    if let Some(file) = sanitized_file.as_ref() {
+        command.arg("--").arg(file);
+    }
+
+    let output = command
+        .output()
+        .map_err(|e| format!("执行 git diff 失败: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "执行 git diff 失败".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 #[tauri::command]
 fn apply_workspace_patch(workspace_path: String, patch: String) -> Result<PatchApplyResult, String> {
+    apply_patch_internal(workspace_path, patch, false)
+}
+
+#[tauri::command]
+fn check_workspace_patch(workspace_path: String, patch: String) -> Result<PatchApplyResult, String> {
+    apply_patch_internal(workspace_path, patch, true)
+}
+
+fn apply_patch_internal(
+    workspace_path: String,
+    patch: String,
+    check_only: bool,
+) -> Result<PatchApplyResult, String> {
     let workspace = canonicalize_workspace_root(&workspace_path)?;
     if patch.trim().is_empty() {
         return Err("Patch 不能为空".to_string());
     }
 
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(&workspace)
         .arg("apply")
-        .arg("--whitespace=nowarn")
+        .arg("--whitespace=nowarn");
+    if check_only {
+        command.arg("--check");
+    }
+    let mut child = command
         .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("启动 git apply 失败: {}", e))?;
+        .map_err(|e| {
+            if check_only {
+                format!("启动 git apply --check 失败: {}", e)
+            } else {
+                format!("启动 git apply 失败: {}", e)
+            }
+        })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
@@ -744,7 +895,11 @@ fn apply_workspace_patch(workspace_path: String, patch: String) -> Result<PatchA
 
     if !output.status.success() {
         let detail = if stderr.is_empty() {
-            "git apply 失败".to_string()
+            if check_only {
+                "git apply --check 失败".to_string()
+            } else {
+                "git apply 失败".to_string()
+            }
         } else {
             stderr
         };
@@ -757,130 +912,144 @@ fn apply_workspace_patch(workspace_path: String, patch: String) -> Result<PatchA
 
     Ok(PatchApplyResult {
         success: true,
-        message: format!("Patch 已应用（{} files）", files.len()),
+        message: if check_only {
+            format!("Patch 可应用（{} files）", files.len())
+        } else {
+            format!("Patch 已应用（{} files）", files.len())
+        },
         files,
     })
 }
 
 #[tauri::command]
-fn create_workspace_snapshot(workspace_path: String) -> Result<SnapshotResult, String> {
+fn create_workspace_snapshot(workspace_path: String, patch: Option<String>) -> Result<SnapshotResult, String> {
     let workspace = canonicalize_workspace_root(&workspace_path)?;
     let snapshots_root = snapshots_root_dir()?;
     fs::create_dir_all(&snapshots_root).map_err(|e| format!("创建 snapshots 根目录失败: {}", e))?;
 
-    let status = run_git_capture_output(&workspace, &["status", "--short"])?;
-    let diff = run_git_capture_output(&workspace, &["diff"])?;
-    let untracked_files = list_untracked_files(&workspace)?;
+    let files = patch
+        .as_deref()
+        .map(parse_patch_files)
+        .unwrap_or_default();
     let snapshot_id = generate_checkpoint_id("snapshot");
     let snapshot_dir = snapshots_root.join(&snapshot_id);
     fs::create_dir_all(&snapshot_dir).map_err(|e| format!("创建 snapshot 目录失败: {}", e))?;
-    copy_untracked_to_snapshot(&workspace, &snapshot_dir, &untracked_files)?;
+    let records = snapshot_patch_files(&workspace, &snapshot_dir, &files)?;
+    let manifest = SnapshotManifest {
+        files: records.clone(),
+    };
+    let manifest_json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("序列化快照清单失败: {}", e))?;
+    fs::write(snapshot_dir.join("manifest.json"), manifest_json)
+        .map_err(|e| format!("写入快照清单失败: {}", e))?;
 
     Ok(SnapshotResult {
         success: true,
         snapshot_id,
-        status,
-        diff,
-        untracked_files,
+        files: records.into_iter().map(|record| record.path).collect(),
     })
 }
 
 #[tauri::command]
 fn restore_workspace_snapshot(
     workspace_path: String,
-    diff: String,
     snapshot_id: Option<String>,
 ) -> Result<PatchApplyResult, String> {
     let workspace = canonicalize_workspace_root(&workspace_path)?;
-    // Rollback strategy:
-    // 1) Reset tracked files to HEAD.
-    // 2) Clean untracked files/directories.
-    // 3) Re-apply tracked diff snapshot.
-    // 4) Restore untracked file backups from snapshot directory.
-    run_git_expect_success(&workspace, &["reset", "--hard", "HEAD"])?;
-    run_git_expect_success(&workspace, &["clean", "-fd"])?;
-
-    if !diff.trim().is_empty() {
-        let mut child = Command::new("git")
-            .arg("-C")
-            .arg(&workspace)
-            .arg("apply")
-            .arg("--whitespace=nowarn")
-            .arg("-")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("启动 git apply 恢复快照失败: {}", e))?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(diff.as_bytes())
-                .map_err(|e| format!("写入快照 diff 失败: {}", e))?;
-        } else {
-            return Err("无法获取快照恢复 stdin".to_string());
-        }
-
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("等待快照恢复完成失败: {}", e))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Ok(PatchApplyResult {
-                success: false,
-                message: if stderr.is_empty() {
-                    "恢复快照失败".to_string()
-                } else {
-                    stderr
-                },
-                files: parse_patch_files(&diff),
-            });
-        }
+    let Some(snapshot_id_raw) = snapshot_id else {
+        return Ok(PatchApplyResult {
+            success: true,
+            message: "未提供快照，跳过回滚".to_string(),
+            files: Vec::new(),
+        });
+    };
+    if snapshot_id_raw.trim().is_empty() {
+        return Ok(PatchApplyResult {
+            success: true,
+            message: "未提供快照，跳过回滚".to_string(),
+            files: Vec::new(),
+        });
     }
 
-    let restored_untracked_count = if let Some(snapshot_id_raw) = snapshot_id {
-        if snapshot_id_raw.trim().is_empty() {
-            0
-        } else {
-            let snapshot_path = snapshots_root_dir()?.join(snapshot_id_raw.trim());
-            restore_untracked_from_snapshot(&workspace, &snapshot_path)?
+    let snapshot_path = snapshots_root_dir()?.join(snapshot_id_raw.trim());
+    let manifest = load_snapshot_manifest(&snapshot_path)?;
+    let mut restored_files = Vec::new();
+
+    for record in manifest.files {
+        let Some(sanitized) = sanitize_relative_path(&record.path) else {
+            continue;
+        };
+        let target = workspace.join(&sanitized);
+
+        if record.existed {
+            let backup_relative = record
+                .backup_path
+                .clone()
+                .ok_or_else(|| format!("快照缺少备份文件路径: {}", record.path))?;
+            let backup_path = snapshot_path.join(&backup_relative);
+            if !backup_path.is_file() {
+                return Err(format!("快照备份文件不存在: {}", backup_path.display()));
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("创建恢复目录失败: {}", e))?;
+            }
+            fs::copy(&backup_path, &target).map_err(|e| {
+                format!(
+                    "恢复文件失败: {} -> {} ({})",
+                    backup_path.display(),
+                    target.display(),
+                    e
+                )
+            })?;
+        } else if target.is_file() {
+            fs::remove_file(&target)
+                .map_err(|e| format!("删除新增文件失败: {} ({})", target.display(), e))?;
         }
-    } else {
-        0
-    };
+
+        restored_files.push(record.path);
+    }
 
     Ok(PatchApplyResult {
         success: true,
-        message: format!(
-            "已恢复到快照前状态（tracked + {} untracked files）",
-            restored_untracked_count
-        ),
-        files: parse_patch_files(&diff),
+        message: format!("已基于文件快照回滚（{} files）", restored_files.len()),
+        files: restored_files,
     })
 }
 
 #[tauri::command]
-fn run_workspace_command(
+fn run_shell_command(
     workspace_path: String,
-    command: String,
+    shell: String,
     timeout_ms: Option<u64>,
 ) -> Result<CommandExecutionResult, String> {
     let workspace = canonicalize_workspace_root(&workspace_path)?;
-    let command_trimmed = command.trim().to_string();
-    if command_trimmed.is_empty() {
+    let shell_trimmed = shell.trim().to_string();
+    if shell_trimmed.is_empty() {
         return Err("命令不能为空".to_string());
     }
+
+    validate_shell_safety(&shell_trimmed)?;
+
     let max_timeout = timeout_ms.unwrap_or(120_000).clamp(1_000, 600_000);
     let timeout = Duration::from_millis(max_timeout);
 
-    let mut child = Command::new("/bin/zsh")
-        .arg("-lc")
-        .arg(&command_trimmed)
-        .current_dir(&workspace)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("启动命令失败: {}", e))?;
+    let mut child = if cfg!(target_os = "windows") {
+        Command::new("powershell")
+            .args(["-NoProfile", "-Command", &shell_trimmed])
+            .current_dir(&workspace)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("启动 powershell 失败: {}", e))?
+    } else {
+        Command::new("sh")
+            .args(["-c", &shell_trimmed])
+            .current_dir(&workspace)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("启动 sh 失败: {}", e))?
+    };
 
     let mut stdout_pipe = child
         .stdout
@@ -923,7 +1092,7 @@ fn run_workspace_command(
 
     Ok(CommandExecutionResult {
         success: exit_status.success() && !timed_out,
-        command: command_trimmed,
+        command: shell_trimmed,
         timed_out,
         status: exit_status.code().unwrap_or(-1),
         stdout,
@@ -931,150 +1100,6 @@ fn run_workspace_command(
     })
 }
 
-#[tauri::command]
-fn git_write_workspace(
-    workspace_path: String,
-    operation: String,
-    message: Option<String>,
-    branch_name: Option<String>,
-    allow_empty: Option<bool>,
-) -> Result<GitWriteResult, String> {
-    let repo = git2::Repository::open(&workspace_path)
-        .map_err(|e| format!("Failed to open git repository: {}", e))?;
-    let operation_trimmed = operation.trim().to_string();
-
-    match operation_trimmed.as_str() {
-        "stage" => {
-            let mut index = repo
-                .index()
-                .map_err(|e| format!("读取 git index 失败: {}", e))?;
-            index
-                .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
-                .map_err(|e| format!("stage 失败: {}", e))?;
-            index
-                .write()
-                .map_err(|e| format!("写入 git index 失败: {}", e))?;
-
-            Ok(GitWriteResult {
-                success: true,
-                operation: "stage".to_string(),
-                message: "已 stage 当前工作区变更".to_string(),
-                branch: None,
-                commit_oid: None,
-            })
-        }
-        "commit" => {
-            let commit_message = message
-                .unwrap_or_else(|| "chore: apply approved changes".to_string())
-                .trim()
-                .to_string();
-            if commit_message.is_empty() {
-                return Err("Commit message 不能为空".to_string());
-            }
-
-            let mut index = repo
-                .index()
-                .map_err(|e| format!("读取 git index 失败: {}", e))?;
-            index
-                .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
-                .map_err(|e| format!("stage for commit 失败: {}", e))?;
-            index
-                .write()
-                .map_err(|e| format!("写入 git index 失败: {}", e))?;
-
-            let tree_oid = index
-                .write_tree()
-                .map_err(|e| format!("生成 commit tree 失败: {}", e))?;
-            let tree = repo
-                .find_tree(tree_oid)
-                .map_err(|e| format!("读取 commit tree 失败: {}", e))?;
-
-            let parent_commit = repo
-                .head()
-                .ok()
-                .and_then(|head| head.target())
-                .and_then(|oid| repo.find_commit(oid).ok());
-
-            if !allow_empty.unwrap_or(false) {
-                if let Some(parent) = parent_commit.as_ref() {
-                    if parent.tree_id() == tree_oid {
-                        return Err("没有可提交的变更".to_string());
-                    }
-                }
-            }
-
-            let signature = repo.signature().or_else(|_| {
-                git2::Signature::now("Cofree", "cofree@local.dev")
-                    .map_err(|e| git2::Error::from_str(&e.to_string()))
-            })
-            .map_err(|e| format!("创建 git signature 失败: {}", e))?;
-
-            let oid = if let Some(parent) = parent_commit.as_ref() {
-                repo.commit(
-                    Some("HEAD"),
-                    &signature,
-                    &signature,
-                    &commit_message,
-                    &tree,
-                    &[parent],
-                )
-                .map_err(|e| format!("创建 commit 失败: {}", e))?
-            } else {
-                repo.commit(
-                    Some("HEAD"),
-                    &signature,
-                    &signature,
-                    &commit_message,
-                    &tree,
-                    &[],
-                )
-                .map_err(|e| format!("创建初始 commit 失败: {}", e))?
-            };
-
-            Ok(GitWriteResult {
-                success: true,
-                operation: "commit".to_string(),
-                message: commit_message,
-                branch: None,
-                commit_oid: Some(oid.to_string()),
-            })
-        }
-        "checkout_branch" => {
-            let branch = branch_name
-                .unwrap_or_else(|| "cofree/m3-approved".to_string())
-                .trim()
-                .to_string();
-            if branch.is_empty() {
-                return Err("Branch 名称不能为空".to_string());
-            }
-
-            let reference_name = format!("refs/heads/{}", branch);
-            if repo.find_reference(&reference_name).is_err() {
-                let head_commit = repo
-                    .head()
-                    .map_err(|e| format!("读取 HEAD 失败: {}", e))?
-                    .peel_to_commit()
-                    .map_err(|e| format!("读取 HEAD commit 失败: {}", e))?;
-                repo.branch(&branch, &head_commit, false)
-                    .map_err(|e| format!("创建分支失败: {}", e))?;
-            }
-
-            repo.set_head(&reference_name)
-                .map_err(|e| format!("切换分支失败: {}", e))?;
-            repo.checkout_head(Some(git2::build::CheckoutBuilder::new().safe()))
-                .map_err(|e| format!("checkout 分支失败: {}", e))?;
-
-            Ok(GitWriteResult {
-                success: true,
-                operation: "checkout_branch".to_string(),
-                message: format!("已切换到分支 {}", branch),
-                branch: Some(branch),
-                commit_oid: None,
-            })
-        }
-        _ => Err(format!("不支持的 git write 操作: {}", operation_trimmed)),
-    }
-}
 
 #[tauri::command]
 fn save_workflow_checkpoint(
@@ -1187,6 +1212,8 @@ async fn fetch_litellm_models(base_url: String, api_key: String) -> Result<Vec<S
     }
 
     let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))  // 120 seconds timeout for LLM API calls
+        .connect_timeout(Duration::from_secs(10))  // 10 seconds for connection
         .build()
         .map_err(|e| format!("初始化 HTTP 客户端失败: {}", e))?;
 
@@ -1218,6 +1245,8 @@ async fn post_litellm_chat_completions(
     }
 
     let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))  // 120 seconds timeout for LLM API calls
+        .connect_timeout(Duration::from_secs(10))  // 10 seconds for connection
         .build()
         .map_err(|e| format!("初始化 HTTP 客户端失败: {}", e))?;
 
@@ -1256,14 +1285,16 @@ pub fn run() {
             git_status_workspace,
             git_diff_workspace,
             apply_workspace_patch,
+            check_workspace_patch,
             create_workspace_snapshot,
             restore_workspace_snapshot,
-            run_workspace_command,
-            git_write_workspace,
+            run_shell_command,
             save_workflow_checkpoint,
             load_latest_workflow_checkpoint,
             fetch_litellm_models,
-            post_litellm_chat_completions
+            post_litellm_chat_completions,
+            load_secure_api_key,
+            save_secure_api_key
         ])
         .run(tauri::generate_context!())
         .expect("error while running cofree tauri application");
