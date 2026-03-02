@@ -22,3 +22,6 @@ yarn-error.log*
 
 # Lockfile from non-pnpm workflows
 package-lock.json
+
+.claude/
+.snow/

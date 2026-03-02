@@ -1,50 +1,54 @@
-# Cofree PRD v0.1
+# Cofree PRD v0.1（实际实现修订版）
 
 ## 1. 产品定位
 见 README。
 
 ## 2. 核心用户流程
-1. 打开 Cofree（菜单栏图标）并选择工作区（本地 Git 仓库文件夹）
-2. 在聊天框点单（自然语言）
-3. 服务员生成计划 + 团队推荐
-4. 用户 Approve / 修改专家
-5. 专家并行工作 + 实时厨房仪表盘
-6. 每个节点 Mac Notification + 可视化 diff 审批
-7. 最终交付 Git commit + 一键打开项目文件夹
+1. 打开 Cofree 桌面应用并选择工作区（本地 Git 仓库文件夹）
+2. 在聊天区输入需求（点单）
+3. 系统通过 LLM 工具调用循环自动分析需求、读取文件、生成编辑方案
+4. 敏感操作（写文件、执行命令、git 操作）生成待审批动作卡片
+5. 用户在 diff 预览界面执行 Approve / Reject / Comment
+6. 审批通过后系统执行操作，展示结果
+7. 用户可通过 `propose_shell` 执行 `git commit` 完成代码提交
 
 ## 3. 功能列表 & Priority
 
-> 说明：为了保证 MVP 可交付性，v0.1 以“可审计的黄金路径”为核心：
-> **生成 patch（不落盘）→ 可视化只读 diff 审批（Approve/Reject/Comment）→ 应用 patch →（可选）运行经运行时护栏检查的命令 → Git commit（最终确认）**。
->
-> v0.1 默认采用轻量 diff（`jsdiff` + `diff2html`）实现并排只读审批；Monaco Diff 作为后续升级项。
+> v0.1 以"可审计的黄金路径"为核心：
+> **LLM 工具循环读取上下文 → 生成 patch（不落盘）→ 彩色 diff 审批（Approve/Reject/Comment）→ 应用 patch →（可选）运行经审批的 shell 命令 → Git commit（经审批的 shell 命令）**。
 
-### P0（必须有）
-- 服务员 + 3 专家（Planner / Coder / Tester）
-- 可视化 diff 审批（只读并排，`jsdiff` + `diff2html`）
-- 自定义专家（JSON 配置：模型/提示词/工具集/权限边界）
-- Guardrails（工具 runtime guardrails + 文件读写边界 + 强制审批门 + 审计日志）
+### P0（已实现）
+- 单 LLM 工具调用编排循环（含动态工具路由）
+- 结构化文件编辑（propose_file_edit：replace/insert/delete/create + 行定位）
+- 自研彩色 diff 预览 + Approve/Reject/Comment 审批
+- Guardrails（workspace 边界校验 + 灾难命令拦截 + 强制审批门 + 审计日志）
+- Patch 预检 + 失败自动修复重试 + 快照回滚
+- Shell 命令执行（propose_shell：完整 shell 语法 + 超时控制）
+- SQLite checkpoint 会话持久化与恢复
 
-### P1（有则更好）
-- 厨房仪表盘（实时状态：每个专家在做什么、正在等待什么审批）
-- 本地 Git 集成（受支持范围内：创建分支、应用 patch、stage、commit）
-- Monaco Diff 升级（在确有“可编辑/合并”需求时引入）
+### P1（后续增强）
+- 厨房仪表盘（当前为占位页）
+- 更丰富的 diff 渲染（并排视图、hunk 级审批）
+- Agent 角色配置（当前角色定义为元数据，未作为独立 Agent 使用）
+- 审计日志导出 UI
 
 ## 4. v0.1 验收标准（MVP）
-以下验收标准以“可测试 / 可录屏演示”为准。
 
 ### 4.1 黄金路径（Golden Journey）
-- 用户在设置页选择一个本地 Git 仓库作为工作区（workspace）；系统验证该目录是否为有效 Git 仓库。
-- 用户点单后，系统能生成一份**可预览的 patch**（未写入磁盘），所有文件操作限定在选定的工作区内。
-- 用户在 diff 界面可执行：Approve / Reject / Comment（至少支持 file 级；hunk 级作为加分项）。
-- 未经明确 Approve：系统**不得**写入任何文件、不得执行任何 shell 命令。
-- 用户 Approve 后：系统将 patch 应用到工作区；并能展示应用结果（成功/失败及原因）。
-- Git commit：必须在用户最终确认后才创建；commit message 可预览与编辑。
+- [x] 用户在设置页选择本地 Git 仓库作为工作区；系统验证目录有效性。
+- [x] 用户点单后，系统通过 LLM 工具调用自动读取上下文并生成**待审批的 patch**（未写入磁盘）。
+- [x] 用户在 diff 预览界面可执行：Approve / Reject / Comment（action 级）。
+- [x] 未经明确 Approve：系统**不会**写入任何文件、不会执行任何 shell 命令。
+- [x] 用户 Approve 后：系统将 patch 应用到工作区，展示成功/失败结果。
+- [ ] Git commit：通过 `propose_shell` 提交 git 命令，用户审批后执行。（功能可用，但无专用 commit UI）
 
 ### 4.2 可观察性与可恢复性
-- 所有“敏感动作”（写文件/执行命令/git 写操作）都记录到本地审计日志（含时间、操作者 agent、动作类型、目标、结果）。
-- 发生错误（patch apply / git 操作失败）时：UI 有明确提示，且不会留下半完成的不可追踪状态。
+- [x] 所有敏感动作记录到本地审计日志（含时间、动作类型、目标、结果）。
+- [x] Patch apply 失败时自动回滚到快照点，UI 展示错误原因。
+- [x] 应用重启后可从 SQLite checkpoint 恢复会话状态。
 
 ### 4.3 反目标（Non-goals）
 - v0.1 不承诺强隔离 OS sandbox（以 guardrails 为主）。
 - v0.1 不承诺覆盖复杂 Git 场景（如 submodules/LFS/冲突自动解决）。
+- v0.1 不承诺多 Agent 并行编排（采用单 LLM 工具循环）。
+- v0.1 不承诺 Monaco diff 编辑/合并能力。

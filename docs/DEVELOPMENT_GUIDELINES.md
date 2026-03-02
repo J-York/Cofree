@@ -1,42 +1,42 @@
-# Cofree 开发规范（AI & Human 必须严格遵守）
+# Cofree 开发规范（AI & Human 必须严格遵守）— 实际实现修订版
 
 ## 1. 进度同步机制（最重要）
 - **核心文件**：根目录 `PROGRESS.md`
-- **文件头注释**：每个源代码文件顶部必须有以下注释块（Claude 自动生成）：
+- **文件头注释**：鼓励在源代码文件顶部添加以下注释块（非强制，部分文件已有）：
 
 ```ts
 /**
  * Cofree - AI Programming Cafe
- * File: src/components/ChatWindow.tsx
- * Milestone: 1
- * Task: 1.1
- * Status: In Progress | Completed | Review Needed
- * Owner: Claude-3.5-Sonnet
- * Last Modified: 2026-02-26
- * Description: 服务员聊天窗口组件
+ * File: src/orchestrator/types.ts
+ * Milestone: 2
+ * Status: Completed
+ * Last Modified: 2026-03-01
+ * Description: 工作流状态与动作类型定义
  */
-
 ```
 
 ## 2. 文档优先（Docs-as-Code）
-v0.1 的“可控自主”依赖文档约束。任何会影响安全边界/数据外泄/交付流程的改动，都必须先更新对应文档：
+v0.1 的"可控自主"依赖文档约束。任何会影响安全边界/数据外泄/交付流程的改动，都必须先更新对应文档：
 - 范围与黄金路径：`docs/MVP.md`
 - 安全与隐私：`docs/SECURITY_PRIVACY.md`
 - Guardrails 与审批门：`docs/GUARDRAILS.md`
 - Git 支持范围：`docs/GIT_SUPPORT.md`
 
 ## 3. HITL（Human-in-the-loop）硬性规则
-如果使用 LangGraph 的 `interrupt()`：
-1) **禁止**在 `interrupt()` 之前执行不可逆副作用（写盘、命令执行、git 写操作）。原因：resume 时节点会重跑。
-2) `interrupt()` 的 payload 必须可 JSON 序列化（避免函数/复杂对象）。
-3) **禁止**把 `interrupt()` 包进会吞掉异常的 try/catch。
+
+v0.1 使用**自研的 TypeScript 工具调用编排循环**（非 LangGraph）实现 HITL：
+
+1) LLM 通过 `propose_*` 工具生成待审批动作，系统暂停等待用户审批。
+2) 审批前不执行任何副作用（写盘、命令、git 写操作）。
+3) 审批状态通过 SQLite checkpoint 持久化，支持会话恢复。
+4) 审批结果（approve/reject/comment）通过 `hitlService.ts` 处理。
 
 ## 4. 审批门（Approval Gates）必须覆盖的动作
-以下动作一律视为“敏感动作”，必须经过 UI 审批门并写入审计日志：
-- 写文件 / 删除文件 / 批量重命名
-- 执行任何 shell 命令
-- git 写操作：创建分支、stage、commit（以及任何未来扩展的写操作）
+以下动作一律视为"敏感动作"，必须经过 UI 审批门并写入审计日志：
+- **Gate A**：写文件 / 删除文件内容 / 创建文件（通过 propose_file_edit 或 propose_apply_patch）
+- **Gate B**：执行任何 shell 命令、git 写操作、文件删除（通过 propose_shell）
 
 ## 5. 术语一致性
-- v0.1 使用 **Guardrails** 表述安全边界；不要在没有强隔离实现的前提下使用“Sandbox”误导。
-- “100% 本地”必须同时参考 `docs/SECURITY_PRIVACY.md` 的 Data Egress Policy。
+- v0.1 使用 **Guardrails** 表述安全边界；不要在没有强隔离实现的前提下使用"Sandbox"误导。
+- "100% 本地"必须同时参考 `docs/SECURITY_PRIVACY.md` 的 Data Egress Policy。
+- 编排架构描述为"单 LLM 工具调用循环"，不使用"LangGraph"或"多 Agent 编排"。

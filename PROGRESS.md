@@ -1,8 +1,8 @@
 # Cofree 开发进度追踪（必须实时维护）
 
-**Last Updated**: 2026-03-01 02:03 CST by Codex-GPT-5
+**Last Updated**: 2026-03-02 by Claude-Opus-4.6
 **当前 Milestone**: 3.0 - HITL 审批 + Guardrails（Completed）
-**Next Task**: 进入 Milestone 4 规划与最小可演示链路定义
+**Next Task**: Milestone 4 — 可用性打磨与稳定性
 
 ## Milestone 0: 项目初始化与文档（Completed）
 - [x] 创建仓库 & 初始化文档包
@@ -14,48 +14,67 @@
 - [x] 1.2 配置 LiteLLM + 多模型支持（provider/model 注册表 + 请求配置模块）
 - [x] 1.3 实现基础设置页（API Key + Base URL + egress 选项本地持久化）
 
-**Acceptance Criteria for Milestone 1**：
-- [x] 前端构建通过（`npm run build`，含 TypeScript 校验）
-- [x] 设置页可保存 API Key 到本地（`localStorage`）
-- [x] PROGRESS.md 已更新
-
-## Milestone 2: 对话规划与工作区读能力（Completed, Simplified）
-- [x] 2.1-2.3 聊天流式回复 + 结构化计划 + Pending 动作展示（不执行）
-- [x] 2.4 local-only 约束与 LLM 最小审计日志
-- [x] 2.5 workspace 选择/验证 + workspace 边界内文件与 git 只读命令
-- [x] 2.6 多轮对话与会话历史持久化恢复
-
-**Acceptance Criteria for Milestone 2（简版）**：
-- [x] 规划链路稳定可演示，敏感动作仅 Pending 展示
-- [x] 未审批前无写盘、无命令执行、无 git 写操作
-- [x] workspace 上下文与路径边界校验生效
+## Milestone 2: 对话规划与工作区读能力（Completed）
+- [x] 2.1 LLM 工具调用循环（单 Agent + native tool calling，非 LangGraph）
+- [x] 2.2 流式聊天回复 + 结构化计划展示 + pending 动作展示（不执行）
+- [x] 2.3 Workspace 选择/验证 + workspace 边界内文件与 git 只读命令
+- [x] 2.4 Local-only 约束与 LLM 最小审计日志
+- [x] 2.5 多轮对话与会话历史持久化恢复
 
 ## Milestone 3: HITL 审批 + Guardrails（Completed）
 - [x] 3.1 状态机骨架：`planning → executing → human_review → done`
-- [x] 3.2 Gate A（Apply Patch）：审批后写盘 + 失败回滚（tracked + untracked）
-- [x] 3.3 Gate B（Run Command）：allowlist + 超时控制 + 执行结果归档
-- [x] 3.4 Gate C（Git Write）：create branch / stage / commit（最终确认）
-- [x] 3.5 Guardrails 执行层：workspace 边界 + agent-tool 权限映射 + 强制审批中断
-- [x] 3.6 SQLite checkpointer：审批点持久化与会话恢复
-- [x] 3.7 审计日志统一：动作、时间、agent、目标、结果、审批信息（localStorage v1）
+- [x] 3.2 Gate A（Apply Patch）：propose_file_edit（结构化编辑）+ propose_apply_patch（raw patch）→ 预检 → 快照 → 审批 → 应用 → 回滚
+- [x] 3.3 Gate B（Shell Execution）：propose_shell（完整 shell 语法）→ 审批 → 执行 → stdout/stderr/exit code 归档
+- [x] 3.4 Git 写操作通过 propose_shell 统一处理（git add/commit/checkout 等）
+- [x] 3.5 Guardrails 执行层：workspace 边界 + 灾难命令硬拦截 + 动态工具路由 + 强制审批
+- [x] 3.6 SQLite checkpoint：审批点持久化与会话恢复
+- [x] 3.7 审计日志统一：动作、时间、agent、目标、结果（localStorage v1）
+- [x] 3.8 自研彩色 diff 预览 + Approve/Reject/Comment UI
+- [x] 3.9 Patch 预检失败自动修复重试 + create 路径修复提示
+- [x] 3.10 CI/CD：GitHub Actions 跨平台构建发布
 
-**Acceptance Criteria for Milestone 3**：
+### Milestone 3 验收标准
 - [x] 未审批前，不能触发任何写盘/命令/git 写副作用
 - [x] 每个敏感动作都能进入审批 UI，支持 Approve / Reject / Comment
 - [x] Reject 后可继续下一轮生成，不产生半完成状态
 - [x] 审批后执行结果可追踪（成功/失败 + 原因 + 时间 + 执行者）
 - [x] 重启应用后可恢复到上一个审批点继续执行
 
+## Milestone 4: 可用性打磨与稳定性（Pending）
+- [ ] 4.1 Diff 渲染增强：并排 diff 视图，文件级折叠/展开
+- [ ] 4.2 Shell 执行结果内联展示：stdout/stderr 实时流式输出
+- [ ] 4.3 错误体验优化：用户友好提示与重试引导
+- [ ] 4.4 厨房页实现：工具调用追踪可观察性仪表盘
+- [ ] 4.5 审计日志导出：一键导出 JSON/CSV
+- [ ] 4.6 对话体验优化：流式输出（streaming）支持
+
+---
+
+## 架构偏移说明（2026-03-02 文档修订）
+
+以下是 v0.1 开发过程中相对初期设想的关键架构变化：
+
+1. **LangGraph → 自研编排循环**：未使用 LangGraph，改为自研的 TypeScript 工具调用循环（`planningService.ts` ~2100 行）。HITL 通过 React 状态 + SQLite checkpoint 实现。
+2. **多 Agent → 单 LLM 循环**：未实现多 Agent 并行编排。采用单一 LLM 工具调用循环，与业界主流 Agent Coding 工具（Cursor、Claude Code、Aider）一致。
+3. **jsdiff + diff2html → 自研 diff 渲染**：未引入第三方 diff 库，采用 ChatPage.tsx 内嵌的自研彩色 diff 预览。
+4. **Gate C → Gate B 统一**：Git 写操作没有独立审批门，通过 `propose_shell` 统一在 Gate B 处理。
+5. **Gate B 安全模型**：从"结构化命令 + shell 控制符阻断"转为"完整 shell 字符串 + 人类审批 + 灾难命令硬拦截"。
+
+所有文档已在 2026-03-02 修订为反映实际实现。
+
+---
+
 **更新规则**（所有开发者必须遵守）：
 1. 每次完成一个子任务 → 立即编辑本文件，打钩 + 更新时间 + 签名
-2. Git commit 必须包含 `progress:` 前缀，例如 `progress: complete 1.1 tauri skeleton`
-3. 每天结束时必须 push PROGRESS.md
+2. Git commit 建议包含 `progress:` 前缀，例如 `progress: complete 4.1 diff rendering`
+3. 每天结束时 push PROGRESS.md
 
 ## Implementation Log
-- 2026-03-01: Improve edit reliability by adding `propose_file_edit` with structured single-file ops (`replace/insert/delete/create`) plus line-based targeting (`line` / `start_line` / `end_line`) that auto-generate patch, add patch preflight (`check_workspace_patch`) before proposal/approval apply, add one-shot automatic patch-repair retry loop, add one-shot auto-hint loops for whole-file delete (`propose_run_command` + `rm <relative_path>`) and missing create paths (`operation='create'`), dynamically route each request to a reduced tool set (read-only / structured edit / explicit patch / delete-file / command / git), and upgrade HITL apply-patch UI to show structured summary + colored diff preview with raw patch collapsed by default.
-
+- 2026-03-02: 全文档修订 — 对齐实际实现与文档描述，消除 LangGraph/多Agent/jsdiff/Gate C 等过期引用，重写 Roadmap M4-M7。
+- 2026-03-01: Improve edit reliability by adding `propose_file_edit` with structured single-file ops (`replace/insert/delete/create`) plus line-based targeting (`line` / `start_line` / `end_line`) that auto-generate patch, add patch preflight (`check_workspace_patch`) before proposal/approval apply, add one-shot automatic patch-repair retry loop, add one-shot auto-hint loops for whole-file delete (`propose_shell` + `rm <relative_path>`) and missing create paths (`operation='create'`), dynamically route each request to a reduced tool set (read-only / structured edit / explicit patch / delete-file / command / git), and upgrade HITL apply-patch UI to show structured summary + colored diff preview with raw patch collapsed by default.
 
 ## Docs Update Log
+- 2026-03-02: 全文档修订 — PRD、MVP、Architecture、Roadmap、Guardrails、Security/Privacy、Git Support、Development Guidelines、Progress 全部更新为反映实际实现。
 - 2026-02-27: Add MVP scope, guardrails, security/privacy, git support docs; update PRD/Roadmap/Architecture to lightweight diff (`jsdiff` + `diff2html`) and clarify non-goals.
 - 2026-02-27: Expand Week 2 planning in `docs/ROADMAP.md` with scope boundaries, task packages (M2.1~M2.5), acceptance checklist, and risk controls; sync Milestone 2 execution template in `PROGRESS.md`.
 - 2026-02-27: Expand Milestone 3 planning in `docs/ROADMAP.md` (M3.1~M3.7 + acceptance checklist) and sync M3 plan into `PROGRESS.md`; simplify Milestone 2 records.
