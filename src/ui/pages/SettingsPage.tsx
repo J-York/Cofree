@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { type ReactElement, useEffect, useState } from "react";
 import { createLiteLLMClientConfig, formatModelRef, parseModelRef } from "../../lib/litellm";
-import { type AppSettings, maskApiKey } from "../../lib/settingsStore";
+import {
+  type AppSettings,
+  type ToolPermissionLevel,
+  DEFAULT_TOOL_PERMISSIONS,
+  maskApiKey
+} from "../../lib/settingsStore";
 
 interface WorkspaceInfo {
   git_branch?: string;
@@ -22,15 +27,9 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
   const loadWorkspaceInfo = async (path: string) => {
     if (!path) { setWorkspaceInfo(null); setWorkspaceError(""); return; }
     try {
-      const isGitRepo = await invoke<boolean>("validate_git_repo", { path });
-      if (isGitRepo) {
-        const info = await invoke<WorkspaceInfo>("get_workspace_info", { path });
-        setWorkspaceInfo(info);
-        setWorkspaceError("");
-      } else {
-        setWorkspaceInfo(null);
-        setWorkspaceError("选择的目录不是一个有效的 Git 仓库");
-      }
+      const info = await invoke<WorkspaceInfo>("get_workspace_info", { path });
+      setWorkspaceInfo(info);
+      setWorkspaceError("");
     } catch (error) {
       setWorkspaceInfo(null);
       setWorkspaceError(error instanceof Error ? error.message : String(error));
@@ -44,7 +43,7 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
     const parsed = parseModelRef(draft.model);
     const normalized = {
       ...draft,
-      provider: parsed.provider || draft.provider,
+      provider: parsed.provider || draft.provider || undefined,
       model: parsed.model || draft.model
     };
     try {
@@ -88,9 +87,9 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
             <p className="workspace-path">
               {draft.workspacePath || "未选择工作区"}
             </p>
-            {workspaceInfo && (
+            {workspaceInfo?.git_branch && (
               <p className="workspace-meta">
-                📦 {workspaceInfo.repo_name} &nbsp;·&nbsp; 🌿 {workspaceInfo.git_branch}
+                {workspaceInfo.repo_name && `📦 ${workspaceInfo.repo_name} · `}🌿 {workspaceInfo.git_branch}
               </p>
             )}
             {workspaceError && (
@@ -136,13 +135,13 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
           <label className="field-label">Model Name</label>
           <input
             className="input"
-            value={formatModelRef(draft.provider, draft.model)}
+            value={formatModelRef(draft.provider || "", draft.model)}
             onChange={(e) => {
               const input = e.target.value;
               const parsed = parseModelRef(input);
               setDraft((p) => ({
                 ...p,
-                provider: parsed.provider || p.provider,
+                provider: parsed.provider,
                 model: parsed.model
               }));
             }}
@@ -210,6 +209,90 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
           />
           <span className="checkbox-label">允许云端模型</span>
         </label>
+      </div>
+
+      {/* Tool Permissions */}
+      <div className="card settings-section">
+        <p className="settings-section-title">工具权限</p>
+
+        <p className="field-label" style={{ marginBottom: "8px" }}>只读工具</p>
+        {(["list_files", "read_file", "grep", "glob", "git_status", "git_diff"] as const).map((toolName) => {
+          const descriptions: Record<string, string> = {
+            list_files: "列出目录文件",
+            read_file: "读取文件内容",
+            grep: "正则搜索文件内容",
+            glob: "Glob 模式匹配文件路径",
+            git_status: "查看 Git 状态",
+            git_diff: "查看 Git 差异",
+          };
+          const permissions = draft.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS;
+          return (
+            <div key={toolName} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0" }}>
+              <span style={{ fontSize: "13px" }}>
+                <code style={{ fontSize: "12px", background: "var(--bg-2)", padding: "1px 4px", borderRadius: "3px" }}>{toolName}</code>
+                <span style={{ color: "var(--text-3)", marginLeft: "6px" }}>{descriptions[toolName]}</span>
+              </span>
+              <select
+                className="select"
+                style={{ width: "120px", fontSize: "12px" }}
+                value={permissions[toolName]}
+                onChange={(e) =>
+                  setDraft((p) => ({
+                    ...p,
+                    toolPermissions: {
+                      ...(p.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS),
+                      [toolName]: e.target.value as ToolPermissionLevel,
+                    },
+                  }))
+                }
+              >
+                <option value="auto">自动执行</option>
+                <option value="ask">需要审批</option>
+              </select>
+            </div>
+          );
+        })}
+
+        <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "12px 0" }} />
+
+        <p className="field-label" style={{ marginBottom: "8px" }}>写入工具</p>
+        {(["propose_file_edit", "propose_apply_patch", "propose_shell"] as const).map((toolName) => {
+          const descriptions: Record<string, string> = {
+            propose_file_edit: "结构化文件编辑",
+            propose_apply_patch: "应用 Patch 补丁",
+            propose_shell: "执行 Shell 命令",
+          };
+          const permissions = draft.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS;
+          return (
+            <div key={toolName} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0" }}>
+              <span style={{ fontSize: "13px" }}>
+                <code style={{ fontSize: "12px", background: "var(--bg-2)", padding: "1px 4px", borderRadius: "3px" }}>{toolName}</code>
+                <span style={{ color: "var(--text-3)", marginLeft: "6px" }}>{descriptions[toolName]}</span>
+              </span>
+              <select
+                className="select"
+                style={{ width: "120px", fontSize: "12px" }}
+                value={permissions[toolName]}
+                onChange={(e) =>
+                  setDraft((p) => ({
+                    ...p,
+                    toolPermissions: {
+                      ...(p.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS),
+                      [toolName]: e.target.value as ToolPermissionLevel,
+                    },
+                  }))
+                }
+              >
+                <option value="auto">自动执行</option>
+                <option value="ask">需要审批</option>
+              </select>
+            </div>
+          );
+        })}
+
+        <p style={{ fontSize: "11px", color: "var(--color-warning, #e6a700)", marginTop: "12px", lineHeight: "1.5" }}>
+          ⚠ 将写入工具设为自动执行意味着 LLM 可以直接修改文件和执行命令，请确保你信任当前使用的模型。
+        </p>
       </div>
 
       {/* Runtime info */}

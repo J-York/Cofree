@@ -75,6 +75,7 @@ src/
 │   ├── types.ts           # 工作流状态与动作类型定义
 │   ├── planningService.ts # LLM 工具调用循环（核心 ~2100 行）
 │   ├── hitlService.ts     # HITL 审批执行（approve/reject/comment）
+│   ├── hitlContinuationMachine.ts # HITL 结束后续跑状态机（tool 回放 + 防循环）
 │   ├── checkpointStore.ts # SQLite 会话检查点持久化
 │   ├── planGuards.ts      # 动作验证 & guardrails
 │   ├── actionInference.ts # 工具调用→动作类型推断

@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bubble Sort Visualization</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        button:disabled {
+            background-color: #bdc3c7;
+            cursor: not-allowed;
+        }
+        .array-container {
+            display: flex;
+            justify-content: center;
+            align-items: flex-end;
+            height: 300px;
+            gap: 5px;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .bar-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 40px;
+        }
+        .bar {
+            width: 100%;
+            background-color: #3498db;
+            border-radius: 4px 4px 0 0;
+            transition: height 0.3s ease, background-color 0.3s ease;
+        }
+        .bar-value {
+            margin-top: 5px;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .status {
+            text-align: center;
+            font-size: 18px;
+            font-weight: bold;
+            min-height: 27px;
+            margin-bottom: 20px;
+            color: #e74c3c;
+        }
+        .explanation {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        code {
+            background-color: #f8f9fa;
+            padding: 2px 4px;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>Bubble Sort Algorithm</h1>
+    
+    <div class="controls">
+        <button id="generateBtn">Generate New Array</button>
+        <button id="sortBtn">Start Sorting</button>
+    </div>
+
+    <div class="status" id="statusText">Ready to sort</div>
+
+    <div class="array-container" id="arrayContainer"></div>
+
+    <div class="explanation">
+        <h3>How it works:</h3>
+        <p>Bubble Sort is a simple sorting algorithm that repeatedly steps through the list, compares adjacent elements and swaps them if they are in the wrong order.</p>
+        <p>The pass through the list is repeated until the list is sorted. The algorithm, which is a comparison sort, is named for the way smaller or larger elements "bubble" to the top of the list.</p>
+        <p><strong>Time Complexity:</strong> O(n²) in worst and average cases, O(n) in best case.</p>
+    </div>
+
+    <script>
+        const container = document.getElementById('arrayContainer');
+        const generateBtn = document.getElementById('generateBtn');
+        const sortBtn = document.getElementById('sortBtn');
+        const statusText = document.getElementById('statusText');
+        
+        let array = [];
+        const ARRAY_SIZE = 10;
+        const ANIMATION_SPEED = 500; // ms
+        
+        // Colors
+        const DEFAULT_COLOR = '#3498db';
+        const COMPARE_COLOR = '#e74c3c';
+        const SORTED_COLOR = '#2ecc71';
+        
+        function generateArray() {
+            array = [];
+            container.innerHTML = '';
+            statusText.textContent = 'Ready to sort';
+            
+            for (let i = 0; i < ARRAY_SIZE; i++) {
+                // Generate random number between 10 and 100
+                const value = Math.floor(Math.random() * 90) + 10;
+                array.push(value);
+                
+                const barWrapper = document.createElement('div');
+                barWrapper.className = 'bar-wrapper';
+                
+                const bar = document.createElement('div');
+                bar.className = 'bar';
+                bar.style.height = `${value * 2.5}px`;
+                bar.id = `bar-${i}`;
+                
+                const label = document.createElement('div');
+                label.className = 'bar-value';
+                label.textContent = value;
+                label.id = `label-${i}`;
+                
+                barWrapper.appendChild(bar);
+                barWrapper.appendChild(label);
+                container.appendChild(barWrapper);
+            }
+        }
+        
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+        
+        async function bubbleSort() {
+            generateBtn.disabled = true;
+            sortBtn.disabled = true;
+            
+            const bars = document.querySelectorAll('.bar');
+            const labels = document.querySelectorAll('.bar-value');
+            let n = array.length;
+            
+            for (let i = 0; i < n - 1; i++) {
+                let swapped = false;
+                
+                for (let j = 0; j < n - i - 1; j++) {
+                    statusText.textContent = `Comparing ${array[j]} and ${array[j+1]}`;
+                    
+                    // Highlight elements being compared
+                    bars[j].style.backgroundColor = COMPARE_COLOR;
+                    bars[j+1].style.backgroundColor = COMPARE_COLOR;
+                    
+                    await sleep(ANIMATION_SPEED);
+                    
+                    if (array[j] > array[j + 1]) {
+                        statusText.textContent = `Swapping ${array[j]} and ${array[j+1]}`;
+                        
+                        // Swap values in array
+                        let temp = array[j];
+                        array[j] = array[j + 1];
+                        array[j + 1] = temp;
+                        
+                        // Swap DOM elements heights and labels
+                        bars[j].style.height = `${array[j] * 2.5}px`;
+                        bars[j+1].style.height = `${array[j+1] * 2.5}px`;
+                        
+                        labels[j].textContent = array[j];
+                        labels[j+1].textContent = array[j+1];
+                        
+                        swapped = true;
+                        await sleep(ANIMATION_SPEED);
+                    }
+                    
+                    // Reset colors
+                    bars[j].style.backgroundColor = DEFAULT_COLOR;
+                    bars[j+1].style.backgroundColor = DEFAULT_COLOR;
+                }
+                
+                // Mark the last element of this pass as sorted
+                bars[n - i - 1].style.backgroundColor = SORTED_COLOR;
+            }
+            
+            // Mark the first element as sorted (it's guaranteed to be)
+            bars[0].style.backgroundColor = SORTED_COLOR;
+            
+            statusText.textContent = 'Array is sorted!';
+            statusText.style.color = SORTED_COLOR;
+            
+            generateBtn.disabled = false;
+            sortBtn.disabled = false;
+        }
+        
+        // Event Listeners
+        generateBtn.addEventListener('click', generateArray);
+        sortBtn.addEventListener('click', bubbleSort);
+        
+        // Initialize
+        generateArray();
+    </script>
+</body>
+</html>

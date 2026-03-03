@@ -7,11 +7,23 @@ import {
 } from "../../lib/chatHistoryStore";
 import { isLocalProvider } from "../../lib/litellm";
 import type { AppSettings } from "../../lib/settingsStore";
+import { classifyError, type CategorizedError } from "../../lib/errorClassifier";
+import { ErrorBanner } from "../components/ErrorBanner";
+import { ShellResultDisplay } from "../components/ShellResultDisplay";
+import { DiffViewer } from "../components/DiffViewer";
+import {
+  formatTime,
+  actionStatusBadgeClass,
+  canApproveAction,
+  canReviewAction,
+} from "../utils/chatUtils";
 import {
   approveAction,
+  approveAllPendingActions,
   commentAction,
   markActionRunning,
   rejectAction,
+  rejectAllPendingActions,
   updateActionPayload
 } from "../../orchestrator/hitlService";
 import Markdown from "react-markdown";
@@ -23,11 +35,22 @@ import {
   saveWorkflowCheckpoint
 } from "../../orchestrator/checkpointStore";
 import {
+  type ToolReplayMessage,
+} from "../../orchestrator/hitlContinuationMachine";
+import {
+  advanceAfterHitl,
+  getHitlContinuationMemory,
+  hydrateHitlContinuationMemory,
+  resetHitlContinuationMemory,
+} from "../../orchestrator/hitlContinuationController";
+import {
   runPlanningSession,
+  actionFingerprint,
   type PlanningSessionPhase,
   type ToolExecutionTrace
 } from "../../orchestrator/planningService";
 import type { ActionProposal, OrchestrationPlan } from "../../orchestrator/types";
+import { useSession } from "../../lib/sessionContext";
 
 interface ChatPageProps {
   settings: AppSettings;
@@ -39,30 +62,46 @@ interface RunChatCycleOptions {
   phase?: PlanningSessionPhase;
 }
 
-function createMessageId(role: "user" | "assistant"): string {
+function createMessageId(role: "user" | "assistant" | "tool"): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `${role}-${crypto.randomUUID()}`;
   }
   return `${role}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
+function buildToolCallsFromPlan(plan: OrchestrationPlan | null): any[] | undefined {
+  if (!plan || !Array.isArray(plan.proposedActions) || plan.proposedActions.length === 0) {
+    return undefined;
+  }
+
+  return plan.proposedActions.map((action: any) => ({
+    id: action.toolCallId || action.id,
+    type: "function",
+    function: {
+      name: action.toolName || (action.type === "shell" ? "propose_shell" : "propose_file_edit"),
+      arguments: JSON.stringify(action.payload)
+    }
+  }));
+}
+
 function toConversationHistory(
   records: ChatMessageRecord[]
-): Array<{ role: "user" | "assistant"; content: string }> {
+): Array<{ 
+  role: "user" | "assistant" | "tool"; 
+  content: string;
+  tool_calls?: any[];
+  tool_call_id?: string;
+  name?: string;
+}> {
   return records
-    .filter((record) => Boolean(record.content.trim()))
+    .filter((record) => record.content.trim() || record.role === "tool" || (record.role === "assistant" && record.tool_calls && record.tool_calls.length > 0))
     .map((record) => ({
       role: record.role,
-      content: record.content.trim()
+      content: record.content.trim(),
+      ...(record.tool_calls ? { tool_calls: record.tool_calls } : {}),
+      ...(record.tool_call_id ? { tool_call_id: record.tool_call_id } : {}),
+      ...(record.name ? { name: record.name } : {})
     }));
-}
-
-function canApproveAction(action: ActionProposal): boolean {
-  return action.status === "pending" || action.status === "failed";
-}
-
-function canReviewAction(action: ActionProposal): boolean {
-  return action.status === "pending" || action.status === "failed";
 }
 
 function markActionExecutionError(
@@ -82,127 +121,6 @@ function markActionExecutionError(
       : action
   );
   return { ...plan, state: "human_review", proposedActions: nextActions };
-}
-
-function formatTime(isoTime: string): string {
-  const ts = new Date(isoTime);
-  if (Number.isNaN(ts.getTime())) return "";
-  return ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function actionStatusBadgeClass(status: string): string {
-  if (status === "completed" || status === "success") return "badge badge-success";
-  if (status === "failed" || status === "rejected") return "badge badge-error";
-  if (status === "running") return "badge badge-warning";
-  return "badge badge-default";
-}
-
-type PatchPreviewLineKind = "file" | "meta" | "hunk" | "add" | "remove" | "context";
-
-interface PatchPreviewLine {
-  text: string;
-  kind: PatchPreviewLineKind;
-}
-
-interface PatchFileSummary {
-  path: string;
-  additions: number;
-  deletions: number;
-  hunks: number;
-}
-
-interface PatchPreviewData {
-  files: PatchFileSummary[];
-  additions: number;
-  deletions: number;
-  hunks: number;
-  lines: PatchPreviewLine[];
-  truncated: boolean;
-}
-
-const MAX_PATCH_PREVIEW_LINES = 180;
-const MAX_PATCH_SUMMARY_FILES = 8;
-
-function classifyPatchLine(line: string): PatchPreviewLineKind {
-  if (line.startsWith("diff --git ")) return "file";
-  if (line.startsWith("@@")) return "hunk";
-  if (line.startsWith("+") && !line.startsWith("+++")) return "add";
-  if (line.startsWith("-") && !line.startsWith("---")) return "remove";
-  if (line.startsWith("index ") || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("new file mode ")) {
-    return "meta";
-  }
-  return "context";
-}
-
-function extractPatchPath(diffHeader: string): string {
-  const tokens = diffHeader.trim().split(/\s+/);
-  const rawA = tokens[2] ?? "";
-  const rawB = tokens[3] ?? "";
-  const normalize = (value: string): string =>
-    value.replace(/^[ab]\//, "").trim();
-  const candidateB = normalize(rawB);
-  if (candidateB && candidateB !== "/dev/null") {
-    return candidateB;
-  }
-  const candidateA = normalize(rawA);
-  return candidateA && candidateA !== "/dev/null" ? candidateA : "(unknown)";
-}
-
-function parsePatchPreview(patch: string): PatchPreviewData {
-  const rows = patch ? patch.split("\n") : [];
-  const files: PatchFileSummary[] = [];
-  let currentFile: PatchFileSummary | null = null;
-  let additions = 0;
-  let deletions = 0;
-  let hunks = 0;
-  const lines: PatchPreviewLine[] = [];
-
-  for (const row of rows) {
-    if (row.startsWith("diff --git ")) {
-      currentFile = {
-        path: extractPatchPath(row),
-        additions: 0,
-        deletions: 0,
-        hunks: 0
-      };
-      files.push(currentFile);
-    } else if (!currentFile) {
-      currentFile = {
-        path: "(patch)",
-        additions: 0,
-        deletions: 0,
-        hunks: 0
-      };
-      files.push(currentFile);
-    }
-
-    if (row.startsWith("@@")) {
-      hunks += 1;
-      currentFile.hunks += 1;
-    } else if (row.startsWith("+") && !row.startsWith("+++")) {
-      additions += 1;
-      currentFile.additions += 1;
-    } else if (row.startsWith("-") && !row.startsWith("---")) {
-      deletions += 1;
-      currentFile.deletions += 1;
-    }
-
-    if (lines.length < MAX_PATCH_PREVIEW_LINES) {
-      lines.push({
-        text: row || " ",
-        kind: classifyPatchLine(row)
-      });
-    }
-  }
-
-  return {
-    files,
-    additions,
-    deletions,
-    hunks,
-    lines,
-    truncated: rows.length > MAX_PATCH_PREVIEW_LINES
-  };
 }
 
 /* ── Think-block + Markdown renderer ─────────────────────── */
@@ -228,6 +146,14 @@ function MessageContent({
 
   const parts: { type: "text" | "think"; content: string; streaming: boolean }[] = [];
   let remaining = content;
+
+  // During streaming, strip trailing partial tags like "<", "<t", "<thi", etc.
+  if (isStreaming && role === "assistant") {
+    const partialTagMatch = remaining.match(/<\/?t(?:h(?:i(?:n(?:k)?)?)?)?$/);
+    if (partialTagMatch) {
+      remaining = remaining.slice(0, remaining.length - partialTagMatch[0].length);
+    }
+  }
 
   while (remaining.length > 0) {
     const start = remaining.indexOf("<think>");
@@ -321,50 +247,11 @@ function ActionPayloadFields({
   const disabled = action.status === "running";
 
   if (action.type === "apply_patch") {
-    const preview = parsePatchPreview(action.payload.patch);
     return (
       <div className="action-grid">
         <div className="action-field action-wide">
-          <span>变更摘要</span>
-          <div className="patch-summary-card">
-            <div className="patch-summary-kpis">
-              <span className="patch-kpi">files {preview.files.length}</span>
-              <span className="patch-kpi patch-kpi-add">+{preview.additions}</span>
-              <span className="patch-kpi patch-kpi-del">-{preview.deletions}</span>
-              <span className="patch-kpi">hunks {preview.hunks}</span>
-            </div>
-            {preview.files.length > 0 ? (
-              <ul className="patch-summary-files">
-                {preview.files.slice(0, MAX_PATCH_SUMMARY_FILES).map((file) => (
-                  <li key={`${file.path}-${file.hunks}`} className="patch-summary-file">
-                    <code>{file.path}</code>
-                    <span className="patch-summary-file-stats">
-                      +{file.additions} / -{file.deletions}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="patch-summary-empty">无可预览 patch。</p>
-            )}
-            {preview.files.length > MAX_PATCH_SUMMARY_FILES && (
-              <p className="patch-summary-more">
-                其余 {preview.files.length - MAX_PATCH_SUMMARY_FILES} 个文件已省略。
-              </p>
-            )}
-          </div>
-        </div>
-
-        <div className="action-field action-wide">
           <span>差异预览</span>
-          <div className="patch-preview">
-            {preview.lines.map((line, index) => (
-              <div key={`${index}-${line.text.slice(0, 16)}`} className={`patch-line ${line.kind}`}>
-                <code>{line.text}</code>
-              </div>
-            ))}
-          </div>
-          {preview.truncated && <p className="patch-preview-note">预览已截断，仅显示前 {MAX_PATCH_PREVIEW_LINES} 行。</p>}
+          <DiffViewer patch={action.payload.patch} />
         </div>
 
         <div className="action-field action-wide">
@@ -387,12 +274,25 @@ function ActionPayloadFields({
   }
 
   if (action.type === "shell") {
+    const meta = action.executionResult?.metadata as Record<string, unknown> | undefined;
+    const hasShellOutput = action.executionResult && meta?.stdout !== undefined;
     return (
       <div className="action-grid">
         <div className="action-field action-wide">
           <span>命令</span>
           <code className="action-command-preview">{action.payload.shell || "(empty command)"}</code>
         </div>
+        {hasShellOutput && (
+          <div className="action-field action-wide">
+            <ShellResultDisplay
+              command={String(meta?.command || action.payload.shell)}
+              exitCode={Number(meta?.status ?? -1)}
+              stdout={String(meta?.stdout ?? "")}
+              stderr={String(meta?.stderr ?? "")}
+              timedOut={Boolean(meta?.timed_out)}
+            />
+          </div>
+        )}
       </div>
     );
   }
@@ -409,6 +309,8 @@ function InlinePlan({
   onApprove,
   onReject,
   onComment,
+  onApproveAll,
+  onRejectAll,
 }: {
   plan: OrchestrationPlan;
   messageId: string;
@@ -417,6 +319,8 @@ function InlinePlan({
   onApprove: (messageId: string, actionId: string, plan: OrchestrationPlan) => Promise<void>;
   onReject: (messageId: string, actionId: string) => void;
   onComment: (messageId: string, actionId: string) => void;
+  onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
+  onRejectAll: (messageId: string) => void;
 }) {
   const safePlan: OrchestrationPlan = {
     ...plan,
@@ -442,7 +346,30 @@ function InlinePlan({
         </ol>
       )}
 
-      {safePlan.proposedActions.length > 0 && (
+      {safePlan.proposedActions.length > 0 && (() => {
+        const pendingCount = safePlan.proposedActions.filter((a) => a.status === "pending").length;
+        return (
+        <>
+        {pendingCount > 1 && (
+          <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+            <button
+              className="btn btn-primary btn-sm"
+              disabled={Boolean(executingActionId)}
+              onClick={() => void onApproveAll(messageId, plan)}
+              type="button"
+            >
+              ✓ 全部批准 ({pendingCount})
+            </button>
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={Boolean(executingActionId)}
+              onClick={() => onRejectAll(messageId)}
+              type="button"
+            >
+              ✕ 全部拒绝
+            </button>
+          </div>
+        )}
         <ul className="action-list">
           {safePlan.proposedActions.map((action) => (
             <li key={action.id} className="action-item">
@@ -495,17 +422,20 @@ function InlinePlan({
             </li>
           ))}
         </ul>
-      )}
+        </>
+        );
+      })()}
     </div>
   );
 }
 
 /* ── Main ChatPage ────────────────────────────────────────── */
 export function ChatPage({ settings }: ChatPageProps): ReactElement {
+  const { actions: session } = useSession();
   const initialHistory = useMemo(() => loadChatHistory(), []);
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<ChatMessageRecord[]>(initialHistory);
-  const [errorMessage, setErrorMessage] = useState<string>("");
+  const [categorizedError, setCategorizedError] = useState<CategorizedError | null>(null);
   const [sessionNote, setSessionNote] = useState<string>(
     initialHistory.length ? "已恢复历史会话" : ""
   );
@@ -513,10 +443,13 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const [executingActionId, setExecutingActionId] = useState<string>("");
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<ChatMessageRecord[]>(initialHistory);
+  const lastPromptRef = useRef<string>("");
   const threadRef = useRef<HTMLDivElement | null>(null);
+  const streamBufferRef = useRef<string>("");
+  const rafIdRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const localOnlyBlocked = !settings.allowCloudModels && !isLocalProvider(settings.provider);
+  const localOnlyBlocked = !settings.allowCloudModels && !isLocalProvider(settings.provider ?? "");
   const noWorkspaceSelected = !settings.workspacePath;
   const chatBlocked = localOnlyBlocked || noWorkspaceSelected;
 
@@ -554,7 +487,12 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
           if (idx >= 0) {
             return prev.map((m, i) =>
               i === idx
-                ? { ...m, plan: latest.payload.plan, toolTrace: latest.payload.toolTrace ?? m.toolTrace }
+                ? {
+                    ...m,
+                    plan: latest.payload.plan,
+                    toolTrace: latest.payload.toolTrace ?? m.toolTrace,
+                    tool_calls: buildToolCallsFromPlan(latest.payload.plan),
+                  }
                 : m
             );
           }
@@ -565,9 +503,11 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
             createdAt: new Date().toISOString(),
             plan: latest.payload.plan,
             toolTrace: latest.payload.toolTrace ?? [],
+            tool_calls: buildToolCallsFromPlan(latest.payload.plan),
           };
           return [...prev, recovered].slice(-80);
         });
+        hydrateHitlContinuationMemory(getChatSessionId(), latest.payload.continuationMemory);
         setSessionNote("已从 checkpoint 恢复审批状态");
       } catch { /* non-fatal */ }
     };
@@ -575,90 +515,72 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     return () => { cancelled = true; };
   }, []);
 
-  const buildActionSummaryText = (plan: OrchestrationPlan): string => {
-    const summaryLines = plan.proposedActions.map((action) => {
-      if (action.status === "rejected") {
-        return `[${action.type}] 用户拒绝了执行。原因：${action.executionResult?.message || "无"}`;
-      }
-      if (!action.executionResult) {
-        return `[${action.type}] 状态异常未执行`;
-      }
-      const resultLabel = action.executionResult.success ? "成功" : "失败";
-      let detailText = action.executionResult.message;
+  const collectBlockedActionFingerprints = (plan: OrchestrationPlan): string[] =>
+    plan.proposedActions
+      .filter((action) =>
+        action.status === "completed" || action.status === "rejected" || action.status === "failed"
+      )
+      .map((action) => action.fingerprint ?? actionFingerprint(action));
 
-      if (action.type === "apply_patch" && action.executionResult.metadata) {
-        const meta = action.executionResult.metadata;
-        const files = Array.isArray(meta.files)
-          ? meta.files.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          : [];
-        if (files.length > 0) {
-          const normalizedFiles = files.join("、");
-          detailText = action.executionResult.success
-            ? `已执行补丁。实际影响文件：${normalizedFiles}`
-            : `补丁执行失败。涉及文件：${normalizedFiles}。错误：${action.executionResult.message}`;
-        }
+  const continueAfterHitlIfNeeded = (messageId: string, plan: OrchestrationPlan): void => {
+    const currentTrace =
+      messagesRef.current.find((m) => m.id === messageId)?.toolTrace ?? [];
+
+    void advanceAfterHitl({
+      sessionId: getChatSessionId(),
+      messageId,
+      plan,
+      toolTrace: currentTrace
+    }).then((decision) => {
+      if (decision.kind === "stop") {
+        setSessionNote(decision.reason);
+        return;
       }
 
-      // For shell actions, include command details and output
-      if (action.type === "shell" && action.executionResult.metadata) {
-        const meta = action.executionResult.metadata;
-        const cmdInfo = [`命令: ${String(meta.command || "")}`];
-        if (meta.stdout && String(meta.stdout).trim()) {
-          cmdInfo.push(`标准输出:\n${String(meta.stdout).trim()}`);
-        }
-        if (meta.stderr && String(meta.stderr).trim()) {
-          cmdInfo.push(`标准错误:\n${String(meta.stderr).trim()}`);
-        }
-        cmdInfo.push(`退出码: ${String(meta.status ?? "unknown")}`);
-        detailText = cmdInfo.join("\n");
-      }
+      setSessionNote("审批结果已同步，正在继续完成剩余任务…");
 
-      return `[${action.type}] 执行${resultLabel}。详细信息：\n${detailText}`;
+      const toolMessages: ChatMessageRecord[] = decision.toolReplayMessages.map((tool: ToolReplayMessage) => ({
+        id: createMessageId("tool"),
+        role: "tool",
+        content: tool.content,
+        createdAt: new Date().toISOString(),
+        plan: null,
+        tool_call_id: tool.tool_call_id,
+        name: tool.name
+      }));
+
+      setMessages((prev) => {
+        const next = [...prev, ...toolMessages];
+        messagesRef.current = next;
+        return next;
+      });
+
+      setTimeout(
+        () =>
+          void runChatCycle(decision.prompt, {
+            visibleUserMessage: false,
+            isContinuation: true,
+            internalSystemNote: decision.internalSystemNote
+          }),
+        100
+      );
+    }).catch((err) => {
+      setSessionNote(`续跑状态机失败：${err instanceof Error ? err.message : "未知错误"}`);
     });
-    return [
-      "[系统通知] 计划中的所有审批动作已处理完毕。结果汇总：",
-      "",
-      summaryLines.join("\n\n"),
-      "",
-      "请继续完成任务或向用户汇报。"
-    ].join("\n");
-  };
-
-  const continueFromActionSummary = (plan: OrchestrationPlan): void => {
-    const internalSystemNote = buildActionSummaryText(plan);
-    console.log("[DEBUG] Sending action summary to LLM:", internalSystemNote);
-    console.log("[DEBUG] Plan state:", plan.state);
-    console.log("[DEBUG] Actions status:", plan.proposedActions.map(a => ({
-      id: a.id,
-      type: a.type,
-      status: a.status,
-      executed: a.executed,
-      hasResult: !!a.executionResult
-    })));
-
-    // Temporarily show the feedback message in the session note for debugging
-    setSessionNote(`[DEBUG] 发送给LLM的反馈: ${internalSystemNote.slice(0, 200)}...`);
-
-    const followUpPrompt = "请总结审批结果，并给出简短下一步建议。";
-    setTimeout(
-      () =>
-        void runChatCycle(followUpPrompt, {
-          visibleUserMessage: false,
-          internalSystemNote,
-          phase: "post_action_summary"
-        }),
-      100
-    );
   };
 
   const runChatCycle = async (
     promptText: string,
-    options: RunChatCycleOptions = {}
+    options: RunChatCycleOptions & { isContinuation?: boolean } = {}
   ): Promise<void> => {
     if (!promptText || isStreaming) return;
     const visibleUserMessage = options.visibleUserMessage !== false;
+    if (visibleUserMessage) {
+      resetHitlContinuationMemory(getChatSessionId());
+    }
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    lastPromptRef.current = promptText;
     const conversationHistory = toConversationHistory(messagesRef.current);
     const assistantMessageId = createMessageId("assistant");
     const now = new Date().toISOString();
@@ -684,8 +606,9 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     }
 
     setIsStreaming(true);
-    setErrorMessage("");
+    setCategorizedError(null);
     setSessionNote("正在回复…");
+    session.setWorkflowPhase("planning");
 
     try {
       const result = await runPlanningSession({
@@ -693,27 +616,78 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
         settings,
         phase: options.phase,
         conversationHistory,
+        isContinuation: options.isContinuation,
         internalSystemNote: options.internalSystemNote,
+        blockedActionFingerprints: visibleUserMessage
+          ? []
+          : messagesRef.current
+              .flatMap((message) => (message.plan ? collectBlockedActionFingerprints(message.plan) : [])),
         signal: controller.signal,
         onAssistantChunk: (chunk) => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMessageId ? { ...m, content: `${m.content}${chunk}` } : m
-            )
-          );
+          streamBufferRef.current += chunk;
+          if (rafIdRef.current === null) {
+            rafIdRef.current = requestAnimationFrame(() => {
+              const buffered = streamBufferRef.current;
+              streamBufferRef.current = "";
+              rafIdRef.current = null;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantMessageId ? { ...m, content: `${m.content}${buffered}` } : m
+                )
+              );
+            });
+          }
         },
       });
 
+      // Cancel any pending streaming buffer before final overwrite
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+      streamBufferRef.current = "";
+
       setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantMessageId
-            ? { ...m, content: result.assistantReply, plan: result.plan, toolTrace: result.toolTrace }
-            : m
-        )
+        prev.map((m) => {
+          if (m.id === assistantMessageId) {
+            let tool_calls: any[] | undefined = undefined;
+            if (result.plan && result.plan.proposedActions && result.plan.proposedActions.length > 0) {
+              tool_calls = result.plan.proposedActions.map((action: any) => ({
+                id: action.toolCallId || action.id,
+                type: "function",
+                function: {
+                  name: action.toolName || (action.type === "shell" ? "propose_shell" : "propose_file_edit"),
+                  arguments: JSON.stringify(action.payload)
+                }
+              }));
+            }
+            return { 
+              ...m, 
+              content: result.assistantReply, 
+              plan: result.plan, 
+              toolTrace: result.toolTrace,
+              tool_calls
+            };
+          }
+          return m;
+        })
       );
 
+      // Update session context for kitchen page
+      session.updatePlan(result.assistantReply);
+      session.appendToolTraces(result.toolTrace ?? []);
+      if (result.plan.proposedActions.length > 0) {
+        session.setWorkflowPhase("human_review");
+      } else {
+        session.setWorkflowPhase("done");
+      }
+
       void saveWorkflowCheckpoint(
-        getChatSessionId(), assistantMessageId, result.plan, result.toolTrace
+        getChatSessionId(),
+        assistantMessageId,
+        result.plan,
+        result.toolTrace,
+        getHitlContinuationMemory(getChatSessionId())
       ).catch((err) =>
         setSessionNote(`审批点未保存：${err instanceof Error ? err.message : "未知错误"}`)
       );
@@ -731,11 +705,16 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
         setSessionNote("已取消");
         return;
       }
-      const msg = error instanceof Error ? error.message : String(error || "请求失败，请检查网络与 LiteLLM 配置");
-      setErrorMessage(msg);
+      setCategorizedError(classifyError(error));
       setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
       setSessionNote("回复失败");
     } finally {
+      // Clean up any remaining stream state
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+      streamBufferRef.current = "";
       if (abortControllerRef.current === controller) abortControllerRef.current = null;
       setIsStreaming(false);
     }
@@ -754,17 +733,23 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   ): void => {
     let updatedPlan: OrchestrationPlan | null = null;
     let currentTrace: ToolExecutionTrace[] = [];
-    setMessages((prev) =>
-      prev.map((m) => {
+    setMessages((prev) => {
+      const next = prev.map((m) => {
         if (m.id !== messageId || !m.plan) return m;
         updatedPlan = updater(m.plan);
         currentTrace = m.toolTrace ?? [];
         return { ...m, plan: updatedPlan };
-      })
-    );
+      });
+      messagesRef.current = next;
+      return next;
+    });
     if (updatedPlan) {
       void saveWorkflowCheckpoint(
-        getChatSessionId(), messageId, updatedPlan, currentTrace
+        getChatSessionId(),
+        messageId,
+        updatedPlan,
+        currentTrace,
+        getHitlContinuationMemory(getChatSessionId())
       ).catch((err) =>
         setSessionNote(`审批点未保存：${err instanceof Error ? err.message : "未知错误"}`)
       );
@@ -778,33 +763,20 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   ): Promise<void> => {
     if (executingActionId) return;
     setExecutingActionId(actionId);
-    setErrorMessage("");
+    setCategorizedError(null);
     const runningPlan = markActionRunning(plan, actionId);
     handlePlanUpdate(messageId, () => runningPlan);
     try {
       const nextPlan = await approveAction(runningPlan, actionId, settings.workspacePath);
       handlePlanUpdate(messageId, () => nextPlan);
       setSessionNote(`动作 ${actionId} 已执行 · 状态：${nextPlan.state}`);
-      
-      // Check if there are any remaining pending actions
-      const hasPending = nextPlan.proposedActions.some(a => a.status === "pending");
-
-      if (!hasPending) {
-        continueFromActionSummary(nextPlan);
-      } else {
-        setSessionNote(`动作已执行，还有待审批动作`);
-      }
+      continueAfterHitlIfNeeded(messageId, nextPlan);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error || "动作执行失败");
       const errorPlan = markActionExecutionError(plan, actionId, reason);
       handlePlanUpdate(messageId, () => errorPlan);
-      setErrorMessage(reason);
-
-      // Check if there are any remaining pending actions
-      const hasPending = errorPlan.proposedActions.some(a => a.status === "pending");
-      if (!hasPending) {
-        continueFromActionSummary(errorPlan);
-      }
+      setCategorizedError(classifyError(error));
+      continueAfterHitlIfNeeded(messageId, errorPlan);
     } finally {
       setExecutingActionId("");
     }
@@ -824,14 +796,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     setTimeout(() => {
       if (newPlan) {
         const plan = newPlan as OrchestrationPlan;
-        const hasPending = plan.proposedActions.some(a => a.status === "pending");
-        if (!hasPending) {
-          void runChatCycle("请总结审批结果，并给出简短下一步建议。", {
-            visibleUserMessage: false,
-            internalSystemNote: buildActionSummaryText(plan),
-            phase: "post_action_summary"
-          });
-        }
+        continueAfterHitlIfNeeded(messageId, plan);
       }
     }, 100);
   };
@@ -842,12 +807,51 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     handlePlanUpdate(messageId, (p) => commentAction(p, actionId, comment));
   };
 
+  const handleApproveAllActions = async (
+    messageId: string,
+    plan: OrchestrationPlan
+  ): Promise<void> => {
+    if (executingActionId) return;
+    setExecutingActionId("batch-approve");
+    setCategorizedError(null);
+    try {
+      const nextPlan = await approveAllPendingActions(plan, settings.workspacePath);
+      handlePlanUpdate(messageId, () => nextPlan);
+      const completedCount = nextPlan.proposedActions.filter((a) => a.status === "completed").length;
+      setSessionNote(`已批量执行 ${completedCount} 个动作 · 状态：${nextPlan.state}`);
+      continueAfterHitlIfNeeded(messageId, nextPlan);
+    } catch (error) {
+      setCategorizedError(classifyError(error));
+    } finally {
+      setExecutingActionId("");
+    }
+  };
+
+  const handleRejectAllActions = (messageId: string): void => {
+    const reason = window.prompt("请输入批量拒绝原因", "Need refinement");
+    if (reason === null) return;
+    let newPlan: OrchestrationPlan | null = null;
+    handlePlanUpdate(messageId, (p) => {
+      newPlan = rejectAllPendingActions(p, reason);
+      return newPlan;
+    });
+    setSessionNote("已批量拒绝所有待审批动作");
+    setTimeout(() => {
+      if (newPlan) {
+        continueAfterHitlIfNeeded(messageId, newPlan as OrchestrationPlan);
+      }
+    }, 100);
+  };
+
   const handleClearHistory = (): void => {
     if (isStreaming || Boolean(executingActionId)) return;
+    const previousSessionId = getChatSessionId();
     clearChatHistory();
     resetChatSessionId();
+    resetHitlContinuationMemory(previousSessionId);
+    resetHitlContinuationMemory(getChatSessionId());
     setMessages([]);
-    setErrorMessage("");
+    setCategorizedError(null);
     setSessionNote("");
   };
 
@@ -929,6 +933,8 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                     onApprove={handleApproveAction}
                     onReject={handleRejectAction}
                     onComment={handleCommentAction}
+                    onApproveAll={handleApproveAllActions}
+                    onRejectAll={handleRejectAllActions}
                   />
                 )}
               </div>
@@ -939,8 +945,17 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
 
       {/* ── Input ── */}
       <div className="chat-input-area">
-        {errorMessage && (
-          <p className="status-error" style={{ margin: 0 }}>{errorMessage}</p>
+        {categorizedError && (
+          <ErrorBanner
+            error={categorizedError}
+            onRetry={categorizedError.retriable ? () => {
+              setCategorizedError(null);
+              if (lastPromptRef.current) {
+                void runChatCycle(lastPromptRef.current);
+              }
+            } : undefined}
+            onDismiss={() => setCategorizedError(null)}
+          />
         )}
         <form onSubmit={(e) => { e.preventDefault(); void handleSubmit(); }}>
           <div className="chat-input-box">

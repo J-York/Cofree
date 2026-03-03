@@ -17,15 +17,22 @@ export const CHAT_HISTORY_STORAGE_KEY = "cofree.chat.history.v1";
 
 export interface ChatMessageRecord {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool";
   content: string;
   createdAt: string;
   plan: OrchestrationPlan | null;
   toolTrace?: ToolExecutionTrace[];
-}
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }>;
+  tool_call_id?: string;
+  name?: string;
+  }
 
 function normalizeRole(value: unknown): ChatMessageRecord["role"] | null {
-  if (value === "user" || value === "assistant") {
+  if (value === "user" || value === "assistant" || value === "tool") {
     return value;
   }
 
@@ -131,8 +138,19 @@ export function loadChatHistory(): ChatMessageRecord[] {
       const content = typeof record.content === "string" ? record.content : "";
       const id = typeof record.id === "string" ? record.id : "";
       const createdAt = typeof record.createdAt === "string" ? record.createdAt : "";
+      
+      let tool_calls;
+      if (Array.isArray(record.tool_calls)) {
+        tool_calls = record.tool_calls.filter(tc => tc && typeof tc === "object" && typeof tc.id === "string");
+      }
 
-      if (!role || !content.trim() || !id || !createdAt) {
+      const tool_call_id = typeof record.tool_call_id === "string" ? record.tool_call_id : undefined;
+      const name = typeof record.name === "string" ? record.name : undefined;
+
+      // For tool role, content can be empty string, but for others it should exist unless there are tool_calls
+      const hasValidContent = content.trim() || role === "tool" || (role === "assistant" && tool_calls && tool_calls.length > 0);
+
+      if (!role || !id || !createdAt || !hasValidContent) {
         continue;
       }
 
@@ -142,7 +160,10 @@ export function loadChatHistory(): ChatMessageRecord[] {
         content,
         createdAt,
         plan: normalizePlan(record.plan),
-        toolTrace: normalizeToolTrace(record.toolTrace)
+        toolTrace: normalizeToolTrace(record.toolTrace),
+        tool_calls,
+        tool_call_id,
+        name
       });
     }
 
@@ -160,7 +181,19 @@ export function saveChatHistory(messages: ChatMessageRecord[]): void {
   const trimmedMessages = messages.slice(-80).map((message) => ({
     ...message,
     plan: null,
-    toolTrace: []
+    toolTrace: (message.toolTrace ?? []).slice(-20).map((trace) => ({
+      callId: trace.callId,
+      name: trace.name,
+      arguments: trace.arguments.slice(0, 240),
+      startedAt: trace.startedAt,
+      finishedAt: trace.finishedAt,
+      attempts: trace.attempts,
+      status: trace.status,
+      retried: trace.retried,
+      errorCategory: trace.errorCategory,
+      errorMessage: trace.errorMessage?.slice(0, 240),
+      resultPreview: trace.resultPreview?.slice(0, 240)
+    }))
   }));
   window.localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(trimmedMessages));
 }

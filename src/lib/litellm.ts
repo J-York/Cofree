@@ -11,6 +11,14 @@
 
 import type { AppSettings } from "./settingsStore";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+export interface StreamChunkEvent {
+  request_id: string;
+  content: string;
+  done: boolean;
+  finish_reason: string | null;
+}
 
 export interface ModelProvider {
   id: string;
@@ -111,6 +119,9 @@ export function defaultModelForProvider(providerId: string): string {
 }
 
 export function formatModelRef(providerId: string, model: string): string {
+  if (!providerId) {
+    return model;
+  }
   return `${providerId}/${model}`;
 }
 
@@ -218,11 +229,14 @@ function extractErrorMessage(payload: unknown): string {
 export function createLiteLLMClientConfig(settings: AppSettings): LiteLLMClientConfig {
   const [endpoint] = buildChatCompletionEndpoints(settings.liteLLMBaseUrl);
   const headers = createAuthHeaders(settings.apiKey);
+  const modelRef = settings.provider
+    ? formatModelRef(settings.provider, settings.model)
+    : settings.model;
 
   return {
     endpoint,
     headers,
-    modelRef: formatModelRef(settings.provider, settings.model)
+    modelRef
   };
 }
 
@@ -348,8 +362,11 @@ export function createLiteLLMRequestBody(
     toolChoice?: "auto" | "none" | { type: "function"; function: { name: string } };
   }
 ): Record<string, unknown> {
+  const modelRef = settings.provider
+    ? formatModelRef(settings.provider, settings.model)
+    : settings.model;
   const body: Record<string, unknown> = {
-    model: formatModelRef(settings.provider, settings.model),
+    model: modelRef,
     messages,
     temperature: options?.temperature ?? 0.2,
     stream: options?.stream ?? true
@@ -365,4 +382,42 @@ export function createLiteLLMRequestBody(
   }
 
   return body;
+}
+
+export async function postLiteLLMChatCompletionsStream(
+  settings: AppSettings,
+  body: Record<string, unknown>,
+  onChunk: (content: string) => void,
+): Promise<LiteLLMHttpResponse> {
+  const baseUrl = settings.liteLLMBaseUrl;
+  const apiKey = settings.apiKey;
+
+  const requestId = `stream-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+
+  // Listen for streaming events, filtering by request_id
+  let unlisten: UnlistenFn | undefined;
+  const listenerReady = listen<StreamChunkEvent>("llm-stream-chunk", (event) => {
+    if (event.payload.request_id === requestId && !event.payload.done && event.payload.content) {
+      onChunk(event.payload.content);
+    }
+  }).then((fn) => {
+    unlisten = fn;
+  });
+
+  await listenerReady;
+
+  try {
+    const response = await invoke<LiteLLMHttpResponse>(
+      "post_litellm_chat_completions_stream",
+      {
+        baseUrl,
+        apiKey,
+        body,
+        requestId,
+      }
+    );
+    return response;
+  } finally {
+    unlisten?.();
+  }
 }

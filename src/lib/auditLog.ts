@@ -146,3 +146,30 @@ export function recordSensitiveActionAudit(record: SensitiveActionAuditRecord): 
   const next = [safeRecord, ...readSensitiveActionAuditRecords()].slice(0, MAX_AUDIT_RECORDS);
   window.localStorage.setItem(ACTION_AUDIT_LOG_STORAGE_KEY, JSON.stringify({ records: next }));
 }
+
+/* ── Export functions ─────────────────────────────────── */
+
+export function exportAuditToJSON(): string {
+  const llm = readLLMAuditRecords();
+  const actions = readSensitiveActionAuditRecords();
+  return JSON.stringify({ llm, actions, exportedAt: new Date().toISOString() }, null, 2);
+}
+
+export function exportAuditToCSV(): string {
+  const llm = readLLMAuditRecords();
+  const actions = readSensitiveActionAuditRecords();
+
+  const llmHeader = "type,requestId,provider,model,timestamp,inputLength,outputLength";
+  const llmRows = llm.map(
+    (r) =>
+      `llm,"${r.requestId}","${r.provider}","${r.model}","${r.timestamp}",${r.inputLength},${r.outputLength}`
+  );
+
+  const actionHeader = "type,actionId,actionType,status,startedAt,finishedAt,executor,reason,workspacePath";
+  const actionRows = actions.map(
+    (r) =>
+      `action,"${r.actionId}","${r.actionType}","${r.status}","${r.startedAt}","${r.finishedAt}","${r.executor}","${r.reason.replace(/"/g, '""')}","${r.workspacePath}"`
+  );
+
+  return [llmHeader, ...llmRows, "", actionHeader, ...actionRows].join("\n");
+}

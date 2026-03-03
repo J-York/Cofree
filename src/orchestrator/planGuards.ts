@@ -86,6 +86,9 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
   const executed = asBoolean(record.executed, status === "completed");
   const executionResult = normalizeExecutionResult(record.executionResult);
   const payload = asRecord(record.payload) ?? {};
+  const toolCallId = typeof record.toolCallId === "string" ? record.toolCallId : undefined;
+  const toolName = typeof record.toolName === "string" ? record.toolName : undefined;
+  const fingerprint = typeof record.fingerprint === "string" ? record.fingerprint : undefined;
 
   if (record.type === "apply_patch") {
     return {
@@ -96,6 +99,9 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       status,
       executed,
       executionResult,
+      toolCallId,
+      toolName,
+      fingerprint,
       payload: {
         patch: asString(payload.patch, "")
       }
@@ -117,6 +123,9 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       status,
       executed,
       executionResult,
+      toolCallId,
+      toolName,
+      fingerprint,
       payload: {
         shell: shellCommand,
         timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000))
@@ -147,6 +156,9 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       status,
       executed,
       executionResult,
+      toolCallId,
+      toolName,
+      fingerprint,
       payload: {
         shell: shellCommand,
         timeoutMs: 120000
@@ -163,6 +175,9 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       status,
       executed,
       executionResult,
+      toolCallId,
+      toolName,
+      fingerprint,
       payload: {
         shell: asString(payload.shell, "pnpm build"),
         timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000))

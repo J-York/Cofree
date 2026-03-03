@@ -14,10 +14,40 @@ import { defaultModelForProvider } from "./litellm";
 
 export const SETTINGS_STORAGE_KEY = "cofree.settings.v1";
 
+export type ToolPermissionLevel = "auto" | "ask";
+
+export interface ToolPermissions {
+  list_files: ToolPermissionLevel;
+  read_file: ToolPermissionLevel;
+  grep: ToolPermissionLevel;
+  glob: ToolPermissionLevel;
+  git_status: ToolPermissionLevel;
+  git_diff: ToolPermissionLevel;
+  propose_file_edit: ToolPermissionLevel;
+  propose_apply_patch: ToolPermissionLevel;
+  propose_shell: ToolPermissionLevel;
+  diagnostics: ToolPermissionLevel;
+  fetch: ToolPermissionLevel;
+}
+
+export const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = {
+  list_files: "auto",
+  read_file: "auto",
+  grep: "auto",
+  glob: "auto",
+  git_status: "auto",
+  git_diff: "auto",
+  propose_file_edit: "ask",
+  propose_apply_patch: "ask",
+  propose_shell: "ask",
+  diagnostics: "auto",
+  fetch: "ask",
+};
+
 export interface AppSettings {
   apiKey: string;
   liteLLMBaseUrl: string;
-  provider: string;
+  provider?: string;
   model: string;
   allowCloudModels: boolean;
   maxSnippetLines: 200 | 500 | 2000;
@@ -25,12 +55,12 @@ export interface AppSettings {
   sendRelativePathOnly: boolean;
   lastSavedAt: string | null;
   workspacePath: string;
+  toolPermissions: ToolPermissions;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   apiKey: "",
   liteLLMBaseUrl: "http://localhost:4000",
-  provider: "openai",
   model: defaultModelForProvider("openai"),
   allowCloudModels: true,
   maxSnippetLines: 500,
@@ -38,6 +68,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sendRelativePathOnly: true,
   lastSavedAt: null,
   workspacePath: "",
+  toolPermissions: { ...DEFAULT_TOOL_PERMISSIONS },
 };
 
 type PersistedSettings = Omit<AppSettings, "apiKey"> & { apiKey?: string };
@@ -62,7 +93,7 @@ export function loadSettings(): AppSettings {
         ...parsed,
         apiKey: "",
         provider,
-        model: parsed.model?.trim() || defaultModelForProvider(provider)
+        model: parsed.model?.trim() || defaultModelForProvider(provider || "openai")
       };
       window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(migrated));
     }
@@ -72,7 +103,7 @@ export function loadSettings(): AppSettings {
       ...parsed,
       apiKey: "",
       provider,
-      model: parsed.model?.trim() || defaultModelForProvider(provider)
+      model: parsed.model?.trim() || defaultModelForProvider(provider || "openai")
     };
   } catch (_error) {
     return DEFAULT_SETTINGS;

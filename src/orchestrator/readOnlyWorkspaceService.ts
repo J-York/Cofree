@@ -278,10 +278,15 @@ export async function summarizeWorkspaceFilePurposes(workspacePath: string): Pro
       let content = "";
       if (file.size <= MAX_READ_BYTES) {
         try {
-          content = await invoke<string>("read_workspace_file", {
+          content = (await invoke<{
+            content: string;
+            total_lines: number;
+            start_line: number;
+            end_line: number;
+          }>("read_workspace_file", {
             workspacePath,
             relativePath: file.name
-          });
+          })).content;
         } catch (_error) {
           content = "";
         }

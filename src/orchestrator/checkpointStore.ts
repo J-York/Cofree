@@ -14,6 +14,7 @@ import type { OrchestrationPlan } from "./types";
 import { redactSensitiveText, sanitizeForPersistence } from "../lib/redaction";
 import { normalizeOrchestrationPlan } from "./planGuards";
 import type { ToolErrorCategory, ToolExecutionTrace } from "./planningService";
+import { normalizeHitlContinuationMemory, type HitlContinuationMemory } from "./hitlContinuationMachine";
 
 const CHAT_SESSION_KEY = "cofree.chat.session.v1";
 
@@ -70,6 +71,9 @@ function sanitizePlanForCheckpoint(plan: OrchestrationPlan): OrchestrationPlan {
       if (action.type === "apply_patch") {
         return {
           ...action,
+          toolCallId: typeof action.toolCallId === "string" ? action.toolCallId : undefined,
+          toolName: typeof action.toolName === "string" ? action.toolName : undefined,
+          fingerprint: typeof action.fingerprint === "string" ? action.fingerprint : undefined,
           executionResult: action.executionResult
             ? {
                 ...action.executionResult,
@@ -90,6 +94,9 @@ function sanitizePlanForCheckpoint(plan: OrchestrationPlan): OrchestrationPlan {
       if (action.type === "shell") {
         return {
           ...action,
+          toolCallId: typeof action.toolCallId === "string" ? action.toolCallId : undefined,
+          toolName: typeof action.toolName === "string" ? action.toolName : undefined,
+          fingerprint: typeof action.fingerprint === "string" ? action.fingerprint : undefined,
           executionResult: action.executionResult
             ? {
                 ...action.executionResult,
@@ -114,6 +121,7 @@ function sanitizePlanForCheckpoint(plan: OrchestrationPlan): OrchestrationPlan {
 export interface WorkflowCheckpointPayload {
   plan: OrchestrationPlan;
   toolTrace?: ToolExecutionTrace[];
+  continuationMemory?: HitlContinuationMemory;
 }
 
 function isToolErrorCategory(value: unknown): value is ToolErrorCategory {
@@ -187,11 +195,13 @@ export async function saveWorkflowCheckpoint(
   sessionId: string,
   messageId: string,
   plan: OrchestrationPlan,
-  toolTrace: ToolExecutionTrace[] = []
+  toolTrace: ToolExecutionTrace[] = [],
+  continuationMemory?: HitlContinuationMemory
 ): Promise<void> {
   const payload: WorkflowCheckpointPayload = {
     plan: sanitizePlanForCheckpoint(plan),
-    toolTrace: sanitizeToolTraceForCheckpoint(toolTrace)
+    toolTrace: sanitizeToolTraceForCheckpoint(toolTrace),
+    continuationMemory: continuationMemory ? sanitizeForPersistence(continuationMemory) as HitlContinuationMemory : undefined
   };
   await invoke("save_workflow_checkpoint", {
     sessionId,
@@ -225,7 +235,8 @@ export async function loadLatestWorkflowCheckpoint(
     messageId: result.checkpoint.message_id,
     payload: {
       plan: normalizedPlan,
-      toolTrace: normalizeToolTrace(parsed.toolTrace)
+      toolTrace: normalizeToolTrace(parsed.toolTrace),
+      continuationMemory: normalizeHitlContinuationMemory(parsed.continuationMemory)
     }
   };
 }

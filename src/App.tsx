@@ -11,6 +11,12 @@ import { type AppTab } from "./ui/components/NavTabs";
 import { ChatPage } from "./ui/pages/ChatPage";
 import { KitchenPage } from "./ui/pages/KitchenPage";
 import { SettingsPage } from "./ui/pages/SettingsPage";
+import {
+  SessionContext,
+  initialSessionState,
+  type SessionState,
+  type SessionActions,
+} from "./lib/sessionContext";
 
 const NAV_ITEMS: Array<{ key: AppTab; icon: string; label: string }> = [
   { key: "chat",     icon: "💬", label: "聊天" },
@@ -21,10 +27,32 @@ const NAV_ITEMS: Array<{ key: AppTab; icon: string; label: string }> = [
 export default function App(): ReactElement {
   const [activeTab, setActiveTab] = useState<AppTab>("chat");
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const [sessionState, setSessionState] = useState<SessionState>(initialSessionState);
+
+  const sessionActions: SessionActions = useMemo(
+    () => ({
+      updatePlan: (plan) =>
+        setSessionState((s) => ({ ...s, currentPlan: plan })),
+      appendToolTraces: (traces) =>
+        setSessionState((s) => ({
+          ...s,
+          toolTraces: [...s.toolTraces, ...traces],
+        })),
+      appendRequestSummary: (summary) =>
+        setSessionState((s) => ({
+          ...s,
+          requestSummaries: [...s.requestSummaries, summary],
+        })),
+      setWorkflowPhase: (phase) =>
+        setSessionState((s) => ({ ...s, workflowPhase: phase })),
+      resetSession: () => setSessionState(initialSessionState),
+    }),
+    []
+  );
 
   const runtimeSummary = useMemo(() => {
     if (!settings.allowCloudModels) return "Local-only";
-    return formatModelRef(settings.provider, settings.model);
+    return formatModelRef(settings.provider ?? "", settings.model);
   }, [settings.allowCloudModels, settings.model, settings.provider]);
 
   useEffect(() => {
@@ -44,7 +72,7 @@ export default function App(): ReactElement {
 
   const handleSaveSettings = async (nextSettings: AppSettings): Promise<void> => {
     const normalizedModel =
-      nextSettings.model.trim() || defaultModelForProvider(nextSettings.provider);
+      nextSettings.model.trim() || defaultModelForProvider(nextSettings.provider ?? "openai");
     const normalized: AppSettings = { ...nextSettings, model: normalizedModel };
     await saveSecureApiKey(normalized.apiKey);
     saveSettings(normalized);
@@ -52,6 +80,7 @@ export default function App(): ReactElement {
   };
 
   return (
+    <SessionContext.Provider value={{ state: sessionState, actions: sessionActions }}>
     <div className="app-shell">
       <div className="app-layout">
         {/* ── Sidebar ── */}
@@ -97,5 +126,6 @@ export default function App(): ReactElement {
         </main>
       </div>
     </div>
+    </SessionContext.Provider>
   );
 }

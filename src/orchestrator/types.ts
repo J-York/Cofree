@@ -40,6 +40,9 @@ interface ActionProposalBase {
   status: ActionStatus;
   executed: boolean;
   executionResult?: ActionExecutionResult;
+  toolCallId?: string;
+  toolName?: string;
+  fingerprint?: string;
 }
 
 export interface ApplyPatchActionProposal extends ActionProposalBase {

@@ -17,9 +17,13 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 git2 = "0.18"
 rfd = "0.14"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 dirs = "5.0"
+futures-util = "0.3"
+glob = "0.3"
+regex = "1"
+url = "2"
 
 [features]
 default = ["custom-protocol"]

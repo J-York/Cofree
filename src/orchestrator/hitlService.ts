@@ -17,6 +17,7 @@ import type {
   OrchestrationPlan,
   WorkflowState
 } from "./types";
+import { actionFingerprint } from "./planningService";
 
 interface PatchApplyResult {
   success: boolean;
@@ -49,6 +50,13 @@ function mapActions(
   updater: (action: ActionProposal) => ActionProposal
 ): ActionProposal[] {
   return plan.proposedActions.map((action) => (action.id === actionId ? updater(action) : action));
+}
+
+function ensureFingerprint(action: ActionProposal): string {
+  if (typeof action.fingerprint === "string" && action.fingerprint.trim()) {
+    return action.fingerprint;
+  }
+  return actionFingerprint(action);
 }
 
 function canRejectOrComment(action: ActionProposal): boolean {
@@ -112,6 +120,7 @@ export function rejectAction(
 
   const nextActions = mapActions(plan, actionId, (action) => ({
     ...action,
+    fingerprint: ensureFingerprint(action),
     status: "rejected",
     executed: false,
     executionResult: createExecutionResult(false, normalizedReason)
@@ -141,6 +150,7 @@ export function commentAction(
 
   const nextActions = mapActions(plan, actionId, (action) => ({
     ...action,
+    fingerprint: ensureFingerprint(action),
     executionResult: createExecutionResult(true, normalizedComment, {
       commentOnly: true
     })
@@ -160,7 +170,7 @@ export function updateActionPayload(
 ): OrchestrationPlan {
   const nextActions = mapActions(plan, actionId, (action) => {
     if (action.type === "apply_patch") {
-      return {
+      const nextAction: ActionProposal = {
         ...action,
         payload: {
           ...action.payload,
@@ -168,10 +178,14 @@ export function updateActionPayload(
             typeof payloadPatch.patch === "string" ? payloadPatch.patch : action.payload.patch
         }
       };
+      return {
+        ...nextAction,
+        fingerprint: ensureFingerprint(nextAction)
+      };
     }
 
     if (action.type === "shell") {
-      return {
+      const nextAction: ActionProposal = {
         ...action,
         payload: {
           ...action.payload,
@@ -183,6 +197,10 @@ export function updateActionPayload(
               : action.payload.timeoutMs
         }
       };
+      return {
+        ...nextAction,
+        fingerprint: ensureFingerprint(nextAction)
+      };
     }
 
     return action;
@@ -192,6 +210,47 @@ export function updateActionPayload(
     ...plan,
     proposedActions: nextActions
   };
+}
+
+export function rejectAllPendingActions(
+  plan: OrchestrationPlan,
+  reason: string
+): OrchestrationPlan {
+  const normalizedReason = reason.trim() || "Batch rejected by reviewer";
+  const nextActions = plan.proposedActions.map((action) => {
+    if (action.status !== "pending" && action.status !== "failed") {
+      return action;
+    }
+    return {
+      ...action,
+      fingerprint: ensureFingerprint(action),
+      status: "rejected" as const,
+      executed: false,
+      executionResult: createExecutionResult(false, normalizedReason)
+    };
+  });
+
+  return {
+    ...plan,
+    state: deriveWorkflowState(nextActions),
+    proposedActions: nextActions
+  };
+}
+
+export async function approveAllPendingActions(
+  plan: OrchestrationPlan,
+  workspacePath: string
+): Promise<OrchestrationPlan> {
+  let currentPlan = plan;
+  const pendingActionIds = plan.proposedActions
+    .filter((action) => action.status === "pending")
+    .map((action) => action.id);
+
+  for (const actionId of pendingActionIds) {
+    currentPlan = await approveAction(currentPlan, actionId, workspacePath);
+  }
+
+  return currentPlan;
 }
 
 export async function approveAction(
@@ -278,6 +337,7 @@ export async function approveAction(
 
   const nextActions = mapActions(plan, actionId, (entry) => ({
     ...entry,
+    fingerprint: ensureFingerprint(entry),
     status: result.success ? "completed" : "failed",
     executed: result.success,
     executionResult: result

@@ -1,50 +1,89 @@
-import type { ReactElement } from "react";
+import { type ReactElement, useMemo, useState } from "react";
+import { useSession, type WorkflowPhase } from "../../lib/sessionContext";
+import {
+  readLLMAuditRecords,
+  readSensitiveActionAuditRecords,
+  exportAuditToJSON,
+  exportAuditToCSV,
+} from "../../lib/auditLog";
+import { invoke } from "@tauri-apps/api/core";
 
-const AGENTS = [
-  {
-    icon: "🧠",
-    name: "Planner",
-    role: "规划师",
-    status: "planning",
-    statusLabel: "规划动作中",
-    statusClass: "badge-warning",
-  },
-  {
-    icon: "💻",
-    name: "Coder",
-    role: "编码员",
-    status: "waiting",
-    statusLabel: "等待审批门",
-    statusClass: "badge-default",
-  },
-  {
-    icon: "🧪",
-    name: "Tester",
-    role: "测试员",
-    status: "waiting",
-    statusLabel: "等待执行结果",
-    statusClass: "badge-default",
-  },
-];
+const FLOW_STEPS: WorkflowPhase[] = ["idle", "planning", "executing", "human_review", "done"];
 
-const FLOW_STEPS = ["planning", "executing", "human_review", "done"];
+const PHASE_LABELS: Record<WorkflowPhase, string> = {
+  idle: "空闲",
+  planning: "规划中",
+  executing: "执行中",
+  human_review: "人工审批",
+  done: "完成",
+  error: "出错",
+};
+
+type AuditTab = "llm" | "action";
 
 export function KitchenPage(): ReactElement {
+  const { state } = useSession();
+  const [auditTab, setAuditTab] = useState<AuditTab>("llm");
+
+  const llmRecords = useMemo(() => readLLMAuditRecords(), [auditTab]);
+  const actionRecords = useMemo(() => readSensitiveActionAuditRecords(), [auditTab]);
+
+  const totalInputTokens = useMemo(
+    () => state.requestSummaries.reduce((sum, r) => sum + r.inputTokens, 0),
+    [state.requestSummaries]
+  );
+  const totalOutputTokens = useMemo(
+    () => state.requestSummaries.reduce((sum, r) => sum + r.outputTokens, 0),
+    [state.requestSummaries]
+  );
+  const totalDurationMs = useMemo(
+    () => state.requestSummaries.reduce((sum, r) => sum + r.durationMs, 0),
+    [state.requestSummaries]
+  );
+
+  const handleExportJSON = async () => {
+    try {
+      const content = exportAuditToJSON();
+      await invoke("save_file_dialog", {
+        fileName: `cofree-audit-${Date.now()}.json`,
+        content,
+      });
+    } catch (_) {
+      // User cancelled or error
+    }
+  };
+
+  const handleExportCSV = async () => {
+    try {
+      const content = exportAuditToCSV();
+      await invoke("save_file_dialog", {
+        fileName: `cofree-audit-${Date.now()}.csv`,
+        content,
+      });
+    } catch (_) {
+      // User cancelled or error
+    }
+  };
+
   return (
     <div className="page-content">
       <div className="page-header">
         <h1 className="page-title">厨房</h1>
-        <p className="page-subtitle">HITL 工作流状态看板 · Milestone 3</p>
+        <p className="page-subtitle">工作流状态 · 工具追踪 · 审计日志</p>
       </div>
 
-      {/* Workflow flow */}
+      {/* ── Workflow Phase ── */}
       <div className="card">
-        <p className="card-title">当前工作流</p>
+        <p className="card-title">工作流状态</p>
         <div className="kitchen-flow">
           {FLOW_STEPS.map((step, i) => (
             <div key={step} className="kitchen-flow-step">
-              <span className={`kitchen-flow-label${step === "planning" ? " active" : ""}`}>
-                {step}
+              <span
+                className={`kitchen-flow-label${
+                  state.workflowPhase === step ? " active" : ""
+                }`}
+              >
+                {PHASE_LABELS[step]}
               </span>
               {i < FLOW_STEPS.length - 1 && (
                 <span className="kitchen-flow-arrow">→</span>
@@ -54,28 +93,154 @@ export function KitchenPage(): ReactElement {
         </div>
       </div>
 
-      {/* Agent cards */}
-      <div className="kitchen-grid">
-        {AGENTS.map((agent) => (
-          <div key={agent.name} className="kitchen-agent-card">
-            <div className="kitchen-agent-icon">{agent.icon}</div>
-            <div>
-              <h3 className="kitchen-agent-name">{agent.name}</h3>
-              <p className="kitchen-agent-status">{agent.role}</p>
-            </div>
-            <span className={`badge ${agent.statusClass}`}>{agent.statusLabel}</span>
-          </div>
-        ))}
+      {/* ── Stats Grid ── */}
+      <div className="kitchen-stats-grid">
+        <div className="kitchen-stat">
+          <span className="kitchen-stat-value">{state.requestSummaries.length}</span>
+          <span className="kitchen-stat-label">LLM 请求数</span>
+        </div>
+        <div className="kitchen-stat">
+          <span className="kitchen-stat-value">{state.toolTraces.length}</span>
+          <span className="kitchen-stat-label">工具调用数</span>
+        </div>
+        <div className="kitchen-stat">
+          <span className="kitchen-stat-value">
+            {totalInputTokens > 0 ? `${Math.round(totalInputTokens / 1000)}k` : "—"}
+          </span>
+          <span className="kitchen-stat-label">输入 Tokens</span>
+        </div>
+        <div className="kitchen-stat">
+          <span className="kitchen-stat-value">
+            {totalOutputTokens > 0 ? `${Math.round(totalOutputTokens / 1000)}k` : "—"}
+          </span>
+          <span className="kitchen-stat-label">输出 Tokens</span>
+        </div>
+        <div className="kitchen-stat">
+          <span className="kitchen-stat-value">
+            {totalDurationMs > 0 ? `${(totalDurationMs / 1000).toFixed(1)}s` : "—"}
+          </span>
+          <span className="kitchen-stat-label">总耗时</span>
+        </div>
       </div>
 
-      {/* Info card */}
-      <div className="card card-sm">
-        <p className="card-title">说明</p>
-        <p className="status-note" style={{ lineHeight: 1.7 }}>
-          厨房看板展示 AI 多智能体协作状态。Planner 负责分解任务并生成动作提案，
-          Coder 等待用户在聊天区审批后执行，Tester 在执行完成后验证结果。
-          所有敏感动作均需经过 HITL（Human-in-the-Loop）审批门。
-        </p>
+      {/* ── Tool Call Timeline ── */}
+      <div className="card">
+        <p className="card-title">工具调用追踪</p>
+        {state.toolTraces.length === 0 ? (
+          <p className="status-note">暂无工具调用记录。发送消息后将显示详细追踪。</p>
+        ) : (
+          <div className="kitchen-timeline">
+            {state.toolTraces.map((trace, i) => (
+              <div
+                key={`${trace.name}-${i}`}
+                className={`kitchen-timeline-item ${
+                  trace.status === "success" ? "success" : "failed"
+                }`}
+              >
+                <div className="kitchen-timeline-dot" />
+                <div className="kitchen-timeline-content">
+                  <div className="kitchen-timeline-head">
+                    <span className="kitchen-timeline-name">{trace.name}</span>
+                    <span
+                      className={`badge ${
+                        trace.status === "success" ? "badge-success" : "badge-error"
+                      }`}
+                    >
+                      {trace.status === "success" ? "成功" : "失败"}
+                    </span>
+                    {trace.startedAt && trace.finishedAt && (
+                      <span className="badge badge-default">
+                        {new Date(trace.finishedAt).getTime() - new Date(trace.startedAt).getTime()}ms
+                      </span>
+                    )}
+                  </div>
+                  {trace.resultPreview && (
+                    <pre className="kitchen-timeline-preview">
+                      {trace.resultPreview.slice(0, 200)}
+                    </pre>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Audit Log ── */}
+      <div className="card">
+        <div className="audit-header">
+          <p className="card-title" style={{ margin: 0 }}>审计日志</p>
+          <div className="btn-row">
+            <button className="btn btn-ghost btn-sm" onClick={handleExportJSON} type="button">
+              导出 JSON
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={handleExportCSV} type="button">
+              导出 CSV
+            </button>
+          </div>
+        </div>
+
+        <div className="audit-tabs">
+          <button
+            className={`btn btn-sm ${auditTab === "llm" ? "btn-primary" : "btn-ghost"}`}
+            onClick={() => setAuditTab("llm")}
+            type="button"
+          >
+            LLM 请求 ({llmRecords.length})
+          </button>
+          <button
+            className={`btn btn-sm ${auditTab === "action" ? "btn-primary" : "btn-ghost"}`}
+            onClick={() => setAuditTab("action")}
+            type="button"
+          >
+            敏感操作 ({actionRecords.length})
+          </button>
+        </div>
+
+        {auditTab === "llm" && (
+          <div className="audit-list">
+            {llmRecords.length === 0 ? (
+              <p className="status-note">暂无 LLM 请求记录。</p>
+            ) : (
+              llmRecords.slice(0, 50).map((r) => (
+                <div key={r.requestId} className="audit-item">
+                  <div className="audit-item-head">
+                    <span className="audit-item-model">{r.provider}/{r.model}</span>
+                    <span className="audit-item-time">{new Date(r.timestamp).toLocaleString()}</span>
+                  </div>
+                  <div className="audit-item-meta">
+                    <span>入 {r.inputLength} 字符</span>
+                    <span>出 {r.outputLength} 字符</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {auditTab === "action" && (
+          <div className="audit-list">
+            {actionRecords.length === 0 ? (
+              <p className="status-note">暂无敏感操作记录。</p>
+            ) : (
+              actionRecords.slice(0, 50).map((r) => (
+                <div key={r.actionId} className="audit-item">
+                  <div className="audit-item-head">
+                    <span className="audit-item-model">{r.actionType}</span>
+                    <span className={`badge ${r.status === "success" ? "badge-success" : "badge-error"}`}>
+                      {r.status}
+                    </span>
+                    <span className="audit-item-time">{new Date(r.startedAt).toLocaleString()}</span>
+                  </div>
+                  <div className="audit-item-meta">
+                    <span>{r.executor}</span>
+                    {r.reason && <span>{r.reason.slice(0, 80)}</span>}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>快速排序可视化</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --muted: #94a3b8;
+        --text: #e5e7eb;
+        --bar: #60a5fa;
+        --compare: #f59e0b;
+        --pivot: #34d399;
+        --swap: #f43f5e;
+        --sorted: #22c55e;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: radial-gradient(circle at top, #1e293b 0%, var(--bg) 55%);
+        color: var(--text);
+        min-height: 100vh;
+      }
+      .app { max-width: 1100px; margin: 0 auto; padding: 20px; }
+      h1 { margin: 8px 0 14px; font-size: 28px; }
+      .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+      .panel {
+        background: color-mix(in oklab, var(--panel) 88%, white 12%);
+        border: 1px solid #334155;
+        border-radius: 14px;
+        padding: 14px;
+      }
+      button, input, select {
+        background: #0b1220;
+        color: var(--text);
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 9px 12px;
+      }
+      button { cursor: pointer; }
+      button:disabled { opacity: .5; cursor: not-allowed; }
+      .grow { flex: 1; }
+      .bars {
+        height: 360px;
+        display: flex;
+        align-items: flex-end;
+        gap: 4px;
+        padding: 12px;
+        border-radius: 12px;
+        background: #020617;
+        border: 1px solid #1f2937;
+        overflow: hidden;
+      }
+      .bar {
+        flex: 1;
+        min-width: 12px;
+        background: var(--bar);
+        border-radius: 6px 6px 0 0;
+        transition: height 140ms linear, background 120ms linear;
+      }
+      .bar.compare { background: var(--compare); }
+      .bar.pivot { background: var(--pivot); }
+      .bar.swap { background: var(--swap); }
+      .bar.sorted { background: var(--sorted); }
+      .meta { color: var(--muted); font-size: 14px; }
+      .log {
+        margin-top: 12px;
+        max-height: 220px;
+        overflow: auto;
+        padding: 8px;
+        border-radius: 10px;
+        background: #020617;
+        border: 1px solid #1f2937;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+      }
+      .log div { padding: 4px 0; border-bottom: 1px dashed #1f2937; }
+      .stats { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 10px; }
+      .chip { background: #0b1220; border: 1px solid #334155; border-radius: 10px; padding: 8px; }
+      .chip b { display: block; font-size: 18px; }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <h1>快速排序（Quicksort）可视化细节演示</h1>
+      <div class="row panel">
+        <button id="regen">重新生成数组</button>
+        <button id="start">开始</button>
+        <button id="pause">暂停</button>
+        <button id="step">单步</button>
+        <label class="meta">规模
+          <input id="size" type="range" min="8" max="70" value="30" />
+          <span id="sizeLabel">30</span>
+        </label>
+        <label class="meta">速度(ms)
+          <input id="speed" type="range" min="20" max="500" value="90" />
+          <span id="speedLabel">90</span>
+        </label>
+        <div class="grow"></div>
+        <label class="meta">Pivot 选择
+          <select id="pivotMode">
+            <option value="last">末尾元素</option>
+            <option value="middle">中间元素</option>
+            <option value="random">随机元素</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="panel" style="margin-top:12px;">
+        <div class="stats">
+          <div class="chip"><span class="meta">比较次数</span><b id="cmp">0</b></div>
+          <div class="chip"><span class="meta">交换次数</span><b id="swp">0</b></div>
+          <div class="chip"><span class="meta">递归深度(最大)</span><b id="depth">0</b></div>
+          <div class="chip"><span class="meta">当前区间</span><b id="range">-</b></div>
+        </div>
+        <p id="explain" class="meta" style="margin-top:10px;">点击“开始”查看每次分区、比较与交换。</p>
+        <div id="bars" class="bars"></div>
+        <div id="log" class="log"></div>
+      </div>
+    </div>
+
+    <script>
+      const barsEl = document.getElementById('bars');
+      const logEl = document.getElementById('log');
+      const explainEl = document.getElementById('explain');
+      const cmpEl = document.getElementById('cmp');
+      const swpEl = document.getElementById('swp');
+      const depthEl = document.getElementById('depth');
+      const rangeEl = document.getElementById('range');
+
+      const size = document.getElementById('size');
+      const speed = document.getElementById('speed');
+      const sizeLabel = document.getElementById('sizeLabel');
+      const speedLabel = document.getElementById('speedLabel');
+      const pivotMode = document.getElementById('pivotMode');
+
+      let arr = [];
+      let ops = [];
+      let opIndex = 0;
+      let timer = null;
+      let running = false;
+      let comparisons = 0;
+      let swaps = 0;
+      let maxDepth = 0;
+
+      const log = (text) => {
+        const div = document.createElement('div');
+        div.textContent = text;
+        logEl.prepend(div);
+        if (logEl.children.length > 120) logEl.removeChild(logEl.lastChild);
+      };
+
+      function randomArray(n) {
+        return Array.from({ length: n }, () => Math.floor(Math.random() * 95) + 5);
+      }
+
+      function draw(state = {}) {
+        barsEl.innerHTML = '';
+        const max = Math.max(...arr, 1);
+        for (let i = 0; i < arr.length; i++) {
+          const bar = document.createElement('div');
+          bar.className = 'bar';
+          if (state.sorted?.has(i)) bar.classList.add('sorted');
+          if (state.compare?.includes(i)) bar.classList.add('compare');
+          if (state.pivot === i) bar.classList.add('pivot');
+          if (state.swap?.includes(i)) bar.classList.add('swap');
+          bar.style.height = `${(arr[i] / max) * 100}%`;
+          barsEl.appendChild(bar);
+        }
+      }
+
+      function pushOp(type, payload) { ops.push({ type, ...payload }); }
+
+      function choosePivot(l, r) {
+        if (pivotMode.value === 'middle') return Math.floor((l + r) / 2);
+        if (pivotMode.value === 'random') return Math.floor(Math.random() * (r - l + 1)) + l;
+        return r;
+      }
+
+      function buildOps(source) {
+        const a = [...source];
+        const sorted = new Set();
+        ops = [];
+        comparisons = 0;
+        swaps = 0;
+        maxDepth = 0;
+
+        const swapLocal = (i, j) => {
+          if (i === j) return;
+          [a[i], a[j]] = [a[j], a[i]];
+          swaps++;
+          pushOp('swap', { i, j, snapshot: [...a], swaps });
+        };
+
+        const partition = (l, r, depth) => {
+          const pIdx = choosePivot(l, r);
+          swapLocal(pIdx, r);
+          const pivot = a[r];
+          pushOp('pivot', { l, r, pivotIndex: r, pivotValue: pivot, snapshot: [...a], depth });
+          let i = l - 1;
+          for (let j = l; j < r; j++) {
+            comparisons++;
+            pushOp('compare', { i: j, pivotIndex: r, l, r, snapshot: [...a], comparisons, depth });
+            if (a[j] <= pivot) {
+              i++;
+              swapLocal(i, j);
+            }
+          }
+          swapLocal(i + 1, r);
+          pushOp('partition_done', { p: i + 1, l, r, snapshot: [...a], depth });
+          return i + 1;
+        };
+
+        const qs = (l, r, depth) => {
+          maxDepth = Math.max(maxDepth, depth);
+          if (l > r) return;
+          if (l === r) {
+            sorted.add(l);
+            pushOp('sorted_mark', { idx: l, snapshot: [...a], sorted: new Set(sorted), depth });
+            return;
+          }
+          pushOp('range', { l, r, snapshot: [...a], depth });
+          const p = partition(l, r, depth);
+          sorted.add(p);
+          pushOp('sorted_mark', { idx: p, snapshot: [...a], sorted: new Set(sorted), depth });
+          qs(l, p - 1, depth + 1);
+          qs(p + 1, r, depth + 1);
+        };
+
+        qs(0, a.length - 1, 1);
+        for (let i = 0; i < a.length; i++) sorted.add(i);
+        pushOp('done', { snapshot: [...a], sorted });
+      }
+
+      function applyOp(op) {
+        arr = [...op.snapshot];
+        cmpEl.textContent = String(op.comparisons ?? comparisons);
+        swpEl.textContent = String(op.swaps ?? swaps);
+        depthEl.textContent = String(Math.max(maxDepth, op.depth ?? 0));
+
+        if (op.type === 'range') {
+          rangeEl.textContent = `[${op.l}, ${op.r}]`;
+          explainEl.textContent = `处理区间 [${op.l}, ${op.r}]，准备分区。`;
+          draw({});
+          log(`进入区间 [${op.l}, ${op.r}]`);
+          return;
+        }
+        if (op.type === 'pivot') {
+          rangeEl.textContent = `[${op.l}, ${op.r}]`;
+          explainEl.textContent = `选择 pivot = ${op.pivotValue}（索引 ${op.pivotIndex}）。`;
+          draw({ pivot: op.pivotIndex });
+          log(`Pivot=${op.pivotValue} @${op.pivotIndex}`);
+          return;
+        }
+        if (op.type === 'compare') {
+          explainEl.textContent = `比较 A[${op.i}] 与 pivot。`;
+          draw({ compare: [op.i], pivot: op.pivotIndex });
+          log(`比较: A[${op.i}] ? pivot`);
+          return;
+        }
+        if (op.type === 'swap') {
+          explainEl.textContent = `交换 A[${op.i}] 与 A[${op.j}]。`;
+          draw({ swap: [op.i, op.j] });
+          log(`交换: ${op.i} <-> ${op.j}`);
+          return;
+        }
+        if (op.type === 'partition_done') {
+          explainEl.textContent = `分区完成，pivot 最终位置是 ${op.p}。`;
+          draw({});
+          log(`分区完成: pivot -> ${op.p}`);
+          return;
+        }
+        if (op.type === 'sorted_mark') {
+          explainEl.textContent = `索引 ${op.idx} 已就位。`;
+          draw({ sorted: op.sorted });
+          log(`已就位: ${op.idx}`);
+          return;
+        }
+        if (op.type === 'done') {
+          explainEl.textContent = '排序完成。';
+          rangeEl.textContent = '-';
+          draw({ sorted: op.sorted });
+          log('排序完成 ✅');
+        }
+      }
+
+      function tick() {
+        if (!running) return;
+        if (opIndex >= ops.length) {
+          running = false;
+          clearInterval(timer);
+          timer = null;
+          return;
+        }
+        applyOp(ops[opIndex++]);
+      }
+
+      function start() {
+        if (!ops.length) {
+          buildOps(arr);
+          opIndex = 0;
+        }
+        if (running) return;
+        running = true;
+        clearInterval(timer);
+        timer = setInterval(tick, Number(speed.value));
+      }
+
+      function pause() {
+        running = false;
+        clearInterval(timer);
+        timer = null;
+      }
+
+      function step() {
+        if (!ops.length) {
+          buildOps(arr);
+          opIndex = 0;
+        }
+        if (opIndex < ops.length) applyOp(ops[opIndex++]);
+      }
+
+      function regen() {
+        pause();
+        arr = randomArray(Number(size.value));
+        ops = [];
+        opIndex = 0;
+        comparisons = 0;
+        swaps = 0;
+        maxDepth = 0;
+        cmpEl.textContent = '0';
+        swpEl.textContent = '0';
+        depthEl.textContent = '0';
+        rangeEl.textContent = '-';
+        explainEl.textContent = '点击“开始”查看每次分区、比较与交换。';
+        logEl.innerHTML = '';
+        draw({});
+      }
+
+      document.getElementById('regen').onclick = regen;
+      document.getElementById('start').onclick = start;
+      document.getElementById('pause').onclick = pause;
+      document.getElementById('step').onclick = step;
+      size.oninput = () => { sizeLabel.textContent = size.value; regen(); };
+      speed.oninput = () => {
+        speedLabel.textContent = speed.value;
+        if (running) {
+          clearInterval(timer);
+          timer = setInterval(tick, Number(speed.value));
+        }
+      };
+      pivotMode.onchange = () => { regen(); };
+
+      sizeLabel.textContent = size.value;
+      speedLabel.textContent = speed.value;
+      regen();
+    </script>
+  </body>
+</html>
