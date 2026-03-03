@@ -241,13 +241,105 @@ export async function approveAllPendingActions(
   plan: OrchestrationPlan,
   workspacePath: string
 ): Promise<OrchestrationPlan> {
-  let currentPlan = plan;
-  const pendingActionIds = plan.proposedActions
-    .filter((action) => action.status === "pending")
-    .map((action) => action.id);
+  if (!workspacePath.trim()) {
+    throw new Error("未选择工作区，无法执行审批动作。");
+  }
 
-  for (const actionId of pendingActionIds) {
-    currentPlan = await approveAction(currentPlan, actionId, workspacePath);
+  const pendingActions = plan.proposedActions.filter(
+    (action) => action.status === "pending"
+  );
+
+  if (pendingActions.length === 0) {
+    return plan;
+  }
+
+  const patchActions = pendingActions.filter((a) => a.type === "apply_patch");
+  const shellActions = pendingActions.filter((a) => a.type === "shell");
+
+  // ── Atomic batch: create a single snapshot covering all patch actions ──
+  // If any patch fails, we rollback ALL patches applied in this batch.
+  let batchSnapshotId: string | null = null;
+  const batchSnapshotFiles: string[] = [];
+
+  if (patchActions.length > 1) {
+    // Merge all patches into one combined patch for a single snapshot
+    const combinedPatch = patchActions
+      .map((a) => a.payload.patch)
+      .join("\n");
+    try {
+      const snapshot = await invoke<SnapshotResult>("create_workspace_snapshot", {
+        workspacePath,
+        patch: combinedPatch
+      });
+      if (snapshot.success) {
+        batchSnapshotId = snapshot.snapshot_id;
+        batchSnapshotFiles.push(...snapshot.files);
+      }
+    } catch {
+      // Snapshot creation failed — proceed without atomic guarantee
+      // (falls back to per-action snapshots via approveAction)
+    }
+  }
+
+  let currentPlan = plan;
+  let batchFailed = false;
+  const appliedPatchIds: string[] = [];
+
+  // Apply patch actions first (they form the atomic unit)
+  for (const action of patchActions) {
+    currentPlan = await approveAction(currentPlan, action.id, workspacePath);
+    const updatedAction = currentPlan.proposedActions.find(
+      (a) => a.id === action.id
+    );
+    if (updatedAction?.executionResult?.success) {
+      appliedPatchIds.push(action.id);
+    } else {
+      batchFailed = true;
+      break;
+    }
+  }
+
+  // If any patch failed and we have a batch snapshot, rollback everything
+  if (batchFailed && batchSnapshotId) {
+    try {
+      const rollback = await invoke<PatchApplyResult>("restore_workspace_snapshot", {
+        workspacePath,
+        snapshotId: batchSnapshotId
+      });
+      const rollbackMsg = rollback.success
+        ? "批量补丁中有失败项，已原子回滚全部已应用的补丁。"
+        : "批量补丁中有失败项，原子回滚失败，部分补丁可能已生效。";
+
+      // Mark all patch actions in the batch as failed with rollback info
+      const nextActions = currentPlan.proposedActions.map((a) => {
+        if (a.type !== "apply_patch" || !pendingActions.find((p) => p.id === a.id)) {
+          return a;
+        }
+        return {
+          ...a,
+          fingerprint: ensureFingerprint(a),
+          status: "failed" as const,
+          executed: false,
+          executionResult: createExecutionResult(false, rollbackMsg, {
+            atomicRollback: true,
+            batchSnapshotId,
+            rollbackSuccess: rollback.success
+          })
+        };
+      });
+      currentPlan = {
+        ...currentPlan,
+        state: deriveWorkflowState(nextActions),
+        proposedActions: nextActions
+      };
+    } catch {
+      // Rollback invocation failed — leave current state as-is
+    }
+  }
+
+  // Apply shell actions (not part of the atomic patch unit)
+  for (const action of shellActions) {
+    currentPlan = await approveAction(currentPlan, action.id, workspacePath);
   }
 
   return currentPlan;

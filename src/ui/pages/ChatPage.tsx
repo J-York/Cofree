@@ -472,28 +472,87 @@ function InlinePlan({
           const pendingCount = safePlan.proposedActions.filter(
             (a) => a.status === "pending"
           ).length;
+          const pendingPatchActions = safePlan.proposedActions.filter(
+            (a): a is import("../../orchestrator/types").ApplyPatchActionProposal =>
+              a.status === "pending" && a.type === "apply_patch"
+          );
+          // Extract affected files from patch descriptions for batch summary
+          const batchAffectedFiles = Array.from(
+            new Set(
+              pendingPatchActions.flatMap((a) => {
+                const matches = a.payload.patch.match(
+                  /^diff --git a\/(.+?) b\//gm
+                );
+                if (matches) {
+                  return matches.map((m: string) =>
+                    m.replace(/^diff --git a\//, "").replace(/ b\/$/, "").trim()
+                  );
+                }
+                // Fallback: extract from description
+                const descMatch = a.description.match(
+                  /(?:编辑|创建|修改|删除)\s+(.+?)(?:\s|$)/
+                );
+                return descMatch ? [descMatch[1]] : [];
+              })
+            )
+          );
           return (
             <>
               {pendingCount > 1 && (
-                <div
-                  style={{ display: "flex", gap: "8px", marginBottom: "8px" }}
-                >
-                  <button
-                    className="btn btn-primary btn-sm"
-                    disabled={Boolean(executingActionId)}
-                    onClick={() => void onApproveAll(messageId, plan)}
-                    type="button"
-                  >
-                    ✓ 全部批准 ({pendingCount})
-                  </button>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    disabled={Boolean(executingActionId)}
-                    onClick={() => onRejectAll(messageId)}
-                    type="button"
-                  >
-                    ✕ 全部拒绝
-                  </button>
+                <div style={{ marginBottom: "8px" }}>
+                  {batchAffectedFiles.length > 0 && (
+                    <div
+                      style={{
+                        fontSize: "12px",
+                        color: "var(--text-3)",
+                        marginBottom: "6px",
+                        padding: "4px 8px",
+                        background: "var(--bg-2, #f5f5f5)",
+                        borderRadius: "4px",
+                        lineHeight: "1.6",
+                      }}
+                    >
+                      <strong>批量变更涉及 {batchAffectedFiles.length} 个文件</strong>
+                      {pendingPatchActions.length > 1 && (
+                        <span style={{ marginLeft: "4px", opacity: 0.7 }}>
+                          (原子执行：全部成功或全部回滚)
+                        </span>
+                      )}
+                      <div style={{ marginTop: "2px" }}>
+                        {batchAffectedFiles.map((f) => (
+                          <span
+                            key={f}
+                            style={{
+                              display: "inline-block",
+                              marginRight: "8px",
+                              fontFamily: "monospace",
+                              fontSize: "11px",
+                            }}
+                          >
+                            📄 {f}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      disabled={Boolean(executingActionId)}
+                      onClick={() => void onApproveAll(messageId, plan)}
+                      type="button"
+                    >
+                      ✓ 全部批准 ({pendingCount})
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      disabled={Boolean(executingActionId)}
+                      onClick={() => onRejectAll(messageId)}
+                      type="button"
+                    >
+                      ✕ 全部拒绝
+                    </button>
+                  </div>
                 </div>
               )}
               <ul className="action-list">

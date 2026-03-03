@@ -23,6 +23,8 @@ import {
 import type { AppSettings, ToolPermissions } from "../lib/settingsStore";
 import { DEFAULT_TOOL_PERMISSIONS } from "../lib/settingsStore";
 import type { ActionProposal, OrchestrationPlan, PlanStep } from "./types";
+import { summarizeWorkspaceFiles } from "./readOnlyWorkspaceService";
+import { loadCofreeRc, buildCofreeRcPromptFragment, type CofreeRcConfig } from "../lib/cofreerc";
 const MAX_TOOL_LOOP_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 30;
 const MAX_LIST_ENTRIES = 120;
@@ -138,6 +140,8 @@ const ASSISTANT_SYSTEM_PROMPT = [
   "**重要**：调用 propose_* 工具后，立即停止生成文本。不要预测审批结果，不要说\"用户未批准\"或\"等待用户批准\"等话。系统会自动处理审批流程并在执行后通知你结果。",
   "3) 如果用户仅在询问信息或解释且不需要落盘，不要提出审批动作。",
   "4) 不要为了兜底提出无关审批动作；当用户请求包含多个交付物时，可以在同一轮提出多个紧密相关动作（建议 ≤5）以减少往返审批。",
+  "4.1) **多文件编辑原子性**：当一个功能变更涉及多个文件时（如修改接口定义并同步更新所有调用方），尽量在同一轮工具调用中提出所有相关的 propose_file_edit，系统会将它们打包为一次原子审批。全部成功才生效，任何一个失败则全部回滚。",
+  "4.2) 先完成所有必要的上下文收集（grep/read_file），然后在一轮中集中提出所有相关编辑，避免分散在多轮中逐个提出。",
   "",
   "## 工具选择关键规则",
   "- **创建新文件**：必须使用 propose_file_edit，设置 operation='create'、relative_path 和 content。绝对不要用 cat/echo 重定向。",
@@ -155,8 +159,9 @@ const ASSISTANT_SYSTEM_PROMPT = [
   "- 注意：Sub-Agent 无法嵌套调用 task 工具，避免循环委派。",
   "",
   "## 搜索与文件读取策略",
-  "当需要定位代码（函数定义、变量使用、导入语句等）时，优先使用 grep 搜索关键词，而非逐个文件阅读。",
-  "当需要查找文件（按扩展名、命名规则等）时，优先使用 glob 匹配模式（如 '**/*.tsx'），而非逐层 list_files。",
+  "当深入一个文件或功能时，利用 grep 积极追踪 import 路径和函数调用链，扩充上下文理解，避免盲目猜测。",
+  "定位代码（函数定义、变量使用、导入语句等）时，优先使用 grep 搜索关键词，而非逐个文件盲读。",
+  "当查找文件时，优先使用 glob 匹配模式（如 '**/*.tsx'），而非逐层 list_files。",
   "grep 和 glob 会自动排除 .git、node_modules、target 等目录。",
   "当读取文件系统信息时，必须调用 list_files/read_file/grep/glob/git_status/git_diff，而不是伪造结果。",
   "read_file 返回带行号的内容（格式: `行号│内容`）、total_lines（文件总行数）和 showing_lines（当前显示的行范围）。",
@@ -808,12 +813,12 @@ async function requestSummary(
     {
       role: "system",
       content: [
-        "你是一个对话摘要助手。请将以下对话历史压缩为一段简洁的摘要，保留关键信息：",
-        "1. 用户的核心需求和目标",
-        "2. 已完成的关键操作和修改（包括文件路径）",
-        "3. 当前进展状态和未完成的任务",
-        "4. 重要的技术决策和约束",
-        "请用中文输出，控制在 500 字以内。"
+        "你是一个代码助手内置的上下文压缩引擎。你的任务是将冗长的对话历史压缩为高密度的摘要，保留对后续工作至关重要的事实与技术上下文。",
+        "请使用高度结构化、简明扼要的语言（中文）输出，严格控制在 800 字以内，并包含以下部分：",
+        "【核心目标】用户最初的需求是什么？",
+        "【已完成变更】涉及哪些文件的修改？具体做了什么（给出关键函数或组件名）？",
+        "【收集到的事实】发现的重要错误信息、项目的架构约束、特殊的配置结构等。",
+        "【当前进展与下一步】任务停在哪里？接下来立即需要解决的是什么？"
       ].join("\n")
     },
     {
@@ -872,7 +877,8 @@ async function sanitizeConversationHistory(
 
   const limitTokens = maxTokens > 0 ? maxTokens : 128000;
   const bufferTokens = 8000;
-  const maxAllowedTokens = limitTokens - bufferTokens;
+  const hardTriggerTokens = 32000; // Trigger compression earlier to improve reasoning quality
+  const maxAllowedTokens = Math.min(limitTokens - bufferTokens, hardTriggerTokens);
 
   const totalTokens = validMessages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0);
 
@@ -886,7 +892,7 @@ async function sanitizeConversationHistory(
   let splitIndex = validMessages.length;
   for (let i = validMessages.length - 1; i >= 0; i--) {
     const tokens = estimateTokens(validMessages[i].content);
-    if (recentTokens + tokens > maxAllowedTokens * 0.7) {
+    if (recentTokens + tokens > maxAllowedTokens * 0.5) {
       splitIndex = i + 1;
       break;
     }
@@ -2535,7 +2541,8 @@ async function runNativeToolCallingLoop(
   blockedActionFingerprints: string[] = [],
   signal?: AbortSignal,
   onAssistantChunk?: (chunk: string) => void,
-  isContinuation?: boolean
+  isContinuation?: boolean,
+  projectConfig?: CofreeRcConfig
 ): Promise<{
   assistantReply: string;
   requestRecords: RequestRecord[];
@@ -2544,7 +2551,11 @@ async function runNativeToolCallingLoop(
 }> {
   const allToolNames = getAllToolNames();
   const activeTools = selectToolDefinitions(allToolNames);
-  const toolPermissions = settings.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS;
+  // Merge tool permissions: settings take priority, then .cofreerc overrides defaults
+  const basePermissions = settings.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS;
+  const toolPermissions: ToolPermissions = projectConfig?.toolPermissions
+    ? { ...basePermissions, ...projectConfig.toolPermissions } as ToolPermissions
+    : basePermissions;
   const patchRepairInstruction = "请读取必要文件片段后，重新调用 propose_file_edit。";
   const createPathRepairInstruction =
     "若目标是新建文件，请调用 propose_file_edit 并设置 operation='create'；若目录不存在，可先调用 propose_shell 执行 mkdir -p <目录>。";
@@ -2956,17 +2967,87 @@ export async function runPlanningSession(
   const maxTokens = input.settings.maxContextTokens || 128000;
   const historyMessages = await sanitizeConversationHistory(input.conversationHistory, maxTokens, input.settings);
 
+  let initialInternalNote = input.internalSystemNote;
+  let projectConfig: CofreeRcConfig = {};
+  
+  if (historyMessages.length === 0 && !input.isContinuation && input.settings.workspacePath) {
+    // Load project-level .cofreerc config
+    try {
+      projectConfig = await loadCofreeRc(input.settings.workspacePath);
+    } catch (e) {
+      console.warn("Failed to load .cofreerc", e);
+    }
+
+    // Inject workspace overview
+    try {
+      const overview = await summarizeWorkspaceFiles(input.settings.workspacePath);
+      const overviewPrompt = `项目概览：\n${overview}`;
+      if (initialInternalNote) {
+        initialInternalNote = `${initialInternalNote}\n\n${overviewPrompt}`;
+      } else {
+        initialInternalNote = overviewPrompt;
+      }
+    } catch (e) {
+      console.warn("Failed to generate workspace overview", e);
+    }
+
+    // Inject .cofreerc prompt fragment
+    const rcFragment = buildCofreeRcPromptFragment(projectConfig);
+    if (rcFragment) {
+      if (initialInternalNote) {
+        initialInternalNote = `${initialInternalNote}\n\n${rcFragment}`;
+      } else {
+        initialInternalNote = rcFragment;
+      }
+    }
+
+    // Load contextFiles specified in .cofreerc
+    if (projectConfig.contextFiles && projectConfig.contextFiles.length > 0 && input.settings.workspacePath) {
+      const contextSnippets: string[] = [];
+      for (const relPath of projectConfig.contextFiles) {
+        try {
+          const result = await invoke<{
+            content: string;
+            total_lines: number;
+            start_line: number;
+            end_line: number;
+          }>("read_workspace_file", {
+            workspacePath: input.settings.workspacePath,
+            relativePath: relPath,
+            startLine: null,
+            endLine: null
+          });
+          if (result.content && result.content.trim()) {
+            const truncated = result.content.length > 2000
+              ? result.content.slice(0, 2000) + "\n... (truncated)"
+              : result.content;
+            contextSnippets.push(`--- ${relPath} ---\n${truncated}`);
+          }
+        } catch {
+          // File not found — skip silently
+        }
+      }
+      if (contextSnippets.length > 0) {
+        const contextBlock = `[项目关键文件]\n${contextSnippets.join("\n\n")}`;
+        initialInternalNote = initialInternalNote
+          ? `${initialInternalNote}\n\n${contextBlock}`
+          : contextBlock;
+      }
+    }
+  }
+
   try {
     const loopResult = await runNativeToolCallingLoop(
       normalizedPrompt,
       input.settings,
       phase,
       historyMessages,
-      input.internalSystemNote,
+      initialInternalNote,
       input.blockedActionFingerprints,
       input.signal,
       input.onAssistantChunk,
-      input.isContinuation
+      input.isContinuation,
+      projectConfig
     );
     for (const record of loopResult.requestRecords) {
       recordLLMAudit({
