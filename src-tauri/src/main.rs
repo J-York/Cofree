@@ -31,6 +31,13 @@ static CHECKPOINT_COUNTER: AtomicU64 = AtomicU64::new(0);
 const KEYCHAIN_SERVICE_NAME: &str = "dev.cofree.app";
 const KEYCHAIN_ACCOUNT_NAME: &str = "litellm-api-key";
 
+fn keychain_account_for_profile(profile_id: Option<&str>) -> String {
+    match profile_id {
+        Some(id) if !id.trim().is_empty() => format!("profile-{}", id.trim()),
+        _ => KEYCHAIN_ACCOUNT_NAME.to_string(),
+    }
+}
+
 #[derive(Clone, Serialize)]
 struct AppHealth {
     status: String,
@@ -126,12 +133,13 @@ fn normalize_base_url(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_string()
 }
 
-fn load_secure_api_key_macos() -> Result<String, String> {
+fn load_secure_api_key_macos(profile_id: Option<&str>) -> Result<String, String> {
+    let account = keychain_account_for_profile(profile_id);
     let output = Command::new("security")
         .args([
             "find-generic-password",
             "-a",
-            KEYCHAIN_ACCOUNT_NAME,
+            &account,
             "-s",
             KEYCHAIN_SERVICE_NAME,
             "-w",
@@ -151,13 +159,14 @@ fn load_secure_api_key_macos() -> Result<String, String> {
     }
 }
 
-fn save_secure_api_key_macos(api_key: &str) -> Result<(), String> {
+fn save_secure_api_key_macos(profile_id: Option<&str>, api_key: &str) -> Result<(), String> {
+    let account = keychain_account_for_profile(profile_id);
     if api_key.trim().is_empty() {
         let _ = Command::new("security")
             .args([
                 "delete-generic-password",
                 "-a",
-                KEYCHAIN_ACCOUNT_NAME,
+                &account,
                 "-s",
                 KEYCHAIN_SERVICE_NAME,
             ])
@@ -169,7 +178,7 @@ fn save_secure_api_key_macos(api_key: &str) -> Result<(), String> {
         .args([
             "add-generic-password",
             "-a",
-            KEYCHAIN_ACCOUNT_NAME,
+            &account,
             "-s",
             KEYCHAIN_SERVICE_NAME,
             "-w",
@@ -186,27 +195,63 @@ fn save_secure_api_key_macos(api_key: &str) -> Result<(), String> {
     }
 }
 
+fn delete_secure_api_key_macos(profile_id: &str) -> Result<(), String> {
+    let account = keychain_account_for_profile(Some(profile_id));
+    let output = Command::new("security")
+        .args([
+            "delete-generic-password",
+            "-a",
+            &account,
+            "-s",
+            KEYCHAIN_SERVICE_NAME,
+        ])
+        .output()
+        .map_err(|e| format!("删除 Keychain 失败: {}", e))?;
+
+    // Ignore "not found" errors - the key might not exist
+    if output.status.success() || String::from_utf8_lossy(&output.stderr).contains("could not be found") {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
 #[tauri::command]
-fn load_secure_api_key() -> Result<String, String> {
+fn load_secure_api_key(profile_id: Option<String>) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
-        load_secure_api_key_macos()
+        load_secure_api_key_macos(profile_id.as_deref())
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = profile_id;
         Ok(String::new())
     }
 }
 
 #[tauri::command]
-fn save_secure_api_key(api_key: String) -> Result<(), String> {
+fn save_secure_api_key(profile_id: Option<String>, api_key: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        save_secure_api_key_macos(&api_key)
+        save_secure_api_key_macos(profile_id.as_deref(), &api_key)
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = profile_id;
         let _ = api_key;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn delete_secure_api_key(profile_id: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        delete_secure_api_key_macos(&profile_id)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = profile_id;
         Ok(())
     }
 }
@@ -2197,6 +2242,7 @@ pub fn run() {
             post_litellm_chat_completions_stream,
             load_secure_api_key,
             save_secure_api_key,
+            delete_secure_api_key,
             save_file_dialog,
             get_workspace_diagnostics,
             fetch_url

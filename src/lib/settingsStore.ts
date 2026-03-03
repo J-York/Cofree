@@ -13,6 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { defaultModelForProvider } from "./litellm";
 
 export const SETTINGS_STORAGE_KEY = "cofree.settings.v1";
+export const SETTINGS_STORAGE_KEY_V2 = "cofree.settings.v2";
 
 export type ToolPermissionLevel = "auto" | "ask";
 
@@ -56,6 +57,17 @@ export interface ProxySettings {
   noProxy?: string;
 }
 
+/** 单个模型配置档案 */
+export interface ModelProfile {
+  id: string;                   // 唯一ID: "profile-{timestamp}"
+  name: string;                 // 用户命名: "Claude 日常", "GPT-4 生产"
+  provider?: string;            // 供应商: "anthropic", "openai", "ollama"
+  model: string;                // 模型名
+  liteLLMBaseUrl: string;       // Base URL
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppSettings {
   apiKey: string;
   liteLLMBaseUrl: string;
@@ -69,6 +81,9 @@ export interface AppSettings {
   workspacePath: string;
   toolPermissions: ToolPermissions;
   proxy: ProxySettings;
+  // V2 新增字段
+  activeProfileId: string | null;
+  profiles: ModelProfile[];
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -89,47 +104,104 @@ export const DEFAULT_SETTINGS: AppSettings = {
     password: "",
     noProxy: "",
   },
+  activeProfileId: null,
+  profiles: [],
 };
 
 type PersistedSettings = Omit<AppSettings, "apiKey"> & { apiKey?: string };
+
+/** 生成唯一的 profile ID */
+export function generateProfileId(): string {
+  return `profile-${Date.now()}`;
+}
+
+/** 创建默认的 profile */
+export function createDefaultProfile(
+  id: string,
+  name: string,
+  baseUrl: string,
+  provider?: string,
+  model?: string
+): ModelProfile {
+  const now = new Date().toISOString();
+  return {
+    id,
+    name,
+    provider,
+    model: model || defaultModelForProvider(provider || "openai"),
+    liteLLMBaseUrl: baseUrl,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/** 从 V1 设置迁移到 V2 */
+function migrateSettingsV1ToV2(v1Settings: Partial<PersistedSettings>): AppSettings {
+  const legacyProfileId = "profile-legacy";
+  const now = new Date().toISOString();
+
+  const legacyProfile: ModelProfile = {
+    id: legacyProfileId,
+    name: "默认配置",
+    provider: v1Settings.provider,
+    model: v1Settings.model?.trim() || defaultModelForProvider(v1Settings.provider || "openai"),
+    liteLLMBaseUrl: v1Settings.liteLLMBaseUrl || DEFAULT_SETTINGS.liteLLMBaseUrl,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  return {
+    ...DEFAULT_SETTINGS,
+    ...v1Settings,
+    apiKey: "",
+    activeProfileId: legacyProfileId,
+    profiles: [legacyProfile],
+  };
+}
 
 export function loadSettings(): AppSettings {
   if (typeof window === "undefined") {
     return DEFAULT_SETTINGS;
   }
 
-  const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+  // 优先尝试加载 V2 设置
+  const rawV2 = window.localStorage.getItem(SETTINGS_STORAGE_KEY_V2);
+  if (rawV2) {
+    try {
+      const parsed = JSON.parse(rawV2) as Partial<PersistedSettings>;
+      return {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        apiKey: "",
+        profiles: parsed.profiles || [],
+        activeProfileId: parsed.activeProfileId || null,
+      };
+    } catch (_error) {
+      // V2 解析失败，继续尝试 V1
+    }
+  }
 
-  if (!raw) {
+  // 尝试加载 V1 设置并迁移
+  const rawV1 = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+  if (!rawV1) {
     return DEFAULT_SETTINGS;
   }
 
   try {
-    const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
-    const provider = parsed.provider ?? DEFAULT_SETTINGS.provider;
-    if (typeof parsed.apiKey === "string" && parsed.apiKey) {
-      const migrated: PersistedSettings = {
-        ...DEFAULT_SETTINGS,
-        ...parsed,
-        apiKey: "",
-        provider,
-        model:
-          parsed.model?.trim() || defaultModelForProvider(provider || "openai"),
-      };
-      window.localStorage.setItem(
-        SETTINGS_STORAGE_KEY,
-        JSON.stringify(migrated)
-      );
-    }
+    const parsed = JSON.parse(rawV1) as Partial<PersistedSettings>;
+    const migrated = migrateSettingsV1ToV2(parsed);
 
-    return {
-      ...DEFAULT_SETTINGS,
-      ...parsed,
+    // 保存迁移后的 V2 设置
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY_V2, JSON.stringify({
+      ...migrated,
       apiKey: "",
-      provider,
-      model:
-        parsed.model?.trim() || defaultModelForProvider(provider || "openai"),
-    };
+      lastSavedAt: new Date().toISOString(),
+    }));
+
+    // 删除旧的 V1 设置
+    window.localStorage.removeItem(SETTINGS_STORAGE_KEY);
+
+    return migrated;
   } catch (_error) {
     return DEFAULT_SETTINGS;
   }
@@ -147,22 +219,114 @@ export function saveSettings(settings: AppSettings): void {
   };
 
   window.localStorage.setItem(
-    SETTINGS_STORAGE_KEY,
+    SETTINGS_STORAGE_KEY_V2,
     JSON.stringify(withTimestamp)
   );
 }
 
-export async function loadSecureApiKey(): Promise<string> {
+export async function loadSecureApiKey(profileId?: string | null): Promise<string> {
   try {
-    const value = await invoke<string>("load_secure_api_key");
+    const value = await invoke<string>("load_secure_api_key", {
+      profileId: profileId || null,
+    });
     return typeof value === "string" ? value : "";
   } catch (_error) {
     return "";
   }
 }
 
-export async function saveSecureApiKey(apiKey: string): Promise<void> {
-  await invoke("save_secure_api_key", { apiKey });
+export async function saveSecureApiKey(apiKey: string, profileId?: string | null): Promise<void> {
+  await invoke("save_secure_api_key", {
+    profileId: profileId || null,
+    apiKey,
+  });
+}
+
+export async function deleteSecureApiKey(profileId: string): Promise<void> {
+  await invoke("delete_secure_api_key", { profileId });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Profile CRUD 操作
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 创建新的配置档案 */
+export function createProfile(
+  settings: AppSettings,
+  name: string,
+  baseUrl: string,
+  provider?: string,
+  model?: string
+): { settings: AppSettings; profile: ModelProfile } {
+  const id = generateProfileId();
+  const profile = createDefaultProfile(id, name, baseUrl, provider, model);
+
+  const newSettings: AppSettings = {
+    ...settings,
+    profiles: [...settings.profiles, profile],
+    activeProfileId: id,
+  };
+
+  return { settings: newSettings, profile };
+}
+
+/** 更新配置档案 */
+export function updateProfile(
+  settings: AppSettings,
+  profileId: string,
+  updates: Partial<Omit<ModelProfile, "id" | "createdAt">>
+): AppSettings {
+  const profiles = settings.profiles.map((p) =>
+    p.id === profileId
+      ? { ...p, ...updates, updatedAt: new Date().toISOString() }
+      : p
+  );
+
+  return { ...settings, profiles };
+}
+
+/** 删除配置档案 */
+export function deleteProfile(
+  settings: AppSettings,
+  profileId: string
+): AppSettings {
+  const profiles = settings.profiles.filter((p) => p.id !== profileId);
+
+  // 如果删除的是当前激活的配置，切换到第一个可用的配置
+  let activeProfileId = settings.activeProfileId;
+  if (activeProfileId === profileId) {
+    activeProfileId = profiles.length > 0 ? profiles[0].id : null;
+  }
+
+  return { ...settings, profiles, activeProfileId };
+}
+
+/** 切换到指定的配置档案 */
+export function switchProfile(
+  settings: AppSettings,
+  profileId: string
+): AppSettings {
+  const profile = settings.profiles.find((p) => p.id === profileId);
+  if (!profile) {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    activeProfileId: profileId,
+    // 同步 profile 的配置到顶层设置
+    provider: profile.provider,
+    model: profile.model,
+    liteLLMBaseUrl: profile.liteLLMBaseUrl,
+  };
+}
+
+/** 获取当前激活的配置档案 */
+export function getActiveProfile(settings: AppSettings): ModelProfile | null {
+  if (!settings.activeProfileId) {
+    return null;
+  }
+  return settings.profiles.find((p) => p.id === settings.activeProfileId) || null;
 }
 
 export function maskApiKey(key: string): string {

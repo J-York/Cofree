@@ -1,11 +1,13 @@
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { defaultModelForProvider, formatModelRef } from "./lib/litellm";
 import {
   type AppSettings,
+  getActiveProfile,
   loadSecureApiKey,
   loadSettings,
   saveSecureApiKey,
-  saveSettings
+  saveSettings,
+  switchProfile,
 } from "./lib/settingsStore";
 import { type AppTab } from "./ui/components/NavTabs";
 import { ChatPage } from "./ui/pages/ChatPage";
@@ -28,6 +30,8 @@ export default function App(): ReactElement {
   const [activeTab, setActiveTab] = useState<AppTab>("chat");
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [sessionState, setSessionState] = useState<SessionState>(initialSessionState);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
 
   const sessionActions: SessionActions = useMemo(
     () => ({
@@ -58,7 +62,7 @@ export default function App(): ReactElement {
   useEffect(() => {
     let cancelled = false;
     const hydrate = async () => {
-      const apiKey = await loadSecureApiKey();
+      const apiKey = await loadSecureApiKey(settings.activeProfileId);
       if (cancelled) {
         return;
       }
@@ -74,10 +78,43 @@ export default function App(): ReactElement {
     const normalizedModel =
       nextSettings.model.trim() || defaultModelForProvider(nextSettings.provider ?? "openai");
     const normalized: AppSettings = { ...nextSettings, model: normalizedModel };
-    await saveSecureApiKey(normalized.apiKey);
+    await saveSecureApiKey(normalized.apiKey, normalized.activeProfileId);
     saveSettings(normalized);
     setSettings(normalized);
   };
+
+  const handleQuickSwitchProfile = useCallback(async (profileId: string) => {
+    if (profileId === settings.activeProfileId) {
+      setProfileMenuOpen(false);
+      return;
+    }
+    const switched = switchProfile(settings, profileId);
+    let apiKey = "";
+    try {
+      apiKey = await loadSecureApiKey(profileId);
+    } catch {
+      // Ignore keychain errors
+    }
+    const updated: AppSettings = { ...switched, apiKey };
+    saveSettings(updated);
+    setSettings(updated);
+    setProfileMenuOpen(false);
+  }, [settings]);
+
+  // Close profile menu on outside click
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
+        setProfileMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [profileMenuOpen]);
+
+  const activeProfile = getActiveProfile(settings);
+  const hasProfiles = settings.profiles.length > 0;
 
   return (
     <SessionContext.Provider value={{ state: sessionState, actions: sessionActions }}>
@@ -108,11 +145,51 @@ export default function App(): ReactElement {
             ))}
           </nav>
 
-          <div className="sidebar-footer">
-            <div className="runtime-badge">
+          <div className="sidebar-footer" ref={profileMenuRef}>
+            <button
+              className="runtime-badge"
+              type="button"
+              onClick={() => hasProfiles && setProfileMenuOpen((v) => !v)}
+              style={{ cursor: hasProfiles ? "pointer" : "default", width: "100%", border: "1px solid var(--border-1)" }}
+              title={hasProfiles ? "切换配置档案" : runtimeSummary}
+            >
               <div className="runtime-dot" />
-              <span className="runtime-text">{runtimeSummary}</span>
-            </div>
+              <span className="runtime-text" style={{ flex: 1, textAlign: "left" }}>
+                {activeProfile ? activeProfile.name : runtimeSummary}
+              </span>
+              {hasProfiles && (
+                <span className="runtime-text" style={{ flexShrink: 0, fontSize: "9px", opacity: 0.6 }}>
+                  {profileMenuOpen ? "▲" : "▼"}
+                </span>
+              )}
+            </button>
+            {activeProfile && (
+              <div className="runtime-model-hint">
+                {runtimeSummary}
+              </div>
+            )}
+
+            {profileMenuOpen && hasProfiles && (
+              <div className="profile-switcher-menu">
+                <div className="profile-switcher-header">切换配置</div>
+                {settings.profiles.map((p) => (
+                  <button
+                    key={p.id}
+                    className={`profile-switcher-item${p.id === settings.activeProfileId ? " active" : ""}`}
+                    type="button"
+                    onClick={() => void handleQuickSwitchProfile(p.id)}
+                  >
+                    <div className={`profile-switcher-dot${p.id === settings.activeProfileId ? " active" : ""}`} />
+                    <div className="profile-switcher-info">
+                      <span className="profile-switcher-name">{p.name}</span>
+                      <span className="profile-switcher-model">
+                        {formatModelRef(p.provider ?? "", p.model)}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </aside>
 

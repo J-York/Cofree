@@ -7,9 +7,17 @@ import {
 } from "../../lib/litellm";
 import {
   type AppSettings,
+  type ModelProfile,
   type ToolPermissionLevel,
   DEFAULT_TOOL_PERMISSIONS,
+  createProfile,
+  deleteProfile,
+  deleteSecureApiKey,
+  getActiveProfile,
+  loadSecureApiKey,
   maskApiKey,
+  switchProfile,
+  updateProfile,
 } from "../../lib/settingsStore";
 import { clearAllConversations } from "../../lib/conversationStore";
 
@@ -35,6 +43,13 @@ export function SettingsPage({
   const [workspaceError, setWorkspaceError] = useState<string>("");
   const [confirmClear, setConfirmClear] = useState<boolean>(false);
 
+  // Profile management states
+  const [showNewProfile, setShowNewProfile] = useState(false);
+  const [newProfileName, setNewProfileName] = useState("");
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const [editingProfileName, setEditingProfileName] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
   const loadWorkspaceInfo = async (path: string) => {
     if (!path) {
       setWorkspaceInfo(null);
@@ -58,12 +73,29 @@ export function SettingsPage({
     setDraft(settings);
   }, [settings]);
 
+  const activeProfile = getActiveProfile(draft);
+
   const handleSave = async (): Promise<void> => {
-    const parsed = parseModelRef(draft.model);
+    let settingsToSave = { ...draft };
+
+    // Sync top-level model config back to active profile
+    if (settingsToSave.activeProfileId) {
+      settingsToSave = updateProfile(
+        settingsToSave,
+        settingsToSave.activeProfileId,
+        {
+          provider: settingsToSave.provider,
+          model: settingsToSave.model,
+          liteLLMBaseUrl: settingsToSave.liteLLMBaseUrl,
+        }
+      );
+    }
+
+    const parsed = parseModelRef(settingsToSave.model);
     const normalized = {
-      ...draft,
-      provider: parsed.provider || draft.provider || undefined,
-      model: parsed.model || draft.model,
+      ...settingsToSave,
+      provider: parsed.provider || settingsToSave.provider || undefined,
+      model: parsed.model || settingsToSave.model,
     };
     try {
       await onSave(normalized);
@@ -93,13 +125,75 @@ export function SettingsPage({
     }
   };
 
+  const handleCreateProfile = () => {
+    const name = newProfileName.trim() || "新配置";
+    const { settings: newSettings } = createProfile(
+      draft,
+      name,
+      draft.liteLLMBaseUrl,
+      draft.provider,
+      draft.model
+    );
+    // New profile starts with empty API key
+    setDraft({ ...newSettings, apiKey: "" });
+    setShowNewProfile(false);
+    setNewProfileName("");
+  };
+
+  const handleSwitchProfile = async (profileId: string) => {
+    if (profileId === draft.activeProfileId) return;
+    const switched = switchProfile(draft, profileId);
+    try {
+      const apiKey = await loadSecureApiKey(profileId);
+      setDraft({ ...switched, apiKey });
+    } catch {
+      setDraft({ ...switched, apiKey: "" });
+    }
+  };
+
+  const handleDeleteProfile = async (profileId: string) => {
+    if (draft.profiles.length <= 1) return; // Don't delete the last profile
+    const newSettings = deleteProfile(draft, profileId);
+    try {
+      await deleteSecureApiKey(profileId);
+    } catch {
+      // Ignore keychain errors on delete
+    }
+    // If active profile changed, load new active's API key
+    if (
+      newSettings.activeProfileId !== draft.activeProfileId &&
+      newSettings.activeProfileId
+    ) {
+      try {
+        const apiKey = await loadSecureApiKey(newSettings.activeProfileId);
+        setDraft({ ...newSettings, apiKey });
+      } catch {
+        setDraft({ ...newSettings, apiKey: "" });
+      }
+    } else {
+      setDraft(newSettings);
+    }
+    setConfirmDeleteId(null);
+  };
+
+  const handleRenameProfile = (profileId: string) => {
+    const name = editingProfileName.trim();
+    if (!name) {
+      setEditingProfileId(null);
+      return;
+    }
+    setDraft((prev) => updateProfile(prev, profileId, { name }));
+    setEditingProfileId(null);
+    setEditingProfileName("");
+  };
+
   const runtimeConfig = createLiteLLMClientConfig(draft);
 
   return (
     <div className="page-content">
       <div className="page-header">
         <h1 className="page-title">设置</h1>
-        <p className="page-subtitle">API 密钥、模型配置与工作区管理</p>
+        <p className="page-subtitle">配置档案、模型设置与工作区管理</p>
       </div>
 
       {/* Workspace */}
@@ -136,9 +230,100 @@ export function SettingsPage({
         </div>
       </div>
 
-      {/* Model config */}
+      {/* Profile Management */}
       <div className="card settings-section">
-        <p className="settings-section-title">模型配置</p>
+        <p className="settings-section-title">配置档案</p>
+
+        {draft.profiles.length > 0 ? (
+          <div className="profile-list">
+            {draft.profiles.map((profile) => (
+              <ProfileCard
+                key={profile.id}
+                profile={profile}
+                isActive={profile.id === draft.activeProfileId}
+                isEditing={editingProfileId === profile.id}
+                editingName={editingProfileName}
+                confirmDelete={confirmDeleteId === profile.id}
+                canDelete={draft.profiles.length > 1}
+                onSwitch={() => void handleSwitchProfile(profile.id)}
+                onStartEdit={() => {
+                  setEditingProfileId(profile.id);
+                  setEditingProfileName(profile.name);
+                }}
+                onEditNameChange={setEditingProfileName}
+                onSaveEdit={() => handleRenameProfile(profile.id)}
+                onCancelEdit={() => {
+                  setEditingProfileId(null);
+                  setEditingProfileName("");
+                }}
+                onConfirmDelete={() => setConfirmDeleteId(profile.id)}
+                onDelete={() => void handleDeleteProfile(profile.id)}
+                onCancelDelete={() => setConfirmDeleteId(null)}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="profile-empty-hint">
+            暂无配置档案，创建第一个配置以开始使用
+          </p>
+        )}
+
+        {showNewProfile ? (
+          <div className="profile-new-form">
+            <input
+              className="input"
+              value={newProfileName}
+              onChange={(e) => setNewProfileName(e.target.value)}
+              placeholder="配置名称，如 Claude 日常"
+              type="text"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleCreateProfile();
+                if (e.key === "Escape") {
+                  setShowNewProfile(false);
+                  setNewProfileName("");
+                }
+              }}
+            />
+            <div className="btn-row">
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleCreateProfile}
+                type="button"
+              >
+                创建
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => {
+                  setShowNewProfile(false);
+                  setNewProfileName("");
+                }}
+                type="button"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            className="btn btn-ghost btn-sm profile-add-btn"
+            onClick={() => setShowNewProfile(true)}
+            type="button"
+          >
+            + 新建配置档案
+          </button>
+        )}
+      </div>
+
+      {/* Model config — edits the active profile */}
+      <div className="card settings-section">
+        <p className="settings-section-title">
+          模型配置
+          {activeProfile && (
+            <span className="settings-section-tag">{activeProfile.name}</span>
+          )}
+        </p>
 
         {/* Proxy config */}
         <div className="field" style={{ marginTop: "14px" }}>
@@ -602,6 +787,169 @@ export function SettingsPage({
         </button>
         {saveMessage && <span className="save-feedback">✓ {saveMessage}</span>}
       </div>
+    </div>
+  );
+}
+
+/* ── Profile Card Sub-component ──────────────────────────── */
+
+interface ProfileCardProps {
+  profile: ModelProfile;
+  isActive: boolean;
+  isEditing: boolean;
+  editingName: string;
+  confirmDelete: boolean;
+  canDelete: boolean;
+  onSwitch: () => void;
+  onStartEdit: () => void;
+  onEditNameChange: (name: string) => void;
+  onSaveEdit: () => void;
+  onCancelEdit: () => void;
+  onConfirmDelete: () => void;
+  onDelete: () => void;
+  onCancelDelete: () => void;
+}
+
+function ProfileCard({
+  profile,
+  isActive,
+  isEditing,
+  editingName,
+  confirmDelete,
+  canDelete,
+  onSwitch,
+  onStartEdit,
+  onEditNameChange,
+  onSaveEdit,
+  onCancelEdit,
+  onConfirmDelete,
+  onDelete,
+  onCancelDelete,
+}: ProfileCardProps): ReactElement {
+  const modelDisplay = formatModelRef(profile.provider || "", profile.model);
+
+  return (
+    <div
+      className={`profile-card${isActive ? " active" : ""}`}
+      onClick={!isActive && !isEditing ? onSwitch : undefined}
+      role={!isActive && !isEditing ? "button" : undefined}
+      tabIndex={!isActive && !isEditing ? 0 : undefined}
+      onKeyDown={
+        !isActive && !isEditing
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") onSwitch();
+            }
+          : undefined
+      }
+    >
+      <div className="profile-card-indicator">
+        <div className={`profile-dot${isActive ? " active" : ""}`} />
+      </div>
+      <div className="profile-card-body">
+        {isEditing ? (
+          <div className="profile-edit-row">
+            <input
+              className="input profile-edit-input"
+              value={editingName}
+              onChange={(e) => onEditNameChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onSaveEdit();
+                if (e.key === "Escape") onCancelEdit();
+              }}
+              autoFocus
+              onClick={(e) => e.stopPropagation()}
+            />
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSaveEdit();
+              }}
+              type="button"
+            >
+              保存
+            </button>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCancelEdit();
+              }}
+              type="button"
+            >
+              取消
+            </button>
+          </div>
+        ) : (
+          <>
+            <span className="profile-card-name">{profile.name}</span>
+            <span className="profile-card-model">{modelDisplay}</span>
+          </>
+        )}
+      </div>
+      {!isEditing && (
+        <div className="profile-card-actions">
+          {confirmDelete ? (
+            <>
+              <span className="profile-delete-confirm-text">删除？</span>
+              <button
+                className="btn btn-ghost btn-sm"
+                style={{
+                  color: "var(--color-error)",
+                  borderColor: "var(--color-error)",
+                  padding: "2px 8px",
+                  fontSize: "11px",
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete();
+                }}
+                type="button"
+              >
+                确认
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                style={{ padding: "2px 8px", fontSize: "11px" }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCancelDelete();
+                }}
+                type="button"
+              >
+                取消
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="profile-action-btn"
+                title="重命名"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStartEdit();
+                }}
+                type="button"
+              >
+                ✏️
+              </button>
+              {canDelete && (
+                <button
+                  className="profile-action-btn danger"
+                  title="删除"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onConfirmDelete();
+                  }}
+                  type="button"
+                >
+                  🗑
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

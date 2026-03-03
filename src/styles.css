@@ -239,6 +239,7 @@ body {
 .sidebar-footer {
   padding: 12px 14px;
   border-top: 1px solid var(--border-1);
+  position: relative;
 }
 
 .runtime-badge {
@@ -249,6 +250,24 @@ body {
   background: var(--surface-3);
   border: 1px solid var(--border-1);
   border-radius: var(--r-md);
+  font-family: inherit;
+  transition: all var(--t-fast);
+}
+
+.runtime-badge:hover {
+  border-color: var(--border-2);
+  background: var(--surface-4);
+}
+
+.runtime-model-hint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+  margin-top: 4px;
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .runtime-dot {
@@ -275,6 +294,111 @@ body {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Profile Switcher (sidebar popover) ──────────────────── */
+.profile-switcher-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 14px;
+  right: 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 100;
+  animation: profile-menu-in 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+@keyframes profile-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.profile-switcher-header {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 8px 6px;
+}
+
+.profile-switcher-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--r-sm);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--t-fast);
+  text-align: left;
+  width: 100%;
+  font-family: var(--font-sans);
+}
+
+.profile-switcher-item:hover {
+  background: var(--surface-3);
+}
+
+.profile-switcher-item.active {
+  background: var(--accent-muted);
+}
+
+.profile-switcher-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--surface-4);
+  border: 1.5px solid var(--border-2);
+  flex-shrink: 0;
+  transition: all var(--t-fast);
+}
+
+.profile-switcher-dot.active {
+  background: var(--color-success);
+  border-color: rgba(52, 211, 153, 0.4);
+  box-shadow: 0 0 4px rgba(52, 211, 153, 0.4);
+}
+
+.profile-switcher-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.profile-switcher-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-switcher-model {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1393,6 +1517,184 @@ details[open] .think-summary::before {
   margin: 0 0 2px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border-1);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-section-tag {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #a5b4fc;
+  background: var(--accent-muted);
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+}
+
+/* ── Profile Management ─────────────────────────────────── */
+.profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.profile-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-1);
+  background: var(--surface-2);
+  transition: all var(--t-fast);
+  cursor: default;
+}
+
+.profile-card:not(.active) {
+  cursor: pointer;
+}
+
+.profile-card:not(.active):hover {
+  border-color: var(--border-2);
+  background: var(--surface-3);
+}
+
+.profile-card.active {
+  border-color: rgba(99, 102, 241, 0.35);
+  background: var(--accent-muted);
+}
+
+.profile-card-indicator {
+  flex-shrink: 0;
+}
+
+.profile-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-full);
+  background: var(--surface-4);
+  border: 1.5px solid var(--border-2);
+  transition: all var(--t-fast);
+}
+
+.profile-dot.active {
+  background: var(--color-success);
+  border-color: rgba(52, 211, 153, 0.4);
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.4);
+}
+
+.profile-card-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.profile-card-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-card-model {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+
+.profile-card:hover .profile-card-actions,
+.profile-card.active .profile-card-actions {
+  opacity: 1;
+}
+
+.profile-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all var(--t-fast);
+  color: var(--text-3);
+}
+
+.profile-action-btn:hover {
+  background: var(--surface-4);
+}
+
+.profile-action-btn.danger:hover {
+  background: rgba(248, 113, 113, 0.15);
+}
+
+.profile-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.profile-edit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px !important;
+  font-size: 13px !important;
+}
+
+.profile-delete-confirm-text {
+  font-size: 11px;
+  color: var(--color-error);
+  white-space: nowrap;
+}
+
+.profile-empty-hint {
+  font-size: 13px;
+  color: var(--text-3);
+  margin: 0;
+  padding: 12px 0;
+  text-align: center;
+}
+
+.profile-new-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-2);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.profile-add-btn {
+  align-self: flex-start;
+  color: var(--text-link) !important;
+  border-color: transparent !important;
+}
+
+.profile-add-btn:hover {
+  border-color: var(--border-1) !important;
 }
 
 .workspace-card {
@@ -1486,7 +1788,8 @@ details[open] .think-summary::before {
   .sidebar-logo-text,
   .sidebar-tagline,
   .sidebar-nav-item span:not(.sidebar-nav-icon),
-  .runtime-text {
+  .runtime-text,
+  .runtime-model-hint {
     display: none;
   }
 
@@ -1525,6 +1828,12 @@ details[open] .think-summary::before {
 
   .diff-split-container {
     grid-template-columns: 1fr;
+  }
+
+  .profile-switcher-menu {
+    left: 6px;
+    right: auto;
+    width: 200px;
   }
 }
 
