@@ -1,8 +1,9 @@
-# Cofree Guardrails（v0.1）— 实际实现修订版
+# Cofree Guardrails（v0.0.2）— 实际实现修订版
 
-本文件定义 v0.1 的"可控自主"边界：**允许做什么 / 禁止做什么 / 何时必须人工审批 / 如何审计与回滚**。
+本文件定义 v0.0.2 的"可控自主"边界：**允许做什么 / 禁止做什么 / 何时必须人工审批 / 如何审计与回滚**。
 
-> v0.1 使用 Guardrails（审批门 + runtime guardrails），不宣称强隔离 sandbox。
+> v0.0.2 使用 Guardrails（审批门 + runtime guardrails），不宣称强隔离 sandbox。
+> v0.0.2 新增工具权限系统（`ToolPermissions`），每个写操作工具可独立配置为 `ask`（需审批）或 `auto`（自动执行）。
 
 ## 1. 安全原则
 1) **默认只读**：未审批前，LLM 只能读文件、查看 git 状态、生成方案（内存中）。
@@ -51,14 +52,19 @@ v0.1 存在**两类**审批门：
 | 工具 | 类型 | 说明 |
 |------|------|------|
 | `list_files` | 只读 | 列出目录内容 |
-| `read_file` | 只读 | 读取文件内容（支持行范围） |
+| `read_file` | 只读 | 读取文件内容（支持行范围分段读取） |
 | `git_status` | 只读 | 查看 git 状态 |
 | `git_diff` | 只读 | 查看 git diff |
+| `grep` | 只读 | 正则表达式搜索文件内容（v0.0.2 新增） |
+| `glob` | 只读 | 文件模式匹配搜索（v0.0.2 新增） |
+| `diagnostics` | 只读 | 编译诊断（自动检测项目类型）（v0.0.2 新增） |
+| `fetch` | 只读 | URL 内容获取（白名单域名限制）（v0.0.2 新增） |
 | `propose_file_edit` | Gate A | 结构化文件编辑（replace/insert/delete/create），系统生成 patch |
 | `propose_apply_patch` | Gate A | 提交 raw unified diff patch |
 | `propose_shell` | Gate B | 提交 shell 命令（含 git 操作） |
+| `task` | 委派 | 委派子任务给 Sub-Agent（planner/coder/tester）（v0.0.2 新增） |
 
-系统通过**动态工具路由**控制每轮暴露给 LLM 的工具子集（详见 ARCHITECTURE.md）。
+每个 Gate A/B 工具可通过 `ToolPermissions` 配置为 `ask`（默认，需审批）或 `auto`（自动执行）。
 
 ## 5. 文件系统边界
 - 必须限定 workspace root（用户在设置页选择的项目根目录）
