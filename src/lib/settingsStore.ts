@@ -44,6 +44,18 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = {
   fetch: "ask",
 };
 
+export type ProxyMode = "off" | "http" | "https" | "socks5";
+
+export interface ProxySettings {
+  mode: ProxyMode;
+  url: string; // e.g. http://127.0.0.1:7890, socks5://127.0.0.1:1080
+  username?: string;
+  password?: string;
+  // Comma-separated host patterns, e.g. "localhost,127.0.0.1,*.local"
+  // (We keep it as a string to simplify the UI; Rust side can split/trim.)
+  noProxy?: string;
+}
+
 export interface AppSettings {
   apiKey: string;
   liteLLMBaseUrl: string;
@@ -56,6 +68,7 @@ export interface AppSettings {
   lastSavedAt: string | null;
   workspacePath: string;
   toolPermissions: ToolPermissions;
+  proxy: ProxySettings;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -69,6 +82,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lastSavedAt: null,
   workspacePath: "",
   toolPermissions: { ...DEFAULT_TOOL_PERMISSIONS },
+  proxy: {
+    mode: "off",
+    url: "",
+    username: "",
+    password: "",
+    noProxy: "",
+  },
 };
 
 type PersistedSettings = Omit<AppSettings, "apiKey"> & { apiKey?: string };
@@ -93,9 +113,13 @@ export function loadSettings(): AppSettings {
         ...parsed,
         apiKey: "",
         provider,
-        model: parsed.model?.trim() || defaultModelForProvider(provider || "openai")
+        model:
+          parsed.model?.trim() || defaultModelForProvider(provider || "openai"),
       };
-      window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(migrated));
+      window.localStorage.setItem(
+        SETTINGS_STORAGE_KEY,
+        JSON.stringify(migrated)
+      );
     }
 
     return {
@@ -103,7 +127,8 @@ export function loadSettings(): AppSettings {
       ...parsed,
       apiKey: "",
       provider,
-      model: parsed.model?.trim() || defaultModelForProvider(provider || "openai")
+      model:
+        parsed.model?.trim() || defaultModelForProvider(provider || "openai"),
     };
   } catch (_error) {
     return DEFAULT_SETTINGS;
@@ -118,10 +143,13 @@ export function saveSettings(settings: AppSettings): void {
   const withTimestamp: PersistedSettings = {
     ...settings,
     apiKey: "",
-    lastSavedAt: new Date().toISOString()
+    lastSavedAt: new Date().toISOString(),
   };
 
-  window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(withTimestamp));
+  window.localStorage.setItem(
+    SETTINGS_STORAGE_KEY,
+    JSON.stringify(withTimestamp)
+  );
 }
 
 export async function loadSecureApiKey(): Promise<string> {

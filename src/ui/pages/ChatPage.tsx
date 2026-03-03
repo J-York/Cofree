@@ -1217,26 +1217,30 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const handleDeleteConversation = (conversationId: string): void => {
     if (isStreaming || Boolean(executingActionId)) return;
 
-    console.log("[handleDeleteConversation] Deleting conversation:", {
-      conversationId,
-      wsPath,
-      activeConversationId,
-    });
+    const wasActiveConversation = conversationId === activeConversationId;
 
     deleteConversation(wsPath, conversationId);
     const updatedList = loadConversationList(wsPath);
-    console.log(
-      "[handleDeleteConversation] Updated list length:",
-      updatedList.length,
-      "IDs:",
-      updatedList.map((c) => c.id)
-    );
     setConversations(updatedList);
 
     // If deleted current conversation, switch to another or create new
-    if (conversationId === activeConversationId) {
+    if (wasActiveConversation) {
       if (updatedList.length > 0) {
-        handleSelectConversation(updatedList[0].id);
+        const nextConversation = loadConversation(wsPath, updatedList[0].id);
+        if (nextConversation) {
+          setCurrentConversation(nextConversation);
+          setActiveConversationIdState(nextConversation.id);
+          setActiveConversationId(wsPath, nextConversation.id);
+          setMessages(nextConversation.messages);
+          setCategorizedError(null);
+          setSessionNote(nextConversation.messages.length ? "已切换对话" : "");
+
+          // Reset session state for switched conversation
+          const previousSessionId = getChatSessionId();
+          resetChatSessionId();
+          resetHitlContinuationMemory(previousSessionId);
+          resetHitlContinuationMemory(getChatSessionId());
+        }
       } else {
         handleNewConversation();
       }

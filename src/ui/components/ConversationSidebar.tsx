@@ -30,6 +30,7 @@ export function ConversationSidebar({
 }: ConversationSidebarProps): ReactElement {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
 
   // Close on Escape
@@ -61,9 +62,16 @@ export function ConversationSidebar({
   };
 
   const handleDelete = (conversationId: string) => {
-    if (window.confirm("确定要删除这个对话吗？")) {
-      onDeleteConversation(conversationId);
-    }
+    setConfirmingDeleteId(conversationId);
+  };
+
+  const handleConfirmDelete = (conversationId: string) => {
+    setConfirmingDeleteId(null);
+    onDeleteConversation(conversationId);
+  };
+
+  const handleCancelDelete = () => {
+    setConfirmingDeleteId(null);
   };
 
   const handleSelect = (id: string) => {
@@ -208,17 +216,40 @@ export function ConversationSidebar({
                           <path d="M8.5 1.5a1.414 1.414 0 012 2L3.5 10.5l-3 .5.5-3 7.5-6.5z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
                         </svg>
                       </button>
-                      <button
-                        className="conv-action-btn danger"
-                        onClick={(e) => { e.stopPropagation(); handleDelete(conversation.id); }}
-                        type="button"
-                        title="删除"
-                        aria-label="删除"
-                      >
-                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                          <path d="M1.5 3h9M4 3V2h4v1M5 5.5v3M7 5.5v3M2.5 3l.5 7h6l.5-7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      </button>
+                      {confirmingDeleteId === conversation.id ? (
+                        <>
+                          <button
+                            className="conv-action-btn danger"
+                            onClick={(e) => { e.stopPropagation(); handleConfirmDelete(conversation.id); }}
+                            type="button"
+                            title="确认删除"
+                            aria-label="确认删除"
+                          >
+                            ✓
+                          </button>
+                          <button
+                            className="conv-action-btn"
+                            onClick={(e) => { e.stopPropagation(); handleCancelDelete(); }}
+                            type="button"
+                            title="取消"
+                            aria-label="取消"
+                          >
+                            ✕
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="conv-action-btn danger"
+                          onClick={(e) => { e.stopPropagation(); handleDelete(conversation.id); }}
+                          type="button"
+                          title="删除"
+                          aria-label="删除"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                            <path d="M1.5 3h9M4 3V2h4v1M5 5.5v3M7 5.5v3M2.5 3l.5 7h6l.5-7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                        </button>
+                      )}
                     </div>
                   </>
                 )}

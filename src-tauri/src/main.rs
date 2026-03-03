@@ -1524,17 +1524,17 @@ fn load_latest_workflow_checkpoint(session_id: String) -> Result<RecoveryResult,
 }
 
 #[tauri::command]
-async fn fetch_litellm_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
+async fn fetch_litellm_models(
+    base_url: String,
+    api_key: String,
+    proxy: Option<ProxySettings>,
+) -> Result<Vec<String>, String> {
     let normalized = normalize_base_url(&base_url);
     if normalized.is_empty() {
         return Err("LiteLLM Base URL 不能为空".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))  // 120 seconds timeout for LLM API calls
-        .connect_timeout(Duration::from_secs(10))  // 10 seconds for connection
-        .build()
-        .map_err(|e| format!("初始化 HTTP 客户端失败: {}", e))?;
+    let client = build_reqwest_client_with_proxy(proxy, 120)?;
 
     let mut endpoints = vec![format!("{}/models", normalized)];
     if !normalized.ends_with("/v1") {
@@ -1552,22 +1552,89 @@ async fn fetch_litellm_models(base_url: String, api_key: String) -> Result<Vec<S
     Err(format!("拉取模型失败: {}", errors.join(" | ")))
 }
 
+#[derive(Clone, Deserialize)]
+struct ProxySettings {
+    mode: String,
+    url: String,
+    username: Option<String>,
+    password: Option<String>,
+    no_proxy: Option<String>,
+}
+
+fn build_reqwest_client_with_proxy(
+    proxy: Option<ProxySettings>,
+    timeout_secs: u64,
+) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .connect_timeout(Duration::from_secs(10));
+
+    if let Some(proxy_cfg) = proxy {
+        let mode = proxy_cfg.mode.trim().to_lowercase();
+        if mode != "off" {
+            let raw_url = proxy_cfg.url.trim();
+            if raw_url.is_empty() {
+                return Err("代理已启用，但未填写代理 URL".to_string());
+            }
+
+            // reqwest expects scheme in the URL. For convenience, if user chose a mode but omitted scheme,
+            // we will prepend it.
+            let url_with_scheme = if raw_url.starts_with("http://")
+                || raw_url.starts_with("https://")
+                || raw_url.starts_with("socks5://")
+                || raw_url.starts_with("socks5h://")
+            {
+                raw_url.to_string()
+            } else {
+                format!("{}://{}", mode, raw_url)
+            };
+
+            let mut pxy = reqwest::Proxy::all(&url_with_scheme)
+                .map_err(|e| format!("代理地址无效: {}", e))?;
+
+            if let (Some(user), Some(pass)) = (proxy_cfg.username, proxy_cfg.password) {
+                if !user.trim().is_empty() {
+                    pxy = pxy.basic_auth(user.trim(), pass.trim());
+                }
+            }
+
+            builder = builder.proxy(pxy);
+
+            if let Some(no_proxy) = proxy_cfg.no_proxy {
+                // Best-effort: `reqwest` exposes only `ClientBuilder::no_proxy()` (disable proxy entirely)
+                // and reads NO_PROXY from env; it doesn't accept a custom list via builder.
+                // So here we set NO_PROXY env var for this process.
+                let cleaned = no_proxy
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                if !cleaned.is_empty() {
+                    std::env::set_var("NO_PROXY", cleaned);
+                }
+            }
+        }
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("初始化 HTTP 客户端失败: {}", e))
+}
+
 #[tauri::command]
 async fn post_litellm_chat_completions(
     base_url: String,
     api_key: String,
     body: Value,
+    proxy: Option<ProxySettings>,
 ) -> Result<LiteLLMHttpResponse, String> {
     let normalized = normalize_base_url(&base_url);
     if normalized.is_empty() {
         return Err("LiteLLM Base URL 不能为空".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))  // 120 seconds timeout for LLM API calls
-        .connect_timeout(Duration::from_secs(10))  // 10 seconds for connection
-        .build()
-        .map_err(|e| format!("初始化 HTTP 客户端失败: {}", e))?;
+    let client = build_reqwest_client_with_proxy(proxy, 120)?;
 
     let mut endpoints = vec![format!("{}/chat/completions", normalized)];
     if !normalized.ends_with("/v1") {
@@ -1606,17 +1673,14 @@ async fn post_litellm_chat_completions_stream(
     api_key: String,
     body: Value,
     request_id: String,
+    proxy: Option<ProxySettings>,
 ) -> Result<LiteLLMHttpResponse, String> {
     let normalized = normalize_base_url(&base_url);
     if normalized.is_empty() {
         return Err("LiteLLM Base URL 不能为空".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("初始化 HTTP 客户端失败: {}", e))?;
+    let client = build_reqwest_client_with_proxy(proxy, 300)?;
 
     // Force stream: true in the body
     let mut stream_body = body.clone();
@@ -2034,6 +2098,7 @@ fn is_domain_allowed(url: &str) -> bool {
 async fn fetch_url(
     url: String,
     max_size: Option<usize>,
+    proxy: Option<ProxySettings>,
 ) -> Result<FetchResult, String> {
     let url_trimmed = url.trim();
     if url_trimmed.is_empty() {
@@ -2055,11 +2120,7 @@ async fn fetch_url(
     }
 
     let max_bytes = max_size.unwrap_or(512 * 1024).min(512 * 1024);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("初始化 HTTP 客户端失败: {}", e))?;
+    let client = build_reqwest_client_with_proxy(proxy, 30)?;
 
     let response = client
         .get(url_trimmed)

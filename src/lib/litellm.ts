@@ -32,26 +32,26 @@ export const MODEL_PROVIDERS: ModelProvider[] = [
     id: "openai",
     label: "OpenAI",
     models: ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
-    localOnly: false
+    localOnly: false,
   },
   {
     id: "anthropic",
     label: "Anthropic",
     models: ["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"],
-    localOnly: false
+    localOnly: false,
   },
   {
     id: "xai",
     label: "xAI",
     models: ["grok-2-latest", "grok-2-vision-latest"],
-    localOnly: false
+    localOnly: false,
   },
   {
     id: "ollama",
     label: "Ollama (Local)",
     models: ["llama3.1:8b", "qwen2.5-coder:7b"],
-    localOnly: true
-  }
+    localOnly: true,
+  },
 ];
 
 export interface LiteLLMMessage {
@@ -125,23 +125,25 @@ export function formatModelRef(providerId: string, model: string): string {
   return `${providerId}/${model}`;
 }
 
-export function parseModelRef(modelRef: string): { provider: string; model: string } {
+export function parseModelRef(modelRef: string): {
+  provider: string;
+  model: string;
+} {
   const trimmed = modelRef.trim();
   const slashIndex = trimmed.indexOf("/");
-  
+
   if (slashIndex > 0) {
     return {
       provider: trimmed.substring(0, slashIndex),
-      model: trimmed.substring(slashIndex + 1)
+      model: trimmed.substring(slashIndex + 1),
     };
   }
-  
+
   return {
     provider: "",
-    model: trimmed
+    model: trimmed,
   };
 }
-
 
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/$/, "");
@@ -158,7 +160,7 @@ function buildChatCompletionEndpoints(baseUrl: string): string[] {
 
 function createAuthHeaders(apiKey: string): Record<string, string> {
   const headers: Record<string, string> = {
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
   };
 
   if (apiKey.trim()) {
@@ -173,7 +175,11 @@ function extractModelEntries(payload: unknown): unknown[] {
     return payload;
   }
 
-  if (payload && typeof payload === "object" && Array.isArray((payload as { data?: unknown[] }).data)) {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    Array.isArray((payload as { data?: unknown[] }).data)
+  ) {
     return (payload as { data: unknown[] }).data;
   }
 
@@ -226,7 +232,9 @@ function extractErrorMessage(payload: unknown): string {
   return "";
 }
 
-export function createLiteLLMClientConfig(settings: AppSettings): LiteLLMClientConfig {
+export function createLiteLLMClientConfig(
+  settings: AppSettings
+): LiteLLMClientConfig {
   const [endpoint] = buildChatCompletionEndpoints(settings.liteLLMBaseUrl);
   const headers = createAuthHeaders(settings.apiKey);
   const modelRef = settings.provider
@@ -236,21 +244,23 @@ export function createLiteLLMClientConfig(settings: AppSettings): LiteLLMClientC
   return {
     endpoint,
     headers,
-    modelRef
+    modelRef,
   };
 }
 
 export async function postLiteLLMChatCompletions(
-  settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey">,
+  settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey" | "proxy">,
   body: Record<string, unknown>
 ): Promise<LiteLLMHttpResponse> {
-  const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-  
+  const isTauri =
+    typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
   try {
     return await invoke<LiteLLMHttpResponse>("post_litellm_chat_completions", {
       baseUrl: settings.liteLLMBaseUrl,
       apiKey: settings.apiKey,
-      body
+      body,
+      proxy: settings.proxy,
     });
   } catch (error) {
     // If we're in Tauri, don't fallback to browser fetch (which will fail with CORS).
@@ -269,7 +279,7 @@ export async function postLiteLLMChatCompletions(
       const response = await fetch(endpoint, {
         method: "POST",
         headers: createAuthHeaders(settings.apiKey),
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
       });
       const rawBody = await response.text();
       if (response.status === 404 && index < endpoints.length - 1) {
@@ -280,7 +290,7 @@ export async function postLiteLLMChatCompletions(
       return {
         status: response.status,
         body: rawBody,
-        endpoint
+        endpoint,
       };
     } catch (error) {
       errors.push(String(error || "Unknown error"));
@@ -291,17 +301,23 @@ export async function postLiteLLMChatCompletions(
 }
 
 export async function fetchLiteLLMModelIds(
-  settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey">
+  settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey" | "proxy">
 ): Promise<string[]> {
-  const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-  
+  const isTauri =
+    typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
   try {
     const viaTauri = await invoke<string[]>("fetch_litellm_models", {
       baseUrl: settings.liteLLMBaseUrl,
-      apiKey: settings.apiKey
+      apiKey: settings.apiKey,
+      proxy: settings.proxy,
     });
     const normalized = Array.from(
-      new Set(viaTauri.map((modelId) => modelId.trim()).filter((modelId) => Boolean(modelId)))
+      new Set(
+        viaTauri
+          .map((modelId) => modelId.trim())
+          .filter((modelId) => Boolean(modelId))
+      )
     ).sort((left, right) => left.localeCompare(right));
     if (normalized.length) {
       return normalized;
@@ -324,7 +340,7 @@ export async function fetchLiteLLMModelIds(
     try {
       const response = await fetch(endpoint, {
         method: "GET",
-        headers: createAuthHeaders(settings.apiKey)
+        headers: createAuthHeaders(settings.apiKey),
       });
       const payload = (await response.json().catch(() => null)) as unknown;
       if (!response.ok) {
@@ -335,7 +351,11 @@ export async function fetchLiteLLMModelIds(
         throw new Error(message);
       }
       const modelIds = Array.from(
-        new Set(extractModelEntries(payload).map(extractModelId).filter((id): id is string => Boolean(id)))
+        new Set(
+          extractModelEntries(payload)
+            .map(extractModelId)
+            .filter((id): id is string => Boolean(id))
+        )
       ).sort((left, right) => left.localeCompare(right));
       if (modelIds.length) {
         return modelIds;
@@ -359,7 +379,10 @@ export function createLiteLLMRequestBody(
     stream?: boolean;
     temperature?: number;
     tools?: LiteLLMToolDefinition[];
-    toolChoice?: "auto" | "none" | { type: "function"; function: { name: string } };
+    toolChoice?:
+      | "auto"
+      | "none"
+      | { type: "function"; function: { name: string } };
   }
 ): Record<string, unknown> {
   const modelRef = settings.provider
@@ -369,7 +392,7 @@ export function createLiteLLMRequestBody(
     model: modelRef,
     messages,
     temperature: options?.temperature ?? 0.2,
-    stream: options?.stream ?? true
+    stream: options?.stream ?? true,
   };
 
   if (options?.responseFormat) {
@@ -387,20 +410,29 @@ export function createLiteLLMRequestBody(
 export async function postLiteLLMChatCompletionsStream(
   settings: AppSettings,
   body: Record<string, unknown>,
-  onChunk: (content: string) => void,
+  onChunk: (content: string) => void
 ): Promise<LiteLLMHttpResponse> {
   const baseUrl = settings.liteLLMBaseUrl;
   const apiKey = settings.apiKey;
 
-  const requestId = `stream-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const requestId = `stream-${Date.now()}-${Math.random()
+    .toString(16)
+    .slice(2, 8)}`;
 
   // Listen for streaming events, filtering by request_id
   let unlisten: UnlistenFn | undefined;
-  const listenerReady = listen<StreamChunkEvent>("llm-stream-chunk", (event) => {
-    if (event.payload.request_id === requestId && !event.payload.done && event.payload.content) {
-      onChunk(event.payload.content);
+  const listenerReady = listen<StreamChunkEvent>(
+    "llm-stream-chunk",
+    (event) => {
+      if (
+        event.payload.request_id === requestId &&
+        !event.payload.done &&
+        event.payload.content
+      ) {
+        onChunk(event.payload.content);
+      }
     }
-  }).then((fn) => {
+  ).then((fn) => {
     unlisten = fn;
   });
 
@@ -414,6 +446,7 @@ export async function postLiteLLMChatCompletionsStream(
         apiKey,
         body,
         requestId,
+        proxy: settings.proxy,
       }
     );
     return response;

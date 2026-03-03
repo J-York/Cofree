@@ -232,28 +232,13 @@ export function deleteConversation(
   }
 
   try {
-    // Debug logging
-    console.log("[deleteConversation] Deleting conversation:", {
-      workspacePath,
-      conversationId,
-      storageKeyPrefix: getStorageKeyPrefix(workspacePath),
-    });
-
     // Remove full conversation data
     const key = `${getStorageKeyPrefix(workspacePath)}.${conversationId}`;
-    console.log("[deleteConversation] Removing key:", key);
     window.localStorage.removeItem(key);
 
     // Update metadata list
     const list = loadConversationList(workspacePath);
-    console.log(
-      "[deleteConversation] Current list length:",
-      list.length,
-      "IDs:",
-      list.map((item) => item.id)
-    );
     const filtered = list.filter((item) => item.id !== conversationId);
-    console.log("[deleteConversation] Filtered list length:", filtered.length);
     window.localStorage.setItem(
       getStorageKeyPrefix(workspacePath),
       JSON.stringify(filtered)
@@ -263,8 +248,6 @@ export function deleteConversation(
     if (getActiveConversationId(workspacePath) === conversationId) {
       window.localStorage.removeItem(getActiveKey(workspacePath));
     }
-
-    console.log("[deleteConversation] Delete successful");
   } catch (error) {
     console.error("Failed to delete conversation:", error);
   }

@@ -33,6 +33,7 @@ export function SettingsPage({
     null
   );
   const [workspaceError, setWorkspaceError] = useState<string>("");
+  const [confirmClear, setConfirmClear] = useState<boolean>(false);
 
   const loadWorkspaceInfo = async (path: string) => {
     if (!path) {
@@ -138,6 +139,87 @@ export function SettingsPage({
       {/* Model config */}
       <div className="card settings-section">
         <p className="settings-section-title">模型配置</p>
+
+        {/* Proxy config */}
+        <div className="field" style={{ marginTop: "14px" }}>
+          <label className="field-label">代理（影响所有网络请求）</label>
+          <div className="grid-2">
+            <select
+              className="select"
+              value={draft.proxy.mode}
+              onChange={(e) =>
+                setDraft((p) => ({
+                  ...p,
+                  proxy: {
+                    ...p.proxy,
+                    mode: e.target.value as typeof p.proxy.mode,
+                  },
+                }))
+              }
+            >
+              <option value="off">关闭</option>
+              <option value="http">HTTP</option>
+              <option value="https">HTTPS</option>
+              <option value="socks5">SOCKS5</option>
+            </select>
+
+            <input
+              className="input"
+              value={draft.proxy.url}
+              onChange={(e) =>
+                setDraft((p) => ({
+                  ...p,
+                  proxy: { ...p.proxy, url: e.target.value },
+                }))
+              }
+              placeholder="http://127.0.0.1:7890 / socks5://127.0.0.1:1080"
+              type="text"
+            />
+          </div>
+
+          <div className="grid-2" style={{ marginTop: "8px" }}>
+            <input
+              className="input"
+              value={draft.proxy.username ?? ""}
+              onChange={(e) =>
+                setDraft((p) => ({
+                  ...p,
+                  proxy: { ...p.proxy, username: e.target.value },
+                }))
+              }
+              placeholder="用户名（可选）"
+              type="text"
+              autoComplete="off"
+            />
+            <input
+              className="input"
+              value={draft.proxy.password ?? ""}
+              onChange={(e) =>
+                setDraft((p) => ({
+                  ...p,
+                  proxy: { ...p.proxy, password: e.target.value },
+                }))
+              }
+              placeholder="密码（可选）"
+              type="password"
+              autoComplete="off"
+            />
+          </div>
+
+          <input
+            className="input"
+            style={{ marginTop: "8px" }}
+            value={draft.proxy.noProxy ?? ""}
+            onChange={(e) =>
+              setDraft((p) => ({
+                ...p,
+                proxy: { ...p.proxy, noProxy: e.target.value },
+              }))
+            }
+            placeholder="No Proxy（可选）：localhost,127.0.0.1,*.local"
+            type="text"
+          />
+        </div>
 
         <div className="field">
           <label className="field-label">LiteLLM Base URL</label>
@@ -452,27 +534,49 @@ export function SettingsPage({
               删除所有工作区的所有对话数据，此操作不可撤销
             </p>
           </div>
-          <button
-            className="btn btn-ghost"
-            style={{
-              color: "var(--color-error)",
-              borderColor: "var(--color-error)",
-            }}
-            onClick={() => {
-              if (
-                window.confirm("确定要清除所有会话记录吗？此操作不可撤销！")
-              ) {
-                clearAllConversations();
-                setSaveMessage("已清除所有会话");
-                setTimeout(() => setSaveMessage(""), 3000);
-                // 刷新页面以重置状态
-                window.location.reload();
-              }
-            }}
-            type="button"
-          >
-            清除会话
-          </button>
+          {confirmClear ? (
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <span style={{ fontSize: "12px", color: "var(--color-error)" }}>
+                确认清除所有会话？
+              </span>
+              <button
+                className="btn btn-ghost btn-sm"
+                style={{
+                  color: "var(--color-error)",
+                  borderColor: "var(--color-error)",
+                }}
+                onClick={() => {
+                  setConfirmClear(false);
+                  clearAllConversations();
+                  setSaveMessage("已清除所有会话");
+                  setTimeout(() => setSaveMessage(""), 3000);
+                  window.location.reload();
+                }}
+                type="button"
+              >
+                确认
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setConfirmClear(false)}
+                type="button"
+              >
+                取消
+              </button>
+            </div>
+          ) : (
+            <button
+              className="btn btn-ghost"
+              style={{
+                color: "var(--color-error)",
+                borderColor: "var(--color-error)",
+              }}
+              onClick={() => setConfirmClear(true)}
+              type="button"
+            >
+              清除会话
+            </button>
+          )}
         </div>
       </div>
 

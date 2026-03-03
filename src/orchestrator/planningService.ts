@@ -2289,7 +2289,8 @@ async function executeToolCall(
         error: string | null;
       }>("fetch_url", {
         url,
-        maxSize: maxSize || null
+        maxSize: maxSize || null,
+        proxy: settings?.proxy ?? null
       });
 
       if (!result.success) {
