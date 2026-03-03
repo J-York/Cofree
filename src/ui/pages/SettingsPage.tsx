@@ -1,12 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { type ReactElement, useEffect, useState } from "react";
-import { createLiteLLMClientConfig, formatModelRef, parseModelRef } from "../../lib/litellm";
+import {
+  createLiteLLMClientConfig,
+  formatModelRef,
+  parseModelRef,
+} from "../../lib/litellm";
 import {
   type AppSettings,
   type ToolPermissionLevel,
   DEFAULT_TOOL_PERMISSIONS,
-  maskApiKey
+  maskApiKey,
 } from "../../lib/settingsStore";
+import { clearAllConversations } from "../../lib/conversationStore";
 
 interface WorkspaceInfo {
   git_branch?: string;
@@ -18,14 +23,23 @@ interface SettingsPageProps {
   onSave: (settings: AppSettings) => Promise<void>;
 }
 
-export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElement {
+export function SettingsPage({
+  settings,
+  onSave,
+}: SettingsPageProps): ReactElement {
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [saveMessage, setSaveMessage] = useState<string>("");
-  const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
+  const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(
+    null
+  );
   const [workspaceError, setWorkspaceError] = useState<string>("");
 
   const loadWorkspaceInfo = async (path: string) => {
-    if (!path) { setWorkspaceInfo(null); setWorkspaceError(""); return; }
+    if (!path) {
+      setWorkspaceInfo(null);
+      setWorkspaceError("");
+      return;
+    }
     try {
       const info = await invoke<WorkspaceInfo>("get_workspace_info", { path });
       setWorkspaceInfo(info);
@@ -36,22 +50,28 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
     }
   };
 
-  useEffect(() => { void loadWorkspaceInfo(draft.workspacePath || ""); }, [draft.workspacePath]);
-  useEffect(() => { setDraft(settings); }, [settings]);
+  useEffect(() => {
+    void loadWorkspaceInfo(draft.workspacePath || "");
+  }, [draft.workspacePath]);
+  useEffect(() => {
+    setDraft(settings);
+  }, [settings]);
 
   const handleSave = async (): Promise<void> => {
     const parsed = parseModelRef(draft.model);
     const normalized = {
       ...draft,
       provider: parsed.provider || draft.provider || undefined,
-      model: parsed.model || draft.model
+      model: parsed.model || draft.model,
     };
     try {
       await onSave(normalized);
       setSaveMessage("已保存");
       setTimeout(() => setSaveMessage(""), 3000);
     } catch (error) {
-      setSaveMessage(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      setSaveMessage(
+        `保存失败：${error instanceof Error ? error.message : String(error)}`
+      );
       setTimeout(() => setSaveMessage(""), 4000);
     }
   };
@@ -65,7 +85,10 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
         await onSave(updated);
       }
     } catch (error) {
-      setWorkspaceError("选择工作区失败: " + (error instanceof Error ? error.message : String(error)));
+      setWorkspaceError(
+        "选择工作区失败: " +
+          (error instanceof Error ? error.message : String(error))
+      );
     }
   };
 
@@ -89,16 +112,24 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
             </p>
             {workspaceInfo?.git_branch && (
               <p className="workspace-meta">
-                {workspaceInfo.repo_name && `📦 ${workspaceInfo.repo_name} · `}🌿 {workspaceInfo.git_branch}
+                {workspaceInfo.repo_name && `📦 ${workspaceInfo.repo_name} · `}
+                🌿 {workspaceInfo.git_branch}
               </p>
             )}
             {workspaceError && (
-              <p className="workspace-meta" style={{ color: "var(--color-error)" }}>
+              <p
+                className="workspace-meta"
+                style={{ color: "var(--color-error)" }}
+              >
                 ⚠ {workspaceError}
               </p>
             )}
           </div>
-          <button className="btn btn-ghost btn-sm" onClick={handleSelectWorkspace} type="button">
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={handleSelectWorkspace}
+            type="button"
+          >
             选择目录
           </button>
         </div>
@@ -113,7 +144,9 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
           <input
             className="input"
             value={draft.liteLLMBaseUrl}
-            onChange={(e) => setDraft((p) => ({ ...p, liteLLMBaseUrl: e.target.value }))}
+            onChange={(e) =>
+              setDraft((p) => ({ ...p, liteLLMBaseUrl: e.target.value }))
+            }
             placeholder="http://localhost:4000"
             type="text"
           />
@@ -124,7 +157,9 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
           <input
             className="input"
             value={draft.apiKey}
-            onChange={(e) => setDraft((p) => ({ ...p, apiKey: e.target.value.trim() }))}
+            onChange={(e) =>
+              setDraft((p) => ({ ...p, apiKey: e.target.value.trim() }))
+            }
             placeholder="sk-..."
             type="password"
           />
@@ -142,7 +177,7 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
               setDraft((p) => ({
                 ...p,
                 provider: parsed.provider,
-                model: parsed.model
+                model: parsed.model,
               }));
             }}
             placeholder="e.g. openai/gpt-4o"
@@ -159,7 +194,9 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
               onChange={(e) =>
                 setDraft((p) => ({
                   ...p,
-                  maxSnippetLines: Number(e.target.value) as AppSettings["maxSnippetLines"],
+                  maxSnippetLines: Number(
+                    e.target.value
+                  ) as AppSettings["maxSnippetLines"],
                 }))
               }
             >
@@ -183,7 +220,17 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
                 }))
               }
             />
-            <span className="field-hint" style={{ fontSize: "11px", color: "var(--text-3)", marginTop: "4px", display: "block" }}>Used for truncating chat history</span>
+            <span
+              className="field-hint"
+              style={{
+                fontSize: "11px",
+                color: "var(--text-3)",
+                marginTop: "4px",
+                display: "block",
+              }}
+            >
+              Used for truncating chat history
+            </span>
           </div>
 
           <div className="field">
@@ -192,7 +239,10 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
               className="select"
               value={draft.sendRelativePathOnly ? "relative" : "full"}
               onChange={(e) =>
-                setDraft((p) => ({ ...p, sendRelativePathOnly: e.target.value === "relative" }))
+                setDraft((p) => ({
+                  ...p,
+                  sendRelativePathOnly: e.target.value === "relative",
+                }))
               }
             >
               <option value="relative">Relative only (default)</option>
@@ -205,7 +255,9 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
           <input
             type="checkbox"
             checked={draft.allowCloudModels}
-            onChange={(e) => setDraft((p) => ({ ...p, allowCloudModels: e.target.checked }))}
+            onChange={(e) =>
+              setDraft((p) => ({ ...p, allowCloudModels: e.target.checked }))
+            }
           />
           <span className="checkbox-label">允许云端模型</span>
         </label>
@@ -215,8 +267,19 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
       <div className="card settings-section">
         <p className="settings-section-title">工具权限</p>
 
-        <p className="field-label" style={{ marginBottom: "8px" }}>只读工具</p>
-        {(["list_files", "read_file", "grep", "glob", "git_status", "git_diff"] as const).map((toolName) => {
+        <p className="field-label" style={{ marginBottom: "8px" }}>
+          只读工具
+        </p>
+        {(
+          [
+            "list_files",
+            "read_file",
+            "grep",
+            "glob",
+            "git_status",
+            "git_diff",
+          ] as const
+        ).map((toolName) => {
           const descriptions: Record<string, string> = {
             list_files: "列出目录文件",
             read_file: "读取文件内容",
@@ -227,10 +290,29 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
           };
           const permissions = draft.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS;
           return (
-            <div key={toolName} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0" }}>
+            <div
+              key={toolName}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "4px 0",
+              }}
+            >
               <span style={{ fontSize: "13px" }}>
-                <code style={{ fontSize: "12px", background: "var(--bg-2)", padding: "1px 4px", borderRadius: "3px" }}>{toolName}</code>
-                <span style={{ color: "var(--text-3)", marginLeft: "6px" }}>{descriptions[toolName]}</span>
+                <code
+                  style={{
+                    fontSize: "12px",
+                    background: "var(--bg-2)",
+                    padding: "1px 4px",
+                    borderRadius: "3px",
+                  }}
+                >
+                  {toolName}
+                </code>
+                <span style={{ color: "var(--text-3)", marginLeft: "6px" }}>
+                  {descriptions[toolName]}
+                </span>
               </span>
               <select
                 className="select"
@@ -253,10 +335,20 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
           );
         })}
 
-        <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "12px 0" }} />
+        <hr
+          style={{
+            border: "none",
+            borderTop: "1px solid var(--border)",
+            margin: "12px 0",
+          }}
+        />
 
-        <p className="field-label" style={{ marginBottom: "8px" }}>写入工具</p>
-        {(["propose_file_edit", "propose_apply_patch", "propose_shell"] as const).map((toolName) => {
+        <p className="field-label" style={{ marginBottom: "8px" }}>
+          写入工具
+        </p>
+        {(
+          ["propose_file_edit", "propose_apply_patch", "propose_shell"] as const
+        ).map((toolName) => {
           const descriptions: Record<string, string> = {
             propose_file_edit: "结构化文件编辑",
             propose_apply_patch: "应用 Patch 补丁",
@@ -264,10 +356,29 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
           };
           const permissions = draft.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS;
           return (
-            <div key={toolName} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0" }}>
+            <div
+              key={toolName}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "4px 0",
+              }}
+            >
               <span style={{ fontSize: "13px" }}>
-                <code style={{ fontSize: "12px", background: "var(--bg-2)", padding: "1px 4px", borderRadius: "3px" }}>{toolName}</code>
-                <span style={{ color: "var(--text-3)", marginLeft: "6px" }}>{descriptions[toolName]}</span>
+                <code
+                  style={{
+                    fontSize: "12px",
+                    background: "var(--bg-2)",
+                    padding: "1px 4px",
+                    borderRadius: "3px",
+                  }}
+                >
+                  {toolName}
+                </code>
+                <span style={{ color: "var(--text-3)", marginLeft: "6px" }}>
+                  {descriptions[toolName]}
+                </span>
               </span>
               <select
                 className="select"
@@ -290,8 +401,16 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
           );
         })}
 
-        <p style={{ fontSize: "11px", color: "var(--color-warning, #e6a700)", marginTop: "12px", lineHeight: "1.5" }}>
-          ⚠ 将写入工具设为自动执行意味着 LLM 可以直接修改文件和执行命令，请确保你信任当前使用的模型。
+        <p
+          style={{
+            fontSize: "11px",
+            color: "var(--color-warning, #e6a700)",
+            marginTop: "12px",
+            lineHeight: "1.5",
+          }}
+        >
+          ⚠ 将写入工具设为自动执行意味着 LLM
+          可以直接修改文件和执行命令，请确保你信任当前使用的模型。
         </p>
       </div>
 
@@ -299,25 +418,85 @@ export function SettingsPage({ settings, onSave }: SettingsPageProps): ReactElem
       <div className="card card-sm">
         <p className="card-title">运行时信息</p>
         <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <div className="api-key-display">Endpoint: {runtimeConfig.endpoint}</div>
+          <div className="api-key-display">
+            Endpoint: {runtimeConfig.endpoint}
+          </div>
+        </div>
+      </div>
+
+      {/* Danger Zone */}
+      <div
+        className="card card-sm"
+        style={{ borderColor: "var(--color-error)" }}
+      >
+        <p className="card-title" style={{ color: "var(--color-error)" }}>
+          危险操作
+        </p>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+          }}
+        >
+          <div>
+            <p style={{ fontSize: "13px", margin: 0 }}>清除所有会话记录</p>
+            <p
+              style={{
+                fontSize: "11px",
+                color: "var(--text-3)",
+                margin: "4px 0 0 0",
+              }}
+            >
+              删除所有工作区的所有对话数据，此操作不可撤销
+            </p>
+          </div>
+          <button
+            className="btn btn-ghost"
+            style={{
+              color: "var(--color-error)",
+              borderColor: "var(--color-error)",
+            }}
+            onClick={() => {
+              if (
+                window.confirm("确定要清除所有会话记录吗？此操作不可撤销！")
+              ) {
+                clearAllConversations();
+                setSaveMessage("已清除所有会话");
+                setTimeout(() => setSaveMessage(""), 3000);
+                // 刷新页面以重置状态
+                window.location.reload();
+              }
+            }}
+            type="button"
+          >
+            清除会话
+          </button>
         </div>
       </div>
 
       {/* Actions */}
       <div className="btn-row">
-        <button className="btn btn-primary" onClick={() => void handleSave()} type="button">
+        <button
+          className="btn btn-primary"
+          onClick={() => void handleSave()}
+          type="button"
+        >
           保存设置
         </button>
         <button
           className="btn btn-ghost"
-          onClick={() => { setDraft(settings); setSaveMessage("已重置"); setTimeout(() => setSaveMessage(""), 2000); }}
+          onClick={() => {
+            setDraft(settings);
+            setSaveMessage("已重置");
+            setTimeout(() => setSaveMessage(""), 2000);
+          }}
           type="button"
         >
           重置
         </button>
-        {saveMessage && (
-          <span className="save-feedback">✓ {saveMessage}</span>
-        )}
+        {saveMessage && <span className="save-feedback">✓ {saveMessage}</span>}
       </div>
     </div>
   );

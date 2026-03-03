@@ -56,10 +56,6 @@ jobs:
         run: |
           rustup target add ${{ matrix.platform.target }}
 
-      - name: Install OpenSSL (macOS)
-        if: startsWith(matrix.platform.os, 'macos-')
-        run: brew install openssl@3
-
       - name: Install frontend dependencies
         run: pnpm install
 

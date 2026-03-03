@@ -1217,8 +1217,20 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const handleDeleteConversation = (conversationId: string): void => {
     if (isStreaming || Boolean(executingActionId)) return;
 
+    console.log("[handleDeleteConversation] Deleting conversation:", {
+      conversationId,
+      wsPath,
+      activeConversationId,
+    });
+
     deleteConversation(wsPath, conversationId);
     const updatedList = loadConversationList(wsPath);
+    console.log(
+      "[handleDeleteConversation] Updated list length:",
+      updatedList.length,
+      "IDs:",
+      updatedList.map((c) => c.id)
+    );
     setConversations(updatedList);
 
     // If deleted current conversation, switch to another or create new
@@ -1272,13 +1284,13 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
             }}
           >
             <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              minWidth: 0,
-            }}
-          >
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                minWidth: 0,
+              }}
+            >
               <button
                 className="chat-sidebar-toggle"
                 onClick={() => setSidebarOpen((v) => !v)}
@@ -1287,7 +1299,12 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                 title="对话列表"
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path d="M2 4h12M2 8h8M2 12h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                  <path
+                    d="M2 4h12M2 8h8M2 12h10"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                  />
                 </svg>
               </button>
               <span

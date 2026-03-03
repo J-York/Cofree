@@ -56,7 +56,10 @@ function getActiveKey(workspacePath: string): string {
 }
 
 function generateConversationId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return `conv-${crypto.randomUUID()}`;
   }
   return `conv-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
@@ -66,7 +69,9 @@ function generateConversationTitle(messages: ChatMessageRecord[]): string {
   const firstUserMessage = messages.find((m) => m.role === "user");
   if (firstUserMessage && firstUserMessage.content.trim()) {
     const preview = firstUserMessage.content.trim().slice(0, 30);
-    return preview.length < firstUserMessage.content.trim().length ? `${preview}...` : preview;
+    return preview.length < firstUserMessage.content.trim().length
+      ? `${preview}...`
+      : preview;
   }
   return "新对话";
 }
@@ -74,7 +79,9 @@ function generateConversationTitle(messages: ChatMessageRecord[]): string {
 /**
  * Load all conversation metadata (without full message history)
  */
-export function loadConversationList(workspacePath: string): ConversationMetadata[] {
+export function loadConversationList(
+  workspacePath: string
+): ConversationMetadata[] {
   if (typeof window === "undefined") {
     return [];
   }
@@ -98,7 +105,8 @@ export function loadConversationList(workspacePath: string): ConversationMetadat
         title: typeof item.title === "string" ? item.title : "未命名对话",
         createdAt: typeof item.createdAt === "string" ? item.createdAt : "",
         updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
-        messageCount: typeof item.messageCount === "number" ? item.messageCount : 0,
+        messageCount:
+          typeof item.messageCount === "number" ? item.messageCount : 0,
       }))
       .filter((item) => item.id && item.createdAt);
   } catch {
@@ -109,7 +117,10 @@ export function loadConversationList(workspacePath: string): ConversationMetadat
 /**
  * Load a specific conversation with full message history
  */
-export function loadConversation(workspacePath: string, conversationId: string): Conversation | null {
+export function loadConversation(
+  workspacePath: string,
+  conversationId: string
+): Conversation | null {
   if (typeof window === "undefined") {
     return null;
   }
@@ -141,7 +152,10 @@ export function loadConversation(workspacePath: string, conversationId: string):
 /**
  * Save a conversation (creates or updates)
  */
-export function saveConversation(workspacePath: string, conversation: Conversation): void {
+export function saveConversation(
+  workspacePath: string,
+  conversation: Conversation
+): void {
   if (typeof window === "undefined") {
     return;
   }
@@ -170,9 +184,15 @@ export function saveConversation(workspacePath: string, conversation: Conversati
     }
 
     // Sort by updatedAt descending
-    list.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    list.sort(
+      (a, b) =>
+        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
 
-    window.localStorage.setItem(getStorageKeyPrefix(workspacePath), JSON.stringify(list));
+    window.localStorage.setItem(
+      getStorageKeyPrefix(workspacePath),
+      JSON.stringify(list)
+    );
   } catch (error) {
     console.error("Failed to save conversation:", error);
   }
@@ -181,7 +201,10 @@ export function saveConversation(workspacePath: string, conversation: Conversati
 /**
  * Create a new conversation
  */
-export function createConversation(workspacePath: string, initialMessages: ChatMessageRecord[] = []): Conversation {
+export function createConversation(
+  workspacePath: string,
+  initialMessages: ChatMessageRecord[] = []
+): Conversation {
   const now = new Date().toISOString();
   const conversation: Conversation = {
     id: generateConversationId(),
@@ -200,25 +223,48 @@ export function createConversation(workspacePath: string, initialMessages: ChatM
 /**
  * Delete a conversation
  */
-export function deleteConversation(workspacePath: string, conversationId: string): void {
+export function deleteConversation(
+  workspacePath: string,
+  conversationId: string
+): void {
   if (typeof window === "undefined") {
     return;
   }
 
   try {
+    // Debug logging
+    console.log("[deleteConversation] Deleting conversation:", {
+      workspacePath,
+      conversationId,
+      storageKeyPrefix: getStorageKeyPrefix(workspacePath),
+    });
+
     // Remove full conversation data
     const key = `${getStorageKeyPrefix(workspacePath)}.${conversationId}`;
+    console.log("[deleteConversation] Removing key:", key);
     window.localStorage.removeItem(key);
 
     // Update metadata list
     const list = loadConversationList(workspacePath);
+    console.log(
+      "[deleteConversation] Current list length:",
+      list.length,
+      "IDs:",
+      list.map((item) => item.id)
+    );
     const filtered = list.filter((item) => item.id !== conversationId);
-    window.localStorage.setItem(getStorageKeyPrefix(workspacePath), JSON.stringify(filtered));
+    console.log("[deleteConversation] Filtered list length:", filtered.length);
+    window.localStorage.setItem(
+      getStorageKeyPrefix(workspacePath),
+      JSON.stringify(filtered)
+    );
 
     // If this was the active conversation, clear it
     if (getActiveConversationId(workspacePath) === conversationId) {
       window.localStorage.removeItem(getActiveKey(workspacePath));
     }
+
+    console.log("[deleteConversation] Delete successful");
   } catch (error) {
     console.error("Failed to delete conversation:", error);
   }
@@ -227,7 +273,11 @@ export function deleteConversation(workspacePath: string, conversationId: string
 /**
  * Update conversation title
  */
-export function updateConversationTitle(workspacePath: string, conversationId: string, newTitle: string): void {
+export function updateConversationTitle(
+  workspacePath: string,
+  conversationId: string,
+  newTitle: string
+): void {
   const conversation = loadConversation(workspacePath, conversationId);
   if (!conversation) {
     return;
@@ -256,7 +306,10 @@ export function getActiveConversationId(workspacePath: string): string | null {
 /**
  * Set active conversation ID
  */
-export function setActiveConversationId(workspacePath: string, conversationId: string): void {
+export function setActiveConversationId(
+  workspacePath: string,
+  conversationId: string
+): void {
   if (typeof window === "undefined") {
     return;
   }
@@ -271,7 +324,10 @@ export function setActiveConversationId(workspacePath: string, conversationId: s
 /**
  * Migrate old single-conversation data to new multi-conversation format
  */
-export function migrateOldChatHistory(workspacePath: string, oldMessages: ChatMessageRecord[]): void {
+export function migrateOldChatHistory(
+  workspacePath: string,
+  oldMessages: ChatMessageRecord[]
+): void {
   if (typeof window === "undefined" || oldMessages.length === 0) {
     return;
   }
@@ -288,6 +344,41 @@ export function migrateOldChatHistory(workspacePath: string, oldMessages: ChatMe
 }
 
 /**
+ * Clear all conversations for all workspaces
+ */
+export function clearAllConversations(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    const keysToRemove: string[] = [];
+
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i);
+      if (
+        key &&
+        (key.startsWith(CONVERSATIONS_STORAGE_KEY) ||
+          key.startsWith(ACTIVE_CONVERSATION_KEY))
+      ) {
+        keysToRemove.push(key);
+      }
+    }
+
+    keysToRemove.forEach((key) => {
+      window.localStorage.removeItem(key);
+    });
+
+    console.log(
+      `[clearAllConversations] Cleared ${keysToRemove.length} conversation keys:`,
+      keysToRemove
+    );
+  } catch (error) {
+    console.error("Failed to clear conversations:", error);
+  }
+}
+
+/**
  * Migrate global (un-namespaced) conversations to workspace-scoped keys.
  * Runs only when the global key has data AND the workspace key is empty.
  * After a successful copy, the global keys are removed.
@@ -298,7 +389,9 @@ export function migrateGlobalToWorkspace(workspacePath: string): void {
   }
 
   try {
-    const globalListRaw = window.localStorage.getItem(CONVERSATIONS_STORAGE_KEY);
+    const globalListRaw = window.localStorage.getItem(
+      CONVERSATIONS_STORAGE_KEY
+    );
     if (!globalListRaw) {
       return; // Nothing to migrate
     }
@@ -341,8 +434,13 @@ export function migrateGlobalToWorkspace(workspacePath: string): void {
     window.localStorage.removeItem(CONVERSATIONS_STORAGE_KEY);
     window.localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
 
-    console.log(`Migrated ${globalList.length} conversations to workspace: ${workspacePath}`);
+    console.log(
+      `Migrated ${globalList.length} conversations to workspace: ${workspacePath}`
+    );
   } catch (error) {
-    console.error("Failed to migrate global conversations to workspace:", error);
+    console.error(
+      "Failed to migrate global conversations to workspace:",
+      error
+    );
   }
 }
