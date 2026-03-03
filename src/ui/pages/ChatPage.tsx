@@ -14,6 +14,7 @@ import {
   getActiveConversationId,
   setActiveConversationId,
   migrateOldChatHistory,
+  migrateGlobalToWorkspace,
   type ConversationMetadata,
   type Conversation,
 } from "../../lib/conversationStore";
@@ -573,27 +574,32 @@ function InlinePlan({
 export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const { actions: session } = useSession();
 
+  const wsPath = settings.workspacePath;
+
   // Multi-conversation state
   const [conversations, setConversations] = useState<ConversationMetadata[]>(
-    () => loadConversationList()
+    () => {
+      migrateGlobalToWorkspace(wsPath);
+      return loadConversationList(wsPath);
+    }
   );
   const [activeConversationId, setActiveConversationIdState] = useState<
     string | null
-  >(() => getActiveConversationId());
+  >(() => getActiveConversationId(wsPath));
   const [currentConversation, setCurrentConversation] =
     useState<Conversation | null>(() => {
-      const activeId = getActiveConversationId();
+      const activeId = getActiveConversationId(wsPath);
       if (activeId) {
-        return loadConversation(activeId);
+        return loadConversation(wsPath, activeId);
       }
       // Migrate old chat history if exists
       const oldHistory = loadChatHistory();
       if (oldHistory.length > 0) {
-        migrateOldChatHistory(oldHistory);
+        migrateOldChatHistory(wsPath, oldHistory);
         clearChatHistory();
-        const newList = loadConversationList();
+        const newList = loadConversationList(wsPath);
         if (newList.length > 0) {
-          const firstConv = loadConversation(newList[0].id);
+          const firstConv = loadConversation(wsPath, newList[0].id);
           return firstConv;
         }
       }
@@ -640,13 +646,66 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
         messages,
         updatedAt: new Date().toISOString(),
       };
-      saveConversation(updatedConversation);
+      saveConversation(wsPath, updatedConversation);
       setCurrentConversation(updatedConversation);
 
       // Update conversation list
-      setConversations(loadConversationList());
+      setConversations(loadConversationList(wsPath));
     }
   }, [messages, currentConversation?.id]);
+
+  // React to workspace path changes: migrate, reload conversations
+  const prevWsPathRef = useRef(wsPath);
+  useEffect(() => {
+    if (prevWsPathRef.current === wsPath) return;
+    prevWsPathRef.current = wsPath;
+
+    // Abort any in-flight stream
+    abortControllerRef.current?.abort();
+
+    // Migrate global data if needed
+    migrateGlobalToWorkspace(wsPath);
+
+    // Load workspace-scoped conversations
+    const list = loadConversationList(wsPath);
+    setConversations(list);
+
+    const activeId = getActiveConversationId(wsPath);
+    const conv = activeId ? loadConversation(wsPath, activeId) : null;
+
+    if (conv) {
+      setCurrentConversation(conv);
+      setActiveConversationIdState(conv.id);
+      setMessages(conv.messages);
+      messagesRef.current = conv.messages;
+      setSessionNote(conv.messages.length ? "已切换工作区" : "");
+    } else if (list.length > 0) {
+      const first = loadConversation(wsPath, list[0].id);
+      if (first) {
+        setCurrentConversation(first);
+        setActiveConversationIdState(first.id);
+        setActiveConversationId(wsPath, first.id);
+        setMessages(first.messages);
+        messagesRef.current = first.messages;
+        setSessionNote("已切换工作区");
+      }
+    } else {
+      setCurrentConversation(null);
+      setActiveConversationIdState(null);
+      setMessages([]);
+      messagesRef.current = [];
+      setSessionNote("");
+    }
+
+    setCategorizedError(null);
+    setIsStreaming(false);
+
+    // Reset session state
+    const previousSessionId = getChatSessionId();
+    resetChatSessionId();
+    resetHitlContinuationMemory(previousSessionId);
+    resetHitlContinuationMemory(getChatSessionId());
+  }, [wsPath]);
 
   useEffect(
     () => () => {
@@ -1107,25 +1166,25 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
       messages: [],
       updatedAt: new Date().toISOString(),
     };
-    saveConversation(clearedConversation);
+    saveConversation(wsPath, clearedConversation);
     setCurrentConversation(clearedConversation);
     setMessages([]);
     setCategorizedError(null);
     setSessionNote("");
-    setConversations(loadConversationList());
+    setConversations(loadConversationList(wsPath));
   };
 
   // Conversation management handlers
   const handleNewConversation = (): void => {
     if (isStreaming || Boolean(executingActionId)) return;
 
-    const newConv = createConversation([]);
+    const newConv = createConversation(wsPath, []);
     setCurrentConversation(newConv);
     setActiveConversationIdState(newConv.id);
     setMessages([]);
     setCategorizedError(null);
     setSessionNote("");
-    setConversations(loadConversationList());
+    setConversations(loadConversationList(wsPath));
 
     // Reset session state
     const previousSessionId = getChatSessionId();
@@ -1138,12 +1197,12 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     if (isStreaming || Boolean(executingActionId)) return;
     if (conversationId === activeConversationId) return;
 
-    const conv = loadConversation(conversationId);
+    const conv = loadConversation(wsPath, conversationId);
     if (!conv) return;
 
     setCurrentConversation(conv);
     setActiveConversationIdState(conv.id);
-    setActiveConversationId(conv.id);
+    setActiveConversationId(wsPath, conv.id);
     setMessages(conv.messages);
     setCategorizedError(null);
     setSessionNote(conv.messages.length ? "已切换对话" : "");
@@ -1158,8 +1217,8 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const handleDeleteConversation = (conversationId: string): void => {
     if (isStreaming || Boolean(executingActionId)) return;
 
-    deleteConversation(conversationId);
-    const updatedList = loadConversationList();
+    deleteConversation(wsPath, conversationId);
+    const updatedList = loadConversationList(wsPath);
     setConversations(updatedList);
 
     // If deleted current conversation, switch to another or create new
@@ -1176,8 +1235,8 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     conversationId: string,
     newTitle: string
   ): void => {
-    updateConversationTitle(conversationId, newTitle);
-    setConversations(loadConversationList());
+    updateConversationTitle(wsPath, conversationId, newTitle);
+    setConversations(loadConversationList(wsPath));
 
     // Update current conversation if it's the one being renamed
     if (conversationId === activeConversationId && currentConversation) {
