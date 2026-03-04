@@ -3126,3 +3126,85 @@ details[open] .think-summary::before {
   border-color: var(--border-2);
   color: var(--text-1);
 }
+
+/* ── Input Dialog (modal prompt replacement) ─────────────── */
+.input-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  animation: dialog-fade-in 150ms ease-out;
+}
+
+@keyframes dialog-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.input-dialog {
+  width: 90%;
+  max-width: 420px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-lg);
+  animation: dialog-scale-in 150ms ease-out;
+}
+
+@keyframes dialog-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.input-dialog-title {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-1);
+}
+
+.input-dialog-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-1);
+  background: var(--surface-3);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  resize: vertical;
+  min-height: 80px;
+  transition: border-color var(--t-fast);
+}
+
+.input-dialog-textarea:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.input-dialog-textarea::placeholder {
+  color: var(--text-3);
+}
+
+.input-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}

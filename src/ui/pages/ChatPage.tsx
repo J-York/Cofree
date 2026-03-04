@@ -26,6 +26,7 @@ import {
   type CategorizedError,
 } from "../../lib/errorClassifier";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { InputDialog } from "../components/InputDialog";
 import { ShellResultDisplay } from "../components/ShellResultDisplay";
 import { DiffViewer } from "../components/DiffViewer";
 import {
@@ -1014,6 +1015,17 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
   const [liveContextTokens, setLiveContextTokens] = useState<number | null>(null);
+  const [inputDialog, setInputDialog] = useState<{
+    open: boolean;
+    title: string;
+    placeholder?: string;
+    defaultValue?: string;
+    onConfirm: (value: string) => void;
+  }>({
+    open: false,
+    title: "",
+    onConfirm: () => {},
+  });
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<ChatMessageRecord[]>(
     currentConversation?.messages ?? []
@@ -1520,31 +1532,44 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   };
 
   const handleRejectAction = (messageId: string, actionId: string): void => {
-    const reason = window.prompt("请输入 Reject 原因", "Need refinement");
-    if (reason === null) return;
-    let newPlan: OrchestrationPlan | null = null;
-    handlePlanUpdate(messageId, (p) => {
-      newPlan = rejectAction(p, actionId, reason);
-      return newPlan;
-    });
-    setSessionNote(`动作 ${actionId} 已拒绝`);
+    setInputDialog({
+      open: true,
+      title: "请输入拒绝原因",
+      placeholder: "说明为什么拒绝这个操作...",
+      defaultValue: "需要修改",
+      onConfirm: (reason) => {
+        setInputDialog((prev) => ({ ...prev, open: false }));
+        if (!reason.trim()) return;
+        let newPlan: OrchestrationPlan | null = null;
+        handlePlanUpdate(messageId, (p) => {
+          newPlan = rejectAction(p, actionId, reason);
+          return newPlan;
+        });
+        setSessionNote(`动作 ${actionId} 已拒绝`);
 
-    // Defer the check so that handlePlanUpdate completes synchronously
-    setTimeout(() => {
-      if (newPlan) {
-        const plan = newPlan as OrchestrationPlan;
-        continueAfterHitlIfNeeded(messageId, plan);
-      }
-    }, 100);
+        // Defer the check so that handlePlanUpdate completes synchronously
+        setTimeout(() => {
+          if (newPlan) {
+            const plan = newPlan as OrchestrationPlan;
+            continueAfterHitlIfNeeded(messageId, plan);
+          }
+        }, 100);
+      },
+    });
   };
 
   const handleCommentAction = (messageId: string, actionId: string): void => {
-    const comment = window.prompt(
-      "请输入 Comment",
-      "Please update payload before approval"
-    );
-    if (comment === null) return;
-    handlePlanUpdate(messageId, (p) => commentAction(p, actionId, comment));
+    setInputDialog({
+      open: true,
+      title: "添加备注",
+      placeholder: "添加说明或修改建议...",
+      defaultValue: "",
+      onConfirm: (comment) => {
+        setInputDialog((prev) => ({ ...prev, open: false }));
+        if (!comment.trim()) return;
+        handlePlanUpdate(messageId, (p) => commentAction(p, actionId, comment));
+      },
+    });
   };
 
   const handleApproveAllActions = async (
@@ -1575,19 +1600,27 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   };
 
   const handleRejectAllActions = (messageId: string): void => {
-    const reason = window.prompt("请输入批量拒绝原因", "Need refinement");
-    if (reason === null) return;
-    let newPlan: OrchestrationPlan | null = null;
-    handlePlanUpdate(messageId, (p) => {
-      newPlan = rejectAllPendingActions(p, reason);
-      return newPlan;
+    setInputDialog({
+      open: true,
+      title: "批量拒绝所有待审批动作",
+      placeholder: "说明为什么拒绝这些操作...",
+      defaultValue: "需要修改",
+      onConfirm: (reason) => {
+        setInputDialog((prev) => ({ ...prev, open: false }));
+        if (!reason.trim()) return;
+        let newPlan: OrchestrationPlan | null = null;
+        handlePlanUpdate(messageId, (p) => {
+          newPlan = rejectAllPendingActions(p, reason);
+          return newPlan;
+        });
+        setSessionNote("已批量拒绝所有待审批动作");
+        setTimeout(() => {
+          if (newPlan) {
+            continueAfterHitlIfNeeded(messageId, newPlan as OrchestrationPlan);
+          }
+        }, 100);
+      },
     });
-    setSessionNote("已批量拒绝所有待审批动作");
-    setTimeout(() => {
-      if (newPlan) {
-        continueAfterHitlIfNeeded(messageId, newPlan as OrchestrationPlan);
-      }
-    }, 100);
   };
 
   const handleClearHistory = (): void => {
@@ -1847,7 +1880,9 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                 <p className="chat-empty-text">开始你的第一条消息</p>
               </div>
             ) : (
-              messages.map((message) => (
+              messages
+                .filter((message) => message.role !== "tool")
+                .map((message) => (
                 <div key={message.id} className={`chat-row ${message.role}`}>
                   <div className={`chat-avatar ${message.role}`}>
                     {message.role === "user" ? "你" : "AI"}
@@ -1983,6 +2018,15 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
           </div>
         </div>
       </div>
+
+      <InputDialog
+        open={inputDialog.open}
+        title={inputDialog.title}
+        placeholder={inputDialog.placeholder}
+        defaultValue={inputDialog.defaultValue}
+        onConfirm={inputDialog.onConfirm}
+        onCancel={() => setInputDialog((prev) => ({ ...prev, open: false }))}
+      />
     </div>
   );
 }
