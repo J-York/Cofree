@@ -6,6 +6,9 @@ node_modules/
 dist/
 src-tauri/target/
 
+# Tauri auto-generated schemas
+src-tauri/gen/schemas/
+
 # Environment files
 .env
 .env.*
