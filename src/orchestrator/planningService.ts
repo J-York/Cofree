@@ -3536,7 +3536,16 @@ function reconcileAssistantReply(params: {
     if (proposedActions.length > 0) {
       return "已生成待审批动作，请查看下方审批卡片。";
     }
-    return normalized;
+    // 兜底：有工具调用但LLM未返回文本（弱模型常见）
+    if (toolTrace.length > 0) {
+      const hasSuccess = toolTrace.some((t) => t.status === "success");
+      if (hasSuccess) {
+        return "已完成工具调用。";
+      }
+      return "工具调用已结束。";
+    }
+    // 最终兜底：确保不返回空字符串
+    return "处理完成。";
   }
 
   if (!containsCapabilityDenial(normalized)) {

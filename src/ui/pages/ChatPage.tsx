@@ -181,6 +181,17 @@ function MessageContent({
     );
   }
 
+  // 兜底：非流式状态下内容为空时显示占位提示，避免空对话框
+  if (!content && !isStreaming && role === "assistant") {
+    return (
+      <div className="chat-markdown chat-empty-reply">
+        <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+          （无回复内容）
+        </span>
+      </div>
+    );
+  }
+
   const parts: {
     type: "text" | "think";
     content: string;
