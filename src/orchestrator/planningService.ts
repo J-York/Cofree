@@ -872,6 +872,15 @@ export class LocalOnlyPolicyError extends Error {
   }
 }
 
+export interface ToolCallEvent {
+  type: "start" | "end";
+  callId: string;
+  toolName: string;
+  argsPreview?: string;
+  result?: "success" | "failed";
+  resultPreview?: string;
+}
+
 export interface RunPlanningSessionInput {
   prompt: string;
   settings: AppSettings;
@@ -888,6 +897,7 @@ export interface RunPlanningSessionInput {
   blockedActionFingerprints?: string[];
   signal?: AbortSignal;
   onAssistantChunk?: (chunk: string) => void;
+  onToolCallEvent?: (event: ToolCallEvent) => void;
 }
 
 export interface PlanningSessionResult {
@@ -1514,6 +1524,50 @@ function shouldRetryToolCall(category: ToolErrorCategory): boolean {
 }
 function resultPreview(content: string): string {
   return content.slice(0, MAX_TOOL_RESULT_PREVIEW);
+}
+
+/**
+ * Generate a short human-readable preview of tool call arguments.
+ */
+function summarizeToolArgs(toolName: string, argsJson: string): string {
+  try {
+    const args = JSON.parse(argsJson) as Record<string, unknown>;
+    switch (toolName) {
+      case "read_file":
+        return String(args.relative_path || "");
+      case "list_files":
+        return String(args.relative_path || "/");
+      case "grep":
+        return `"${String(args.pattern || "").slice(0, 30)}"${args.include_glob ? ` in ${args.include_glob}` : ""}`;
+      case "glob":
+        return String(args.pattern || "").slice(0, 40);
+      case "git_status":
+        return "";
+      case "git_diff":
+        return args.file_path ? String(args.file_path) : "(all)";
+      case "propose_file_edit":
+        return String(args.relative_path || "");
+      case "propose_apply_patch": {
+        const patch = String(args.patch || "");
+        const match = patch.match(/^diff --git a\/(.+?) b\//m);
+        return match ? match[1] : "(patch)";
+      }
+      case "propose_shell": {
+        const cmd = String(args.shell || "");
+        return cmd.length > 50 ? cmd.slice(0, 47) + "..." : cmd;
+      }
+      case "task":
+        return `${args.role}: ${String(args.description || "").slice(0, 30)}...`;
+      case "diagnostics":
+        return args.changed_files ? `${(args.changed_files as string[]).length} files` : "(all)";
+      case "fetch":
+        return String(args.url || "").slice(0, 50);
+      default:
+        return "";
+    }
+  } catch {
+    return "";
+  }
 }
 
 function limitJsonField(value: string, maxChars: number): string {
@@ -3042,7 +3096,8 @@ async function runNativeToolCallingLoop(
   signal?: AbortSignal,
   onAssistantChunk?: (chunk: string) => void,
   isContinuation?: boolean,
-  projectConfig?: CofreeRcConfig
+  projectConfig?: CofreeRcConfig,
+  onToolCallEvent?: (event: ToolCallEvent) => void
 ): Promise<{
   assistantReply: string;
   requestRecords: RequestRecord[];
@@ -3143,6 +3198,14 @@ async function runNativeToolCallingLoop(
     let patchPreflightFailure: string | null = null;
     let createPathUsageFailure: string | null = null;
     for (const toolCall of completion.toolCalls) {
+      // Notify: tool call started
+      onToolCallEvent?.({
+        type: "start",
+        callId: toolCall.id,
+        toolName: toolCall.function.name,
+        argsPreview: summarizeToolArgs(toolCall.function.name, toolCall.function.arguments),
+      });
+
       const { result: toolResult, trace } = await executeToolCallWithRetry(
         toolCall,
         settings.workspacePath,
@@ -3150,6 +3213,16 @@ async function runNativeToolCallingLoop(
         settings,
         projectConfig
       );
+
+      // Notify: tool call ended
+      onToolCallEvent?.({
+        type: "end",
+        callId: toolCall.id,
+        toolName: toolCall.function.name,
+        result: trace.status,
+        resultPreview: trace.resultPreview,
+      });
+
       toolTrace.push(trace);
       if (
         toolResult.success === false &&
@@ -3634,7 +3707,8 @@ export async function runPlanningSession(
       input.signal,
       input.onAssistantChunk,
       input.isContinuation,
-      projectConfig
+      projectConfig,
+      input.onToolCallEvent
     );
     for (const record of loopResult.requestRecords) {
       recordLLMAudit({

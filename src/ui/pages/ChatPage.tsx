@@ -63,6 +63,7 @@ import {
   actionFingerprint,
   type PlanningSessionPhase,
   type ToolExecutionTrace,
+  type ToolCallEvent,
 } from "../../orchestrator/planningService";
 import type {
   ActionProposal,
@@ -245,6 +246,58 @@ function MessageContent({
         )
       )}
     </>
+  );
+}
+
+/* ── Tool name friendly labels ───────────────────────────────── */
+const TOOL_NAME_LABELS: Record<string, string> = {
+  list_files: "浏览目录",
+  read_file: "读取文件",
+  git_status: "Git 状态",
+  git_diff: "Git 差异",
+  grep: "搜索代码",
+  glob: "查找文件",
+  propose_file_edit: "编辑文件",
+  propose_apply_patch: "应用补丁",
+  propose_shell: "执行命令",
+  task: "子任务",
+  diagnostics: "诊断检查",
+  fetch: "获取网页",
+};
+
+function formatToolName(name: string): string {
+  return TOOL_NAME_LABELS[name] || name;
+}
+
+/* ── Live Tool Status (real-time feedback) ─────────────────────── */
+interface LiveToolCall {
+  callId: string;
+  toolName: string;
+  argsPreview?: string;
+  status: "running" | "success" | "failed";
+  resultPreview?: string;
+}
+
+function LiveToolStatus({ calls }: { calls: LiveToolCall[] }) {
+  if (calls.length === 0) return null;
+
+  return (
+    <div className="live-tool-status">
+      {calls.map((call) => (
+        <div
+          key={call.callId}
+          className={`live-tool-item ${call.status}`}
+        >
+          <span className="live-tool-icon">
+            {call.status === "running" ? "◐" : call.status === "success" ? "✓" : "✕"}
+          </span>
+          <span className="live-tool-name">{formatToolName(call.toolName)}</span>
+          {call.argsPreview && (
+            <span className="live-tool-args">{call.argsPreview}</span>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -873,6 +926,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [executingActionId, setExecutingActionId] = useState<string>("");
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+  const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<ChatMessageRecord[]>(
     currentConversation?.messages ?? []
@@ -1136,6 +1190,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     setIsStreaming(true);
     setCategorizedError(null);
     setSessionNote("正在回复…");
+    setLiveToolCalls([]);
     session.setWorkflowPhase("planning");
 
     try {
@@ -1167,6 +1222,31 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                 )
               );
             });
+          }
+        },
+        onToolCallEvent: (event: ToolCallEvent) => {
+          if (event.type === "start") {
+            setLiveToolCalls((prev) => [
+              ...prev,
+              {
+                callId: event.callId,
+                toolName: event.toolName,
+                argsPreview: event.argsPreview,
+                status: "running",
+              },
+            ]);
+          } else {
+            setLiveToolCalls((prev) =>
+              prev.map((call) =>
+                call.callId === event.callId
+                  ? {
+                      ...call,
+                      status: event.result === "success" ? "success" : "failed",
+                      resultPreview: event.resultPreview,
+                    }
+                  : call
+              )
+            );
           }
         },
       });
@@ -1261,6 +1341,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
       if (abortControllerRef.current === controller)
         abortControllerRef.current = null;
       setIsStreaming(false);
+      setLiveToolCalls([]);
     }
   };
 
@@ -1686,6 +1767,13 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                         role={message.role}
                       />
                     </div>
+                    {/* Live tool status - show during streaming for last assistant message */}
+                    {message.role === "assistant" &&
+                      isStreaming &&
+                      message === messages[messages.length - 1] &&
+                      liveToolCalls.length > 0 && (
+                        <LiveToolStatus calls={liveToolCalls} />
+                      )}
                     {message.role === "assistant" &&
                       (message.toolTrace?.length ?? 0) > 0 && (
                         <ToolTracePanel traces={message.toolTrace!} />

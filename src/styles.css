@@ -1080,6 +1080,75 @@ details[open] .think-summary::before {
   margin: 0;
 }
 
+/* ── Live Tool Status (real-time feedback) ────────────────── */
+.live-tool-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+}
+
+.live-tool-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  min-height: 20px;
+}
+
+.live-tool-icon {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.live-tool-item.running .live-tool-icon {
+  color: var(--accent-solid);
+  animation: tool-spin 1s linear infinite;
+}
+
+.live-tool-item.success .live-tool-icon {
+  color: var(--color-success);
+}
+
+.live-tool-item.failed .live-tool-icon {
+  color: var(--color-error);
+}
+
+.live-tool-name {
+  font-weight: 500;
+  color: var(--text-1);
+  flex-shrink: 0;
+}
+
+.live-tool-args {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+
+@keyframes tool-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
 /* ── Tool Trace ──────────────────────────────────────────── */
 .tool-trace {
   margin-top: 10px;
