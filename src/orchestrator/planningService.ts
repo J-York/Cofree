@@ -140,6 +140,11 @@ interface ChatCompletionPayload {
   choices?: Array<{
     message?: ChatCompletionChoiceMessage;
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
 }
 
 interface FileEntry {
@@ -898,18 +903,26 @@ export interface RunPlanningSessionInput {
   signal?: AbortSignal;
   onAssistantChunk?: (chunk: string) => void;
   onToolCallEvent?: (event: ToolCallEvent) => void;
+  /** Called with the estimated context token count after each LLM turn (including tool results). */
+  onContextUpdate?: (estimatedTokens: number) => void;
 }
 
 export interface PlanningSessionResult {
   assistantReply: string;
   plan: OrchestrationPlan;
   toolTrace: ToolExecutionTrace[];
+  tokenUsage: {
+    inputTokens: number;
+    outputTokens: number;
+  };
 }
 
 interface RequestRecord {
   requestId: string;
   inputLength: number;
   outputLength: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export type ToolErrorCategory =
@@ -3017,6 +3030,8 @@ export async function requestToolCompletion(
       requestId,
       inputLength: inputLengthOf(messages),
       outputLength: response.body.length,
+      inputTokens: payload.usage?.prompt_tokens,
+      outputTokens: payload.usage?.completion_tokens,
     },
   };
 }
@@ -3082,6 +3097,8 @@ async function requestToolCompletionWithStream(
       requestId,
       inputLength: inputLengthOf(messages),
       outputLength: response.body.length,
+      inputTokens: payload.usage?.prompt_tokens,
+      outputTokens: payload.usage?.completion_tokens,
     },
   };
 }
@@ -3097,7 +3114,8 @@ async function runNativeToolCallingLoop(
   onAssistantChunk?: (chunk: string) => void,
   isContinuation?: boolean,
   projectConfig?: CofreeRcConfig,
-  onToolCallEvent?: (event: ToolCallEvent) => void
+  onToolCallEvent?: (event: ToolCallEvent) => void,
+  onContextUpdate?: (estimatedTokens: number) => void
 ): Promise<{
   assistantReply: string;
   requestRecords: RequestRecord[];
@@ -3258,6 +3276,13 @@ async function runNativeToolCallingLoop(
           toolResult.content
         ),
       });
+    }
+
+    // Notify caller of updated context size after all tool results are added
+    if (onContextUpdate) {
+      // Same estimation method as estimateTokens: 1 token ≈ 2.5 chars
+      const estimatedTokens = Math.ceil(inputLengthOf(messages) / 2.5);
+      onContextUpdate(estimatedTokens);
     }
 
     if (
@@ -3708,7 +3733,8 @@ export async function runPlanningSession(
       input.onAssistantChunk,
       input.isContinuation,
       projectConfig,
-      input.onToolCallEvent
+      input.onToolCallEvent,
+      input.onContextUpdate
     );
     for (const record of loopResult.requestRecords) {
       recordLLMAudit({
@@ -3720,6 +3746,18 @@ export async function runPlanningSession(
         outputLength: record.outputLength,
       });
     }
+
+    // Compute total token usage across all turns.
+    // Prefer actual API-reported values; fall back to estimates (1 token ≈ 2.5 chars).
+    // For input tokens, use the last turn's prompt_tokens (it represents the full context size).
+    // For output tokens, sum all turns' completion_tokens.
+    const lastRecord = loopResult.requestRecords[loopResult.requestRecords.length - 1];
+    const totalInputTokens = lastRecord
+      ? (lastRecord.inputTokens ?? Math.ceil(lastRecord.inputLength / 2.5))
+      : 0;
+    const totalOutputTokens = loopResult.requestRecords.reduce((sum, r) => {
+      return sum + (r.outputTokens ?? Math.ceil(r.outputLength / 2.5));
+    }, 0);
 
     const proposedActions = buildProposedActions(
       loopResult.proposedActions,
@@ -3740,6 +3778,7 @@ export async function runPlanningSession(
       assistantReply,
       plan,
       toolTrace: loopResult.toolTrace,
+      tokenUsage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
     };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -3752,6 +3791,7 @@ export async function runPlanningSession(
       assistantReply: `服务员暂时无法完成本轮工具调用，请稍后重试。\n\n**错误详情**：\n\`\`\`\n${errorMessage}\n\`\`\``,
       plan: fallbackPlan,
       toolTrace: [],
+      tokenUsage: { inputTokens: 0, outputTokens: 0 },
     };
   }
 }

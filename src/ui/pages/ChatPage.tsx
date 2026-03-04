@@ -927,6 +927,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const [executingActionId, setExecutingActionId] = useState<string>("");
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
+  const [liveContextTokens, setLiveContextTokens] = useState<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<ChatMessageRecord[]>(
     currentConversation?.messages ?? []
@@ -1191,6 +1192,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     setCategorizedError(null);
     setSessionNote("正在回复…");
     setLiveToolCalls([]);
+    setLiveContextTokens(null);
     session.setWorkflowPhase("planning");
 
     try {
@@ -1249,6 +1251,9 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
             );
           }
         },
+        onContextUpdate: (estimatedTokens) => {
+          setLiveContextTokens(estimatedTokens);
+        },
       });
 
       // Cancel any pending streaming buffer before final overwrite
@@ -1295,6 +1300,18 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
       // Update session context for kitchen page
       session.updatePlan(result.assistantReply);
       session.appendToolTraces(result.toolTrace ?? []);
+      // Record token usage for kitchen page stats.
+      // Use actual API-reported totals (inputTokens = full context, outputTokens = response).
+      session.appendRequestSummary({
+        requestId: `chat-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        model: settings.model,
+        timestamp: new Date().toISOString(),
+        inputTokens: result.tokenUsage.inputTokens,
+        outputTokens: result.tokenUsage.outputTokens,
+        durationMs: Date.now() - new Date(now).getTime(),
+      });
+      // Update the displayed token count to reflect the actual usage (input + output)
+      setLiveContextTokens(result.tokenUsage.inputTokens + result.tokenUsage.outputTokens);
       if (result.plan.proposedActions.length > 0) {
         session.setWorkflowPhase("human_review");
       } else {
@@ -1845,6 +1862,14 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                   <span className="chat-input-hint">
                     Enter 发送 · Shift+Enter 换行
                   </span>
+                  {liveContextTokens !== null && (
+                    <span
+                      style={{ fontSize: "11px", color: "var(--text-3)" }}
+                      title={isStreaming ? "预估已用 Token（实时更新）" : "已用 Token（输入 + 输出）"}
+                    >
+                      {isStreaming ? "预估" : "已用"} {liveContextTokens >= 1000 ? `${(liveContextTokens / 1000).toFixed(1)}k` : liveContextTokens} tokens
+                    </span>
+                  )}
                   <div className="chat-input-actions">
                     {isStreaming && (
                       <button
