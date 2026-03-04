@@ -29,16 +29,13 @@ use tauri::Emitter;
 
 static CHECKPOINT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(target_os = "macos")]
-const KEYCHAIN_SERVICE_NAME: &str = "dev.cofree.app";
-#[cfg(target_os = "macos")]
-const KEYCHAIN_ACCOUNT_NAME: &str = "litellm-api-key";
+const KEYRING_SERVICE_NAME: &str = "dev.cofree.app";
+const KEYRING_DEFAULT_USER: &str = "litellm-api-key";
 
-#[cfg(target_os = "macos")]
-fn keychain_account_for_profile(profile_id: Option<&str>) -> String {
+fn keyring_user_for_profile(profile_id: Option<&str>) -> String {
     match profile_id {
         Some(id) if !id.trim().is_empty() => format!("profile-{}", id.trim()),
-        _ => KEYCHAIN_ACCOUNT_NAME.to_string(),
+        _ => KEYRING_DEFAULT_USER.to_string(),
     }
 }
 
@@ -137,130 +134,62 @@ fn normalize_base_url(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_string()
 }
 
-#[cfg(target_os = "macos")]
-fn load_secure_api_key_macos(profile_id: Option<&str>) -> Result<String, String> {
-    let account = keychain_account_for_profile(profile_id);
-    let output = Command::new("security")
-        .args([
-            "find-generic-password",
-            "-a",
-            &account,
-            "-s",
-            KEYCHAIN_SERVICE_NAME,
-            "-w",
-        ])
-        .output()
-        .map_err(|e| format!("读取 Keychain 失败: {}", e))?;
+fn load_secure_api_key_impl(profile_id: Option<&str>) -> Result<String, String> {
+    let user = keyring_user_for_profile(profile_id);
+    let entry = keyring::Entry::new(KEYRING_SERVICE_NAME, &user)
+        .map_err(|e| format!("创建 keyring entry 失败: {}", e))?;
 
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("could not be found") {
-        Ok(String::new())
-    } else {
-        Err(stderr.trim().to_string())
+    match entry.get_password() {
+        Ok(password) => Ok(password),
+        Err(keyring::Error::NoEntry) => Ok(String::new()),
+        Err(e) => Err(format!("读取密钥失败: {}", e)),
     }
 }
 
-#[cfg(target_os = "macos")]
-fn save_secure_api_key_macos(profile_id: Option<&str>, api_key: &str) -> Result<(), String> {
-    let account = keychain_account_for_profile(profile_id);
+fn save_secure_api_key_impl(profile_id: Option<&str>, api_key: &str) -> Result<(), String> {
+    let user = keyring_user_for_profile(profile_id);
+    let entry = keyring::Entry::new(KEYRING_SERVICE_NAME, &user)
+        .map_err(|e| format!("创建 keyring entry 失败: {}", e))?;
+
     if api_key.trim().is_empty() {
-        let _ = Command::new("security")
-            .args([
-                "delete-generic-password",
-                "-a",
-                &account,
-                "-s",
-                KEYCHAIN_SERVICE_NAME,
-            ])
-            .output();
-        return Ok(());
-    }
-
-    let output = Command::new("security")
-        .args([
-            "add-generic-password",
-            "-a",
-            &account,
-            "-s",
-            KEYCHAIN_SERVICE_NAME,
-            "-w",
-            api_key.trim(),
-            "-U",
-        ])
-        .output()
-        .map_err(|e| format!("写入 Keychain 失败: {}", e))?;
-
-    if output.status.success() {
-        Ok(())
+        // Delete the entry if the key is empty
+        match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            Err(keyring::Error::NoEntry) => Ok(()), // Already deleted, that's fine
+            Err(e) => Err(format!("删除密钥失败: {}", e)),
+        }
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        entry
+            .set_password(api_key.trim())
+            .map_err(|e| format!("保存密钥失败: {}", e))
     }
 }
 
-#[cfg(target_os = "macos")]
-fn delete_secure_api_key_macos(profile_id: &str) -> Result<(), String> {
-    let account = keychain_account_for_profile(Some(profile_id));
-    let output = Command::new("security")
-        .args([
-            "delete-generic-password",
-            "-a",
-            &account,
-            "-s",
-            KEYCHAIN_SERVICE_NAME,
-        ])
-        .output()
-        .map_err(|e| format!("删除 Keychain 失败: {}", e))?;
+fn delete_secure_api_key_impl(profile_id: &str) -> Result<(), String> {
+    let user = keyring_user_for_profile(Some(profile_id));
+    let entry = keyring::Entry::new(KEYRING_SERVICE_NAME, &user)
+        .map_err(|e| format!("创建 keyring entry 失败: {}", e))?;
 
-    // Ignore "not found" errors - the key might not exist
-    if output.status.success() || String::from_utf8_lossy(&output.stderr).contains("could not be found") {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()), // Already deleted, that's fine
+        Err(e) => Err(format!("删除密钥失败: {}", e)),
     }
 }
 
 #[tauri::command]
 fn load_secure_api_key(profile_id: Option<String>) -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        load_secure_api_key_macos(profile_id.as_deref())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = profile_id;
-        Ok(String::new())
-    }
+    load_secure_api_key_impl(profile_id.as_deref())
 }
 
 #[tauri::command]
 fn save_secure_api_key(profile_id: Option<String>, api_key: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        save_secure_api_key_macos(profile_id.as_deref(), &api_key)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = profile_id;
-        let _ = api_key;
-        Ok(())
-    }
+    save_secure_api_key_impl(profile_id.as_deref(), &api_key)
 }
 
 #[tauri::command]
 fn delete_secure_api_key(profile_id: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        delete_secure_api_key_macos(&profile_id)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = profile_id;
-        Ok(())
-    }
+    delete_secure_api_key_impl(&profile_id)
 }
 
 #[tauri::command]
