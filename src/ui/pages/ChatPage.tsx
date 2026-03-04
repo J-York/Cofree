@@ -581,10 +581,10 @@ function InlinePlan({
                         color: "var(--text-3)",
                         marginBottom: "6px",
                         padding: "8px 10px",
-                        background: "var(--bg-2, #f5f5f5)",
+                        background: "var(--surface-2)",
                         borderRadius: "6px",
                         lineHeight: "1.6",
-                        border: "1px solid rgba(0,0,0,0.06)",
+                        border: "1px solid var(--border-1)",
                       }}
                     >
                       <div
@@ -698,7 +698,7 @@ function InlinePlan({
                             color: "var(--text-3)",
                             marginBottom: "6px",
                             padding: "4px 8px",
-                            background: "var(--bg-2, #f5f5f5)",
+                            background: "var(--surface-2)",
                             borderRadius: "4px",
                             lineHeight: "1.6",
                           }}
