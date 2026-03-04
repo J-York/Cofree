@@ -48,6 +48,7 @@ const SUMMARY_COOLDOWN_MS = 60 * 1000;
 const MIN_MESSAGES_TO_SUMMARIZE = 4;
 const MIN_RECENT_MESSAGES_TO_KEEP = 6;
 const RECENT_TOKENS_MIN_RATIO = 0.4;
+const TOOL_MESSAGE_MAX_CHARS = 3000; // Max chars for individual tool messages during pre-compression
 
 const MAX_TOOL_OUTPUT_CHARS = 15000; // hard cap for tool content injected into LLM context
 const MAX_GREP_PREVIEW_MATCHES = 30;
@@ -1640,6 +1641,8 @@ async function executeSubAgentTask(
     minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
     minRecentMessagesToKeep: MIN_RECENT_MESSAGES_TO_KEEP,
     recentTokensMinRatio: RECENT_TOKENS_MIN_RATIO,
+    toolMessageMaxChars: TOOL_MESSAGE_MAX_CHARS,
+    mergeToolMessages: true,
   };
   const summarizer = {
     canSummarize: () => canSummarizeNow(workspacePath),
@@ -2946,8 +2949,8 @@ export async function requestToolCompletion(
       requestId,
       inputLength: inputLengthOf(messages),
       outputLength: response.body.length,
-      inputTokens: payload.usage?.prompt_tokens,
-      outputTokens: payload.usage?.completion_tokens,
+      inputTokens: payload.usage?.prompt_tokens || undefined,
+      outputTokens: payload.usage?.completion_tokens || undefined,
     },
   };
 }
@@ -3013,8 +3016,8 @@ async function requestToolCompletionWithStream(
       requestId,
       inputLength: inputLengthOf(messages),
       outputLength: response.body.length,
-      inputTokens: payload.usage?.prompt_tokens,
-      outputTokens: payload.usage?.completion_tokens,
+      inputTokens: payload.usage?.prompt_tokens || undefined,
+      outputTokens: payload.usage?.completion_tokens || undefined,
     },
   };
 }
@@ -3116,6 +3119,8 @@ async function runNativeToolCallingLoop(
     minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
     minRecentMessagesToKeep: MIN_RECENT_MESSAGES_TO_KEEP,
     recentTokensMinRatio: RECENT_TOKENS_MIN_RATIO,
+    toolMessageMaxChars: TOOL_MESSAGE_MAX_CHARS,
+    mergeToolMessages: true,
   };
 
   const summarizer = {

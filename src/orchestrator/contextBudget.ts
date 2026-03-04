@@ -47,6 +47,106 @@ export function adjustSplitIndexToAvoidOrphanToolMessages(
   return idx;
 }
 
+/**
+ * Compress a single tool message's content if it exceeds the threshold.
+ * This is a "soft" compression that keeps the message but shortens its content.
+ */
+function compressToolMessageContent(
+  content: string,
+  maxChars: number
+): string {
+  if (content.length <= maxChars) return content;
+
+  // Try to parse as JSON and extract key fields
+  try {
+    const parsed = JSON.parse(content);
+    if (typeof parsed === "object" && parsed !== null) {
+      // For tool results, keep success/error status and truncate large data fields
+      const compressed: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(parsed)) {
+        if (typeof value === "string" && value.length > 500) {
+          // Truncate long string fields
+          compressed[key] = value.slice(0, 400) + "...[已压缩]";
+        } else if (Array.isArray(value) && value.length > 10) {
+          // Truncate long arrays
+          compressed[key] = [...value.slice(0, 8), `...(+${value.length - 8} more)`];
+        } else {
+          compressed[key] = value;
+        }
+      }
+      const result = JSON.stringify(compressed);
+      if (result.length <= maxChars) return result;
+    }
+  } catch {
+    // Not JSON, use simple truncation
+  }
+
+  // Fallback: simple truncation with marker
+  return content.slice(0, maxChars - 20) + "\n...[内容已压缩]";
+}
+
+/**
+ * Pre-compression pass: compress tool message contents before summary/truncation.
+ * This helps retain more messages in context by shrinking verbose tool outputs.
+ */
+export function preCompressToolMessages(
+  messages: LiteLLMMessage[],
+  toolMessageMaxChars: number = 3000
+): LiteLLMMessage[] {
+  return messages.map((msg) => {
+    if (msg.role !== "tool") return msg;
+    if ((msg.content ?? "").length <= toolMessageMaxChars) return msg;
+
+    return {
+      ...msg,
+      content: compressToolMessageContent(msg.content ?? "", toolMessageMaxChars),
+    };
+  });
+}
+
+/**
+ * Merge consecutive tool messages from the same assistant turn into a single message.
+ * This reduces message count overhead while preserving information.
+ */
+export function mergeConsecutiveToolMessages(
+  messages: LiteLLMMessage[]
+): LiteLLMMessage[] {
+  const result: LiteLLMMessage[] = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+
+    // Not a tool message or first message - just add it
+    if (msg.role !== "tool") {
+      result.push(msg);
+      continue;
+    }
+
+    // Check if we can merge with previous tool message
+    const prevIdx = result.length - 1;
+    if (prevIdx >= 0 && result[prevIdx].role === "tool") {
+      // Merge into previous tool message
+      const prev = result[prevIdx];
+      const mergedContent = [
+        prev.content,
+        `---`,
+        `[tool: ${msg.name ?? "unknown"}]`,
+        msg.content,
+      ].join("\n");
+
+      result[prevIdx] = {
+        ...prev,
+        content: mergedContent,
+        // Keep first tool_call_id for API compatibility
+      };
+    } else {
+      result.push(msg);
+    }
+  }
+
+  return result;
+}
+
 export function sliceRecentMessagesByBudget(params: {
   messages: LiteLLMMessage[];
   maxAllowedTokens: number;
@@ -97,6 +197,10 @@ export interface ContextCompressionPolicy {
   minMessagesToSummarize: number;
   minRecentMessagesToKeep: number;
   recentTokensMinRatio: number;
+  /** Max chars for individual tool message content during pre-compression. */
+  toolMessageMaxChars?: number;
+  /** Whether to merge consecutive tool messages. */
+  mergeToolMessages?: boolean;
 }
 
 export interface ContextSummarizer {
@@ -115,6 +219,7 @@ export async function compressMessagesToFitBudget(params: {
   compressed: boolean;
   usedSummary: boolean;
   usedTruncation: boolean;
+  usedToolCompression: boolean;
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
 }> {
@@ -127,19 +232,59 @@ export async function compressMessagesToFitBudget(params: {
       compressed: false,
       usedSummary: false,
       usedTruncation: false,
+      usedToolCompression: false,
       estimatedTokensBefore,
       estimatedTokensAfter: estimatedTokensBefore,
     };
   }
 
-  const detectedPinnedLen = initialSystemPrefixLength(messages);
+  // === Phase 1: Pre-compress tool message contents ===
+  const toolMaxChars = policy.toolMessageMaxChars ?? 3000;
+  let workingMessages = preCompressToolMessages(messages, toolMaxChars);
+
+  // Check if pre-compression alone is sufficient
+  let estimatedAfterToolCompression = estimateTokensForMessages(workingMessages);
+  const usedToolCompression = estimatedAfterToolCompression < estimatedTokensBefore;
+
+  if (estimatedAfterToolCompression <= policy.maxPromptTokens) {
+    return {
+      messages: workingMessages,
+      compressed: true,
+      usedSummary: false,
+      usedTruncation: false,
+      usedToolCompression,
+      estimatedTokensBefore,
+      estimatedTokensAfter: estimatedAfterToolCompression,
+    };
+  }
+
+  // === Phase 2: Merge consecutive tool messages (optional) ===
+  if (policy.mergeToolMessages !== false) {
+    workingMessages = mergeConsecutiveToolMessages(workingMessages);
+    estimatedAfterToolCompression = estimateTokensForMessages(workingMessages);
+
+    if (estimatedAfterToolCompression <= policy.maxPromptTokens) {
+      return {
+        messages: workingMessages,
+        compressed: true,
+        usedSummary: false,
+        usedTruncation: false,
+        usedToolCompression: true,
+        estimatedTokensBefore,
+        estimatedTokensAfter: estimatedAfterToolCompression,
+      };
+    }
+  }
+
+  // === Phase 3: Summarization or truncation ===
+  const detectedPinnedLen = initialSystemPrefixLength(workingMessages);
   const pinnedLenRaw =
     typeof pinnedPrefixLen === "number" && Number.isFinite(pinnedPrefixLen)
       ? Math.floor(pinnedPrefixLen)
       : detectedPinnedLen;
-  const pinnedLen = Math.max(0, Math.min(messages.length, pinnedLenRaw));
-  const pinned = messages.slice(0, pinnedLen);
-  const compressible = messages.slice(pinnedLen);
+  const pinnedLen = Math.max(0, Math.min(workingMessages.length, pinnedLenRaw));
+  const pinned = workingMessages.slice(0, pinnedLen);
+  const compressible = workingMessages.slice(pinnedLen);
 
   const pinnedTokens = estimateTokensForMessages(pinned);
   const availableTokens = Math.max(0, policy.maxPromptTokens - pinnedTokens);
@@ -156,7 +301,7 @@ export async function compressMessagesToFitBudget(params: {
   const recentMessages = compressible.slice(effectiveSplitIndex);
 
   const lastUserContent =
-    [...messages]
+    [...workingMessages]
       .reverse()
       .find((m) => m.role === "user" && (m.content ?? "").trim())?.content ??
     "";
@@ -197,6 +342,7 @@ export async function compressMessagesToFitBudget(params: {
       compressed: true,
       usedSummary,
       usedTruncation,
+      usedToolCompression,
       estimatedTokensBefore,
       estimatedTokensAfter,
     };
@@ -222,6 +368,7 @@ export async function compressMessagesToFitBudget(params: {
       compressed: true,
       usedSummary,
       usedTruncation,
+      usedToolCompression,
       estimatedTokensBefore,
       estimatedTokensAfter,
     };
@@ -244,6 +391,7 @@ export async function compressMessagesToFitBudget(params: {
     compressed: true,
     usedSummary,
     usedTruncation,
+    usedToolCompression,
     estimatedTokensBefore,
     estimatedTokensAfter,
   };

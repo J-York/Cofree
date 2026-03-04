@@ -28,9 +28,13 @@ use futures_util::StreamExt;
 use tauri::Emitter;
 
 static CHECKPOINT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE_NAME: &str = "dev.cofree.app";
+#[cfg(target_os = "macos")]
 const KEYCHAIN_ACCOUNT_NAME: &str = "litellm-api-key";
 
+#[cfg(target_os = "macos")]
 fn keychain_account_for_profile(profile_id: Option<&str>) -> String {
     match profile_id {
         Some(id) if !id.trim().is_empty() => format!("profile-{}", id.trim()),
@@ -133,6 +137,7 @@ fn normalize_base_url(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_string()
 }
 
+#[cfg(target_os = "macos")]
 fn load_secure_api_key_macos(profile_id: Option<&str>) -> Result<String, String> {
     let account = keychain_account_for_profile(profile_id);
     let output = Command::new("security")
@@ -159,6 +164,7 @@ fn load_secure_api_key_macos(profile_id: Option<&str>) -> Result<String, String>
     }
 }
 
+#[cfg(target_os = "macos")]
 fn save_secure_api_key_macos(profile_id: Option<&str>, api_key: &str) -> Result<(), String> {
     let account = keychain_account_for_profile(profile_id);
     if api_key.trim().is_empty() {
@@ -195,6 +201,7 @@ fn save_secure_api_key_macos(profile_id: Option<&str>, api_key: &str) -> Result<
     }
 }
 
+#[cfg(target_os = "macos")]
 fn delete_secure_api_key_macos(profile_id: &str) -> Result<(), String> {
     let account = keychain_account_for_profile(Some(profile_id));
     let output = Command::new("security")
@@ -1822,10 +1829,14 @@ async fn post_litellm_chat_completions_stream(
 
     let client = build_reqwest_client_with_proxy(proxy, 300)?;
 
-    // Force stream: true in the body
+    // Force stream: true in the body and request usage info
     let mut stream_body = body.clone();
     if let Some(obj) = stream_body.as_object_mut() {
         obj.insert("stream".to_string(), Value::Bool(true));
+        // Request usage information in streaming response (OpenAI compatible)
+        obj.insert("stream_options".to_string(), serde_json::json!({
+            "include_usage": true
+        }));
     }
 
     let mut endpoints = vec![format!("{}/chat/completions", normalized)];
@@ -1875,6 +1886,7 @@ async fn post_litellm_chat_completions_stream(
         let mut full_content = String::new();
         let mut finish_reason: Option<String> = None;
         let mut tool_calls_json: Vec<Value> = Vec::new();
+        let mut usage_info: Option<Value> = None;
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
 
@@ -1910,6 +1922,12 @@ async fn post_litellm_chat_completions_stream(
 
                 if let Some(data) = line.strip_prefix("data: ") {
                     if let Ok(parsed) = serde_json::from_str::<Value>(data) {
+                        // Extract usage info (usually in final chunk with stream_options.include_usage)
+                        if let Some(usage) = parsed.get("usage") {
+                            if usage.is_object() && usage.get("prompt_tokens").is_some() {
+                                usage_info = Some(usage.clone());
+                            }
+                        }
                         // Extract delta content
                         if let Some(choices) = parsed.get("choices").and_then(Value::as_array) {
                             for choice in choices {
@@ -1971,12 +1989,18 @@ async fn post_litellm_chat_completions_stream(
         if !tool_calls_json.is_empty() {
             message["tool_calls"] = Value::Array(tool_calls_json);
         }
+        // Use actual usage from stream if available, otherwise default to 0
+        let final_usage = usage_info.unwrap_or_else(|| serde_json::json!({
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        }));
         let synthetic_response = serde_json::json!({
             "choices": [{
                 "message": message,
                 "finish_reason": finish_reason.unwrap_or_else(|| "stop".to_string()),
             }],
-            "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 },
+            "usage": final_usage,
         });
 
         return Ok(LiteLLMHttpResponse {

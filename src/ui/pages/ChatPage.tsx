@@ -878,6 +878,81 @@ function InlinePlan({
   );
 }
 
+/* ── Token Usage Ring ─────────────────────────────────────── */
+function TokenUsageRing({
+  used,
+  max,
+  isStreaming,
+}: {
+  used: number;
+  max: number;
+  isStreaming: boolean;
+}) {
+  const percentage = Math.min(100, Math.max(0, (used / max) * 100));
+  const size = 16;
+  const strokeWidth = 2;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference * (1 - percentage / 100);
+
+  // Color based on usage level
+  const getColor = () => {
+    if (percentage >= 90) return "var(--color-error)";
+    if (percentage >= 70) return "var(--color-warning)";
+    return "var(--color-success, #10b981)";
+  };
+
+  const formatTokens = (tokens: number) => {
+    if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
+    return String(tokens);
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "6px",
+        fontSize: "12px",
+        color: "var(--text-3)",
+      }}
+      title={`${isStreaming ? "预估" : "已用"} ${used.toLocaleString()} / ${max.toLocaleString()} tokens (${percentage.toFixed(1)}%)`}
+    >
+      <svg
+        width={size}
+        height={size}
+        style={{ transform: "rotate(-90deg)" }}
+      >
+        {/* Background circle */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="var(--border-2, #333)"
+          strokeWidth={strokeWidth}
+        />
+        {/* Progress circle */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={getColor()}
+          strokeWidth={strokeWidth}
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
+          style={{
+            transition: isStreaming ? "none" : "stroke-dashoffset 0.3s ease",
+          }}
+        />
+      </svg>
+      <span>{formatTokens(used)}</span>
+    </div>
+  );
+}
+
 /* ── Main ChatPage ────────────────────────────────────────── */
 export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const { actions: session } = useSession();
@@ -1859,16 +1934,14 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                   rows={1}
                 />
                 <div className="chat-input-footer">
-                  <span className="chat-input-hint">
-                    Enter 发送 · Shift+Enter 换行
-                  </span>
-                  {liveContextTokens !== null && (
-                    <span
-                      style={{ fontSize: "11px", color: "var(--text-3)" }}
-                      title={isStreaming ? "预估已用 Token（实时更新）" : "已用 Token（输入 + 输出）"}
-                    >
-                      {isStreaming ? "预估" : "已用"} {liveContextTokens >= 1000 ? `${(liveContextTokens / 1000).toFixed(1)}k` : liveContextTokens} tokens
-                    </span>
+                  {liveContextTokens !== null ? (
+                    <TokenUsageRing
+                      used={liveContextTokens}
+                      max={settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000}
+                      isStreaming={isStreaming}
+                    />
+                  ) : (
+                    <span />
                   )}
                   <div className="chat-input-actions">
                     {isStreaming && (
