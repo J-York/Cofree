@@ -33,6 +33,7 @@ import {
   type CofreeRcConfig,
 } from "../lib/cofreerc";
 import { SummaryCache } from "../lib/summaryCache";
+import { compressMessagesToFitBudget, estimateTokensForMessages } from "./contextBudget";
 const MAX_TOOL_LOOP_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 30;
 const MAX_LIST_ENTRIES = 120;
@@ -819,47 +820,6 @@ function markSummarizedNow(workspacePath: string | undefined): void {
   lastSummaryAtMsByWorkspace.set(ws, Date.now());
 }
 
-function sliceRecentMessagesByBudget(params: {
-  messages: LiteLLMMessage[];
-  maxAllowedTokens: number;
-}): { splitIndex: number; recentTokens: number } {
-  const { messages, maxAllowedTokens } = params;
-
-  const minRecentTokens = Math.floor(
-    maxAllowedTokens * RECENT_TOKENS_MIN_RATIO
-  );
-  let recentTokens = 0;
-  let kept = 0;
-  let splitIndex = messages.length;
-
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const tokens = estimateTokens(messages[i].content);
-
-    // Always keep at least N recent messages.
-    if (kept < MIN_RECENT_MESSAGES_TO_KEEP) {
-      recentTokens += tokens;
-      kept += 1;
-      splitIndex = i;
-      continue;
-    }
-
-    // After we satisfy the minimum recent messages, keep adding until reaching minRecentTokens,
-    // but never exceed half of maxAllowedTokens to avoid starving oldMessages.
-    if (
-      recentTokens < minRecentTokens &&
-      recentTokens + tokens <= maxAllowedTokens * 0.6
-    ) {
-      recentTokens += tokens;
-      kept += 1;
-      splitIndex = i;
-      continue;
-    }
-
-    break;
-  }
-
-  return { splitIndex, recentTokens };
-}
 
 function selectToolDefinitions(toolNames: string[]): LiteLLMToolDefinition[] {
   const enabled = new Set(toolNames);
@@ -990,11 +950,6 @@ function normalizeMessageContent(content: unknown): string {
   return "";
 }
 
-// 粗略估计 Token 数量：中英文混排时大致 1 个汉字≈1-2 token，英文字符数/4≈token。
-// 这里简单使用字符串长度来做保守估算，假设平均 1 token ≈ 2.5 字符。
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 2.5);
-}
 
 async function requestSummary(
   messagesToSummarize: LiteLLMMessage[],
@@ -1074,16 +1029,14 @@ async function requestSummary(
   return fallback;
 }
 
-async function sanitizeConversationHistory(
-  conversationHistory: RunPlanningSessionInput["conversationHistory"],
-  maxTokens: number,
-  settings: AppSettings
-): Promise<LiteLLMMessage[]> {
+function normalizeConversationHistory(
+  conversationHistory: RunPlanningSessionInput["conversationHistory"]
+): LiteLLMMessage[] {
   if (!conversationHistory?.length) {
     return [];
   }
 
-  const validMessages = conversationHistory
+  return conversationHistory
     .filter(
       (message) =>
         message.content ||
@@ -1108,77 +1061,6 @@ async function sanitizeConversationHistory(
       }
       return m;
     });
-
-  const limitTokens = maxTokens > 0 ? maxTokens : 128000;
-  const bufferTokens = 8000;
-  const hardTriggerTokens = 32000; // Trigger compression earlier to improve reasoning quality
-  const maxAllowedTokens = Math.min(
-    limitTokens - bufferTokens,
-    hardTriggerTokens
-  );
-
-  const totalTokens = validMessages.reduce(
-    (sum, msg) => sum + estimateTokens(msg.content),
-    0
-  );
-
-  // If within limits, return all messages as-is
-  if (totalTokens <= maxAllowedTokens) {
-    return validMessages;
-  }
-
-  // Find the split point: keep recent messages stable (min count + token budget), summarize the rest
-  const sliced = sliceRecentMessagesByBudget({
-    messages: validMessages,
-    maxAllowedTokens,
-  });
-  let splitIndex = sliced.splitIndex;
-
-  // Ensure splitIndex is valid (at least summarize something)
-  if (splitIndex <= 0) {
-    splitIndex = 1;
-  }
-
-  const oldMessages = validMessages.slice(0, splitIndex);
-  const recentMessages = validMessages.slice(splitIndex);
-
-  // Only summarize if there are enough old messages to warrant it
-  if (oldMessages.length < MIN_MESSAGES_TO_SUMMARIZE) {
-    return [
-      {
-        role: "system",
-        content:
-          "[系统提示] 之前的对话历史由于达到上下文长度限制已被截断。请基于现有的最新信息继续工作。",
-      },
-      ...recentMessages,
-    ];
-  }
-
-  // Cooldown window: avoid frequent re-summarization on retries/continuations
-  if (!canSummarizeNow(settings.workspacePath)) {
-    return [
-      {
-        role: "system",
-        content:
-          "[系统提示] 由于达到上下文长度限制，之前的对话历史已被截断（摘要冷却窗口内，已跳过再次生成摘要）。请基于现有的最新信息继续工作。",
-      },
-      ...recentMessages,
-    ];
-  }
-
-  // Request LLM summary for old messages (cached)
-  const summary = await requestSummary(oldMessages, settings, {
-    workspacePath: settings.workspacePath,
-  });
-  markSummarizedNow(settings.workspacePath);
-
-  return [
-    {
-      role: "system",
-      content: `[对话历史摘要] 以下是之前 ${oldMessages.length} 条对话消息的压缩摘要：\n\n${summary}\n\n请基于此摘要和后续最新消息继续工作。`,
-    },
-    ...recentMessages,
-  ];
 }
 
 function inputLengthOf(messages: LiteLLMMessage[]): number {
@@ -1744,7 +1626,41 @@ async function executeSubAgentTask(
   const proposedActions: ActionProposal[] = [];
   const toolTrace: ToolExecutionTrace[] = [];
 
+  // Context window management for sub-agent turns
+  const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
+  const outputBufferTokens = Math.min(
+    8000,
+    Math.max(512, Math.floor(limitTokens * 0.15))
+  );
+  const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
+  const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
+  const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
+  const compressionPolicy = {
+    maxPromptTokens: promptBudgetTarget,
+    minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
+    minRecentMessagesToKeep: MIN_RECENT_MESSAGES_TO_KEEP,
+    recentTokensMinRatio: RECENT_TOKENS_MIN_RATIO,
+  };
+  const summarizer = {
+    canSummarize: () => canSummarizeNow(workspacePath),
+    summarize: (messagesToSummarize: LiteLLMMessage[]) =>
+      requestSummary(messagesToSummarize, settings, { workspacePath }),
+    markSummarized: () => markSummarizedNow(workspacePath),
+  };
+  const pinnedPrefixLen = 2;
+
   for (let turn = 0; turn < maxTurns; turn += 1) {
+    const compression = await compressMessagesToFitBudget({
+      messages,
+      policy: compressionPolicy,
+      summarizer,
+      pinnedPrefixLen,
+    });
+    if (compression.compressed && compression.messages !== messages) {
+      messages.splice(0, messages.length, ...compression.messages);
+    }
+
+
     const completion = await requestToolCompletion(
       messages,
       settings,
@@ -3142,6 +3058,8 @@ async function runNativeToolCallingLoop(
   const blockedFingerprints = blockedActionFingerprints
     .map((value) => value.trim())
     .filter(Boolean);
+  const pinnedPrefixLen = 2 + (blockedFingerprints.length > 0 ? 1 : 0);
+
   const messages: LiteLLMMessage[] = [
     { role: "system", content: ASSISTANT_SYSTEM_PROMPT },
     { role: "system", content: runtimeContext },
@@ -3181,6 +3099,34 @@ async function runNativeToolCallingLoop(
   let createHintRepairRounds = 0;
   let multiArtifactReminderRounds = 0;
 
+  // --- Context window management ---
+  // We reserve a safety buffer for the model's completion + tool-call overhead.
+  const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
+  const outputBufferTokens = Math.min(
+    8000,
+    Math.max(512, Math.floor(limitTokens * 0.15))
+  );
+  const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
+  // Compress a bit before the hard limit because our estimator is approximate.
+  const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
+  const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
+
+  const compressionPolicy = {
+    maxPromptTokens: promptBudgetTarget,
+    minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
+    minRecentMessagesToKeep: MIN_RECENT_MESSAGES_TO_KEEP,
+    recentTokensMinRatio: RECENT_TOKENS_MIN_RATIO,
+  };
+
+  const summarizer = {
+    canSummarize: () => canSummarizeNow(settings.workspacePath),
+    summarize: (messagesToSummarize: LiteLLMMessage[]) =>
+      requestSummary(messagesToSummarize, settings, {
+        workspacePath: settings.workspacePath,
+      }),
+    markSummarized: () => markSummarizedNow(settings.workspacePath),
+  };
+
   for (let turn = 0; turn < MAX_TOOL_LOOP_TURNS; turn += 1) {
     if (turn === TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD) {
       messages.push({
@@ -3192,6 +3138,19 @@ async function runNativeToolCallingLoop(
         ].join("\n"),
       });
     }
+
+    // Keep prompt size within budget to avoid context overflow, especially after many tool turns.
+    const compression = await compressMessagesToFitBudget({
+      messages,
+      policy: compressionPolicy,
+      summarizer,
+      pinnedPrefixLen,
+    });
+    if (compression.compressed && compression.messages !== messages) {
+      messages.splice(0, messages.length, ...compression.messages);
+    }
+    onContextUpdate?.(estimateTokensForMessages(messages));
+
 
     const completion = await requestToolCompletionWithStream(
       messages,
@@ -3279,11 +3238,7 @@ async function runNativeToolCallingLoop(
     }
 
     // Notify caller of updated context size after all tool results are added
-    if (onContextUpdate) {
-      // Same estimation method as estimateTokens: 1 token ≈ 2.5 chars
-      const estimatedTokens = Math.ceil(inputLengthOf(messages) / 2.5);
-      onContextUpdate(estimatedTokens);
-    }
+    onContextUpdate?.(estimateTokensForMessages(messages));
 
     if (
       !proposedActions.length &&
@@ -3621,12 +3576,7 @@ export async function runPlanningSession(
 
   assertLocalOnlyPolicy(input.settings);
   const phase = input.phase ?? "default";
-  const maxTokens = input.settings.maxContextTokens || 128000;
-  const historyMessages = await sanitizeConversationHistory(
-    input.conversationHistory,
-    maxTokens,
-    input.settings
-  );
+  const historyMessages = normalizeConversationHistory(input.conversationHistory);
 
   let initialInternalNote = input.internalSystemNote;
   let projectConfig: CofreeRcConfig = {};
