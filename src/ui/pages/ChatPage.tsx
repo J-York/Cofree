@@ -473,68 +473,263 @@ function InlinePlan({
             (a) => a.status === "pending"
           ).length;
           const pendingPatchActions = safePlan.proposedActions.filter(
-            (a): a is import("../../orchestrator/types").ApplyPatchActionProposal =>
+            (
+              a
+            ): a is import("../../orchestrator/types").ApplyPatchActionProposal =>
               a.status === "pending" && a.type === "apply_patch"
           );
-          // Extract affected files from patch descriptions for batch summary
-          const batchAffectedFiles = Array.from(
-            new Set(
-              pendingPatchActions.flatMap((a) => {
-                const matches = a.payload.patch.match(
-                  /^diff --git a\/(.+?) b\//gm
-                );
-                if (matches) {
-                  return matches.map((m: string) =>
-                    m.replace(/^diff --git a\//, "").replace(/ b\/$/, "").trim()
+
+          const groupIdToPatchActions = new Map<
+            string,
+            import("../../orchestrator/types").ApplyPatchActionProposal[]
+          >();
+          for (const action of pendingPatchActions) {
+            const groupId = action.group?.groupId;
+            if (!groupId) continue;
+            const list = groupIdToPatchActions.get(groupId) ?? [];
+            list.push(action);
+            groupIdToPatchActions.set(groupId, list);
+          }
+
+          const groupedPatchActions = Array.from(
+            groupIdToPatchActions.entries()
+          )
+            .map(([groupId, actions]) => ({ groupId, actions }))
+            .filter((g) => g.actions.length > 1);
+
+          const ungroupedActions = safePlan.proposedActions.filter((a) => {
+            if (a.type !== "apply_patch") return true;
+            return (
+              !a.group?.groupId ||
+              !(groupIdToPatchActions.get(a.group.groupId)?.length ?? 0) ||
+              (groupIdToPatchActions.get(a.group.groupId)?.length ?? 0) < 2
+            );
+          });
+
+          const getAffectedFiles = (
+            actions: import("../../orchestrator/types").ApplyPatchActionProposal[]
+          ): string[] =>
+            Array.from(
+              new Set(
+                actions.flatMap((a) => {
+                  const matches = a.payload.patch.match(
+                    /^diff --git a\/(.+?) b\//gm
                   );
-                }
-                // Fallback: extract from description
-                const descMatch = a.description.match(
-                  /(?:编辑|创建|修改|删除)\s+(.+?)(?:\s|$)/
-                );
-                return descMatch ? [descMatch[1]] : [];
-              })
-            )
-          );
+                  if (matches) {
+                    return matches.map((m: string) =>
+                      m
+                        .replace(/^diff --git a\//, "")
+                        .replace(/ b\/$/, "")
+                        .trim()
+                    );
+                  }
+                  const descMatch = a.description.match(
+                    /(?:编辑|创建|修改|删除)\s+(.+?)(?:\s|$)/
+                  );
+                  return descMatch ? [descMatch[1]] : [];
+                })
+              )
+            );
+
+          const renderAtomicStatus = (
+            actions: import("../../orchestrator/types").ApplyPatchActionProposal[]
+          ) => {
+            const meta = actions[0]?.batchExec;
+            if (!meta) {
+              return (
+                <span style={{ marginLeft: "6px", opacity: 0.7 }}>
+                  (原子状态：未知)
+                </span>
+              );
+            }
+            if (meta.atomicEnabled) {
+              return (
+                <span style={{ marginLeft: "6px", opacity: 0.7 }}>
+                  (原子保护：已启用
+                  {meta.snapshotId ? ` · snapshot=${meta.snapshotId}` : ""})
+                </span>
+              );
+            }
+            return (
+              <span
+                style={{ marginLeft: "6px", color: "var(--color-warning)" }}
+              >
+                (原子保护已降级
+                {meta.degradedReason ? `：${meta.degradedReason}` : ""})
+              </span>
+            );
+          };
+
           return (
             <>
-              {pendingCount > 1 && (
-                <div style={{ marginBottom: "8px" }}>
-                  {batchAffectedFiles.length > 0 && (
+              {/* Grouped patch actions: show as a single batch card */}
+              {groupedPatchActions.map((group) => {
+                const title = group.actions[0].group?.title ?? "批量变更";
+                const affectedFiles = getAffectedFiles(group.actions);
+                const rollbackMeta = group.actions[0].batchExec;
+                const rollbackBadge = rollbackMeta?.atomicRollbackAttempted
+                  ? rollbackMeta.atomicRollbackSuccess
+                    ? " · 回滚成功"
+                    : " · 回滚失败"
+                  : "";
+
+                return (
+                  <div key={group.groupId} style={{ marginBottom: "8px" }}>
                     <div
                       style={{
                         fontSize: "12px",
                         color: "var(--text-3)",
                         marginBottom: "6px",
-                        padding: "4px 8px",
+                        padding: "8px 10px",
                         background: "var(--bg-2, #f5f5f5)",
-                        borderRadius: "4px",
+                        borderRadius: "6px",
                         lineHeight: "1.6",
+                        border: "1px solid rgba(0,0,0,0.06)",
                       }}
                     >
-                      <strong>批量变更涉及 {batchAffectedFiles.length} 个文件</strong>
-                      {pendingPatchActions.length > 1 && (
-                        <span style={{ marginLeft: "4px", opacity: 0.7 }}>
-                          (原子执行：全部成功或全部回滚)
-                        </span>
-                      )}
-                      <div style={{ marginTop: "2px" }}>
-                        {batchAffectedFiles.map((f) => (
-                          <span
-                            key={f}
-                            style={{
-                              display: "inline-block",
-                              marginRight: "8px",
-                              fontFamily: "monospace",
-                              fontSize: "11px",
-                            }}
-                          >
-                            📄 {f}
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: "8px",
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <strong>{title}</strong>
+                          <span style={{ marginLeft: "6px", opacity: 0.7 }}>
+                            ({group.actions.length} 个 patch)
                           </span>
-                        ))}
+                          {renderAtomicStatus(group.actions)}
+                          {rollbackBadge && (
+                            <span style={{ marginLeft: "6px", opacity: 0.8 }}>
+                              {rollbackBadge}
+                            </span>
+                          )}
+                        </div>
+                        <div
+                          style={{ display: "flex", gap: "8px", flexShrink: 0 }}
+                        >
+                          <button
+                            className="btn btn-primary btn-sm"
+                            disabled={Boolean(executingActionId)}
+                            onClick={() => void onApproveAll(messageId, plan)}
+                            type="button"
+                          >
+                            ✓ 批量批准
+                          </button>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            disabled={Boolean(executingActionId)}
+                            onClick={() => onRejectAll(messageId)}
+                            type="button"
+                          >
+                            ✕ 批量拒绝
+                          </button>
+                        </div>
                       </div>
+
+                      {affectedFiles.length > 0 && (
+                        <div style={{ marginTop: "6px" }}>
+                          <div style={{ marginBottom: "4px" }}>
+                            涉及 {affectedFiles.length} 个文件
+                          </div>
+                          <div>
+                            {affectedFiles.map((f) => (
+                              <span
+                                key={f}
+                                style={{
+                                  display: "inline-block",
+                                  marginRight: "8px",
+                                  fontFamily: "monospace",
+                                  fontSize: "11px",
+                                }}
+                              >
+                                📄 {f}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <details style={{ marginTop: "8px" }}>
+                        <summary style={{ cursor: "pointer" }}>
+                          展开查看每个 patch
+                        </summary>
+                        <ul
+                          className="action-list"
+                          style={{ marginTop: "8px" }}
+                        >
+                          {group.actions.map((action) => (
+                            <li key={action.id} className="action-item">
+                              <div className="action-header">
+                                <h4 className="action-title">{action.type}</h4>
+                                <span
+                                  className={actionStatusBadgeClass(
+                                    action.status
+                                  )}
+                                >
+                                  {action.status.toUpperCase()}
+                                </span>
+                              </div>
+                              <ActionPayloadFields
+                                action={action}
+                                messageId={messageId}
+                                onPlanUpdate={onPlanUpdate}
+                              />
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
                     </div>
-                  )}
+                  </div>
+                );
+              })}
+
+              {pendingCount > 1 && groupedPatchActions.length === 0 && (
+                <div style={{ marginBottom: "8px" }}>
+                  {(() => {
+                    const batchAffectedFiles =
+                      getAffectedFiles(pendingPatchActions);
+                    return (
+                      batchAffectedFiles.length > 0 && (
+                        <div
+                          style={{
+                            fontSize: "12px",
+                            color: "var(--text-3)",
+                            marginBottom: "6px",
+                            padding: "4px 8px",
+                            background: "var(--bg-2, #f5f5f5)",
+                            borderRadius: "4px",
+                            lineHeight: "1.6",
+                          }}
+                        >
+                          <strong>
+                            批量变更涉及 {batchAffectedFiles.length} 个文件
+                          </strong>
+                          {pendingPatchActions.length > 1 && (
+                            <span style={{ marginLeft: "4px", opacity: 0.7 }}>
+                              (原子执行：全部成功或全部回滚)
+                            </span>
+                          )}
+                          <div style={{ marginTop: "2px" }}>
+                            {batchAffectedFiles.map((f) => (
+                              <span
+                                key={f}
+                                style={{
+                                  display: "inline-block",
+                                  marginRight: "8px",
+                                  fontFamily: "monospace",
+                                  fontSize: "11px",
+                                }}
+                              >
+                                📄 {f}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    );
+                  })()}
                   <div style={{ display: "flex", gap: "8px" }}>
                     <button
                       className="btn btn-primary btn-sm"
@@ -555,8 +750,9 @@ function InlinePlan({
                   </div>
                 </div>
               )}
+
               <ul className="action-list">
-                {safePlan.proposedActions.map((action) => (
+                {ungroupedActions.map((action) => (
                   <li key={action.id} className="action-item">
                     <div className="action-header">
                       <h4 className="action-title">{action.type}</h4>

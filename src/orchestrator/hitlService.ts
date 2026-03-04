@@ -15,7 +15,7 @@ import type {
   ActionExecutionResult,
   ActionProposal,
   OrchestrationPlan,
-  WorkflowState
+  WorkflowState,
 } from "./types";
 import { actionFingerprint } from "./planningService";
 
@@ -49,7 +49,9 @@ function mapActions(
   actionId: string,
   updater: (action: ActionProposal) => ActionProposal
 ): ActionProposal[] {
-  return plan.proposedActions.map((action) => (action.id === actionId ? updater(action) : action));
+  return plan.proposedActions.map((action) =>
+    action.id === actionId ? updater(action) : action
+  );
 }
 
 function ensureFingerprint(action: ActionProposal): string {
@@ -72,7 +74,7 @@ function createExecutionResult(
     success,
     message,
     timestamp: nowIso(),
-    metadata
+    metadata,
   };
 }
 
@@ -84,7 +86,9 @@ export function deriveWorkflowState(actions: ActionProposal[]): WorkflowState {
   if (
     actions.some(
       (action) =>
-        action.status === "pending" || action.status === "failed" || action.status === "rejected"
+        action.status === "pending" ||
+        action.status === "failed" ||
+        action.status === "rejected"
     )
   ) {
     return "human_review";
@@ -93,17 +97,20 @@ export function deriveWorkflowState(actions: ActionProposal[]): WorkflowState {
   return "done";
 }
 
-export function markActionRunning(plan: OrchestrationPlan, actionId: string): OrchestrationPlan {
+export function markActionRunning(
+  plan: OrchestrationPlan,
+  actionId: string
+): OrchestrationPlan {
   const nextActions = mapActions(plan, actionId, (action) => ({
     ...action,
     status: "running",
-    executed: false
+    executed: false,
   }));
 
   return {
     ...plan,
     state: "executing",
-    proposedActions: nextActions
+    proposedActions: nextActions,
   };
 }
 
@@ -113,7 +120,9 @@ export function rejectAction(
   reason: string
 ): OrchestrationPlan {
   const normalizedReason = reason.trim() || "Rejected by reviewer";
-  const targetAction = plan.proposedActions.find((action) => action.id === actionId);
+  const targetAction = plan.proposedActions.find(
+    (action) => action.id === actionId
+  );
   if (!targetAction || !canRejectOrComment(targetAction)) {
     return plan;
   }
@@ -123,13 +132,13 @@ export function rejectAction(
     fingerprint: ensureFingerprint(action),
     status: "rejected",
     executed: false,
-    executionResult: createExecutionResult(false, normalizedReason)
+    executionResult: createExecutionResult(false, normalizedReason),
   }));
 
   return {
     ...plan,
     state: deriveWorkflowState(nextActions),
-    proposedActions: nextActions
+    proposedActions: nextActions,
   };
 }
 
@@ -143,7 +152,9 @@ export function commentAction(
     return plan;
   }
 
-  const targetAction = plan.proposedActions.find((action) => action.id === actionId);
+  const targetAction = plan.proposedActions.find(
+    (action) => action.id === actionId
+  );
   if (!targetAction || !canRejectOrComment(targetAction)) {
     return plan;
   }
@@ -152,14 +163,14 @@ export function commentAction(
     ...action,
     fingerprint: ensureFingerprint(action),
     executionResult: createExecutionResult(true, normalizedComment, {
-      commentOnly: true
-    })
+      commentOnly: true,
+    }),
   }));
 
   return {
     ...plan,
     state: deriveWorkflowState(nextActions),
-    proposedActions: nextActions
+    proposedActions: nextActions,
   };
 }
 
@@ -175,12 +186,14 @@ export function updateActionPayload(
         payload: {
           ...action.payload,
           patch:
-            typeof payloadPatch.patch === "string" ? payloadPatch.patch : action.payload.patch
-        }
+            typeof payloadPatch.patch === "string"
+              ? payloadPatch.patch
+              : action.payload.patch,
+        },
       };
       return {
         ...nextAction,
-        fingerprint: ensureFingerprint(nextAction)
+        fingerprint: ensureFingerprint(nextAction),
       };
     }
 
@@ -190,16 +203,18 @@ export function updateActionPayload(
         payload: {
           ...action.payload,
           shell:
-            typeof payloadPatch.shell === "string" ? payloadPatch.shell : action.payload.shell,
+            typeof payloadPatch.shell === "string"
+              ? payloadPatch.shell
+              : action.payload.shell,
           timeoutMs:
             typeof payloadPatch.timeoutMs === "number"
               ? payloadPatch.timeoutMs
-              : action.payload.timeoutMs
-        }
+              : action.payload.timeoutMs,
+        },
       };
       return {
         ...nextAction,
-        fingerprint: ensureFingerprint(nextAction)
+        fingerprint: ensureFingerprint(nextAction),
       };
     }
 
@@ -208,7 +223,7 @@ export function updateActionPayload(
 
   return {
     ...plan,
-    proposedActions: nextActions
+    proposedActions: nextActions,
   };
 }
 
@@ -226,14 +241,14 @@ export function rejectAllPendingActions(
       fingerprint: ensureFingerprint(action),
       status: "rejected" as const,
       executed: false,
-      executionResult: createExecutionResult(false, normalizedReason)
+      executionResult: createExecutionResult(false, normalizedReason),
     };
   });
 
   return {
     ...plan,
     state: deriveWorkflowState(nextActions),
-    proposedActions: nextActions
+    proposedActions: nextActions,
   };
 }
 
@@ -256,32 +271,69 @@ export async function approveAllPendingActions(
   const patchActions = pendingActions.filter((a) => a.type === "apply_patch");
   const shellActions = pendingActions.filter((a) => a.type === "shell");
 
+  let currentPlan = plan;
+
   // ── Atomic batch: create a single snapshot covering all patch actions ──
   // If any patch fails, we rollback ALL patches applied in this batch.
   let batchSnapshotId: string | null = null;
   const batchSnapshotFiles: string[] = [];
+  let atomicEnabled = false;
+  let degradedReason: string | undefined;
 
-  if (patchActions.length > 1) {
+  const patchGroupId =
+    patchActions.length > 0 ? patchActions[0].group?.groupId : undefined;
+  const allSameGroup =
+    patchGroupId &&
+    patchActions.every(
+      (a) => a.group?.groupId && a.group.groupId === patchGroupId
+    );
+  const treatAsAtomicBatch = patchActions.length > 1 && allSameGroup;
+
+  if (treatAsAtomicBatch) {
     // Merge all patches into one combined patch for a single snapshot
-    const combinedPatch = patchActions
-      .map((a) => a.payload.patch)
-      .join("\n");
+    const combinedPatch = patchActions.map((a) => a.payload.patch).join("\n");
     try {
-      const snapshot = await invoke<SnapshotResult>("create_workspace_snapshot", {
-        workspacePath,
-        patch: combinedPatch
-      });
+      const snapshot = await invoke<SnapshotResult>(
+        "create_workspace_snapshot",
+        {
+          workspacePath,
+          patch: combinedPatch,
+        }
+      );
       if (snapshot.success) {
         batchSnapshotId = snapshot.snapshot_id;
         batchSnapshotFiles.push(...snapshot.files);
+        atomicEnabled = true;
+      } else {
+        degradedReason = "snapshot failed";
       }
     } catch {
       // Snapshot creation failed — proceed without atomic guarantee
-      // (falls back to per-action snapshots via approveAction)
+      degradedReason = "snapshot threw";
     }
+
+    // Persist batch execution metadata to all patch actions in the group.
+    const batchMeta = {
+      snapshotId: batchSnapshotId ?? undefined,
+      atomicEnabled,
+      degradedReason,
+    };
+    currentPlan = {
+      ...currentPlan,
+      proposedActions: currentPlan.proposedActions.map((a) => {
+        if (a.type !== "apply_patch") return a;
+        if (!a.group?.groupId || a.group.groupId !== patchGroupId) return a;
+        return {
+          ...a,
+          batchExec: {
+            ...(a.batchExec ?? { atomicEnabled: false }),
+            ...batchMeta,
+          },
+        };
+      }),
+    };
   }
 
-  let currentPlan = plan;
   let batchFailed = false;
   const appliedPatchIds: string[] = [];
 
@@ -302,38 +354,70 @@ export async function approveAllPendingActions(
   // If any patch failed and we have a batch snapshot, rollback everything
   if (batchFailed && batchSnapshotId) {
     try {
-      const rollback = await invoke<PatchApplyResult>("restore_workspace_snapshot", {
-        workspacePath,
-        snapshotId: batchSnapshotId
-      });
+      const rollback = await invoke<PatchApplyResult>(
+        "restore_workspace_snapshot",
+        {
+          workspacePath,
+          snapshotId: batchSnapshotId,
+        }
+      );
       const rollbackMsg = rollback.success
         ? "批量补丁中有失败项，已原子回滚全部已应用的补丁。"
         : "批量补丁中有失败项，原子回滚失败，部分补丁可能已生效。";
 
       // Mark all patch actions in the batch as failed with rollback info
       const nextActions = currentPlan.proposedActions.map((a) => {
-        if (a.type !== "apply_patch" || !pendingActions.find((p) => p.id === a.id)) {
+        if (
+          a.type !== "apply_patch" ||
+          !pendingActions.find((p) => p.id === a.id)
+        ) {
           return a;
         }
+
+        const groupId = a.group?.groupId;
+        const nextBatchExec = groupId
+          ? {
+              ...(a.batchExec ?? { atomicEnabled: false }),
+              atomicRollbackAttempted: true,
+              atomicRollbackSuccess: rollback.success,
+            }
+          : a.batchExec;
+
         return {
           ...a,
+          batchExec: nextBatchExec,
           fingerprint: ensureFingerprint(a),
           status: "failed" as const,
           executed: false,
           executionResult: createExecutionResult(false, rollbackMsg, {
             atomicRollback: true,
             batchSnapshotId,
-            rollbackSuccess: rollback.success
-          })
+            rollbackSuccess: rollback.success,
+          }),
         };
       });
       currentPlan = {
         ...currentPlan,
         state: deriveWorkflowState(nextActions),
-        proposedActions: nextActions
+        proposedActions: nextActions,
       };
     } catch {
       // Rollback invocation failed — leave current state as-is
+      currentPlan = {
+        ...currentPlan,
+        proposedActions: currentPlan.proposedActions.map((a) => {
+          if (a.type !== "apply_patch") return a;
+          if (!a.group?.groupId) return a;
+          return {
+            ...a,
+            batchExec: {
+              ...(a.batchExec ?? { atomicEnabled: false }),
+              atomicRollbackAttempted: true,
+              atomicRollbackSuccess: false,
+            },
+          };
+        }),
+      };
     }
   }
 
@@ -365,42 +449,54 @@ export async function approveAction(
   if (action.type === "apply_patch") {
     const preflight = await invoke<PatchApplyResult>("check_workspace_patch", {
       workspacePath,
-      patch: action.payload.patch
+      patch: action.payload.patch,
     });
     if (!preflight.success) {
-      result = createExecutionResult(false, `Patch 预检失败: ${preflight.message}`, {
-        files: preflight.files
-      });
+      result = createExecutionResult(
+        false,
+        `Patch 预检失败: ${preflight.message}`,
+        {
+          files: preflight.files,
+        }
+      );
     } else {
-      const snapshot = await invoke<SnapshotResult>("create_workspace_snapshot", {
-        workspacePath,
-        patch: action.payload.patch
-      });
+      const snapshot = await invoke<SnapshotResult>(
+        "create_workspace_snapshot",
+        {
+          workspacePath,
+          patch: action.payload.patch,
+        }
+      );
       const payload = await invoke<PatchApplyResult>("apply_workspace_patch", {
         workspacePath,
-        patch: action.payload.patch
+        patch: action.payload.patch,
       });
       if (!payload.success && snapshot.success) {
-        const rollback = await invoke<PatchApplyResult>("restore_workspace_snapshot", {
-          workspacePath,
-          snapshotId: snapshot.snapshot_id
-        });
+        const rollback = await invoke<PatchApplyResult>(
+          "restore_workspace_snapshot",
+          {
+            workspacePath,
+            snapshotId: snapshot.snapshot_id,
+          }
+        );
         result = createExecutionResult(
           false,
-          `${payload.message}${rollback.success ? "（已自动回滚）" : "（自动回滚失败）"}`,
+          `${payload.message}${
+            rollback.success ? "（已自动回滚）" : "（自动回滚失败）"
+          }`,
           {
             files: payload.files,
             snapshotId: snapshot.snapshot_id,
             snapshotFiles: snapshot.files,
             rollbackSuccess: rollback.success,
-            rollbackMessage: rollback.message
+            rollbackMessage: rollback.message,
           }
         );
       } else {
         result = createExecutionResult(payload.success, payload.message, {
           files: payload.files,
           snapshotId: snapshot.snapshot_id,
-          snapshotFiles: snapshot.files
+          snapshotFiles: snapshot.files,
         });
       }
     }
@@ -408,23 +504,27 @@ export async function approveAction(
     const payload = await invoke<CommandExecutionResult>("run_shell_command", {
       workspacePath,
       shell: action.payload.shell,
-      timeoutMs: action.payload.timeoutMs
+      timeoutMs: action.payload.timeoutMs,
     });
-    result = createExecutionResult(payload.success, payload.success ? "命令执行成功" : "命令执行失败", {
-      command: action.payload.shell,
-      timedOut: payload.timed_out,
-      status: payload.status,
-      stdout: payload.stdout,
-      stderr: payload.stderr
-    });
+    result = createExecutionResult(
+      payload.success,
+      payload.success ? "命令执行成功" : "命令执行失败",
+      {
+        command: action.payload.shell,
+        timedOut: payload.timed_out,
+        status: payload.status,
+        stdout: payload.stdout,
+        stderr: payload.stderr,
+      }
+    );
   }
 
   result = {
     ...result,
     metadata: {
       ...(result.metadata ?? {}),
-      executor
-    }
+      executor,
+    },
   };
 
   const nextActions = mapActions(plan, actionId, (entry) => ({
@@ -432,7 +532,7 @@ export async function approveAction(
     fingerprint: ensureFingerprint(entry),
     status: result.success ? "completed" : "failed",
     executed: result.success,
-    executionResult: result
+    executionResult: result,
   }));
 
   recordSensitiveActionAudit({
@@ -444,12 +544,12 @@ export async function approveAction(
     executor,
     reason: result.message,
     workspacePath,
-    details: result.metadata ?? {}
+    details: result.metadata ?? {},
   });
 
   return {
     ...plan,
     state: deriveWorkflowState(nextActions),
-    proposedActions: nextActions
+    proposedActions: nextActions,
   };
 }

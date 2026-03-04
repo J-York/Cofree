@@ -15,7 +15,27 @@ export type WorkflowState = "planning" | "executing" | "human_review" | "done";
 
 export type SensitiveActionType = "apply_patch" | "shell";
 
-export type ActionStatus = "pending" | "running" | "completed" | "failed" | "rejected";
+export type ActionStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "rejected";
+
+export type ActionGroupMeta = {
+  groupId: string;
+  title?: string;
+  atomicIntent?: boolean;
+  createdAt: string;
+};
+
+export type BatchExecutionMeta = {
+  snapshotId?: string;
+  atomicEnabled: boolean;
+  atomicRollbackAttempted?: boolean;
+  atomicRollbackSuccess?: boolean;
+  degradedReason?: string;
+};
 
 export interface ActionExecutionResult {
   success: boolean;
@@ -48,6 +68,8 @@ interface ActionProposalBase {
 export interface ApplyPatchActionProposal extends ActionProposalBase {
   type: "apply_patch";
   payload: ApplyPatchPayload;
+  group?: ActionGroupMeta;
+  batchExec?: BatchExecutionMeta;
 }
 
 export interface ShellActionProposal extends ActionProposalBase {
@@ -55,9 +77,7 @@ export interface ShellActionProposal extends ActionProposalBase {
   payload: ShellPayload;
 }
 
-export type ActionProposal =
-  | ApplyPatchActionProposal
-  | ShellActionProposal;
+export type ActionProposal = ApplyPatchActionProposal | ShellActionProposal;
 
 export interface PlanStep {
   id: string;
