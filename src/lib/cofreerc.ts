@@ -16,6 +16,13 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+export interface OverviewBudgetConfig {
+  maxDirectories?: number;
+  maxFiles?: number;
+  maxRootPreview?: number;
+  maxChars?: number;
+}
+
 export interface CofreeRcConfig {
   /** Additional system prompt instructions appended to the base prompt */
   systemPrompt?: string;
@@ -27,11 +34,16 @@ export interface CofreeRcConfig {
   contextFiles?: string[];
   /** Preferred response language hint */
   language?: string;
+  /** Budget controls for initial workspace overview injection */
+  overviewBudget?: OverviewBudgetConfig;
 }
 
 const COFREERC_FILENAMES = [".cofreerc", ".cofreerc.json"];
 
-const configCache = new Map<string, { config: CofreeRcConfig; loadedAt: number }>();
+const configCache = new Map<
+  string,
+  { config: CofreeRcConfig; loadedAt: number }
+>();
 const CACHE_TTL_MS = 30_000; // 30 seconds
 
 /**
@@ -39,7 +51,9 @@ const CACHE_TTL_MS = 30_000; // 30 seconds
  * Returns an empty config if the file doesn't exist or is invalid.
  * Results are cached for 30s to avoid repeated disk reads.
  */
-export async function loadCofreeRc(workspacePath: string): Promise<CofreeRcConfig> {
+export async function loadCofreeRc(
+  workspacePath: string
+): Promise<CofreeRcConfig> {
   const normalizedPath = workspacePath.trim();
   if (!normalizedPath) {
     return {};
@@ -62,7 +76,7 @@ export async function loadCofreeRc(workspacePath: string): Promise<CofreeRcConfi
         workspacePath: normalizedPath,
         relativePath: filename,
         startLine: null,
-        endLine: null
+        endLine: null,
       });
 
       if (result.content && result.content.trim()) {
@@ -114,6 +128,20 @@ function parseCofreeRc(raw: string): CofreeRcConfig {
   const obj = parsed as Record<string, unknown>;
   const config: CofreeRcConfig = {};
 
+  const clampInt = (
+    value: unknown,
+    min: number,
+    max: number
+  ): number | undefined => {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return undefined;
+    }
+    const n = Math.floor(value);
+    if (n < min) return min;
+    if (n > max) return max;
+    return n;
+  };
+
   // systemPrompt
   if (typeof obj.systemPrompt === "string" && obj.systemPrompt.trim()) {
     config.systemPrompt = obj.systemPrompt.trim().slice(0, 4000);
@@ -128,9 +156,15 @@ function parseCofreeRc(raw: string): CofreeRcConfig {
   }
 
   // toolPermissions
-  if (obj.toolPermissions && typeof obj.toolPermissions === "object" && !Array.isArray(obj.toolPermissions)) {
+  if (
+    obj.toolPermissions &&
+    typeof obj.toolPermissions === "object" &&
+    !Array.isArray(obj.toolPermissions)
+  ) {
     const perms: Record<string, "ask" | "auto"> = {};
-    for (const [key, value] of Object.entries(obj.toolPermissions as Record<string, unknown>)) {
+    for (const [key, value] of Object.entries(
+      obj.toolPermissions as Record<string, unknown>
+    )) {
       if (typeof value === "string" && (value === "ask" || value === "auto")) {
         perms[key.trim()] = value;
       }
@@ -153,6 +187,33 @@ function parseCofreeRc(raw: string): CofreeRcConfig {
     config.language = obj.language.trim().slice(0, 20);
   }
 
+  // overviewBudget
+  if (
+    obj.overviewBudget &&
+    typeof obj.overviewBudget === "object" &&
+    !Array.isArray(obj.overviewBudget)
+  ) {
+    const budgetObj = obj.overviewBudget as Record<string, unknown>;
+    const budget: OverviewBudgetConfig = {};
+
+    // Hard upper bounds to prevent pathological configs.
+    const maxDirectories = clampInt(budgetObj.maxDirectories, 1, 2000);
+    const maxFiles = clampInt(budgetObj.maxFiles, 1, 20000);
+    const maxRootPreview = clampInt(budgetObj.maxRootPreview, 1, 200);
+    const maxChars = clampInt(budgetObj.maxChars, 200, 200000);
+
+    if (typeof maxDirectories === "number")
+      budget.maxDirectories = maxDirectories;
+    if (typeof maxFiles === "number") budget.maxFiles = maxFiles;
+    if (typeof maxRootPreview === "number")
+      budget.maxRootPreview = maxRootPreview;
+    if (typeof maxChars === "number") budget.maxChars = maxChars;
+
+    if (Object.keys(budget).length > 0) {
+      config.overviewBudget = budget;
+    }
+  }
+
   return config;
 }
 
@@ -165,7 +226,9 @@ export function buildCofreeRcPromptFragment(config: CofreeRcConfig): string {
 
   if (config.ignorePatterns && config.ignorePatterns.length > 0) {
     parts.push(
-      `[项目配置] 以下文件/目录模式应被忽略，不要读取或修改：${config.ignorePatterns.join(", ")}`
+      `[项目配置] 以下文件/目录模式应被忽略，不要读取或修改：${config.ignorePatterns.join(
+        ", "
+      )}`
     );
   }
 

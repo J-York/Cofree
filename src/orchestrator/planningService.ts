@@ -18,18 +18,45 @@ import {
   postLiteLLMChatCompletions,
   postLiteLLMChatCompletionsStream,
   type LiteLLMMessage,
-  type LiteLLMToolDefinition
+  type LiteLLMToolDefinition,
 } from "../lib/litellm";
 import type { AppSettings, ToolPermissions } from "../lib/settingsStore";
 import { DEFAULT_TOOL_PERMISSIONS } from "../lib/settingsStore";
 import type { ActionProposal, OrchestrationPlan, PlanStep } from "./types";
-import { summarizeWorkspaceFiles } from "./readOnlyWorkspaceService";
-import { loadCofreeRc, buildCofreeRcPromptFragment, type CofreeRcConfig } from "../lib/cofreerc";
+import {
+  summarizeWorkspaceFiles,
+  type WorkspaceOverviewBudget,
+} from "./readOnlyWorkspaceService";
+import {
+  loadCofreeRc,
+  buildCofreeRcPromptFragment,
+  type CofreeRcConfig,
+} from "../lib/cofreerc";
+import { SummaryCache } from "../lib/summaryCache";
 const MAX_TOOL_LOOP_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 30;
 const MAX_LIST_ENTRIES = 120;
 const MAX_FILE_PREVIEW_CHARS = 15000;
 const MAX_TOOL_RESULT_PREVIEW = 400;
+
+// --- Phase 4: Context management budgets ---
+const SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000;
+const SUMMARY_CACHE_MAX_ENTRIES = 100;
+const SUMMARY_COOLDOWN_MS = 60 * 1000;
+
+const MIN_MESSAGES_TO_SUMMARIZE = 4;
+const MIN_RECENT_MESSAGES_TO_KEEP = 6;
+const RECENT_TOKENS_MIN_RATIO = 0.4;
+
+const MAX_TOOL_OUTPUT_CHARS = 15000; // hard cap for tool content injected into LLM context
+const MAX_GREP_PREVIEW_MATCHES = 30;
+const MAX_GREP_PREVIEW_CHARS = 8000;
+const MAX_GLOB_PREVIEW_FILES = 60;
+const MAX_GLOB_PREVIEW_CHARS = 6000;
+// (reserved) diagnostics preview is already aggregated server-side; keep only a hard char cap.
+// const MAX_DIAGNOSTICS_PREVIEW_ENTRIES = 30;
+// const MAX_DIAGNOSTICS_MESSAGE_CHARS = 240;
+const MAX_FETCH_PREVIEW_CHARS = 10000;
 const MAX_TOOL_RETRY = 2;
 const MAX_PATCH_REPAIR_ROUNDS = 1;
 const MAX_CREATE_HINT_REPAIR_ROUNDS = 1;
@@ -61,7 +88,11 @@ function truncateAtLineStart(content: string, minIndex: number): number {
  * @param maxLength Maximum allowed length
  * @param headRatio Ratio of head content to preserve (0-1), defaults to 0.5
  */
-function smartTruncate(content: string, maxLength: number, headRatio = 0.5): string {
+function smartTruncate(
+  content: string,
+  maxLength: number,
+  headRatio = 0.5
+): string {
   if (content.length <= maxLength) return content;
 
   const ellipsis = "\n\n...[已截断中间部分]...\n\n";
@@ -137,7 +168,7 @@ const ASSISTANT_SYSTEM_PROMPT = [
   "2.2) 仅在明确需要 raw diff/patch 时使用 propose_apply_patch，并确保 patch 是合法 unified diff。",
   "2.3) 如果目标是执行任何命令（构建、测试、删除、git 操作等），使用 propose_shell。命令将显示给用户审批后执行。",
   "2.4) 如果收到 patch 预检失败反馈，优先重新读取必要片段后修正，并在一次自动修复重试内完成。",
-  "**重要**：调用 propose_* 工具后，立即停止生成文本。不要预测审批结果，不要说\"用户未批准\"或\"等待用户批准\"等话。系统会自动处理审批流程并在执行后通知你结果。",
+  '**重要**：调用 propose_* 工具后，立即停止生成文本。不要预测审批结果，不要说"用户未批准"或"等待用户批准"等话。系统会自动处理审批流程并在执行后通知你结果。',
   "3) 如果用户仅在询问信息或解释且不需要落盘，不要提出审批动作。",
   "4) 不要为了兜底提出无关审批动作；当用户请求包含多个交付物时，可以在同一轮提出多个紧密相关动作（建议 ≤5）以减少往返审批。",
   "4.1) **多文件编辑原子性**：当一个功能变更涉及多个文件时（如修改接口定义并同步更新所有调用方），尽量在同一轮工具调用中提出所有相关的 propose_file_edit，系统会将它们打包为一次原子审批。全部成功才生效，任何一个失败则全部回滚。",
@@ -180,7 +211,7 @@ const ASSISTANT_SYSTEM_PROMPT = [
   "4) **避免循环**：如果你已经连续 2 次修改同一个文件，停下来并告诉用户当前状态，让用户决定下一步。",
   "",
   "严禁输出伪工具调用标签（如 <tool_call>）。",
-  "回复语言与用户保持一致。"
+  "回复语言与用户保持一致。",
 ].join("\n");
 const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
   {
@@ -194,11 +225,12 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
         properties: {
           relative_path: {
             type: "string",
-            description: "Workspace-relative directory path. Empty means workspace root."
-          }
-        }
-      }
-    }
+            description:
+              "Workspace-relative directory path. Empty means workspace root.",
+          },
+        },
+      },
+    },
   },
   {
     type: "function",
@@ -215,50 +247,52 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           relative_path: {
             type: "string",
             minLength: 1,
-            description: "Workspace-relative file path."
+            description: "Workspace-relative file path.",
           },
           start_line: {
             type: "number",
             minimum: 1,
-            description: "Optional 1-based start line for partial read."
+            description: "Optional 1-based start line for partial read.",
           },
           end_line: {
             type: "number",
             minimum: 1,
-            description: "Optional 1-based end line for partial read."
-          }
-        }
-      }
-    }
+            description: "Optional 1-based end line for partial read.",
+          },
+        },
+      },
+    },
   },
   {
     type: "function",
     function: {
       name: "git_status",
-      description: "Get git status summary in workspace repository. Returns empty result for non-git directories.",
+      description:
+        "Get git status summary in workspace repository. Returns empty result for non-git directories.",
       parameters: {
         type: "object",
         additionalProperties: false,
-        properties: {}
-      }
-    }
+        properties: {},
+      },
+    },
   },
   {
     type: "function",
     function: {
       name: "git_diff",
-      description: "Get workspace git diff, optionally filtered to one file. Returns empty result for non-git directories.",
+      description:
+        "Get workspace git diff, optionally filtered to one file. Returns empty result for non-git directories.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
           file_path: {
             type: "string",
-            description: "Optional workspace-relative file path."
-          }
-        }
-      }
-    }
+            description: "Optional workspace-relative file path.",
+          },
+        },
+      },
+    },
   },
   {
     type: "function",
@@ -275,21 +309,24 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           pattern: {
             type: "string",
             minLength: 1,
-            description: "Regular expression pattern to search for in file contents."
+            description:
+              "Regular expression pattern to search for in file contents.",
           },
           include_glob: {
             type: "string",
-            description: "Optional glob pattern to filter files (e.g. '*.ts', '*.py'). Matches against both file name and relative path."
+            description:
+              "Optional glob pattern to filter files (e.g. '*.ts', '*.py'). Matches against both file name and relative path.",
           },
           max_results: {
             type: "number",
             minimum: 1,
             maximum: 200,
-            description: "Maximum number of matching lines to return. Defaults to 50."
-          }
-        }
-      }
-    }
+            description:
+              "Maximum number of matching lines to return. Defaults to 50.",
+          },
+        },
+      },
+    },
   },
   {
     type: "function",
@@ -306,17 +343,19 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           pattern: {
             type: "string",
             minLength: 1,
-            description: "Glob pattern to match files (e.g. '**/*.tsx', 'src/**/*.py', '**/test_*.js')."
+            description:
+              "Glob pattern to match files (e.g. '**/*.tsx', 'src/**/*.py', '**/test_*.js').",
           },
           max_results: {
             type: "number",
             minimum: 1,
             maximum: 500,
-            description: "Maximum number of matching files to return. Defaults to 100."
-          }
-        }
-      }
-    }
+            description:
+              "Maximum number of matching files to return. Defaults to 100.",
+          },
+        },
+      },
+    },
   },
   {
     type: "function",
@@ -331,15 +370,16 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
         properties: {
           patch: {
             type: "string",
-            description: "Unified diff patch content. MUST include 'diff --git' header. For new files: 'diff --git a/file b/file' then '--- /dev/null' and '+++ b/file'. For edits: 'diff --git a/file b/file' then '--- a/file' and '+++ b/file'. For delete-file patches: include 'deleted file mode 100644', then '--- a/file' and '+++ /dev/null'."
+            description:
+              "Unified diff patch content. MUST include 'diff --git' header. For new files: 'diff --git a/file b/file' then '--- /dev/null' and '+++ b/file'. For edits: 'diff --git a/file b/file' then '--- a/file' and '+++ b/file'. For delete-file patches: include 'deleted file mode 100644', then '--- a/file' and '+++ /dev/null'.",
           },
           description: {
             type: "string",
-            description: "Optional short description for reviewers."
-          }
-        }
-      }
-    }
+            description: "Optional short description for reviewers.",
+          },
+        },
+      },
+    },
   },
   {
     type: "function",
@@ -355,73 +395,78 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           relative_path: {
             type: "string",
             minLength: 1,
-            description: "Workspace-relative file path."
+            description: "Workspace-relative file path.",
           },
           operation: {
             type: "string",
             enum: ["replace", "insert", "delete", "create"],
             description:
-              "Edit operation. Defaults to 'replace' for backward compatibility."
+              "Edit operation. Defaults to 'replace' for backward compatibility.",
           },
           search: {
             type: "string",
             description:
-              "For replace/delete-in-file: exact snippet to find. For backward-compatible insert, may be used as anchor."
+              "For replace/delete-in-file: exact snippet to find. For backward-compatible insert, may be used as anchor.",
           },
           replace: {
             type: "string",
             description:
-              "For replace: replacement text. For backward-compatible insert/create, may be used as inserted/content text."
+              "For replace: replacement text. For backward-compatible insert/create, may be used as inserted/content text.",
           },
           anchor: {
             type: "string",
-            description: "For insert: exact anchor snippet in file."
+            description: "For insert: exact anchor snippet in file.",
           },
           line: {
             type: "number",
             minimum: 1,
-            description: "For insert: 1-based target line used as insertion anchor."
+            description:
+              "For insert: 1-based target line used as insertion anchor.",
           },
           start_line: {
             type: "number",
             minimum: 1,
-            description: "For replace/delete: optional 1-based start line of the target range."
+            description:
+              "For replace/delete: optional 1-based start line of the target range.",
           },
           end_line: {
             type: "number",
             minimum: 1,
-            description: "For replace/delete: optional 1-based end line of the target range."
+            description:
+              "For replace/delete: optional 1-based end line of the target range.",
           },
           content: {
             type: "string",
-            description: "For insert/create: inserted or full file content."
+            description: "For insert/create: inserted or full file content.",
           },
           position: {
             type: "string",
             enum: ["before", "after"],
-            description: "For insert: insert before or after anchor. Defaults to 'after'."
+            description:
+              "For insert: insert before or after anchor. Defaults to 'after'.",
           },
           replace_all: {
             type: "boolean",
             description:
-              "For replace: replace all matches. For backward compatibility, also used as generic apply_all flag."
+              "For replace: replace all matches. For backward compatibility, also used as generic apply_all flag.",
           },
           apply_all: {
             type: "boolean",
-            description: "For replace/insert/delete-in-file: apply operation to all matches."
+            description:
+              "For replace/insert/delete-in-file: apply operation to all matches.",
           },
           overwrite: {
             type: "boolean",
             description:
-              "For create: when true and file already exists, update file content instead of failing."
+              "For create: when true and file already exists, update file content instead of failing.",
           },
           description: {
             type: "string",
-            description: "Optional short description for reviewers."
-          }
-        }
-      }
-    }
+            description: "Optional short description for reviewers.",
+          },
+        },
+      },
+    },
   },
   {
     type: "function",
@@ -437,21 +482,23 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           shell: {
             type: "string",
             minLength: 1,
-            description: "Full shell command string. Can use pipes (|), redirects (>, <), chaining (&&, ;), variables ($VAR), etc."
+            description:
+              "Full shell command string. Can use pipes (|), redirects (>, <), chaining (&&, ;), variables ($VAR), etc.",
           },
           timeout_ms: {
             type: "number",
             minimum: 1000,
             maximum: 600000,
-            description: "Optional execution timeout in milliseconds. Defaults to 120000 (2 minutes)."
+            description:
+              "Optional execution timeout in milliseconds. Defaults to 120000 (2 minutes).",
           },
           description: {
             type: "string",
-            description: "Optional short description for reviewers."
-          }
-        }
-      }
-    }
+            description: "Optional short description for reviewers.",
+          },
+        },
+      },
+    },
   },
   {
     type: "function",
@@ -471,16 +518,17 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           role: {
             type: "string",
             enum: ["planner", "coder", "tester"],
-            description: "The role of the sub-agent to delegate to."
+            description: "The role of the sub-agent to delegate to.",
           },
           description: {
             type: "string",
             minLength: 1,
-            description: "Detailed description of the sub-task for the sub-agent to execute."
-          }
-        }
-      }
-    }
+            description:
+              "Detailed description of the sub-task for the sub-agent to execute.",
+          },
+        },
+      },
+    },
   },
   {
     type: "function",
@@ -499,11 +547,12 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           changed_files: {
             type: "array",
             items: { type: "string" },
-            description: "Optional list of workspace-relative file paths to filter diagnostics to."
-          }
-        }
-      }
-    }
+            description:
+              "Optional list of workspace-relative file paths to filter diagnostics to.",
+          },
+        },
+      },
+    },
   },
   {
     type: "function",
@@ -523,25 +572,36 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           url: {
             type: "string",
             minLength: 1,
-            description: "The URL to fetch. Must be from an allowed domain."
+            description: "The URL to fetch. Must be from an allowed domain.",
           },
           max_size: {
             type: "number",
             minimum: 1024,
             maximum: 524288,
-            description: "Optional maximum content size in bytes. Defaults to 512KB."
-          }
-        }
-      }
-    }
-  }
+            description:
+              "Optional maximum content size in bytes. Defaults to 512KB.",
+          },
+        },
+      },
+    },
+  },
 ];
 
 export type PlanningSessionPhase = "default";
 
 const ALL_TOOL_NAMES = [
-  "list_files", "read_file", "git_status", "git_diff", "grep", "glob",
-  "propose_file_edit", "propose_apply_patch", "propose_shell", "task", "diagnostics", "fetch"
+  "list_files",
+  "read_file",
+  "git_status",
+  "git_diff",
+  "grep",
+  "glob",
+  "propose_file_edit",
+  "propose_apply_patch",
+  "propose_shell",
+  "task",
+  "diagnostics",
+  "fetch",
 ];
 
 export function estimateRequestedArtifactCount(prompt: string): number {
@@ -552,10 +612,20 @@ export function estimateRequestedArtifactCount(prompt: string): number {
 
   // --- New pattern: Chinese numeral + "个文件" (e.g. "三个文件", "3个文件") ---
   const chineseNumWordMap: Record<string, number> = {
-    "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
-    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+    十: 10,
   };
-  const cnNumMatch = normalized.match(/([二两三四五六七八九十]|\d+)\s*个\s*文件/);
+  const cnNumMatch = normalized.match(
+    /([二两三四五六七八九十]|\d+)\s*个\s*文件/
+  );
   if (cnNumMatch) {
     const raw = cnNumMatch[1];
     const parsed = chineseNumWordMap[raw] ?? Number(raw);
@@ -563,7 +633,9 @@ export function estimateRequestedArtifactCount(prompt: string): number {
   }
 
   // --- New pattern: English "<N> (separate|distinct|new)? files" ---
-  const enNumMatch = normalized.match(/(\d+)\s+(?:separate\s+|distinct\s+|new\s+)?files?\b/i);
+  const enNumMatch = normalized.match(
+    /(\d+)\s+(?:separate\s+|distinct\s+|new\s+)?files?\b/i
+  );
   if (enNumMatch) {
     const parsed = Number(enNumMatch[1]);
     if (parsed >= 2) return parsed;
@@ -573,7 +645,10 @@ export function estimateRequestedArtifactCount(prompt: string): number {
   const splitMatch = normalized.match(/拆分[成为]?\s*(.+)/);
   if (splitMatch) {
     const tail = splitMatch[1];
-    const parts = tail.split(/[、，,\s+和and]+/i).map(s => s.trim()).filter(Boolean);
+    const parts = tail
+      .split(/[、，,\s+和and]+/i)
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (parts.length >= 2) return parts.length;
   }
 
@@ -592,7 +667,9 @@ export function estimateRequestedArtifactCount(prompt: string): number {
 
   const artifactPattern =
     /(?:\.py\b|\.html\b|\.css\b|\.js\b|\.jsx\b|\.ts\b|\.tsx\b|\.json\b|python|html|css|javascript|typescript|脚本|页面|网页|文件)/i;
-  const explicitCount = segments.filter((segment) => artifactPattern.test(segment)).length;
+  const explicitCount = segments.filter((segment) =>
+    artifactPattern.test(segment)
+  ).length;
   if (explicitCount > 0) {
     return explicitCount;
   }
@@ -680,6 +757,105 @@ function hashText(value: string): string {
   return hash.toString(16).padStart(8, "0");
 }
 
+function smartTruncateWithHint(
+  text: string,
+  limit: number,
+  hint: string
+): { text: string; truncated: boolean; hint?: string } {
+  if (text.length <= limit) {
+    return { text, truncated: false };
+  }
+  const truncatedText = smartTruncate(text, limit);
+  return {
+    text: truncatedText,
+    truncated: true,
+    hint,
+  };
+}
+
+function stableMessageHashKey(
+  messages: LiteLLMMessage[],
+  workspacePath?: string
+): string {
+  const normalized = messages
+    .map((m) => {
+      const toolCalls = m.tool_calls ? JSON.stringify(m.tool_calls) : "";
+      const toolCallId = (m as any).tool_call_id
+        ? String((m as any).tool_call_id)
+        : "";
+      const name = (m as any).name ? String((m as any).name) : "";
+      return [m.role, m.content ?? "", toolCalls, toolCallId, name].join(
+        "\u001f"
+      );
+    })
+    .join("\u001e");
+  const scope = workspacePath?.trim() ? `ws:${workspacePath.trim()}` : "ws:";
+  return `${scope}:${hashText(normalized)}`;
+}
+
+const summaryCache = new SummaryCache({
+  ttlMs: SUMMARY_CACHE_TTL_MS,
+  maxEntries: SUMMARY_CACHE_MAX_ENTRIES,
+});
+
+// Cooldown is per workspace to reduce oscillation on retries.
+const lastSummaryAtMsByWorkspace = new Map<string, number>();
+
+function canSummarizeNow(workspacePath: string | undefined): boolean {
+  const ws = workspacePath?.trim() || "";
+  if (!ws) return true;
+  const last = lastSummaryAtMsByWorkspace.get(ws) ?? 0;
+  return Date.now() - last >= SUMMARY_COOLDOWN_MS;
+}
+
+function markSummarizedNow(workspacePath: string | undefined): void {
+  const ws = workspacePath?.trim() || "";
+  if (!ws) return;
+  lastSummaryAtMsByWorkspace.set(ws, Date.now());
+}
+
+function sliceRecentMessagesByBudget(params: {
+  messages: LiteLLMMessage[];
+  maxAllowedTokens: number;
+}): { splitIndex: number; recentTokens: number } {
+  const { messages, maxAllowedTokens } = params;
+
+  const minRecentTokens = Math.floor(
+    maxAllowedTokens * RECENT_TOKENS_MIN_RATIO
+  );
+  let recentTokens = 0;
+  let kept = 0;
+  let splitIndex = messages.length;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const tokens = estimateTokens(messages[i].content);
+
+    // Always keep at least N recent messages.
+    if (kept < MIN_RECENT_MESSAGES_TO_KEEP) {
+      recentTokens += tokens;
+      kept += 1;
+      splitIndex = i;
+      continue;
+    }
+
+    // After we satisfy the minimum recent messages, keep adding until reaching minRecentTokens,
+    // but never exceed half of maxAllowedTokens to avoid starving oldMessages.
+    if (
+      recentTokens < minRecentTokens &&
+      recentTokens + tokens <= maxAllowedTokens * 0.6
+    ) {
+      recentTokens += tokens;
+      kept += 1;
+      splitIndex = i;
+      continue;
+    }
+
+    break;
+  }
+
+  return { splitIndex, recentTokens };
+}
+
 function selectToolDefinitions(toolNames: string[]): LiteLLMToolDefinition[] {
   const enabled = new Set(toolNames);
   return TOOL_DEFINITIONS.filter((tool) => enabled.has(tool.function.name));
@@ -752,7 +928,10 @@ export interface ToolExecutionTrace {
 }
 
 function createRequestId(prefix: string): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return `${prefix}-${crypto.randomUUID()}`;
   }
 
@@ -796,18 +975,36 @@ function estimateTokens(text: string): number {
 
 async function requestSummary(
   messagesToSummarize: LiteLLMMessage[],
-  settings: AppSettings
+  settings: AppSettings,
+  options?: {
+    workspacePath?: string;
+  }
 ): Promise<string> {
+  const cacheKey = stableMessageHashKey(
+    messagesToSummarize,
+    options?.workspacePath
+  );
+  const cached = summaryCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const combinedContent = messagesToSummarize
     .map((msg) => {
-      const roleLabel = msg.role === "user" ? "用户" : msg.role === "assistant" ? "助手" : msg.role;
+      const roleLabel =
+        msg.role === "user"
+          ? "用户"
+          : msg.role === "assistant"
+          ? "助手"
+          : msg.role;
       return `[${roleLabel}] ${msg.content}`;
     })
     .join("\n---\n");
 
-  const truncatedContent = combinedContent.length > 12000
-    ? combinedContent.slice(0, 12000) + "\n...(已截断)"
-    : combinedContent;
+  const truncatedContent =
+    combinedContent.length > 12000
+      ? combinedContent.slice(0, 12000) + "\n...(已截断)"
+      : combinedContent;
 
   const summaryMessages: LiteLLMMessage[] = [
     {
@@ -818,21 +1015,24 @@ async function requestSummary(
         "【核心目标】用户最初的需求是什么？",
         "【已完成变更】涉及哪些文件的修改？具体做了什么（给出关键函数或组件名）？",
         "【收集到的事实】发现的重要错误信息、项目的架构约束、特殊的配置结构等。",
-        "【当前进展与下一步】任务停在哪里？接下来立即需要解决的是什么？"
-      ].join("\n")
+        "【当前进展与下一步】任务停在哪里？接下来立即需要解决的是什么？",
+      ].join("\n"),
     },
     {
       role: "user",
-      content: truncatedContent
-    }
+      content: truncatedContent,
+    },
   ];
 
   try {
     const requestBody = createLiteLLMRequestBody(summaryMessages, settings, {});
     const response = await postLiteLLMChatCompletions(settings, requestBody);
-    const payload = JSON.parse(response.body) as { choices?: Array<{ message?: { content?: string } }> };
+    const payload = JSON.parse(response.body) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
     const summaryText = payload.choices?.[0]?.message?.content?.trim();
     if (summaryText) {
+      summaryCache.set(cacheKey, summaryText);
       return summaryText;
     }
   } catch {
@@ -844,7 +1044,11 @@ async function requestSummary(
   const fallbackLines = userMessages
     .map((m) => m.content.slice(0, 100))
     .slice(0, 5);
-  return `[自动摘要] 之前的对话包含 ${messagesToSummarize.length} 条消息。用户主要请求：${fallbackLines.join("；")}`;
+  const fallback = `[自动摘要] 之前的对话包含 ${
+    messagesToSummarize.length
+  } 条消息。用户主要请求：${fallbackLines.join("；")}`;
+  summaryCache.set(cacheKey, fallback);
+  return fallback;
 }
 
 async function sanitizeConversationHistory(
@@ -857,11 +1061,18 @@ async function sanitizeConversationHistory(
   }
 
   const validMessages = conversationHistory
-    .filter((message) => message.content || message.role === "tool" || (message.role === "assistant" && message.tool_calls && message.tool_calls.length > 0))
+    .filter(
+      (message) =>
+        message.content ||
+        message.role === "tool" ||
+        (message.role === "assistant" &&
+          message.tool_calls &&
+          message.tool_calls.length > 0)
+    )
     .map((message) => {
       const m: LiteLLMMessage = {
         role: message.role as any,
-        content: message.content.trim()
+        content: message.content.trim(),
       };
       if (message.tool_calls) {
         m.tool_calls = message.tool_calls;
@@ -878,26 +1089,27 @@ async function sanitizeConversationHistory(
   const limitTokens = maxTokens > 0 ? maxTokens : 128000;
   const bufferTokens = 8000;
   const hardTriggerTokens = 32000; // Trigger compression earlier to improve reasoning quality
-  const maxAllowedTokens = Math.min(limitTokens - bufferTokens, hardTriggerTokens);
+  const maxAllowedTokens = Math.min(
+    limitTokens - bufferTokens,
+    hardTriggerTokens
+  );
 
-  const totalTokens = validMessages.reduce((sum, msg) => sum + estimateTokens(msg.content), 0);
+  const totalTokens = validMessages.reduce(
+    (sum, msg) => sum + estimateTokens(msg.content),
+    0
+  );
 
   // If within limits, return all messages as-is
   if (totalTokens <= maxAllowedTokens) {
     return validMessages;
   }
 
-  // Find the split point: keep recent messages within budget, summarize the rest
-  let recentTokens = 0;
-  let splitIndex = validMessages.length;
-  for (let i = validMessages.length - 1; i >= 0; i--) {
-    const tokens = estimateTokens(validMessages[i].content);
-    if (recentTokens + tokens > maxAllowedTokens * 0.5) {
-      splitIndex = i + 1;
-      break;
-    }
-    recentTokens += tokens;
-  }
+  // Find the split point: keep recent messages stable (min count + token budget), summarize the rest
+  const sliced = sliceRecentMessagesByBudget({
+    messages: validMessages,
+    maxAllowedTokens,
+  });
+  let splitIndex = sliced.splitIndex;
 
   // Ensure splitIndex is valid (at least summarize something)
   if (splitIndex <= 0) {
@@ -908,25 +1120,41 @@ async function sanitizeConversationHistory(
   const recentMessages = validMessages.slice(splitIndex);
 
   // Only summarize if there are enough old messages to warrant it
-  if (oldMessages.length < 3) {
+  if (oldMessages.length < MIN_MESSAGES_TO_SUMMARIZE) {
     return [
       {
         role: "system",
-        content: "[系统提示] 之前的对话历史由于达到上下文长度限制已被截断。请基于现有的最新信息继续工作。"
+        content:
+          "[系统提示] 之前的对话历史由于达到上下文长度限制已被截断。请基于现有的最新信息继续工作。",
       },
-      ...recentMessages
+      ...recentMessages,
     ];
   }
 
-  // Request LLM summary for old messages
-  const summary = await requestSummary(oldMessages, settings);
+  // Cooldown window: avoid frequent re-summarization on retries/continuations
+  if (!canSummarizeNow(settings.workspacePath)) {
+    return [
+      {
+        role: "system",
+        content:
+          "[系统提示] 由于达到上下文长度限制，之前的对话历史已被截断（摘要冷却窗口内，已跳过再次生成摘要）。请基于现有的最新信息继续工作。",
+      },
+      ...recentMessages,
+    ];
+  }
+
+  // Request LLM summary for old messages (cached)
+  const summary = await requestSummary(oldMessages, settings, {
+    workspacePath: settings.workspacePath,
+  });
+  markSummarizedNow(settings.workspacePath);
 
   return [
     {
       role: "system",
-      content: `[对话历史摘要] 以下是之前 ${oldMessages.length} 条对话消息的压缩摘要：\n\n${summary}\n\n请基于此摘要和后续最新消息继续工作。`
+      content: `[对话历史摘要] 以下是之前 ${oldMessages.length} 条对话消息的压缩摘要：\n\n${summary}\n\n请基于此摘要和后续最新消息继续工作。`,
     },
-    ...recentMessages
+    ...recentMessages,
   ];
 }
 
@@ -975,7 +1203,10 @@ function parseToolCalls(raw: unknown): ToolCallRecord[] {
         return null;
       }
       const fnRecord = fn as Record<string, unknown>;
-      if (typeof fnRecord.name !== "string" || typeof fnRecord.arguments !== "string") {
+      if (
+        typeof fnRecord.name !== "string" ||
+        typeof fnRecord.arguments !== "string"
+      ) {
         return null;
       }
       const id =
@@ -987,8 +1218,8 @@ function parseToolCalls(raw: unknown): ToolCallRecord[] {
         type: "function" as const,
         function: {
           name: fnRecord.name,
-          arguments: fnRecord.arguments
-        }
+          arguments: fnRecord.arguments,
+        },
       };
     })
     .filter((item): item is ToolCallRecord => Boolean(item));
@@ -1055,7 +1286,7 @@ function splitPatchLines(content: string): {
   if (!content.length) {
     return {
       lines: [],
-      hasTrailingNewline: false
+      hasTrailingNewline: false,
     };
   }
 
@@ -1064,7 +1295,7 @@ function splitPatchLines(content: string): {
 
   return {
     lines: body.length > 0 ? body.split("\n") : [""],
-    hasTrailingNewline
+    hasTrailingNewline,
   };
 }
 
@@ -1111,7 +1342,12 @@ function replaceByLineRange(
   );
 }
 
-function insertByLine(content: string, line: number, insertContent: string, position: "before" | "after"): string {
+function insertByLine(
+  content: string,
+  line: number,
+  insertContent: string,
+  position: "before" | "after"
+): string {
   const segments = splitContentSegments(content);
   if (!segments.length) {
     throw new Error("文件为空，无法按行定位插入。");
@@ -1135,7 +1371,11 @@ function formatUnifiedRange(start: number, count: number): string {
   return `${start},${count}`;
 }
 
-function buildReplacementPatch(relativePath: string, before: string, after: string): string {
+function buildReplacementPatch(
+  relativePath: string,
+  before: string,
+  after: string
+): string {
   if (before === after) {
     throw new Error("编辑结果为空，未产生文件变更。");
   }
@@ -1162,13 +1402,18 @@ function buildReplacementPatch(relativePath: string, before: string, after: stri
     hunkLines.push("\\ No newline at end of file");
   }
 
-  return [
-    `diff --git a/${relativePath} b/${relativePath}`,
-    `--- a/${relativePath}`,
-    `+++ b/${relativePath}`,
-    `@@ -${formatUnifiedRange(previousStart, previousCount)} +${formatUnifiedRange(nextStart, nextCount)} @@`,
-    ...hunkLines
-  ].join("\n") + "\n";
+  return (
+    [
+      `diff --git a/${relativePath} b/${relativePath}`,
+      `--- a/${relativePath}`,
+      `+++ b/${relativePath}`,
+      `@@ -${formatUnifiedRange(
+        previousStart,
+        previousCount
+      )} +${formatUnifiedRange(nextStart, nextCount)} @@`,
+      ...hunkLines,
+    ].join("\n") + "\n"
+  );
 }
 
 function buildCreateFilePatch(relativePath: string, content: string): string {
@@ -1182,14 +1427,16 @@ function buildCreateFilePatch(relativePath: string, content: string): string {
     hunkLines.push("\\ No newline at end of file");
   }
 
-  return [
-    `diff --git a/${relativePath} b/${relativePath}`,
-    "new file mode 100644",
-    "--- /dev/null",
-    `+++ b/${relativePath}`,
-    `@@ -0,0 +${formatUnifiedRange(1, next.lines.length)} @@`,
-    ...hunkLines
-  ].join("\n") + "\n";
+  return (
+    [
+      `diff --git a/${relativePath} b/${relativePath}`,
+      "new file mode 100644",
+      "--- /dev/null",
+      `+++ b/${relativePath}`,
+      `@@ -0,0 +${formatUnifiedRange(1, next.lines.length)} @@`,
+      ...hunkLines,
+    ].join("\n") + "\n"
+  );
 }
 
 function createActionId(prefix: string): string {
@@ -1237,7 +1484,10 @@ function classifyToolError(message: string): ToolErrorCategory {
   ) {
     return "guardrail";
   }
-  if (lower.includes("patch does not apply") || lower.includes("corrupt patch")) {
+  if (
+    lower.includes("patch does not apply") ||
+    lower.includes("corrupt patch")
+  ) {
     return "validation";
   }
   if (lower.includes("timed out") || lower.includes("超时")) {
@@ -1249,7 +1499,11 @@ function classifyToolError(message: string): ToolErrorCategory {
   if (lower.includes("未知工具")) {
     return "tool_not_found";
   }
-  if (lower.includes("fetch") || lower.includes("network") || lower.includes("http")) {
+  if (
+    lower.includes("fetch") ||
+    lower.includes("network") ||
+    lower.includes("http")
+  ) {
     return "transport";
   }
   return "unknown";
@@ -1258,9 +1512,100 @@ function classifyToolError(message: string): ToolErrorCategory {
 function shouldRetryToolCall(category: ToolErrorCategory): boolean {
   return category === "transport" || category === "timeout";
 }
-
 function resultPreview(content: string): string {
   return content.slice(0, MAX_TOOL_RESULT_PREVIEW);
+}
+
+function limitJsonField(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return value.slice(0, maxChars) + "\n...[truncated]";
+}
+
+function trimToolContentForContext(toolName: string, jsonText: string): string {
+  // Tool content is JSON string. We structurally trim heavy fields per tool.
+  try {
+    const obj = JSON.parse(jsonText) as Record<string, any>;
+
+    if (toolName === "read_file") {
+      if (typeof obj.content_preview === "string") {
+        obj.content_preview = limitJsonField(
+          obj.content_preview,
+          MAX_TOOL_OUTPUT_CHARS
+        );
+      }
+      // Keep hint/metadata; never include any full raw file contents field.
+    }
+
+    if (toolName === "grep") {
+      if (typeof obj.matches_preview === "string") {
+        obj.matches_preview = limitJsonField(
+          obj.matches_preview,
+          MAX_GREP_PREVIEW_CHARS
+        );
+      }
+      if (
+        typeof obj.match_count === "number" &&
+        obj.match_count > MAX_GREP_PREVIEW_MATCHES
+      ) {
+        obj.note = `matches_preview 已限制为前 ${MAX_GREP_PREVIEW_MATCHES} 条，并做了字符裁剪。`;
+      }
+    }
+
+    if (toolName === "glob") {
+      if (typeof obj.files_preview === "string") {
+        obj.files_preview = limitJsonField(
+          obj.files_preview,
+          MAX_GLOB_PREVIEW_CHARS
+        );
+      }
+      if (
+        typeof obj.file_count === "number" &&
+        obj.file_count > MAX_GLOB_PREVIEW_FILES
+      ) {
+        obj.note = `files_preview 已限制为前 ${MAX_GLOB_PREVIEW_FILES} 条，并做了字符裁剪。`;
+      }
+    }
+
+    if (toolName === "diagnostics") {
+      // diagnostics tool already aggregates; just cap preview.
+      if (typeof obj.diagnostics_preview === "string") {
+        obj.diagnostics_preview = limitJsonField(
+          obj.diagnostics_preview,
+          MAX_TOOL_OUTPUT_CHARS
+        );
+      }
+    }
+
+    if (toolName === "fetch") {
+      if (typeof obj.content_preview === "string") {
+        obj.content_preview = limitJsonField(
+          obj.content_preview,
+          MAX_FETCH_PREVIEW_CHARS
+        );
+      }
+    }
+
+    const stringified = JSON.stringify(obj);
+    if (stringified.length <= MAX_TOOL_OUTPUT_CHARS) {
+      return stringified;
+    }
+
+    // Absolute hard cap
+    const hard = smartTruncateWithHint(
+      stringified,
+      MAX_TOOL_OUTPUT_CHARS,
+      `tool(${toolName}) 输出过长，已做硬裁剪。`
+    );
+    return hard.text;
+  } catch {
+    // Not JSON or parse failed: fallback to char cap
+    const hard = smartTruncateWithHint(
+      jsonText,
+      MAX_TOOL_OUTPUT_CHARS,
+      `tool(${toolName}) 输出过长，已做硬裁剪。`
+    );
+    return hard.text;
+  }
 }
 
 function renderListEntries(entries: FileEntry[]): string {
@@ -1306,7 +1651,7 @@ async function executeSubAgentTask(
       reply: `角色 "${role}" 不可用作 Sub-Agent。`,
       proposedActions: [],
       toolTrace: [],
-      turnCount: 0
+      turnCount: 0,
     };
   }
 
@@ -1321,12 +1666,12 @@ async function executeSubAgentTask(
     `当前工作区: ${workspacePath}`,
     "你正在执行一个被委派的子任务。请专注于完成任务并返回结果。",
     "完成任务后，请简洁地汇报结果。不要提出超出任务范围的额外建议。",
-    "严禁输出伪工具调用标签。回复语言与任务描述保持一致。"
+    "严禁输出伪工具调用标签。回复语言与任务描述保持一致。",
   ].join("\n");
 
   const messages: LiteLLMMessage[] = [
     { role: "system", content: subAgentSystemPrompt },
-    { role: "user", content: taskDescription }
+    { role: "user", content: taskDescription },
   ];
 
   const proposedActions: ActionProposal[] = [];
@@ -1334,7 +1679,9 @@ async function executeSubAgentTask(
 
   for (let turn = 0; turn < maxTurns; turn += 1) {
     const completion = await requestToolCompletion(
-      messages, settings, subAgentTools
+      messages,
+      settings,
+      subAgentTools
     );
     messages.push(completion.assistantMessage);
 
@@ -1343,13 +1690,16 @@ async function executeSubAgentTask(
         reply: completion.assistantMessage.content.trim(),
         proposedActions,
         toolTrace,
-        turnCount: turn + 1
+        turnCount: turn + 1,
       };
     }
 
     for (const toolCall of completion.toolCalls) {
       const { result: toolResult, trace } = await executeToolCallWithRetry(
-        toolCall, workspacePath, toolPermissions, settings
+        toolCall,
+        workspacePath,
+        toolPermissions,
+        settings
       );
       toolTrace.push(trace);
 
@@ -1361,7 +1711,10 @@ async function executeSubAgentTask(
         role: "tool",
         tool_call_id: toolCall.id,
         name: toolCall.function.name,
-        content: toolResult.content
+        content: trimToolContentForContext(
+          toolCall.function.name,
+          toolResult.content
+        ),
       });
     }
   }
@@ -1370,7 +1723,7 @@ async function executeSubAgentTask(
     reply: "Sub-Agent 达到工具调用轮次上限，已返回当前进度。",
     proposedActions,
     toolTrace,
-    turnCount: maxTurns
+    turnCount: maxTurns,
   };
 }
 
@@ -1394,18 +1747,30 @@ async function fetchPostPatchDiagnostics(
   changedFiles: string[]
 ): Promise<{ hasDiagnostics: boolean; summary: string }> {
   try {
-    const result = await invoke<DiagnosticsResult>("get_workspace_diagnostics", {
-      workspacePath,
-      changedFiles
-    });
-    if (!result.success || result.tool_used === "none" || result.diagnostics.length === 0) {
+    const result = await invoke<DiagnosticsResult>(
+      "get_workspace_diagnostics",
+      {
+        workspacePath,
+        changedFiles,
+      }
+    );
+    if (
+      !result.success ||
+      result.tool_used === "none" ||
+      result.diagnostics.length === 0
+    ) {
       return { hasDiagnostics: false, summary: "" };
     }
     const relevantDiagnostics = result.diagnostics.slice(0, 10);
     const lines = relevantDiagnostics.map(
-      (d) => `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${d.message}`
+      (d) =>
+        `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${
+          d.message
+        }`
     );
-    const summary = `[诊断反馈 via ${result.tool_used}] 发现 ${result.diagnostics.length} 个问题:\n${lines.join("\n")}`;
+    const summary = `[诊断反馈 via ${result.tool_used}] 发现 ${
+      result.diagnostics.length
+    } 个问题:\n${lines.join("\n")}`;
     return { hasDiagnostics: true, summary };
   } catch {
     return { hasDiagnostics: false, summary: "" };
@@ -1416,7 +1781,8 @@ async function executeToolCall(
   call: ToolCallRecord,
   workspacePath: string,
   toolPermissions: ToolPermissions = DEFAULT_TOOL_PERMISSIONS,
-  settings?: AppSettings
+  settings?: AppSettings,
+  projectConfig?: CofreeRcConfig
 ): Promise<ToolExecutionResult> {
   const safeWorkspace = workspacePath.trim();
   if (!safeWorkspace) {
@@ -1425,7 +1791,7 @@ async function executeToolCall(
       content: JSON.stringify({ error: message }),
       success: false,
       errorCategory: "workspace",
-      errorMessage: message
+      errorMessage: message,
     };
   }
 
@@ -1438,25 +1804,30 @@ async function executeToolCall(
       content: JSON.stringify({ error: message }),
       success: false,
       errorCategory: "validation",
-      errorMessage: message
+      errorMessage: message,
     };
   }
 
   try {
     if (call.function.name === "list_files") {
       const relativePath = normalizeRelativePath(args.relative_path);
+      const ignorePatterns =
+        projectConfig?.ignorePatterns && projectConfig.ignorePatterns.length > 0
+          ? projectConfig.ignorePatterns
+          : null;
       const entries = await invoke<FileEntry[]>("list_workspace_files", {
         workspacePath: safeWorkspace,
-        relativePath
+        relativePath,
+        ignorePatterns,
       });
       return {
         content: JSON.stringify({
           ok: true,
           relative_path: relativePath,
           entry_count: entries.length,
-          entries_preview: renderListEntries(entries)
+          entries_preview: renderListEntries(entries),
         }),
-        success: true
+        success: true,
       };
     }
 
@@ -1470,7 +1841,7 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       if (startLine && endLine && startLine > endLine) {
@@ -1479,7 +1850,7 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       const result = await invoke<{
@@ -1491,7 +1862,12 @@ async function executeToolCall(
         workspacePath: safeWorkspace,
         relativePath,
         startLine,
-        endLine
+        endLine,
+        ignorePatterns:
+          projectConfig?.ignorePatterns &&
+          projectConfig.ignorePatterns.length > 0
+            ? projectConfig.ignorePatterns
+            : null,
       });
 
       // Add line numbers to content for model orientation
@@ -1515,10 +1891,12 @@ async function executeToolCall(
           content_preview: trimmed,
           truncated: wasTruncated,
           ...(wasTruncated
-            ? { hint: `文件共 ${result.total_lines} 行，当前内容被截断。请用 start_line/end_line 分段读取剩余部分。` }
-            : {})
+            ? {
+                hint: `文件共 ${result.total_lines} 行，当前内容被截断。请用 start_line/end_line 分段读取剩余部分。`,
+              }
+            : {}),
         }),
-        success: true
+        success: true,
       };
     }
 
@@ -1529,14 +1907,14 @@ async function executeToolCall(
         deleted: string[];
         untracked: string[];
       }>("git_status_workspace", {
-        workspacePath: safeWorkspace
+        workspacePath: safeWorkspace,
       });
       return {
         content: JSON.stringify({
           ok: true,
-          ...status
+          ...status,
         }),
-        success: true
+        success: true,
       };
     }
 
@@ -1544,16 +1922,16 @@ async function executeToolCall(
       const filePath = normalizeRelativePath(args.file_path);
       const diff = await invoke<string>("git_diff_workspace", {
         workspacePath: safeWorkspace,
-        filePath: filePath || null
+        filePath: filePath || null,
       });
       return {
         content: JSON.stringify({
           ok: true,
           file_path: filePath || null,
           diff_preview: smartTruncate(diff, MAX_FILE_PREVIEW_CHARS),
-          truncated: diff.length > MAX_FILE_PREVIEW_CHARS
+          truncated: diff.length > MAX_FILE_PREVIEW_CHARS,
         }),
-        success: true
+        success: true,
       };
     }
 
@@ -1565,7 +1943,7 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       const includeGlob = asString(args.include_glob).trim() || null;
@@ -1577,7 +1955,12 @@ async function executeToolCall(
         workspacePath: safeWorkspace,
         pattern,
         includeGlob,
-        maxResults
+        maxResults,
+        ignorePatterns:
+          projectConfig?.ignorePatterns &&
+          projectConfig.ignorePatterns.length > 0
+            ? projectConfig.ignorePatterns
+            : null,
       });
       const matchCount = result.matches.length;
       const preview = result.matches
@@ -1591,9 +1974,9 @@ async function executeToolCall(
           include_glob: includeGlob,
           match_count: matchCount,
           truncated: result.truncated,
-          matches_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS)
+          matches_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
         }),
-        success: true
+        success: true,
       };
     }
 
@@ -1605,18 +1988,22 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       const maxResults = normalizeOptionalPositiveInt(args.max_results) ?? 100;
-      const entries = await invoke<Array<{ path: string; size: number; modified: number }>>(
-        "glob_workspace_files",
-        {
-          workspacePath: safeWorkspace,
-          pattern,
-          maxResults
-        }
-      );
+      const entries = await invoke<
+        Array<{ path: string; size: number; modified: number }>
+      >("glob_workspace_files", {
+        workspacePath: safeWorkspace,
+        pattern,
+        maxResults,
+        ignorePatterns:
+          projectConfig?.ignorePatterns &&
+          projectConfig.ignorePatterns.length > 0
+            ? projectConfig.ignorePatterns
+            : null,
+      });
       const preview = entries
         .slice(0, 60)
         .map((e) => `${e.path} (${e.size}B)`)
@@ -1626,9 +2013,9 @@ async function executeToolCall(
           ok: true,
           pattern,
           file_count: entries.length,
-          files_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS)
+          files_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
         }),
-        success: true
+        success: true,
       };
     }
 
@@ -1640,36 +2027,46 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
-      const preflight = await invoke<PatchApplyResult>("check_workspace_patch", {
-        workspacePath: safeWorkspace,
-        patch
-      });
+      const preflight = await invoke<PatchApplyResult>(
+        "check_workspace_patch",
+        {
+          workspacePath: safeWorkspace,
+          patch,
+        }
+      );
       if (!preflight.success) {
         const message = `Patch 预检失败: ${preflight.message}`;
         return {
           content: JSON.stringify({
             error: message,
-            files: preflight.files
+            files: preflight.files,
           }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       if (toolPermissions.propose_apply_patch === "auto") {
-        const snapshot = await invoke<{ success: boolean; snapshot_id: string; files: string[] }>(
-          "create_workspace_snapshot", { workspacePath: safeWorkspace, patch }
-        );
+        const snapshot = await invoke<{
+          success: boolean;
+          snapshot_id: string;
+          files: string[];
+        }>("create_workspace_snapshot", {
+          workspacePath: safeWorkspace,
+          patch,
+        });
         const applyResult = await invoke<PatchApplyResult>(
-          "apply_workspace_patch", { workspacePath: safeWorkspace, patch }
+          "apply_workspace_patch",
+          { workspacePath: safeWorkspace, patch }
         );
         if (!applyResult.success && snapshot.success) {
-          await invoke<PatchApplyResult>(
-            "restore_workspace_snapshot", { workspacePath: safeWorkspace, snapshotId: snapshot.snapshot_id }
-          );
+          await invoke<PatchApplyResult>("restore_workspace_snapshot", {
+            workspacePath: safeWorkspace,
+            snapshotId: snapshot.snapshot_id,
+          });
         }
         const responsePayload: Record<string, unknown> = {
           ok: applyResult.success,
@@ -1677,10 +2074,13 @@ async function executeToolCall(
           auto_executed: true,
           patch_length: patch.length,
           files: applyResult.files,
-          message: applyResult.message
+          message: applyResult.message,
         };
         if (applyResult.success) {
-          const diagnostics = await fetchPostPatchDiagnostics(safeWorkspace, applyResult.files);
+          const diagnostics = await fetchPostPatchDiagnostics(
+            safeWorkspace,
+            applyResult.files
+          );
           if (diagnostics.hasDiagnostics) {
             responsePayload.diagnostics = diagnostics.summary;
           }
@@ -1689,7 +2089,7 @@ async function executeToolCall(
           content: JSON.stringify(responsePayload),
           success: applyResult.success,
           errorCategory: applyResult.success ? undefined : "validation",
-          errorMessage: applyResult.success ? undefined : applyResult.message
+          errorMessage: applyResult.success ? undefined : applyResult.message,
         };
       }
 
@@ -1698,17 +2098,20 @@ async function executeToolCall(
         toolCallId: call.id,
         toolName: call.function.name,
         type: "apply_patch",
-        description: asString(args.description, "Apply generated patch to workspace (Gate A)"),
+        description: asString(
+          args.description,
+          "Apply generated patch to workspace (Gate A)"
+        ),
         gateRequired: true,
         status: "pending",
         executed: false,
         payload: {
-          patch
-        }
+          patch,
+        },
       };
       const action: ActionProposal = {
         ...actionBase,
-        fingerprint: actionFingerprint(actionBase)
+        fingerprint: actionFingerprint(actionBase),
       };
       return {
         content: JSON.stringify({
@@ -1716,20 +2119,28 @@ async function executeToolCall(
           action_type: "apply_patch",
           action_id: action.id,
           patch_length: patch.length,
-          files: preflight.files
+          files: preflight.files,
         }),
         success: true,
-        proposedAction: action
+        proposedAction: action,
       };
     }
 
     if (call.function.name === "propose_file_edit") {
       const relativePath = normalizeRelativePath(args.relative_path);
-      const operationRaw = asString(args.operation, "replace").trim().toLowerCase();
+      const operationRaw = asString(args.operation, "replace")
+        .trim()
+        .toLowerCase();
       const operation = operationRaw || "replace";
-      const applyAll = asBoolean(args.apply_all, asBoolean(args.replace_all, false));
-      const positionCandidate = asString(args.position, "after").trim().toLowerCase();
-      const insertPosition = positionCandidate === "before" ? "before" : "after";
+      const applyAll = asBoolean(
+        args.apply_all,
+        asBoolean(args.replace_all, false)
+      );
+      const positionCandidate = asString(args.position, "after")
+        .trim()
+        .toLowerCase();
+      const insertPosition =
+        positionCandidate === "before" ? "before" : "after";
       const line = normalizeOptionalPositiveInt(args.line);
       const startLine = normalizeOptionalPositiveInt(args.start_line);
       const endLine = normalizeOptionalPositiveInt(args.end_line);
@@ -1739,7 +2150,7 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       let patch = "";
@@ -1747,7 +2158,7 @@ async function executeToolCall(
         mode: "file_edit",
         operation,
         relative_path: relativePath,
-        apply_all: applyAll
+        apply_all: applyAll,
       };
       if (line) {
         responseMeta.line = line;
@@ -1765,7 +2176,7 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       if (startLine && endLine && startLine > endLine) {
@@ -1774,7 +2185,7 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
 
@@ -1787,21 +2198,23 @@ async function executeToolCall(
             content: JSON.stringify({ error: message }),
             success: false,
             errorCategory: "validation",
-            errorMessage: message
+            errorMessage: message,
           };
         }
 
         let existingContent: string | null = null;
         try {
-          existingContent = (await invoke<{
-            content: string;
-            total_lines: number;
-            start_line: number;
-            end_line: number;
-          }>("read_workspace_file", {
-            workspacePath: safeWorkspace,
-            relativePath
-          })).content;
+          existingContent = (
+            await invoke<{
+              content: string;
+              total_lines: number;
+              start_line: number;
+              end_line: number;
+            }>("read_workspace_file", {
+              workspacePath: safeWorkspace,
+              relativePath,
+            })
+          ).content;
         } catch (_error) {
           existingContent = null;
         }
@@ -1812,29 +2225,35 @@ async function executeToolCall(
             content: JSON.stringify({ error: message }),
             success: false,
             errorCategory: "validation",
-            errorMessage: message
+            errorMessage: message,
           };
         }
 
         patch =
           existingContent === null
             ? buildCreateFilePatch(relativePath, createContent)
-            : buildReplacementPatch(relativePath, existingContent, createContent);
+            : buildReplacementPatch(
+                relativePath,
+                existingContent,
+                createContent
+              );
         responseMeta.created = existingContent === null;
         responseMeta.overwrite = overwrite;
       } else {
         let original = "";
         let fileExists = true;
         try {
-          original = (await invoke<{
-            content: string;
-            total_lines: number;
-            start_line: number;
-            end_line: number;
-          }>("read_workspace_file", {
-            workspacePath: safeWorkspace,
-            relativePath
-          })).content;
+          original = (
+            await invoke<{
+              content: string;
+              total_lines: number;
+              start_line: number;
+              end_line: number;
+            }>("read_workspace_file", {
+              workspacePath: safeWorkspace,
+              relativePath,
+            })
+          ).content;
         } catch (_readError) {
           fileExists = false;
           // File doesn't exist — auto-detect as create intent
@@ -1849,194 +2268,230 @@ async function executeToolCall(
               content: JSON.stringify({ error: message }),
               success: false,
               errorCategory: "validation",
-              errorMessage: message
+              errorMessage: message,
             };
           }
         }
         if (!patch && fileExists) {
-        let nextContent = original;
+          let nextContent = original;
 
-        if (operation === "replace") {
-          if (startLine) {
-            const replacement = asString(args.content, asString(args.replace));
-            nextContent = replaceByLineRange(original, startLine, endLine ?? startLine, replacement);
-            responseMeta.selection_mode = "line_range";
+          if (operation === "replace") {
+            if (startLine) {
+              const replacement = asString(
+                args.content,
+                asString(args.replace)
+              );
+              nextContent = replaceByLineRange(
+                original,
+                startLine,
+                endLine ?? startLine,
+                replacement
+              );
+              responseMeta.selection_mode = "line_range";
+            } else {
+              const search = stripLineNumberPrefixes(asString(args.search));
+              const replace = asString(args.replace);
+              if (!search) {
+                const message =
+                  "replace 操作要求 search 非空，或提供 start_line/end_line。若要创建新文件，请改用 operation='create' 并提供 content 参数";
+                return {
+                  content: JSON.stringify({ error: message }),
+                  success: false,
+                  errorCategory: "validation",
+                  errorMessage: message,
+                };
+              }
+              const hits = countOccurrences(original, search);
+              if (hits < 1) {
+                const message = `search 片段未找到: ${relativePath}`;
+                return {
+                  content: JSON.stringify({ error: message }),
+                  success: false,
+                  errorCategory: "validation",
+                  errorMessage: message,
+                };
+              }
+              if (!applyAll && hits > 1) {
+                const message = `search 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
+                return {
+                  content: JSON.stringify({ error: message }),
+                  success: false,
+                  errorCategory: "validation",
+                  errorMessage: message,
+                };
+              }
+
+              nextContent = applyAll
+                ? original.split(search).join(replace)
+                : original.replace(search, replace);
+              responseMeta.matched = hits;
+            }
+          } else if (operation === "insert") {
+            const insertContent = asString(
+              args.content,
+              asString(args.replace)
+            );
+            if (!insertContent) {
+              const message = "insert 操作要求 content 非空";
+              return {
+                content: JSON.stringify({ error: message }),
+                success: false,
+                errorCategory: "validation",
+                errorMessage: message,
+              };
+            }
+            if (line) {
+              nextContent = insertByLine(
+                original,
+                line,
+                insertContent,
+                insertPosition
+              );
+              responseMeta.selection_mode = "line_anchor";
+              responseMeta.position = insertPosition;
+            } else {
+              const anchor = stripLineNumberPrefixes(
+                asString(args.anchor, asString(args.search))
+              );
+              if (!anchor) {
+                const message = "insert 操作要求 anchor 非空，或提供 line";
+                return {
+                  content: JSON.stringify({ error: message }),
+                  success: false,
+                  errorCategory: "validation",
+                  errorMessage: message,
+                };
+              }
+              const hits = countOccurrences(original, anchor);
+              if (hits < 1) {
+                const message = `anchor 片段未找到: ${relativePath}`;
+                return {
+                  content: JSON.stringify({ error: message }),
+                  success: false,
+                  errorCategory: "validation",
+                  errorMessage: message,
+                };
+              }
+              if (!applyAll && hits > 1) {
+                const message = `anchor 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
+                return {
+                  content: JSON.stringify({ error: message }),
+                  success: false,
+                  errorCategory: "validation",
+                  errorMessage: message,
+                };
+              }
+
+              const anchored =
+                insertPosition === "before"
+                  ? `${insertContent}${anchor}`
+                  : `${anchor}${insertContent}`;
+              nextContent = applyAll
+                ? original.split(anchor).join(anchored)
+                : original.replace(anchor, anchored);
+              responseMeta.matched = hits;
+              responseMeta.position = insertPosition;
+            }
+          } else if (operation === "delete") {
+            if (startLine) {
+              nextContent = replaceByLineRange(
+                original,
+                startLine,
+                endLine ?? startLine,
+                ""
+              );
+              responseMeta.selection_mode = "line_range";
+            } else {
+              const search = stripLineNumberPrefixes(
+                asString(args.search, asString(args.anchor))
+              );
+              if (!search) {
+                const message =
+                  "delete 操作要求 search 非空，或提供 start_line/end_line。若目标是删除整个文件，请改用 propose_run_command 执行 rm <relative_path>。";
+                return {
+                  content: JSON.stringify({ error: message }),
+                  success: false,
+                  errorCategory: "validation",
+                  errorMessage: message,
+                };
+              }
+              const hits = countOccurrences(original, search);
+              if (hits < 1) {
+                const message = `search 片段未找到: ${relativePath}`;
+                return {
+                  content: JSON.stringify({ error: message }),
+                  success: false,
+                  errorCategory: "validation",
+                  errorMessage: message,
+                };
+              }
+              if (!applyAll && hits > 1) {
+                const message = `search 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
+                return {
+                  content: JSON.stringify({ error: message }),
+                  success: false,
+                  errorCategory: "validation",
+                  errorMessage: message,
+                };
+              }
+
+              nextContent = applyAll
+                ? original.split(search).join("")
+                : original.replace(search, "");
+              responseMeta.matched = hits;
+            }
           } else {
-            const search = stripLineNumberPrefixes(asString(args.search));
-            const replace = asString(args.replace);
-            if (!search) {
-              const message = "replace 操作要求 search 非空，或提供 start_line/end_line。若要创建新文件，请改用 operation='create' 并提供 content 参数";
-              return {
-                content: JSON.stringify({ error: message }),
-                success: false,
-                errorCategory: "validation",
-                errorMessage: message
-              };
-            }
-            const hits = countOccurrences(original, search);
-            if (hits < 1) {
-              const message = `search 片段未找到: ${relativePath}`;
-              return {
-                content: JSON.stringify({ error: message }),
-                success: false,
-                errorCategory: "validation",
-                errorMessage: message
-              };
-            }
-            if (!applyAll && hits > 1) {
-              const message = `search 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
-              return {
-                content: JSON.stringify({ error: message }),
-                success: false,
-                errorCategory: "validation",
-                errorMessage: message
-              };
-            }
-
-            nextContent = applyAll
-              ? original.split(search).join(replace)
-              : original.replace(search, replace);
-            responseMeta.matched = hits;
-          }
-        } else if (operation === "insert") {
-          const insertContent = asString(args.content, asString(args.replace));
-          if (!insertContent) {
-            const message = "insert 操作要求 content 非空";
+            const message = `不支持的 file edit operation: ${operation}`;
             return {
               content: JSON.stringify({ error: message }),
               success: false,
               errorCategory: "validation",
-              errorMessage: message
+              errorMessage: message,
             };
           }
-          if (line) {
-            nextContent = insertByLine(original, line, insertContent, insertPosition);
-            responseMeta.selection_mode = "line_anchor";
-            responseMeta.position = insertPosition;
-          } else {
-            const anchor = stripLineNumberPrefixes(asString(args.anchor, asString(args.search)));
-            if (!anchor) {
-              const message = "insert 操作要求 anchor 非空，或提供 line";
-              return {
-                content: JSON.stringify({ error: message }),
-                success: false,
-                errorCategory: "validation",
-                errorMessage: message
-              };
-            }
-            const hits = countOccurrences(original, anchor);
-            if (hits < 1) {
-              const message = `anchor 片段未找到: ${relativePath}`;
-              return {
-                content: JSON.stringify({ error: message }),
-                success: false,
-                errorCategory: "validation",
-                errorMessage: message
-              };
-            }
-            if (!applyAll && hits > 1) {
-              const message = `anchor 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
-              return {
-                content: JSON.stringify({ error: message }),
-                success: false,
-                errorCategory: "validation",
-                errorMessage: message
-              };
-            }
 
-            const anchored =
-              insertPosition === "before"
-                ? `${insertContent}${anchor}`
-                : `${anchor}${insertContent}`;
-            nextContent = applyAll
-              ? original.split(anchor).join(anchored)
-              : original.replace(anchor, anchored);
-            responseMeta.matched = hits;
-            responseMeta.position = insertPosition;
-          }
-        } else if (operation === "delete") {
-          if (startLine) {
-            nextContent = replaceByLineRange(original, startLine, endLine ?? startLine, "");
-            responseMeta.selection_mode = "line_range";
-          } else {
-            const search = stripLineNumberPrefixes(asString(args.search, asString(args.anchor)));
-          if (!search) {
-            const message =
-              "delete 操作要求 search 非空，或提供 start_line/end_line。若目标是删除整个文件，请改用 propose_run_command 执行 rm <relative_path>。";
-            return {
-              content: JSON.stringify({ error: message }),
-              success: false,
-              errorCategory: "validation",
-                errorMessage: message
-              };
-            }
-            const hits = countOccurrences(original, search);
-            if (hits < 1) {
-              const message = `search 片段未找到: ${relativePath}`;
-              return {
-                content: JSON.stringify({ error: message }),
-                success: false,
-                errorCategory: "validation",
-                errorMessage: message
-              };
-            }
-            if (!applyAll && hits > 1) {
-              const message = `search 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
-              return {
-                content: JSON.stringify({ error: message }),
-                success: false,
-                errorCategory: "validation",
-                errorMessage: message
-              };
-            }
-
-            nextContent = applyAll
-              ? original.split(search).join("")
-              : original.replace(search, "");
-            responseMeta.matched = hits;
-          }
-        } else {
-          const message = `不支持的 file edit operation: ${operation}`;
-          return {
-            content: JSON.stringify({ error: message }),
-            success: false,
-            errorCategory: "validation",
-            errorMessage: message
-          };
-        }
-
-        patch = buildReplacementPatch(relativePath, original, nextContent);
+          patch = buildReplacementPatch(relativePath, original, nextContent);
         } // end if (!patch && fileExists)
       }
 
-      const preflight = await invoke<PatchApplyResult>("check_workspace_patch", {
-        workspacePath: safeWorkspace,
-        patch
-      });
+      const preflight = await invoke<PatchApplyResult>(
+        "check_workspace_patch",
+        {
+          workspacePath: safeWorkspace,
+          patch,
+        }
+      );
       if (!preflight.success) {
         const message = `Patch 预检失败: ${preflight.message}`;
         return {
           content: JSON.stringify({
             error: message,
-            files: preflight.files
+            files: preflight.files,
           }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
 
       if (toolPermissions.propose_file_edit === "auto") {
-        const snapshot = await invoke<{ success: boolean; snapshot_id: string; files: string[] }>(
-          "create_workspace_snapshot", { workspacePath: safeWorkspace, patch }
-        );
+        const snapshot = await invoke<{
+          success: boolean;
+          snapshot_id: string;
+          files: string[];
+        }>("create_workspace_snapshot", {
+          workspacePath: safeWorkspace,
+          patch,
+        });
         const applyResult = await invoke<PatchApplyResult>(
-          "apply_workspace_patch", { workspacePath: safeWorkspace, patch }
+          "apply_workspace_patch",
+          { workspacePath: safeWorkspace, patch }
         );
         if (!applyResult.success && snapshot.success) {
-          await invoke<PatchApplyResult>(
-            "restore_workspace_snapshot", { workspacePath: safeWorkspace, snapshotId: snapshot.snapshot_id }
-          );
+          await invoke<PatchApplyResult>("restore_workspace_snapshot", {
+            workspacePath: safeWorkspace,
+            snapshotId: snapshot.snapshot_id,
+          });
         }
         const responsePayload: Record<string, unknown> = {
           ok: applyResult.success,
@@ -2045,10 +2500,13 @@ async function executeToolCall(
           patch_length: patch.length,
           files: applyResult.files,
           message: applyResult.message,
-          ...responseMeta
+          ...responseMeta,
         };
         if (applyResult.success) {
-          const diagnostics = await fetchPostPatchDiagnostics(safeWorkspace, applyResult.files);
+          const diagnostics = await fetchPostPatchDiagnostics(
+            safeWorkspace,
+            applyResult.files
+          );
           if (diagnostics.hasDiagnostics) {
             responsePayload.diagnostics = diagnostics.summary;
           }
@@ -2057,7 +2515,7 @@ async function executeToolCall(
           content: JSON.stringify(responsePayload),
           success: applyResult.success,
           errorCategory: applyResult.success ? undefined : "validation",
-          errorMessage: applyResult.success ? undefined : applyResult.message
+          errorMessage: applyResult.success ? undefined : applyResult.message,
         };
       }
 
@@ -2074,8 +2532,8 @@ async function executeToolCall(
         status: "pending",
         executed: false,
         payload: {
-          patch
-        }
+          patch,
+        },
       };
       action.fingerprint = actionFingerprint(action);
       return {
@@ -2085,10 +2543,10 @@ async function executeToolCall(
           action_id: action.id,
           patch_length: patch.length,
           files: preflight.files,
-          ...responseMeta
+          ...responseMeta,
         }),
         success: true,
-        proposedAction: action
+        proposedAction: action,
       };
     }
 
@@ -2100,17 +2558,20 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
-      const timeout = Math.max(1000, Math.min(600000, asNumber(args.timeout_ms, 120000)));
+      const timeout = Math.max(
+        1000,
+        Math.min(600000, asNumber(args.timeout_ms, 120000))
+      );
       if (timeout < 1000 || timeout > 600000) {
         const message = "timeout_ms 必须在 1000-600000 之间";
         return {
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       if (toolPermissions.propose_shell === "auto") {
@@ -2124,7 +2585,7 @@ async function executeToolCall(
         }>("run_shell_command", {
           workspacePath: safeWorkspace,
           shell,
-          timeoutMs: timeout
+          timeoutMs: timeout,
         });
         return {
           content: JSON.stringify({
@@ -2135,11 +2596,13 @@ async function executeToolCall(
             stdout: cmdResult.stdout,
             stderr: cmdResult.stderr,
             exit_code: cmdResult.status,
-            timed_out: cmdResult.timed_out
+            timed_out: cmdResult.timed_out,
           }),
           success: cmdResult.success,
           errorCategory: cmdResult.success ? undefined : "validation",
-          errorMessage: cmdResult.success ? undefined : `命令执行失败 (exit ${cmdResult.status})`
+          errorMessage: cmdResult.success
+            ? undefined
+            : `命令执行失败 (exit ${cmdResult.status})`,
         };
       }
 
@@ -2154,8 +2617,8 @@ async function executeToolCall(
         executed: false,
         payload: {
           shell,
-          timeoutMs: timeout
-        }
+          timeoutMs: timeout,
+        },
       };
       action.fingerprint = actionFingerprint(action);
       return {
@@ -2163,10 +2626,10 @@ async function executeToolCall(
           ok: true,
           action_type: "shell",
           action_id: action.id,
-          shell
+          shell,
         }),
         success: true,
-        proposedAction: action
+        proposedAction: action,
       };
     }
 
@@ -2179,7 +2642,7 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       if (!description) {
@@ -2188,19 +2651,21 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
-      const validRoles = DEFAULT_AGENTS
-        .filter((agent) => agent.allowAsSubAgent)
-        .map((agent) => agent.role);
+      const validRoles = DEFAULT_AGENTS.filter(
+        (agent) => agent.allowAsSubAgent
+      ).map((agent) => agent.role);
       if (!validRoles.includes(role as any)) {
-        const message = `无效的 Sub-Agent 角色: "${role}"。可用角色: ${validRoles.join(", ")}`;
+        const message = `无效的 Sub-Agent 角色: "${role}"。可用角色: ${validRoles.join(
+          ", "
+        )}`;
         return {
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       if (!settings) {
@@ -2209,11 +2674,15 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       const subResult = await executeSubAgentTask(
-        role, description, safeWorkspace, settings, toolPermissions
+        role,
+        description,
+        safeWorkspace,
+        settings,
+        toolPermissions
       );
       const responsePayload: Record<string, unknown> = {
         ok: true,
@@ -2222,11 +2691,11 @@ async function executeToolCall(
         turn_count: subResult.turnCount,
         reply: subResult.reply,
         proposed_action_count: subResult.proposedActions.length,
-        tool_call_count: subResult.toolTrace.length
+        tool_call_count: subResult.toolTrace.length,
       };
       const result: ToolExecutionResult = {
         content: JSON.stringify(responsePayload),
-        success: true
+        success: true,
       };
       if (subResult.proposedActions.length > 0) {
         result.proposedAction = subResult.proposedActions[0];
@@ -2236,7 +2705,9 @@ async function executeToolCall(
 
     if (call.function.name === "diagnostics") {
       const changedFiles = Array.isArray(args.changed_files)
-        ? (args.changed_files as string[]).map((f) => String(f).trim()).filter(Boolean)
+        ? (args.changed_files as string[])
+            .map((f) => String(f).trim())
+            .filter(Boolean)
         : undefined;
       const result = await invoke<{
         success: boolean;
@@ -2251,14 +2722,24 @@ async function executeToolCall(
         raw_output: string;
       }>("get_workspace_diagnostics", {
         workspacePath: safeWorkspace,
-        changedFiles: changedFiles && changedFiles.length > 0 ? changedFiles : null
+        changedFiles:
+          changedFiles && changedFiles.length > 0 ? changedFiles : null,
       });
 
-      const errorCount = result.diagnostics.filter((d) => d.severity === "error").length;
-      const warningCount = result.diagnostics.filter((d) => d.severity === "warning").length;
+      const errorCount = result.diagnostics.filter(
+        (d) => d.severity === "error"
+      ).length;
+      const warningCount = result.diagnostics.filter(
+        (d) => d.severity === "warning"
+      ).length;
       const diagnosticsPreview = result.diagnostics
         .slice(0, 50)
-        .map((d) => `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${d.message}`)
+        .map(
+          (d) =>
+            `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${
+              d.message
+            }`
+        )
         .join("\n");
 
       return {
@@ -2268,9 +2749,12 @@ async function executeToolCall(
           error_count: errorCount,
           warning_count: warningCount,
           total_diagnostics: result.diagnostics.length,
-          diagnostics_preview: smartTruncate(diagnosticsPreview, MAX_FILE_PREVIEW_CHARS)
+          diagnostics_preview: smartTruncate(
+            diagnosticsPreview,
+            MAX_FILE_PREVIEW_CHARS
+          ),
         }),
-        success: true
+        success: true,
       };
     }
 
@@ -2282,7 +2766,7 @@ async function executeToolCall(
           content: JSON.stringify({ error: message }),
           success: false,
           errorCategory: "validation",
-          errorMessage: message
+          errorMessage: message,
         };
       }
       const maxSize = normalizeOptionalPositiveInt(args.max_size);
@@ -2296,7 +2780,7 @@ async function executeToolCall(
       }>("fetch_url", {
         url,
         maxSize: maxSize || null,
-        proxy: settings?.proxy ?? null
+        proxy: settings?.proxy ?? null,
       });
 
       if (!result.success) {
@@ -2305,11 +2789,11 @@ async function executeToolCall(
           content: JSON.stringify({
             ok: false,
             url: result.url,
-            error: errorMsg
+            error: errorMsg,
           }),
           success: false,
           errorCategory: "validation",
-          errorMessage: errorMsg
+          errorMessage: errorMsg,
         };
       }
 
@@ -2319,9 +2803,12 @@ async function executeToolCall(
           url: result.url,
           content_type: result.content_type,
           truncated: result.truncated,
-          content_preview: smartTruncate(result.content, MAX_FILE_PREVIEW_CHARS)
+          content_preview: smartTruncate(
+            result.content,
+            MAX_FILE_PREVIEW_CHARS
+          ),
         }),
-        success: true
+        success: true,
       };
     }
 
@@ -2329,7 +2816,7 @@ async function executeToolCall(
       content: JSON.stringify({ error: `未知工具: ${call.function.name}` }),
       success: false,
       errorCategory: "tool_not_found",
-      errorMessage: `未知工具: ${call.function.name}`
+      errorMessage: `未知工具: ${call.function.name}`,
     };
   } catch (error) {
     const message = String(error || "Unknown error");
@@ -2337,7 +2824,7 @@ async function executeToolCall(
       content: JSON.stringify({ error: message }),
       success: false,
       errorCategory: classifyToolError(message),
-      errorMessage: message
+      errorMessage: message,
     };
   }
 }
@@ -2346,7 +2833,8 @@ async function executeToolCallWithRetry(
   call: ToolCallRecord,
   workspacePath: string,
   toolPermissions: ToolPermissions = DEFAULT_TOOL_PERMISSIONS,
-  settings?: AppSettings
+  settings?: AppSettings,
+  projectConfig?: CofreeRcConfig
 ): Promise<{
   result: ToolExecutionResult;
   trace: ToolExecutionTrace;
@@ -2357,20 +2845,28 @@ async function executeToolCallWithRetry(
     content: JSON.stringify({ error: "工具调用未执行" }),
     success: false,
     errorCategory: "unknown",
-    errorMessage: "工具调用未执行"
+    errorMessage: "工具调用未执行",
   };
 
   while (attempts < MAX_TOOL_RETRY) {
     attempts += 1;
-    const current = await executeToolCall(call, workspacePath, toolPermissions, settings);
+    const current = await executeToolCall(
+      call,
+      workspacePath,
+      toolPermissions,
+      settings,
+      projectConfig
+    );
     const success = current.success !== false;
-    const errorCategory = current.errorCategory ?? (success ? undefined : "unknown");
-    const errorMessage = current.errorMessage ?? (success ? undefined : "工具调用失败");
+    const errorCategory =
+      current.errorCategory ?? (success ? undefined : "unknown");
+    const errorMessage =
+      current.errorMessage ?? (success ? undefined : "工具调用失败");
     lastResult = {
       ...current,
       success,
       errorCategory,
-      errorMessage
+      errorMessage,
     };
 
     if (success) {
@@ -2385,8 +2881,8 @@ async function executeToolCallWithRetry(
           attempts,
           status: "success",
           retried: attempts > 1,
-          resultPreview: resultPreview(current.content)
-        }
+          resultPreview: resultPreview(current.content),
+        },
       };
     }
 
@@ -2408,8 +2904,8 @@ async function executeToolCallWithRetry(
       retried: attempts > 1,
       errorCategory: lastResult.errorCategory,
       errorMessage: lastResult.errorMessage,
-      resultPreview: resultPreview(lastResult.content)
-    }
+      resultPreview: resultPreview(lastResult.content),
+    },
   };
 }
 
@@ -2432,7 +2928,7 @@ export async function requestToolCompletion(
     stream: false,
     temperature: 0.1,
     tools: activeTools,
-    toolChoice: "auto"
+    toolChoice: "auto",
   });
 
   const response = await postLiteLLMChatCompletions(settings, body);
@@ -2443,7 +2939,9 @@ export async function requestToolCompletion(
 
   const payload = parseCompletionPayload(response.body);
   const requestId =
-    typeof payload.id === "string" && payload.id.trim() ? payload.id : createRequestId("chat");
+    typeof payload.id === "string" && payload.id.trim()
+      ? payload.id
+      : createRequestId("chat");
 
   const firstChoice = payload.choices?.[0];
   const rawMessage = firstChoice?.message;
@@ -2455,7 +2953,7 @@ export async function requestToolCompletion(
   const assistantMessage: LiteLLMMessage = {
     role: "assistant",
     content: normalizeMessageContent(rawMessage.content),
-    tool_calls: toolCalls.length ? toolCalls : undefined
+    tool_calls: toolCalls.length ? toolCalls : undefined,
   };
 
   return {
@@ -2464,8 +2962,8 @@ export async function requestToolCompletion(
     requestRecord: {
       requestId,
       inputLength: inputLengthOf(messages),
-      outputLength: response.body.length
-    }
+      outputLength: response.body.length,
+    },
   };
 }
 
@@ -2488,7 +2986,7 @@ async function requestToolCompletionWithStream(
     stream: true,
     temperature: 0.1,
     tools: activeTools,
-    toolChoice: "auto"
+    toolChoice: "auto",
   });
 
   const response = await postLiteLLMChatCompletionsStream(
@@ -2506,7 +3004,9 @@ async function requestToolCompletionWithStream(
 
   const payload = parseCompletionPayload(response.body);
   const requestId =
-    typeof payload.id === "string" && payload.id.trim() ? payload.id : createRequestId("chat");
+    typeof payload.id === "string" && payload.id.trim()
+      ? payload.id
+      : createRequestId("chat");
 
   const firstChoice = payload.choices?.[0];
   const rawMessage = firstChoice?.message;
@@ -2518,7 +3018,7 @@ async function requestToolCompletionWithStream(
   const assistantMessage: LiteLLMMessage = {
     role: "assistant",
     content: normalizeMessageContent(rawMessage.content),
-    tool_calls: toolCalls.length ? toolCalls : undefined
+    tool_calls: toolCalls.length ? toolCalls : undefined,
   };
 
   return {
@@ -2527,8 +3027,8 @@ async function requestToolCompletionWithStream(
     requestRecord: {
       requestId,
       inputLength: inputLengthOf(messages),
-      outputLength: response.body.length
-    }
+      outputLength: response.body.length,
+    },
   };
 }
 
@@ -2554,16 +3054,18 @@ async function runNativeToolCallingLoop(
   // Merge tool permissions: settings take priority, then .cofreerc overrides defaults
   const basePermissions = settings.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS;
   const toolPermissions: ToolPermissions = projectConfig?.toolPermissions
-    ? { ...basePermissions, ...projectConfig.toolPermissions } as ToolPermissions
+    ? ({
+        ...basePermissions,
+        ...projectConfig.toolPermissions,
+      } as ToolPermissions)
     : basePermissions;
-  const patchRepairInstruction = "请读取必要文件片段后，重新调用 propose_file_edit。";
+  const patchRepairInstruction =
+    "请读取必要文件片段后，重新调用 propose_file_edit。";
   const createPathRepairInstruction =
     "若目标是新建文件，请调用 propose_file_edit 并设置 operation='create'；若目录不存在，可先调用 propose_shell 执行 mkdir -p <目录>。";
   const runtimeContext = createRuntimeContextPrompt(settings);
   const requestedArtifactCount =
-    phase === "default"
-      ? estimateRequestedArtifactCount(prompt)
-      : 0;
+    phase === "default" ? estimateRequestedArtifactCount(prompt) : 0;
   const blockedFingerprints = blockedActionFingerprints
     .map((value) => value.trim())
     .filter(Boolean);
@@ -2571,14 +3073,16 @@ async function runNativeToolCallingLoop(
     { role: "system", content: ASSISTANT_SYSTEM_PROMPT },
     { role: "system", content: runtimeContext },
     ...(blockedFingerprints.length > 0
-      ? [{
-          role: "system" as const,
-          content: [
-            "系统提示：以下动作指纹已在之前轮次执行或处理完成，禁止再次提出相同动作。",
-            ...blockedFingerprints.map((fingerprint) => `- ${fingerprint}`),
-            "如果没有新的必要动作，请直接给出最终总结。"
-          ].join("\n")
-        }]
+      ? [
+          {
+            role: "system" as const,
+            content: [
+              "系统提示：以下动作指纹已在之前轮次执行或处理完成，禁止再次提出相同动作。",
+              ...blockedFingerprints.map((fingerprint) => `- ${fingerprint}`),
+              "如果没有新的必要动作，请直接给出最终总结。",
+            ].join("\n"),
+          },
+        ]
       : []),
     ...(internalSystemNote?.trim()
       ? [{ role: "system" as const, content: internalSystemNote.trim() }]
@@ -2590,11 +3094,11 @@ async function runNativeToolCallingLoop(
       ? [
           {
             role: "system" as const,
-            content: `[任务上下文] 用户的原始请求是："${prompt}"。本轮是自动续跑（continuation），请基于已完成的工作继续完成剩余交付物。如果所有交付物均已完成，直接简短汇报。`
+            content: `[任务上下文] 用户的原始请求是："${prompt}"。本轮是自动续跑（continuation），请基于已完成的工作继续完成剩余交付物。如果所有交付物均已完成，直接简短汇报。`,
           },
-          { role: "user" as const, content: prompt }
+          { role: "user" as const, content: prompt },
         ]
-      : [{ role: "user" as const, content: prompt }])
+      : [{ role: "user" as const, content: prompt }]),
   ];
 
   const requestRecords: RequestRecord[] = [];
@@ -2611,13 +3115,17 @@ async function runNativeToolCallingLoop(
         content: [
           `系统提示：你已经使用了 ${turn} 轮工具调用，接近上限 ${MAX_TOOL_LOOP_TURNS} 轮。`,
           "请注意效率，优先使用 grep/glob 批量搜索而非逐个文件阅读。",
-          "如果任务已基本完成，请尽快给出最终总结；如果确实需要继续，请集中处理剩余关键步骤。"
-        ].join("\n")
+          "如果任务已基本完成，请尽快给出最终总结；如果确实需要继续，请集中处理剩余关键步骤。",
+        ].join("\n"),
       });
     }
 
     const completion = await requestToolCompletionWithStream(
-      messages, settings, activeTools, signal, onAssistantChunk
+      messages,
+      settings,
+      activeTools,
+      signal,
+      onAssistantChunk
     );
     requestRecords.push(completion.requestRecord);
     messages.push(completion.assistantMessage);
@@ -2628,7 +3136,7 @@ async function runNativeToolCallingLoop(
         assistantReply: finalText,
         requestRecords,
         proposedActions,
-        toolTrace
+        toolTrace,
       };
     }
 
@@ -2639,7 +3147,8 @@ async function runNativeToolCallingLoop(
         toolCall,
         settings.workspacePath,
         toolPermissions,
-        settings
+        settings,
+        projectConfig
       );
       toolTrace.push(trace);
       if (
@@ -2655,8 +3164,12 @@ async function runNativeToolCallingLoop(
         toolResult.success === false &&
         toolResult.errorCategory === "validation" &&
         toolCall.function.name === "propose_file_edit" &&
-        ((toolResult.errorMessage ?? "").toLowerCase().includes("invalid target path") ||
-          (toolResult.errorMessage ?? "").toLowerCase().includes("no such file or directory"))
+        ((toolResult.errorMessage ?? "")
+          .toLowerCase()
+          .includes("invalid target path") ||
+          (toolResult.errorMessage ?? "")
+            .toLowerCase()
+            .includes("no such file or directory"))
       ) {
         createPathUsageFailure = toolResult.errorMessage ?? "目标路径不存在";
       }
@@ -2667,7 +3180,10 @@ async function runNativeToolCallingLoop(
         role: "tool",
         tool_call_id: toolCall.id,
         name: toolCall.function.name,
-        content: toolResult.content
+        content: trimToolContentForContext(
+          toolCall.function.name,
+          toolResult.content
+        ),
       });
     }
 
@@ -2683,8 +3199,8 @@ async function runNativeToolCallingLoop(
           "系统提示：上一轮 patch 预检失败。",
           `错误信息：${patchPreflightFailure}`,
           patchRepairInstruction,
-          "仅允许一次自动修复重试，并保持最小改动。"
-        ].join("\n")
+          "仅允许一次自动修复重试，并保持最小改动。",
+        ].join("\n"),
       });
       continue;
     }
@@ -2700,8 +3216,8 @@ async function runNativeToolCallingLoop(
         content: [
           "系统提示：检测到文件创建路径问题。",
           `错误信息：${createPathUsageFailure}`,
-          createPathRepairInstruction
-        ].join("\n")
+          createPathRepairInstruction,
+        ].join("\n"),
       });
       continue;
     }
@@ -2722,25 +3238,30 @@ async function runNativeToolCallingLoop(
             "系统提示：用户请求包含多个交付物。",
             `当前已提出 ${plannedArtifacts} 个交付物相关动作，目标至少 ${requestedArtifactCount} 个。`,
             "请继续提出剩余缺失交付物的审批动作；不要重复已有动作。",
-            "仅在所有请求交付物都已覆盖，或确实无法继续时，才停止工具调用。"
-          ].join("\n")
+            "仅在所有请求交付物都已覆盖，或确实无法继续时，才停止工具调用。",
+          ].join("\n"),
         });
         continue;
       }
     }
 
     if (proposedActions.length > 0) {
-      const reachedBatchLimit = proposedActions.length >= MAX_PROPOSED_ACTIONS_PER_BATCH;
+      const reachedBatchLimit =
+        proposedActions.length >= MAX_PROPOSED_ACTIONS_PER_BATCH;
       const coverageSatisfied =
-        requestedArtifactCount <= 1 || plannedArtifacts === 0 || plannedArtifacts >= requestedArtifactCount;
+        requestedArtifactCount <= 1 ||
+        plannedArtifacts === 0 ||
+        plannedArtifacts >= requestedArtifactCount;
       const shouldReturnNow =
-        reachedBatchLimit || coverageSatisfied || multiArtifactReminderRounds >= MAX_MULTI_ARTIFACT_REMINDER_ROUNDS;
+        reachedBatchLimit ||
+        coverageSatisfied ||
+        multiArtifactReminderRounds >= MAX_MULTI_ARTIFACT_REMINDER_ROUNDS;
 
       if (!shouldReturnNow) {
         messages.push({
           role: "system",
           content:
-            "系统提示：你已经提出了部分待审批动作。请继续补齐剩余缺失交付物，直到达到交付覆盖目标或达到单批动作上限。"
+            "系统提示：你已经提出了部分待审批动作。请继续补齐剩余缺失交付物，直到达到交付覆盖目标或达到单批动作上限。",
         });
         continue;
       }
@@ -2749,7 +3270,7 @@ async function runNativeToolCallingLoop(
         assistantReply: completion.assistantMessage.content.trim(),
         requestRecords,
         proposedActions,
-        toolTrace
+        toolTrace,
       };
     }
   }
@@ -2758,7 +3279,7 @@ async function runNativeToolCallingLoop(
     assistantReply: "已达到工具调用轮次上限，请缩小任务范围后重试。",
     requestRecords,
     proposedActions,
-    toolTrace
+    toolTrace,
   };
 }
 
@@ -2768,18 +3289,18 @@ function sanitizeStepsFromPrompt(prompt: string): PlanStep[] {
     {
       id: "step-plan",
       owner: "planner",
-      summary: `分析需求并拆解执行步骤: ${normalized}`
+      summary: `分析需求并拆解执行步骤: ${normalized}`,
     },
     {
       id: "step-implement",
       owner: "coder",
-      summary: "基于任务生成实现或回答"
+      summary: "基于任务生成实现或回答",
     },
     {
       id: "step-verify",
       owner: "tester",
-      summary: "补充验证建议并总结风险"
-    }
+      summary: "补充验证建议并总结风险",
+    },
   ];
 }
 
@@ -2789,7 +3310,9 @@ function buildProposedActions(
 ): ActionProposal[] {
   const uniqueActions: ActionProposal[] = [];
   const seen = new Set<string>();
-  const blocked = new Set(Array.from(blockedFingerprints, (value) => value.trim()).filter(Boolean));
+  const blocked = new Set(
+    Array.from(blockedFingerprints, (value) => value.trim()).filter(Boolean)
+  );
 
   for (const action of fromTools) {
     const validationError = validateProposedAction(action);
@@ -2808,6 +3331,33 @@ function buildProposedActions(
     uniqueActions.push(action);
   }
 
+  // --- Phase 5: Action Group semantics for multi-patch batches ---
+  // Only when the same round produces 2+ patch actions, we assign a shared groupId.
+  const patchActions = uniqueActions.filter(
+    (a): a is import("./types").ApplyPatchActionProposal =>
+      a.type === "apply_patch"
+  );
+  if (patchActions.length > 1) {
+    const groupId = createActionId("action-group");
+    const createdAt = nowIso();
+    const files = Array.from(
+      new Set(patchActions.flatMap((a) => collectPatchedFiles(a.payload.patch)))
+    );
+    const title =
+      files.length > 0
+        ? `批量补丁（${files.length} 个文件）`
+        : `批量补丁（${patchActions.length} 个 patch）`;
+
+    for (const action of patchActions) {
+      action.group = {
+        groupId,
+        title,
+        atomicIntent: true,
+        createdAt,
+      };
+    }
+  }
+
   return uniqueActions;
 }
 
@@ -2822,7 +3372,7 @@ function initializePlan(
     prompt: prompt.trim() || "实现用户提出的功能",
     steps,
     proposedActions,
-    workspacePath: settings.workspacePath.trim()
+    workspacePath: settings.workspacePath.trim(),
   };
 }
 
@@ -2838,7 +3388,10 @@ export function actionFingerprint(action: ActionProposal): string {
 
     // Fingerprint must be stable enough to block exact duplicates,
     // but not so coarse that any follow-up edit to the same file becomes impossible.
-    const context = files.length > 0 ? `${operationKinds.join(",")}:${files.join("|")}` : "raw";
+    const context =
+      files.length > 0
+        ? `${operationKinds.join(",")}:${files.join("|")}`
+        : "raw";
     return `${action.type}:${context}:${patchHash}`;
   }
   // action.type === "shell"
@@ -2874,7 +3427,9 @@ function createRuntimeContextPrompt(settings: AppSettings): string {
     : "当前工作区: 未选择";
   const agentLines = DEFAULT_AGENTS.map(
     (agent) =>
-      `- ${agent.role}: tools=[${agent.tools.join(", ")}], sensitiveActionAllowed=${agent.sensitiveActionAllowed}`
+      `- ${agent.role}: tools=[${agent.tools.join(
+        ", "
+      )}], sensitiveActionAllowed=${agent.sensitiveActionAllowed}`
   );
   const permissions = settings.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS;
   const autoTools = Object.entries(permissions)
@@ -2895,7 +3450,7 @@ function createRuntimeContextPrompt(settings: AppSettings): string {
     ...agentLines,
     "权限说明：自动执行工具的调用结果会直接返回；需审批工具会生成待审批动作，由用户确认后执行。",
     "Git 工具说明：git_status 和 git_diff 在非 Git 仓库中会返回空结果，这是正常的。",
-    "如需文件系统信息，必须通过已定义工具调用，不得臆测。"
+    "如需文件系统信息，必须通过已定义工具调用，不得臆测。",
   ].join("\n");
 }
 
@@ -2906,7 +3461,7 @@ function containsCapabilityDenial(text: string): boolean {
     "read-only",
     "无法执行文件创建",
     "当前工具路由模式为只读",
-    "仅支持 [list_files, read_file, git_status, git_diff]"
+    "仅支持 [list_files, read_file, git_status, git_diff]",
   ];
   return hints.some((hint) => corpus.includes(hint.toLowerCase()));
 }
@@ -2930,7 +3485,9 @@ function reconcileAssistantReply(params: {
     return normalized;
   }
 
-  const hasSuccessfulToolCall = toolTrace.some((trace) => trace.status === "success");
+  const hasSuccessfulToolCall = toolTrace.some(
+    (trace) => trace.status === "success"
+  );
   if (!hasSuccessfulToolCall) {
     return normalized;
   }
@@ -2951,7 +3508,9 @@ function assertLocalOnlyPolicy(settings: AppSettings): void {
     return;
   }
 
-  throw new LocalOnlyPolicyError("Local-only 已开启，请切换到本地 Provider（如 Ollama）后再发起请求。");
+  throw new LocalOnlyPolicyError(
+    "Local-only 已开启，请切换到本地 Provider（如 Ollama）后再发起请求。"
+  );
 }
 
 export async function runPlanningSession(
@@ -2965,12 +3524,20 @@ export async function runPlanningSession(
   assertLocalOnlyPolicy(input.settings);
   const phase = input.phase ?? "default";
   const maxTokens = input.settings.maxContextTokens || 128000;
-  const historyMessages = await sanitizeConversationHistory(input.conversationHistory, maxTokens, input.settings);
+  const historyMessages = await sanitizeConversationHistory(
+    input.conversationHistory,
+    maxTokens,
+    input.settings
+  );
 
   let initialInternalNote = input.internalSystemNote;
   let projectConfig: CofreeRcConfig = {};
-  
-  if (historyMessages.length === 0 && !input.isContinuation && input.settings.workspacePath) {
+
+  if (
+    historyMessages.length === 0 &&
+    !input.isContinuation &&
+    input.settings.workspacePath
+  ) {
     // Load project-level .cofreerc config
     try {
       projectConfig = await loadCofreeRc(input.settings.workspacePath);
@@ -2980,7 +3547,16 @@ export async function runPlanningSession(
 
     // Inject workspace overview
     try {
-      const overview = await summarizeWorkspaceFiles(input.settings.workspacePath);
+      const overviewBudget: WorkspaceOverviewBudget | undefined =
+        projectConfig.overviewBudget;
+
+      const overview = await summarizeWorkspaceFiles(
+        input.settings.workspacePath,
+        projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+          ? projectConfig.ignorePatterns
+          : null,
+        overviewBudget
+      );
       const overviewPrompt = `项目概览：\n${overview}`;
       if (initialInternalNote) {
         initialInternalNote = `${initialInternalNote}\n\n${overviewPrompt}`;
@@ -3002,8 +3578,17 @@ export async function runPlanningSession(
     }
 
     // Load contextFiles specified in .cofreerc
-    if (projectConfig.contextFiles && projectConfig.contextFiles.length > 0 && input.settings.workspacePath) {
+    if (
+      projectConfig.contextFiles &&
+      projectConfig.contextFiles.length > 0 &&
+      input.settings.workspacePath
+    ) {
       const contextSnippets: string[] = [];
+      const ignorePatterns =
+        projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+          ? projectConfig.ignorePatterns
+          : null;
+
       for (const relPath of projectConfig.contextFiles) {
         try {
           const result = await invoke<{
@@ -3015,16 +3600,18 @@ export async function runPlanningSession(
             workspacePath: input.settings.workspacePath,
             relativePath: relPath,
             startLine: null,
-            endLine: null
+            endLine: null,
+            ignorePatterns,
           });
           if (result.content && result.content.trim()) {
-            const truncated = result.content.length > 2000
-              ? result.content.slice(0, 2000) + "\n... (truncated)"
-              : result.content;
+            const truncated =
+              result.content.length > 2000
+                ? result.content.slice(0, 2000) + "\n... (truncated)"
+                : result.content;
             contextSnippets.push(`--- ${relPath} ---\n${truncated}`);
           }
         } catch {
-          // File not found — skip silently
+          // File not found / ignored / can't be read — skip silently
         }
       }
       if (contextSnippets.length > 0) {
@@ -3056,7 +3643,7 @@ export async function runPlanningSession(
         model: input.settings.model,
         timestamp: new Date().toISOString(),
         inputLength: record.inputLength,
-        outputLength: record.outputLength
+        outputLength: record.outputLength,
       });
     }
 
@@ -3064,17 +3651,21 @@ export async function runPlanningSession(
       loopResult.proposedActions,
       input.blockedActionFingerprints
     );
-    const plan = initializePlan(normalizedPrompt, input.settings, proposedActions);
+    const plan = initializePlan(
+      normalizedPrompt,
+      input.settings,
+      proposedActions
+    );
     const assistantReply = reconcileAssistantReply({
       assistantReply: loopResult.assistantReply,
       proposedActions,
-      toolTrace: loopResult.toolTrace
+      toolTrace: loopResult.toolTrace,
     });
 
     return {
       assistantReply,
       plan,
-      toolTrace: loopResult.toolTrace
+      toolTrace: loopResult.toolTrace,
     };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -3086,7 +3677,7 @@ export async function runPlanningSession(
     return {
       assistantReply: `服务员暂时无法完成本轮工具调用，请稍后重试。\n\n**错误详情**：\n\`\`\`\n${errorMessage}\n\`\`\``,
       plan: fallbackPlan,
-      toolTrace: []
+      toolTrace: [],
     };
   }
 }

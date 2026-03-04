@@ -34,14 +34,88 @@ const FILE_QUERY_HINTS = [
   "list files",
   "project files",
   "folder structure",
-  "directory"
+  "directory",
 ];
 
+export interface WorkspaceOverviewBudget {
+  maxDirectories?: number;
+  maxFiles?: number;
+  maxRootPreview?: number;
+  maxChars?: number;
+}
+
+// Default safety limits for overview injection (can be overridden via .cofreerc overviewBudget).
 const MAX_DIRECTORIES = 200;
 const MAX_FILES = 3000;
 const MAX_PURPOSE_FILES = 12;
 const MAX_READ_BYTES = 200_000;
 const MAX_ROOT_PREVIEW = 12;
+
+function clampBudget(
+  budget: WorkspaceOverviewBudget | undefined
+): Required<
+  Pick<
+    WorkspaceOverviewBudget,
+    "maxDirectories" | "maxFiles" | "maxRootPreview"
+  >
+> &
+  Pick<WorkspaceOverviewBudget, "maxChars"> {
+  // Hard caps to avoid pathological configs.
+  const hardMaxDirectories = 2000;
+  const hardMaxFiles = 20000;
+  const hardMaxRootPreview = 200;
+  const hardMaxChars = 200000;
+
+  const clampIntOr = (
+    value: unknown,
+    fallback: number,
+    max: number
+  ): number => {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return fallback;
+    }
+    const n = Math.floor(value);
+    if (n <= 0) return fallback;
+    return Math.min(n, max);
+  };
+
+  const maxDirectories = clampIntOr(
+    budget?.maxDirectories,
+    MAX_DIRECTORIES,
+    hardMaxDirectories
+  );
+  const maxFiles = clampIntOr(budget?.maxFiles, MAX_FILES, hardMaxFiles);
+  const maxRootPreview = clampIntOr(
+    budget?.maxRootPreview,
+    MAX_ROOT_PREVIEW,
+    hardMaxRootPreview
+  );
+
+  const maxCharsRaw = budget?.maxChars;
+  const maxChars =
+    typeof maxCharsRaw === "number" && Number.isFinite(maxCharsRaw)
+      ? Math.min(Math.max(200, Math.floor(maxCharsRaw)), hardMaxChars)
+      : undefined;
+
+  return {
+    maxDirectories,
+    maxFiles,
+    maxRootPreview,
+    ...(typeof maxChars === "number" ? { maxChars } : {}),
+  };
+}
+
+function truncateOverview(content: string, maxChars?: number): string {
+  if (typeof maxChars !== "number" || maxChars <= 0) {
+    return content;
+  }
+  if (content.length <= maxChars) {
+    return content;
+  }
+  const marker = "\n... (truncated)";
+  const sliceLen = Math.max(0, maxChars - marker.length);
+  return content.slice(0, sliceLen) + marker;
+}
 
 function includesAny(text: string, words: string[]): boolean {
   return words.some((word) => text.includes(word));
@@ -82,7 +156,10 @@ function formatTopExtensions(files: ScannedFile[]): string {
   return top.map(([ext, count]) => `${ext}: ${count}`).join(" | ");
 }
 
-function summarizeRootEntries(entries: FileEntry[]): string {
+function summarizeRootEntries(
+  entries: FileEntry[],
+  maxRootPreview: number
+): string {
   const sorted = [...entries].sort((left, right) => {
     if (left.is_dir !== right.is_dir) {
       return left.is_dir ? -1 : 1;
@@ -90,15 +167,15 @@ function summarizeRootEntries(entries: FileEntry[]): string {
     return left.name.localeCompare(right.name);
   });
 
-  const preview = sorted.slice(0, MAX_ROOT_PREVIEW).map((entry) => {
+  const preview = sorted.slice(0, maxRootPreview).map((entry) => {
     if (entry.is_dir) {
       return `- [DIR] ${entry.name}/`;
     }
     return `- [FILE] ${entry.name}`;
   });
 
-  if (sorted.length > MAX_ROOT_PREVIEW) {
-    preview.push(`- ... 其余 ${sorted.length - MAX_ROOT_PREVIEW} 项省略`);
+  if (sorted.length > maxRootPreview) {
+    preview.push(`- ... 其余 ${sorted.length - maxRootPreview} 项省略`);
   }
 
   return preview.join("\n");
@@ -117,7 +194,7 @@ export function shouldExplainFilePurposes(prompt: string): boolean {
     "功能",
     "what do",
     "purpose",
-    "what is this file"
+    "what is this file",
   ]);
 }
 
@@ -165,7 +242,10 @@ function inferFilePurpose(path: string, content: string): string {
     if (lower.includes("def merge_sort")) {
       return "归并排序实现脚本";
     }
-    if (lower.includes("if __name__ == \"__main__\"") || lower.includes("if __name__ == '__main__'")) {
+    if (
+      lower.includes('if __name__ == "__main__"') ||
+      lower.includes("if __name__ == '__main__'")
+    ) {
       return "可直接运行的 Python 脚本";
     }
     if (lower.includes("def ")) {
@@ -187,10 +267,17 @@ function inferFilePurpose(path: string, content: string): string {
   return extBased;
 }
 
-export async function summarizeWorkspaceFiles(workspacePath: string): Promise<string> {
+export async function summarizeWorkspaceFiles(
+  workspacePath: string,
+  ignorePatterns: string[] | null = null,
+  budget?: WorkspaceOverviewBudget
+): Promise<string> {
+  const effectiveBudget = clampBudget(budget);
   const rootEntries = await invoke<FileEntry[]>("list_workspace_files", {
     workspacePath,
-    relativePath: ""
+    relativePath: "",
+    ignorePatterns:
+      ignorePatterns && ignorePatterns.length > 0 ? ignorePatterns : null,
   });
 
   const queue: string[] = rootEntries
@@ -204,7 +291,10 @@ export async function summarizeWorkspaceFiles(workspacePath: string): Promise<st
   let truncated = false;
 
   while (queue.length) {
-    if (scannedDirectories >= MAX_DIRECTORIES || scannedFiles.length >= MAX_FILES) {
+    if (
+      scannedDirectories >= effectiveBudget.maxDirectories ||
+      scannedFiles.length >= effectiveBudget.maxFiles
+    ) {
       truncated = true;
       break;
     }
@@ -213,7 +303,9 @@ export async function summarizeWorkspaceFiles(workspacePath: string): Promise<st
     scannedDirectories += 1;
     const entries = await invoke<FileEntry[]>("list_workspace_files", {
       workspacePath,
-      relativePath: relativeDir
+      relativePath: relativeDir,
+      ignorePatterns:
+        ignorePatterns && ignorePatterns.length > 0 ? ignorePatterns : null,
     });
 
     for (const entry of entries) {
@@ -226,42 +318,60 @@ export async function summarizeWorkspaceFiles(workspacePath: string): Promise<st
       } else {
         scannedFiles.push({
           path: relativePath,
-          size: entry.size
+          size: entry.size,
         });
       }
-
-      if (scannedFiles.length >= MAX_FILES) {
+      if (scannedFiles.length >= effectiveBudget.maxFiles) {
         truncated = true;
         break;
       }
     }
   }
 
-  const visibleRootEntries = rootEntries.filter((entry) => !isHiddenName(entry.name));
-  const rootDirCount = visibleRootEntries.filter((entry) => entry.is_dir).length;
+  const visibleRootEntries = rootEntries.filter(
+    (entry) => !isHiddenName(entry.name)
+  );
+  const rootDirCount = visibleRootEntries.filter(
+    (entry) => entry.is_dir
+  ).length;
   const rootFileCount = visibleRootEntries.length - rootDirCount;
   const totalBytes = scannedFiles.reduce((sum, file) => sum + file.size, 0);
   const totalMB = (totalBytes / (1024 * 1024)).toFixed(2);
 
-  return [
+  const overview = [
     "基于工作区实时扫描结果：",
     `- 根目录可见条目：${visibleRootEntries.length}（目录 ${rootDirCount} / 文件 ${rootFileCount}）`,
     `- 全项目估算：目录约 ${scannedDirectories}，文件约 ${scannedFiles.length}，体积约 ${totalMB} MB`,
-    truncated ? "- 扫描达到安全上限，统计为部分结果。" : "- 扫描完成（未触发安全上限）。",
+    truncated
+      ? "- 扫描达到安全上限，统计为部分结果。"
+      : "- 扫描完成（未触发安全上限）。",
     `- 常见扩展名：${formatTopExtensions(scannedFiles)}`,
     "- 根目录预览：",
-    summarizeRootEntries(visibleRootEntries)
+    summarizeRootEntries(visibleRootEntries, effectiveBudget.maxRootPreview),
   ].join("\n");
+
+  return truncateOverview(overview, effectiveBudget.maxChars);
 }
 
-export async function summarizeWorkspaceFilePurposes(workspacePath: string): Promise<string> {
+export async function summarizeWorkspaceFilePurposes(
+  workspacePath: string,
+  ignorePatterns: string[] | null = null
+): Promise<string> {
   const rootEntries = await invoke<FileEntry[]>("list_workspace_files", {
     workspacePath,
-    relativePath: ""
+    relativePath: "",
+    ignorePatterns:
+      ignorePatterns && ignorePatterns.length > 0 ? ignorePatterns : null,
   });
-  const visibleEntries = rootEntries.filter((entry) => !isHiddenName(entry.name));
-  const rootFiles = visibleEntries.filter((entry) => !entry.is_dir).slice(0, MAX_PURPOSE_FILES);
-  const rootDirs = visibleEntries.filter((entry) => entry.is_dir).slice(0, MAX_PURPOSE_FILES);
+  const visibleEntries = rootEntries.filter(
+    (entry) => !isHiddenName(entry.name)
+  );
+  const rootFiles = visibleEntries
+    .filter((entry) => !entry.is_dir)
+    .slice(0, MAX_PURPOSE_FILES);
+  const rootDirs = visibleEntries
+    .filter((entry) => entry.is_dir)
+    .slice(0, MAX_PURPOSE_FILES);
 
   const lines: string[] = [];
   lines.push("基于工作区实时读取结果：");
@@ -278,15 +388,21 @@ export async function summarizeWorkspaceFilePurposes(workspacePath: string): Pro
       let content = "";
       if (file.size <= MAX_READ_BYTES) {
         try {
-          content = (await invoke<{
-            content: string;
-            total_lines: number;
-            start_line: number;
-            end_line: number;
-          }>("read_workspace_file", {
-            workspacePath,
-            relativePath: file.name
-          })).content;
+          content = (
+            await invoke<{
+              content: string;
+              total_lines: number;
+              start_line: number;
+              end_line: number;
+            }>("read_workspace_file", {
+              workspacePath,
+              relativePath: file.name,
+              ignorePatterns:
+                ignorePatterns && ignorePatterns.length > 0
+                  ? ignorePatterns
+                  : null,
+            })
+          ).content;
         } catch (_error) {
           content = "";
         }
@@ -300,12 +416,18 @@ export async function summarizeWorkspaceFilePurposes(workspacePath: string): Pro
   if (rootDirs.length) {
     lines.push("- 目录用途：");
     for (const directory of rootDirs) {
-      lines.push(`  - ${directory.name}/: ${inferDirectoryPurpose(directory.name)}`);
+      lines.push(
+        `  - ${directory.name}/: ${inferDirectoryPurpose(directory.name)}`
+      );
     }
   }
 
   if (visibleEntries.length > MAX_PURPOSE_FILES * 2) {
-    lines.push(`- 其余 ${visibleEntries.length - MAX_PURPOSE_FILES * 2} 个条目未展开，可继续指定目录深入查看。`);
+    lines.push(
+      `- 其余 ${
+        visibleEntries.length - MAX_PURPOSE_FILES * 2
+      } 个条目未展开，可继续指定目录深入查看。`
+    );
   }
 
   return lines.join("\n");

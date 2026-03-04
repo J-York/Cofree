@@ -739,6 +739,82 @@ fn is_ignored_dir(name: &str) -> bool {
     DEFAULT_IGNORED_DIRS.contains(&name)
 }
 
+fn normalize_rel_path_for_match(path: &str) -> String {
+    path.replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_matches('/')
+        .to_string()
+}
+
+fn normalize_ignore_pattern(pattern: &str) -> Option<String> {
+    let trimmed = pattern.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Do not support negation for now.
+    if trimmed.starts_with('!') {
+        return None;
+    }
+
+    let normalized = trimmed.replace('\\', "/");
+    let normalized = normalized.trim_start_matches("./");
+
+    // Directory pattern like "dist/" => "dist/**"
+    if normalized.ends_with('/') {
+        return Some(format!("{}**", normalized));
+    }
+
+    Some(normalized.to_string())
+}
+
+fn should_ignore_by_patterns(rel_path: &str, patterns: &Option<Vec<String>>) -> bool {
+    let Some(raw_patterns) = patterns.as_ref() else {
+        return false;
+    };
+
+    let normalized_path = normalize_rel_path_for_match(rel_path);
+    if normalized_path.is_empty() {
+        return false;
+    }
+
+    for raw in raw_patterns {
+        let Some(pat) = normalize_ignore_pattern(raw) else {
+            continue;
+        };
+
+        // If pattern contains '/', match against full relative path; else match against basename.
+        let target = if pat.contains('/') {
+            normalized_path.as_str()
+        } else {
+            Path::new(&normalized_path)
+                .file_name()
+                .and_then(|v| v.to_str())
+                .unwrap_or(&normalized_path)
+        };
+
+        if let Ok(glob_pat) = glob::Pattern::new(&pat) {
+            if glob_pat.matches(target) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn should_ignore_rel_path(rel_path: &str, patterns: &Option<Vec<String>>) -> bool {
+    // Bottom-line default ignored dirs still apply.
+    let normalized = normalize_rel_path_for_match(rel_path);
+    if normalized
+        .split('/')
+        .any(|segment| !segment.is_empty() && is_ignored_dir(segment))
+    {
+        return true;
+    }
+
+    should_ignore_by_patterns(&normalized, patterns)
+}
+
 fn walk_workspace_files(root: &Path, max_files: usize) -> Vec<PathBuf> {
     let mut result = Vec::new();
     let mut queue = vec![root.to_path_buf()];
@@ -780,6 +856,14 @@ fn walk_workspace_files(root: &Path, max_files: usize) -> Vec<PathBuf> {
     result
 }
 
+fn to_workspace_relative_string(workspace: &Path, path: &Path) -> String {
+    path.strip_prefix(workspace)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string()
+        .replace('\\', "/")
+}
+
 fn is_likely_binary(path: &Path) -> bool {
     let mut file = match fs::File::open(path) {
         Ok(f) => f,
@@ -799,6 +883,7 @@ fn grep_workspace_files(
     pattern: String,
     include_glob: Option<String>,
     max_results: Option<usize>,
+    ignore_patterns: Option<Vec<String>>,
 ) -> Result<GrepResult, String> {
     let workspace = canonicalize_workspace_root(&workspace_path)?;
     if pattern.trim().is_empty() {
@@ -807,7 +892,6 @@ fn grep_workspace_files(
 
     let regex = Regex::new(&pattern).map_err(|e| format!("无效的正则表达式: {}", e))?;
     let limit = max_results.unwrap_or(50).min(200);
-
     let all_files = walk_workspace_files(&workspace, 10000);
 
     // Optional glob filter for file names
@@ -830,6 +914,11 @@ fn grep_workspace_files(
             break;
         }
 
+        let rel = to_workspace_relative_string(&workspace, file_path);
+        if should_ignore_rel_path(&rel, &ignore_patterns) {
+            continue;
+        }
+
         // Apply glob filter on file name
         if let Some(ref gf) = glob_filter {
             let file_name = file_path
@@ -838,11 +927,7 @@ fn grep_workspace_files(
                 .unwrap_or_default();
             if !gf.matches(&file_name) {
                 // Also try matching against relative path
-                let rel = file_path
-                    .strip_prefix(&workspace)
-                    .unwrap_or(file_path)
-                    .to_string_lossy()
-                    .to_string();
+                let rel = to_workspace_relative_string(&workspace, file_path);
                 if !gf.matches(&rel) {
                     continue;
                 }
@@ -865,11 +950,7 @@ fn grep_workspace_files(
                 break;
             }
             if regex.is_match(line) {
-                let relative = file_path
-                    .strip_prefix(&workspace)
-                    .unwrap_or(file_path)
-                    .to_string_lossy()
-                    .to_string();
+                let relative = to_workspace_relative_string(&workspace, file_path);
                 let trimmed_line = if line.len() > 500 {
                     format!("{}...", &line[..500])
                 } else {
@@ -895,6 +976,7 @@ fn glob_workspace_files(
     workspace_path: String,
     pattern: String,
     max_results: Option<usize>,
+    ignore_patterns: Option<Vec<String>>,
 ) -> Result<Vec<GlobEntry>, String> {
     let workspace = canonicalize_workspace_root(&workspace_path)?;
     if pattern.trim().is_empty() {
@@ -915,16 +997,9 @@ fn glob_workspace_files(
             Err(_) => continue,
         };
 
-        // Skip ignored directories
-        let relative = path
-            .strip_prefix(&workspace)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .to_string();
-        let should_skip = relative
-            .split('/')
-            .any(|segment| is_ignored_dir(segment));
-        if should_skip {
+        // Skip ignored directories & ignorePatterns
+        let relative = to_workspace_relative_string(&workspace, &path);
+        if should_ignore_rel_path(&relative, &ignore_patterns) {
             continue;
         }
 
@@ -990,8 +1065,14 @@ fn read_workspace_file(
     relative_path: String,
     start_line: Option<usize>,
     end_line: Option<usize>,
+    ignore_patterns: Option<Vec<String>>,
 ) -> Result<ReadFileResult, String> {
     let file_path = validate_workspace_path(&workspace_path, &relative_path)?;
+
+    let rel = normalize_rel_path_for_match(&relative_path);
+    if should_ignore_rel_path(&rel, &ignore_patterns) {
+        return Err("Path is ignored by project config".to_string());
+    }
 
     // Verify it's a file, not a directory
     if !file_path.is_file() {
@@ -1051,7 +1132,11 @@ fn read_workspace_file(
 /// Lists files and directories in workspace path (single level)
 /// Validates that the directory path is within the workspace boundary
 #[tauri::command]
-fn list_workspace_files(workspace_path: String, relative_path: String) -> Result<Vec<FileEntry>, String> {
+fn list_workspace_files(
+    workspace_path: String,
+    relative_path: String,
+    ignore_patterns: Option<Vec<String>>,
+) -> Result<Vec<FileEntry>, String> {
     let dir_path = validate_workspace_path(&workspace_path, &relative_path)?;
     
     // Verify it's a directory
@@ -1091,6 +1176,16 @@ fn list_workspace_files(workspace_path: String, relative_path: String) -> Result
             .map(|d| d.as_secs())
             .unwrap_or(0);
         
+        let rel_dir = normalize_rel_path_for_match(&relative_path);
+        let entry_rel = if rel_dir.is_empty() {
+            name.clone()
+        } else {
+            format!("{}/{}", rel_dir, name)
+        };
+        if should_ignore_rel_path(&entry_rel, &ignore_patterns) {
+            continue;
+        }
+
         entries.push(FileEntry {
             name,
             is_dir: metadata.is_dir(),
@@ -1098,7 +1193,7 @@ fn list_workspace_files(workspace_path: String, relative_path: String) -> Result
             modified,
         });
     }
-    
+
     Ok(entries)
 }
 
