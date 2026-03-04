@@ -8,12 +8,14 @@
 ## 已完成的 Milestones
 
 ### ✅ Milestone 1 — Tauri Skeleton（v0.0.1）
+
 - Tauri 2.0 + React 19 项目骨架
 - 三页导航：聊天区 / 厨房 / 设置页
 - LiteLLM provider/model 注册表
 - 设置页：API Key + Base URL + egress 选项持久化
 
 ### ✅ Milestone 2 — 对话规划与工作区读能力（v0.0.1）
+
 - LLM 工具调用循环（单 Agent + native tool calling）
 - 流式聊天回复 + 结构化计划展示
 - Workspace 选择/验证 + 路径边界校验
@@ -22,6 +24,7 @@
 - Local-only 约束 + LLM 最小审计日志
 
 ### ✅ Milestone 3 — HITL 审批 + Guardrails（v0.0.1）
+
 - 工作流状态机：`planning → executing → human_review → done`
 - **Gate A（Apply Patch）**：propose_file_edit（结构化编辑）+ propose_apply_patch（raw patch）→ 预检 → 快照 → 审批 → 应用 → 回滚
 - **Gate B（Shell Execution）**：propose_shell（完整 shell 语法）→ 审批 → 执行 → stdout/stderr/exit code 归档
@@ -34,6 +37,7 @@
 - CI/CD：GitHub Actions 跨平台构建发布
 
 ### ✅ Milestone 4 — 可用性打磨与智能增强（v0.0.2）
+
 - **Diff 渲染增强**：独立 `DiffViewer` 组件，支持 inline + split 双视图、文件级折叠/展开、行号显示、统计面板（files/additions/deletions/hunks）
 - **Shell 执行结果展示**：独立 `ShellResultDisplay` 组件，内联展示 stdout/stderr/exit code/timeout 状态
 - **错误体验优化**：独立 `ErrorBanner` 组件，分类错误（auth/network/patch_conflict/workspace/llm/unknown）+ 重试引导 + 详情展开
@@ -55,15 +59,15 @@
 
 ### Milestone 5 — 上下文管理与代码理解（下一步）
 
-**目标**：提升 LLM 对代码库的理解能力，减少用户手动指引的需要。当前已有 grep/glob/read_file 分段读取等基础能力，需要在此基础上构建更智能的上下文管理。
+**目标**：让 LLM 更稳定、更省心地完成代码修改：更快定位文件、减少无效上下文、降低 HITL 审批成本。我们优先采用 VibeCoding 的成熟实践（repo 概览 / 忽略规则硬约束 / 原子批量审批 / 上下文压缩），避免引入高维护成本的“全量依赖图”。
 
-**可演示产物**：对一个中等规模项目（~50 文件）发起需求，系统能自动定位相关文件并生成准确的修改方案，无需用户手动指定文件路径。
+**可演示产物**：对一个中等规模项目（~50 文件）发起需求，系统能在较少人工指引下完成定位与修改；同时保证忽略规则生效、批量修改可原子审批与回滚。
 
-- [ ] 5.1 文件树概览注入：启动会话时自动注入项目结构摘要到系统 prompt（利用已有的 `list_files` + `glob`）
-- [ ] 5.2 智能上下文收集：基于 import/依赖关系自动扩展读取范围（利用已有的 `grep` 追踪引用链）
-- [ ] 5.3 多文件编辑原子性：多个 propose_file_edit 打包为一次审批（当前为逐个审批或批量审批）
-- [ ] 5.4 会话 context 压缩优化：改进已有的 `requestSummary` 摘要质量与触发策略
-- [ ] 5.5 项目级 .cofreerc 配置：支持项目级自定义 prompt、忽略文件模式、默认工具权限
+- [ ] 5.1 文件树概览注入（轻量 + 可控）：启动会话时注入项目结构摘要到系统 prompt；支持预算控制（最大文件数/最大字符数）并尊重忽略规则。
+- [ ] 5.2 多文件编辑原子性（强需求）：将同一轮产生的多个文件编辑打包为一次审批（Action Group / Batch Action），一次快照、一次应用、失败整组回滚。
+
+- [ ] 5.3 会话 context 压缩优化（工程化）：改进 `requestSummary` 的触发策略与稳定性；增加摘要缓存、对工具输出做结构化裁剪，避免重复/无效 token。
+- [ ] 5.4 项目级 .cofreerc 配置（硬生效）：支持项目级自定义 prompt、忽略文件模式、默认工具权限；ignorePatterns 必须在 list/read/grep/glob 等工具层面强制生效。
 
 ### Milestone 6 — Git 工作流增强
 
