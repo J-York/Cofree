@@ -10,7 +10,84 @@ permissions:
   contents: write
 
 jobs:
+  prepare_release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.ensure_release.outputs.release_id }}
+    steps:
+      - name: Ensure single published release exists
+        id: ensure_release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace("refs/tags/", "");
+            if (!tag || !tag.startsWith("v")) {
+              core.setFailed(`This workflow requires a tag ref, got: ${context.ref}`);
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const releaseName = `Cofree ${tag}`;
+            const releaseBody = `## Cofree ${tag}
+
+            ### 下载说明
+            - **macOS (Apple Silicon)**：下载 \`*_aarch64.dmg\`
+            - **macOS (Intel)**：下载 \`*_x64.dmg\`
+            - **Windows**：下载 \`.msi\` 或 \`-setup.exe\`
+
+            已安装用户可在应用内自动收到更新提示。
+
+            ### 安装说明
+            详见 [BUILD.md](https://github.com/J-York/Cofree/blob/main/docs/BUILD.md)`;
+
+            let release;
+            try {
+              const response = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag: tag,
+              });
+              release = response.data;
+              core.info(`Found existing release ${release.id}`);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              const created = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                name: releaseName,
+                body: releaseBody,
+                draft: false,
+                prerelease: false,
+              });
+              release = created.data;
+              core.info(`Created release ${release.id}`);
+            }
+
+            if (
+              release.draft ||
+              release.prerelease ||
+              release.name !== releaseName ||
+              (release.body ?? "") !== releaseBody
+            ) {
+              const updated = await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: release.id,
+                name: releaseName,
+                body: releaseBody,
+                draft: false,
+                prerelease: false,
+              });
+              release = updated.data;
+              core.info(`Updated release ${release.id}`);
+            }
+
+            core.setOutput("release_id", String(release.id));
+
   release:
+    needs: prepare_release
     strategy:
       fail-fast: false
       matrix:
@@ -69,21 +146,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Cofree ${{ github.ref_name }}'
-          releaseBody: |
-            ## Cofree ${{ github.ref_name }}
-            
-            ### 下载说明
-            - **macOS (Apple Silicon)**：下载 `*_aarch64.dmg`
-            - **macOS (Intel)**：下载 `*_x64.dmg`
-            - **Windows**：下载 `.msi` 或 `-setup.exe`
-            
-            已安装用户可在应用内自动收到更新提示。
-            
-            ### 安装说明
-            详见 [BUILD.md](https://github.com/J-York/Cofree/blob/main/docs/BUILD.md)
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.prepare_release.outputs.release_id }}
           uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
           args: --target ${{ matrix.platform.target }} --bundles ${{ matrix.platform.bundles }}
