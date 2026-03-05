@@ -16,6 +16,7 @@ export interface Conversation {
   createdAt: string;
   updatedAt: string;
   messages: ChatMessageRecord[];
+  lastTokenCount?: number | null;
 }
 
 export interface ConversationMetadata {
@@ -143,6 +144,7 @@ export function loadConversation(
       createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : "",
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+      lastTokenCount: typeof parsed.lastTokenCount === "number" ? parsed.lastTokenCount : null,
     };
   } catch {
     return null;

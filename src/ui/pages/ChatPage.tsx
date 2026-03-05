@@ -1014,7 +1014,9 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   const [executingActionId, setExecutingActionId] = useState<string>("");
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
-  const [liveContextTokens, setLiveContextTokens] = useState<number | null>(null);
+  const [liveContextTokens, setLiveContextTokens] = useState<number | null>(
+    () => currentConversation?.lastTokenCount ?? null
+  );
   const [inputDialog, setInputDialog] = useState<{
     open: boolean;
     title: string;
@@ -1052,6 +1054,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
       const updatedConversation: Conversation = {
         ...currentConversation,
         messages,
+        lastTokenCount: liveContextTokens,
         updatedAt: new Date().toISOString(),
       };
       saveConversation(wsPath, updatedConversation);
@@ -1086,6 +1089,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
       setActiveConversationIdState(conv.id);
       setMessages(conv.messages);
       messagesRef.current = conv.messages;
+      setLiveContextTokens(conv.lastTokenCount ?? null);
       setSessionNote(conv.messages.length ? "已切换工作区" : "");
     } else if (list.length > 0) {
       const first = loadConversation(wsPath, list[0].id);
@@ -1095,6 +1099,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
         setActiveConversationId(wsPath, first.id);
         setMessages(first.messages);
         messagesRef.current = first.messages;
+        setLiveContextTokens(first.lastTokenCount ?? null);
         setSessionNote("已切换工作区");
       }
     } else {
@@ -1102,6 +1107,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
       setActiveConversationIdState(null);
       setMessages([]);
       messagesRef.current = [];
+      setLiveContextTokens(null);
       setSessionNote("");
     }
 
@@ -1636,11 +1642,13 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     const clearedConversation: Conversation = {
       ...currentConversation,
       messages: [],
+      lastTokenCount: null,
       updatedAt: new Date().toISOString(),
     };
     saveConversation(wsPath, clearedConversation);
     setCurrentConversation(clearedConversation);
     setMessages([]);
+    setLiveContextTokens(null);
     setCategorizedError(null);
     setSessionNote("");
     setConversations(loadConversationList(wsPath));
@@ -1654,6 +1662,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     setCurrentConversation(newConv);
     setActiveConversationIdState(newConv.id);
     setMessages([]);
+    setLiveContextTokens(null);
     setCategorizedError(null);
     setSessionNote("");
     setConversations(loadConversationList(wsPath));
@@ -1676,6 +1685,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     setActiveConversationIdState(conv.id);
     setActiveConversationId(wsPath, conv.id);
     setMessages(conv.messages);
+    setLiveContextTokens(conv.lastTokenCount ?? null);
     setCategorizedError(null);
     setSessionNote(conv.messages.length ? "已切换对话" : "");
 
@@ -1704,6 +1714,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
           setActiveConversationIdState(nextConversation.id);
           setActiveConversationId(wsPath, nextConversation.id);
           setMessages(nextConversation.messages);
+          setLiveContextTokens(nextConversation.lastTokenCount ?? null);
           setCategorizedError(null);
           setSessionNote(nextConversation.messages.length ? "已切换对话" : "");
 
