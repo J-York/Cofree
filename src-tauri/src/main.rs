@@ -9,18 +9,21 @@
  * Description: Tauri entrypoint with workspace folder selection, validation, file operations, git operations, and info retrieval commands.
  */
 
+mod secure_store;
+
 use glob::glob as glob_match;
 use regex::Regex;
 use reqwest::header::ACCEPT;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use dirs;
@@ -37,6 +40,15 @@ fn keyring_user_for_profile(profile_id: Option<&str>) -> String {
         Some(id) if !id.trim().is_empty() => format!("profile-{}", id.trim()),
         _ => KEYRING_DEFAULT_USER.to_string(),
     }
+}
+
+/// In-memory cache for API keys to avoid repeated macOS Keychain access prompts.
+/// On macOS, each Keychain access may trigger a system authorization dialog
+/// (especially when the app binary changes between builds). Caching in memory
+/// ensures at most one Keychain access per profile per app session.
+fn api_key_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[derive(Clone, Serialize)]
@@ -134,9 +146,10 @@ fn normalize_base_url(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_string()
 }
 
-fn load_secure_api_key_impl(profile_id: Option<&str>) -> Result<String, String> {
-    let user = keyring_user_for_profile(profile_id);
-    let entry = keyring::Entry::new(KEYRING_SERVICE_NAME, &user)
+/// Try loading from the OS keyring (Keychain / Credential Manager).
+/// Used only for one-time migration from the old storage to the new file store.
+fn keyring_load(user: &str) -> Result<String, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE_NAME, user)
         .map_err(|e| format!("创建 keyring entry 失败: {}", e))?;
 
     match entry.get_password() {
@@ -146,35 +159,84 @@ fn load_secure_api_key_impl(profile_id: Option<&str>) -> Result<String, String> 
     }
 }
 
+/// Best-effort cleanup of a legacy keyring entry.
+fn keyring_delete_best_effort(user: &str) {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE_NAME, user) {
+        let _ = entry.delete_credential();
+    }
+}
+
+fn load_secure_api_key_impl(profile_id: Option<&str>) -> Result<String, String> {
+    let user = keyring_user_for_profile(profile_id);
+
+    // 1. In-memory cache (fastest, no I/O)
+    if let Ok(cache) = api_key_cache().lock() {
+        if let Some(cached) = cache.get(&user) {
+            return Ok(cached.clone());
+        }
+    }
+
+    // 2. Encrypted file store (primary persistent storage)
+    if let Ok(value) = secure_store::load(&user) {
+        if !value.is_empty() {
+            if let Ok(mut cache) = api_key_cache().lock() {
+                cache.insert(user, value.clone());
+            }
+            return Ok(value);
+        }
+    }
+
+    // 3. OS keyring fallback — one-time migration for existing users.
+    //    After this succeeds once, the value lives in the file store and
+    //    the keyring is never queried again for this profile.
+    let password = keyring_load(&user).unwrap_or_default();
+
+    if !password.is_empty() {
+        let _ = secure_store::save(&user, &password);
+        keyring_delete_best_effort(&user);
+    }
+
+    if let Ok(mut cache) = api_key_cache().lock() {
+        cache.insert(user, password.clone());
+    }
+
+    Ok(password)
+}
+
 fn save_secure_api_key_impl(profile_id: Option<&str>, api_key: &str) -> Result<(), String> {
     let user = keyring_user_for_profile(profile_id);
-    let entry = keyring::Entry::new(KEYRING_SERVICE_NAME, &user)
-        .map_err(|e| format!("创建 keyring entry 失败: {}", e))?;
+
+    secure_store::save(&user, api_key)?;
 
     if api_key.trim().is_empty() {
-        // Delete the entry if the key is empty
-        match entry.delete_credential() {
-            Ok(()) => Ok(()),
-            Err(keyring::Error::NoEntry) => Ok(()), // Already deleted, that's fine
-            Err(e) => Err(format!("删除密钥失败: {}", e)),
-        }
-    } else {
-        entry
-            .set_password(api_key.trim())
-            .map_err(|e| format!("保存密钥失败: {}", e))
+        keyring_delete_best_effort(&user);
     }
+
+    if let Ok(mut cache) = api_key_cache().lock() {
+        cache.insert(
+            user,
+            if api_key.trim().is_empty() {
+                String::new()
+            } else {
+                api_key.trim().to_string()
+            },
+        );
+    }
+
+    Ok(())
 }
 
 fn delete_secure_api_key_impl(profile_id: &str) -> Result<(), String> {
     let user = keyring_user_for_profile(Some(profile_id));
-    let entry = keyring::Entry::new(KEYRING_SERVICE_NAME, &user)
-        .map_err(|e| format!("创建 keyring entry 失败: {}", e))?;
 
-    match entry.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()), // Already deleted, that's fine
-        Err(e) => Err(format!("删除密钥失败: {}", e)),
+    secure_store::delete(&user)?;
+    keyring_delete_best_effort(&user);
+
+    if let Ok(mut cache) = api_key_cache().lock() {
+        cache.remove(&user);
     }
+
+    Ok(())
 }
 
 #[tauri::command]
