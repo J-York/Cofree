@@ -274,9 +274,20 @@ function buildToolReplayMessages(plan: OrchestrationPlan): ToolReplayMessage[] {
         resultObj.stdout = action.executionResult?.metadata?.stdout;
         resultObj.stderr = action.executionResult?.metadata?.stderr;
         resultObj.exitCode = action.executionResult?.metadata?.status;
+        resultObj.timedOut = action.executionResult?.metadata?.timedOut;
       }
     } else {
       resultObj.error = action.executionResult?.message || "Action failed";
+      if (action.type === "shell") {
+        const meta = action.executionResult?.metadata;
+        if (meta) {
+          resultObj.shell = action.payload.shell;
+          resultObj.stdout = meta.stdout;
+          resultObj.stderr = meta.stderr;
+          resultObj.exitCode = meta.status;
+          resultObj.timedOut = meta.timedOut;
+        }
+      }
     }
 
     return {
