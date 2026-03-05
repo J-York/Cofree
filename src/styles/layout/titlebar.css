@@ -1,0 +1,111 @@
+/* ── Custom Titlebar ────────────────────────────────────── */
+.titlebar {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  padding-left: 78px; /* macOS traffic lights */
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-1);
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+.titlebar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  -webkit-app-region: drag;
+}
+
+.titlebar-brand {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.04em;
+}
+
+.titlebar-workspace {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-workspace-name {
+  color: var(--text-2);
+}
+
+.titlebar-sep {
+  opacity: 0.3;
+}
+
+.titlebar-branch {
+  color: var(--text-3);
+}
+
+.titlebar-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color var(--t-fast), background var(--t-fast);
+}
+
+.titlebar-btn:hover {
+  background: rgba(255,255,255,0.04);
+  color: var(--text-2);
+}
+
+.titlebar-btn.active {
+  color: var(--accent-solid);
+  background: var(--accent-muted);
+}
+
+/* ── Window Controls (Windows/Linux) ────────────────────── */
+.window-controls {
+  display: flex;
+  align-items: center;
+  margin-left: 8px;
+}
+
+.window-control-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.window-control-btn:hover {
+  background: rgba(255,255,255,0.06);
+  color: var(--text-1);
+}
+
+.window-control-close:hover {
+  background: var(--color-error);
+  color: #fff;
+}
+

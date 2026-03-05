@@ -1,0 +1,9 @@
+/* ── Input Dialog ───────────────────────────────────────── */
+.input-dialog-backdrop { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); }
+.input-dialog { width: 90%; max-width: 400px; background: var(--surface-2); border: 1px solid var(--border-2); border-radius: var(--r-md); padding: 22px; box-shadow: var(--shadow-lg); }
+.input-dialog-title { margin: 0 0 14px; font-size: 16px; font-weight: 600; color: var(--text-1); }
+.input-dialog-textarea { width: 100%; padding: 10px 14px; font-family: var(--font-sans); font-size: 14px; line-height: 1.45; color: var(--text-1); background: var(--surface-3); border: 1px solid var(--border-1); border-radius: var(--r-sm); resize: vertical; min-height: 76px; outline: none; }
+.input-dialog-textarea:focus { border-color: var(--border-focus); }
+.input-dialog-textarea::placeholder { color: var(--text-3); }
+.input-dialog-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px; }
+

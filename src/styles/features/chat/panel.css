@@ -1,0 +1,200 @@
+/* ── Conversation Panel (permanent sidebar) ─────────────── */
+.conv-panel {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-1);
+  border-right: 1px solid var(--border-1);
+  overflow: hidden;
+  transition: width var(--t-slow), opacity var(--t-med);
+}
+
+.conv-panel.collapsed {
+  width: 0;
+  border-right: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.conv-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid var(--border-1);
+  flex-shrink: 0;
+}
+
+.conv-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.conv-panel-new-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: border-color var(--t-fast), color var(--t-fast);
+}
+
+.conv-panel-new-btn:hover {
+  border-color: var(--border-2);
+  color: var(--text-1);
+}
+
+.conv-panel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.conv-panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 40px 16px;
+  color: var(--text-3);
+  font-size: 13px;
+  text-align: center;
+}
+.conv-panel-empty p { margin: 0; }
+.conv-panel-empty-hint { font-size: 12px; opacity: 0.5; }
+
+.conv-panel-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background var(--t-fast);
+  position: relative;
+}
+
+.conv-panel-item:hover {
+  background: rgba(255,255,255,0.02);
+}
+
+.conv-panel-item.active {
+  background: rgba(255,255,255,0.03);
+}
+
+.conv-panel-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 20%;
+  height: 60%;
+  width: 2px;
+  background: var(--accent-solid);
+  border-radius: 0 var(--r-full) var(--r-full) 0;
+}
+
+.conv-panel-item-body {
+  flex: 1;
+  min-width: 0;
+  outline: none;
+}
+
+.conv-panel-item-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 2px;
+}
+
+.conv-panel-item.active .conv-panel-item-title {
+  color: var(--text-1);
+}
+
+.conv-panel-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.conv-panel-item-count {
+  padding: 1px 5px;
+  background: var(--surface-3);
+  border-radius: var(--r-xs);
+  font-size: 11px;
+}
+
+.conv-panel-item-actions {
+  display: flex;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity var(--t-fast);
+  flex-shrink: 0;
+}
+
+.conv-panel-item:hover .conv-panel-item-actions {
+  opacity: 1;
+}
+
+.conv-panel-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-xs);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color var(--t-fast), background var(--t-fast);
+}
+
+.conv-panel-action-btn:hover {
+  background: rgba(255,255,255,0.04);
+  color: var(--text-1);
+}
+
+.conv-panel-action-btn.danger:hover {
+  background: var(--color-error-bg);
+  color: var(--color-error);
+}
+
+.conv-panel-edit {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.conv-panel-edit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 10px;
+  font-size: 13px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  outline: none;
+}
+
+.conv-panel-edit-input:focus {
+  border-color: var(--border-focus);
+}
+

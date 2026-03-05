@@ -1,0 +1,89 @@
+/* ── Markdown in bubbles ────────────────────────────────── */
+.chat-markdown { font-size: 14px; line-height: 1.65; }
+.chat-markdown p { margin: 0.4em 0; }
+.chat-markdown p:first-child { margin-top: 0; }
+.chat-markdown p:last-child { margin-bottom: 0; }
+.chat-markdown ul, .chat-markdown ol { margin: 0.5em 0; padding-left: 1.4em; }
+.chat-markdown li { margin: 0.2em 0; }
+.chat-markdown h1, .chat-markdown h2, .chat-markdown h3 {
+  margin: 0.8em 0 0.3em;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.chat-markdown h1 { font-size: 18px; }
+.chat-markdown h2 { font-size: 16px; }
+.chat-markdown h3 { font-size: 14px; }
+.chat-markdown a { color: var(--text-link); text-decoration: none; }
+.chat-markdown a:hover { text-decoration: underline; }
+.chat-markdown hr { border: none; height: 1px; background: var(--border-1); margin: 1em 0; }
+
+.chat-markdown pre {
+  background: var(--surface-0);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.chat-markdown code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: rgba(255,255,255,0.03);
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+}
+
+.chat-markdown pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 13px;
+}
+
+.chat-markdown blockquote {
+  border-left: 2px solid var(--accent-solid);
+  margin: 0.5em 0;
+  padding: 4px 14px;
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+/* ── Think Block ────────────────────────────────────────── */
+.think-block {
+  margin: 8px 0;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-sm);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.think-summary {
+  cursor: pointer;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--text-3);
+  background: transparent;
+  user-select: none;
+  outline: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: color var(--t-fast);
+}
+.think-summary:hover { color: var(--text-2); }
+.think-summary::before {
+  content: "▶";
+  font-size: 8px;
+  transition: transform var(--t-fast);
+}
+details[open] .think-summary::before { transform: rotate(90deg); }
+
+.think-content {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-1);
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.6;
+}
+

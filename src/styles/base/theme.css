@@ -1,0 +1,66 @@
+/* ============================================================
+   Cofree Design System — v5  "Precision Tool"
+   Cold neutral surfaces · Minimal chrome · Keyboard-first
+   ============================================================ */
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+/* ── Tokens ─────────────────────────────────────────────── */
+:root {
+  --surface-0: #08080A;
+  --surface-1: #0E0E11;
+  --surface-2: #151518;
+  --surface-3: #1C1C20;
+  --surface-4: #232328;
+  --surface-5: #2A2A30;
+
+  --text-1: #D4D4D8;
+  --text-2: #71717A;
+  --text-3: #3F3F46;
+  --text-link: #8B9FC0;
+
+  --border-1: rgba(255,255,255,0.04);
+  --border-2: rgba(255,255,255,0.07);
+  --border-3: rgba(255,255,255,0.11);
+  --border-focus: rgba(140,160,192,0.35);
+
+  --accent-solid: #8B9FC0;
+  --accent-muted: rgba(139,159,192,0.07);
+
+  --color-success: #3DD68C;
+  --color-success-bg: rgba(61,214,140,0.06);
+  --color-error: #E5534B;
+  --color-error-bg: rgba(229,83,75,0.06);
+  --color-warning: #D4A72C;
+  --color-warning-bg: rgba(212,167,44,0.06);
+  --color-info: #5B9BD5;
+  --color-info-bg: rgba(91,155,213,0.06);
+
+  --user-bubble-bg: rgba(139,159,192,0.06);
+  --user-bubble-border: rgba(139,159,192,0.10);
+
+  --font-sans: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
+
+  --r-xs: 3px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 10px;
+  --r-full: 9999px;
+
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.45);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.5);
+
+  --t-fast: 80ms ease;
+  --t-med: 150ms ease;
+  --t-slow: 250ms cubic-bezier(0.16,1,0.3,1);
+
+  color-scheme: dark;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-1);
+  -webkit-font-smoothing: antialiased;
+}
+

@@ -75,6 +75,8 @@ import { useSession } from "../../lib/sessionContext";
 interface ChatPageProps {
   settings: AppSettings;
   isVisible?: boolean;
+  sidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
 }
 
 interface RunChatCycleOptions {
@@ -342,7 +344,7 @@ function ToolTracePanel({ traces }: { traces: ToolExecutionTrace[] }) {
       >
         <span
           style={{
-            fontSize: "10px",
+            fontSize: "11px",
             transition: "transform 0.2s",
             transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
           }}
@@ -509,7 +511,7 @@ function InlinePlan({
       >
         <span
           style={{
-            fontSize: "10px",
+            fontSize: "11px",
             transition: "transform 0.2s",
             transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
             color: "var(--text-3)",
@@ -534,7 +536,7 @@ function InlinePlan({
         >
           {safePlan.steps.map((step) => (
             <li key={step.id} className="plan-item">
-              <span style={{ color: "var(--text-2)", fontSize: "13px" }}>
+              <span style={{ color: "var(--text-2)", fontSize: "14px" }}>
                 {step.summary}
               </span>
             </li>
@@ -652,12 +654,12 @@ function InlinePlan({
                   <div key={group.groupId} style={{ marginBottom: "8px" }}>
                     <div
                       style={{
-                        fontSize: "12px",
+                        fontSize: "13px",
                         color: "var(--text-3)",
                         marginBottom: "6px",
-                        padding: "8px 10px",
+                        padding: "8px 12px",
                         background: "var(--surface-2)",
-                        borderRadius: "6px",
+                        borderRadius: "8px",
                         lineHeight: "1.6",
                         border: "1px solid var(--border-1)",
                       }}
@@ -716,7 +718,7 @@ function InlinePlan({
                                   display: "inline-block",
                                   marginRight: "8px",
                                   fontFamily: "monospace",
-                                  fontSize: "11px",
+                                  fontSize: "12px",
                                 }}
                               >
                                 📄 {f}
@@ -769,12 +771,12 @@ function InlinePlan({
                       batchAffectedFiles.length > 0 && (
                         <div
                           style={{
-                            fontSize: "12px",
+                            fontSize: "13px",
                             color: "var(--text-3)",
                             marginBottom: "6px",
-                            padding: "4px 8px",
+                            padding: "6px 10px",
                             background: "var(--surface-2)",
-                            borderRadius: "4px",
+                            borderRadius: "6px",
                             lineHeight: "1.6",
                           }}
                         >
@@ -794,7 +796,7 @@ function InlinePlan({
                                   display: "inline-block",
                                   marginRight: "8px",
                                   fontFamily: "monospace",
-                                  fontSize: "11px",
+                                  fontSize: "12px",
                                 }}
                               >
                                 📄 {f}
@@ -935,7 +937,7 @@ function TokenUsageRing({
         display: "flex",
         alignItems: "center",
         gap: "6px",
-        fontSize: "12px",
+        fontSize: "13px",
         color: "var(--text-3)",
       }}
       title={`${isStreaming ? "预估" : "已用"} ${used.toLocaleString()} / ${max.toLocaleString()} tokens (${percentage.toFixed(1)}%)`}
@@ -976,7 +978,7 @@ function TokenUsageRing({
 }
 
 /* ── Main ChatPage ────────────────────────────────────────── */
-export function ChatPage({ settings, isVisible }: ChatPageProps): ReactElement {
+export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSidebar }: ChatPageProps): ReactElement {
   const { actions: session } = useSession();
 
   const wsPath = settings.workspacePath;
@@ -1022,7 +1024,7 @@ export function ChatPage({ settings, isVisible }: ChatPageProps): ReactElement {
   );
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [executingActionId, setExecutingActionId] = useState<string>("");
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+  const [_sidebarOpenLegacy] = useState<boolean>(false);
   const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
   const [liveContextTokens, setLiveContextTokens] = useState<number | null>(
     () => currentConversation?.lastTokenCount ?? null
@@ -1908,13 +1910,19 @@ export function ChatPage({ settings, isVisible }: ChatPageProps): ReactElement {
     textareaRef.current?.focus();
   };
 
+  // Listen for global new-conversation shortcut
+  useEffect(() => {
+    const handler = () => handleNewConversation();
+    window.addEventListener("cofree:new-conversation", handler);
+    return () => window.removeEventListener("cofree:new-conversation", handler);
+  }, []);
+
   return (
     <div className="chat-layout-with-sidebar">
       <ConversationSidebar
         conversations={conversations}
         activeConversationId={activeConversationId}
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
+        collapsed={sidebarCollapsed ?? false}
         onSelectConversation={handleSelectConversation}
         onNewConversation={handleNewConversation}
         onDeleteConversation={handleDeleteConversation}
@@ -1927,33 +1935,27 @@ export function ChatPage({ settings, isVisible }: ChatPageProps): ReactElement {
             <div className="chat-top-bar-left">
               <button
                 className="chat-sidebar-toggle"
-                onClick={() => setSidebarOpen((v) => !v)}
+                onClick={onToggleSidebar}
                 type="button"
-                aria-label="对话列表"
-                title="对话列表"
+                aria-label="对话列表 (⌘B)"
+                title="对话列表 (⌘B)"
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M2 4h12M2 8h8M2 12h10"
-                    stroke="currentColor"
-                    strokeWidth="1.6"
-                    strokeLinecap="round"
-                  />
+                  <rect x="2" y="2" width="12" height="12" rx="1" stroke="currentColor" strokeWidth="1.4" />
+                  <path d="M6 2v12" stroke="currentColor" strokeWidth="1.4" />
                 </svg>
               </button>
-              {settings.workspacePath ? (
-                <span className="chat-workspace-path">
-                  {settings.workspacePath.split("/").pop() || settings.workspacePath}
-                </span>
-              ) : (
-                <span className="chat-workspace-warning">
-                  ⚠ 未选择工作区
-                </span>
+              {sessionNote && (
+                <span className="chat-session-note">{sessionNote}</span>
               )}
             </div>
             <div className="chat-top-bar-right">
-              {sessionNote && (
-                <span className="chat-session-note">{sessionNote}</span>
+              {liveContextTokens !== null && (
+                <TokenUsageRing
+                  used={liveContextTokens}
+                  max={settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000}
+                  isStreaming={isStreaming}
+                />
               )}
               <button
                 className="btn btn-ghost btn-sm"
@@ -1986,37 +1988,20 @@ export function ChatPage({ settings, isVisible }: ChatPageProps): ReactElement {
           <div className="chat-thread" ref={threadRef}>
             {messages.length === 0 ? (
               <div className="chat-empty">
-                <div className="chat-empty-icon">☕</div>
                 <p className="chat-empty-text">你好，有什么可以帮到你？</p>
                 <p className="chat-empty-subtext">描述你的编码任务，我来帮你完成</p>
                 <div className="chat-suggestions">
-                  <button
-                    className="chat-suggestion-chip"
-                    onClick={() => handleSuggestionClick("帮我分析一下这个项目的代码结构")}
-                    type="button"
-                  >
-                    <span>📁</span> 分析代码结构
+                  <button className="chat-suggestion-chip" onClick={() => handleSuggestionClick("帮我分析一下这个项目的代码结构")} type="button">
+                    分析代码结构
                   </button>
-                  <button
-                    className="chat-suggestion-chip"
-                    onClick={() => handleSuggestionClick("帮我查找并修复代码中的问题")}
-                    type="button"
-                  >
-                    <span>🔍</span> 查找问题
+                  <button className="chat-suggestion-chip" onClick={() => handleSuggestionClick("帮我查找并修复代码中的问题")} type="button">
+                    查找问题
                   </button>
-                  <button
-                    className="chat-suggestion-chip"
-                    onClick={() => handleSuggestionClick("帮我写一个新功能")}
-                    type="button"
-                  >
-                    <span>✨</span> 新功能开发
+                  <button className="chat-suggestion-chip" onClick={() => handleSuggestionClick("帮我写一个新功能")} type="button">
+                    新功能开发
                   </button>
-                  <button
-                    className="chat-suggestion-chip"
-                    onClick={() => handleSuggestionClick("帮我优化这个项目的性能")}
-                    type="button"
-                  >
-                    <span>⚡</span> 性能优化
+                  <button className="chat-suggestion-chip" onClick={() => handleSuggestionClick("帮我优化这个项目的性能")} type="button">
+                    性能优化
                   </button>
                 </div>
               </div>
@@ -2026,7 +2011,7 @@ export function ChatPage({ settings, isVisible }: ChatPageProps): ReactElement {
                 .map((message) => (
                 <div key={message.id} className={`chat-row ${message.role}`}>
                   <div className={`chat-avatar ${message.role}`}>
-                    {message.role === "user" ? "你" : "AI"}
+                    {message.role === "user" ? "U" : "A"}
                   </div>
                   <div className="chat-bubble-wrap">
                     <p className="chat-meta">
@@ -2121,15 +2106,7 @@ export function ChatPage({ settings, isVisible }: ChatPageProps): ReactElement {
                   rows={1}
                 />
                 <div className="chat-input-footer">
-                  {liveContextTokens !== null ? (
-                    <TokenUsageRing
-                      used={liveContextTokens}
-                      max={settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000}
-                      isStreaming={isStreaming}
-                    />
-                  ) : (
-                    <span />
-                  )}
+                  <span />
                   <div className="chat-input-actions">
                     {isStreaming && (
                       <button
@@ -2150,7 +2127,7 @@ export function ChatPage({ settings, isVisible }: ChatPageProps): ReactElement {
                       }
                       type="submit"
                     >
-                      {isStreaming ? "回复中…" : "发送 ↑"}
+                      发送
                     </button>
                   </div>
                 </div>

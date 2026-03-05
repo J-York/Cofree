@@ -1,37 +1,36 @@
-import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { defaultModelForProvider, formatModelRef } from "./lib/litellm";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { defaultModelForProvider } from "./lib/litellm";
 import {
   type AppSettings,
-  getActiveProfile,
   loadSecureApiKey,
   loadSettings,
   saveSecureApiKey,
   saveSettings,
-  switchProfile,
 } from "./lib/settingsStore";
-import { type AppTab } from "./ui/components/NavTabs";
 import { ChatPage } from "./ui/pages/ChatPage";
 import { KitchenPage } from "./ui/pages/KitchenPage";
 import { SettingsPage } from "./ui/pages/SettingsPage";
+import { TitleBar } from "./ui/components/TitleBar";
 import {
   SessionContext,
   initialSessionState,
   type SessionState,
   type SessionActions,
 } from "./lib/sessionContext";
+import { invoke } from "@tauri-apps/api/core";
 
-const NAV_ITEMS: Array<{ key: AppTab; icon: string; label: string }> = [
-  { key: "chat",     icon: "💬", label: "对话" },
-  { key: "kitchen",  icon: "📊", label: "控制台" },
-  { key: "settings", icon: "⚙️", label: "设置" },
-];
+interface WorkspaceInfo {
+  git_branch?: string;
+}
 
 export default function App(): ReactElement {
-  const [activeTab, setActiveTab] = useState<AppTab>("chat");
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [sessionState, setSessionState] = useState<SessionState>(initialSessionState);
-  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
-  const profileMenuRef = useRef<HTMLDivElement>(null);
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [kitchenOpen, setKitchenOpen] = useState(false);
+  const [gitBranch, setGitBranch] = useState<string>("");
 
   const sessionActions: SessionActions = useMemo(
     () => ({
@@ -54,25 +53,25 @@ export default function App(): ReactElement {
     []
   );
 
-  const runtimeSummary = useMemo(() => {
-    if (!settings.allowCloudModels) return "Local-only";
-    return formatModelRef(settings.provider ?? "", settings.model);
-  }, [settings.allowCloudModels, settings.model, settings.provider]);
-
   useEffect(() => {
     let cancelled = false;
     const hydrate = async () => {
       const apiKey = await loadSecureApiKey(settings.activeProfileId);
-      if (cancelled) {
-        return;
-      }
+      if (cancelled) return;
       setSettings((current) => (current.apiKey === apiKey ? current : { ...current, apiKey }));
     };
     void hydrate();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (!settings.workspacePath) { setGitBranch(""); return; }
+    let cancelled = false;
+    invoke<WorkspaceInfo>("get_workspace_info", { path: settings.workspacePath })
+      .then((info) => { if (!cancelled) setGitBranch(info.git_branch ?? ""); })
+      .catch(() => { if (!cancelled) setGitBranch(""); });
+    return () => { cancelled = true; };
+  }, [settings.workspacePath]);
 
   const handleSaveSettings = async (nextSettings: AppSettings): Promise<void> => {
     const normalizedModel =
@@ -83,128 +82,85 @@ export default function App(): ReactElement {
     setSettings(normalized);
   };
 
-  const handleQuickSwitchProfile = useCallback(async (profileId: string) => {
-    if (profileId === settings.activeProfileId) {
-      setProfileMenuOpen(false);
-      return;
-    }
-    const switched = switchProfile(settings, profileId);
-    let apiKey = "";
-    try {
-      apiKey = await loadSecureApiKey(profileId);
-    } catch {
-      // Ignore keychain errors
-    }
-    const updated: AppSettings = { ...switched, apiKey };
-    saveSettings(updated);
-    setSettings(updated);
-    setProfileMenuOpen(false);
-  }, [settings]);
-
-  // Close profile menu on outside click
+  // ── Global keyboard shortcuts ──
   useEffect(() => {
-    if (!profileMenuOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
-        setProfileMenuOpen(false);
+    const handler = (e: KeyboardEvent) => {
+      const meta = e.metaKey || e.ctrlKey;
+      if (!meta) return;
+
+      switch (e.key) {
+        case "b":
+          e.preventDefault();
+          setSidebarCollapsed((v) => !v);
+          break;
+        case ",":
+          e.preventDefault();
+          setSettingsOpen((v) => !v);
+          break;
+        case "j":
+          e.preventDefault();
+          setKitchenOpen((v) => !v);
+          break;
+        case "n":
+          e.preventDefault();
+          // Dispatch a custom event that ChatPage listens to
+          window.dispatchEvent(new CustomEvent("cofree:new-conversation"));
+          break;
+      }
+
+      if (e.key === "Escape") {
+        if (settingsOpen) { setSettingsOpen(false); e.preventDefault(); }
+        else if (kitchenOpen) { setKitchenOpen(false); e.preventDefault(); }
       }
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [profileMenuOpen]);
-
-  const activeProfile = getActiveProfile(settings);
-  const hasProfiles = settings.profiles.length > 0;
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [settingsOpen, kitchenOpen]);
 
   return (
     <SessionContext.Provider value={{ state: sessionState, actions: sessionActions }}>
-    <div className="app-shell">
-      <div className="app-layout">
-        {/* ── Sidebar ── */}
-        <aside className="app-sidebar">
-          <div className="sidebar-brand">
-            <div className="sidebar-logo">
-              <div className="sidebar-logo-icon">☕</div>
-              <span className="sidebar-logo-text">Cofree</span>
-            </div>
-            <p className="sidebar-tagline">AI Programming Assistant</p>
-          </div>
+      <div className="app-shell">
+        <TitleBar
+          workspacePath={settings.workspacePath}
+          gitBranch={gitBranch}
+          onToggleKitchen={() => setKitchenOpen((v) => !v)}
+          onToggleSettings={() => setSettingsOpen((v) => !v)}
+          kitchenOpen={kitchenOpen}
+        />
 
-          <nav className="sidebar-nav" aria-label="Primary">
-            {NAV_ITEMS.map((item) => (
+        <div className="app-body">
+          <ChatPage
+            settings={settings}
+            isVisible={true}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
+          />
+        </div>
+
+        {kitchenOpen && (
+          <div className="kitchen-panel-container">
+            <div className="kitchen-panel-header">
+              <span className="kitchen-panel-title">控制台</span>
               <button
-                key={item.key}
-                className={`sidebar-nav-item${activeTab === item.key ? " active" : ""}`}
-                onClick={() => setActiveTab(item.key)}
+                className="kitchen-panel-close"
+                onClick={() => setKitchenOpen(false)}
                 type="button"
-                aria-current={activeTab === item.key ? "page" : undefined}
               >
-                <span className="sidebar-nav-icon">{item.icon}</span>
-                <span>{item.label}</span>
+                &times;
               </button>
-            ))}
-          </nav>
-
-          <div className="sidebar-footer" ref={profileMenuRef}>
-            <button
-              className="runtime-badge"
-              type="button"
-              onClick={() => hasProfiles && setProfileMenuOpen((v) => !v)}
-              style={{ cursor: hasProfiles ? "pointer" : "default", width: "100%", border: "1px solid var(--border-1)" }}
-              title={hasProfiles ? "切换配置档案" : runtimeSummary}
-            >
-              <div className="runtime-dot" />
-              <span className="runtime-text" style={{ flex: 1, textAlign: "left" }}>
-                {activeProfile ? activeProfile.name : runtimeSummary}
-              </span>
-              {hasProfiles && (
-                <span className="runtime-text" style={{ flexShrink: 0, fontSize: "9px", opacity: 0.6 }}>
-                  {profileMenuOpen ? "▲" : "▼"}
-                </span>
-              )}
-            </button>
-            {activeProfile && (
-              <div className="runtime-model-hint">
-                {runtimeSummary}
-              </div>
-            )}
-
-            {profileMenuOpen && hasProfiles && (
-              <div className="profile-switcher-menu">
-                <div className="profile-switcher-header">切换配置</div>
-                {settings.profiles.map((p) => (
-                  <button
-                    key={p.id}
-                    className={`profile-switcher-item${p.id === settings.activeProfileId ? " active" : ""}`}
-                    type="button"
-                    onClick={() => void handleQuickSwitchProfile(p.id)}
-                  >
-                    <div className={`profile-switcher-dot${p.id === settings.activeProfileId ? " active" : ""}`} />
-                    <div className="profile-switcher-info">
-                      <span className="profile-switcher-name">{p.name}</span>
-                      <span className="profile-switcher-model">
-                        {formatModelRef(p.provider ?? "", p.model)}
-                      </span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
+            </div>
+            <KitchenPage />
           </div>
-        </aside>
+        )}
 
-        {/* ── Main ── */}
-        <main className="app-main">
-          <div style={{ display: activeTab === "chat" ? "contents" : "none" }}>
-            <ChatPage settings={settings} isVisible={activeTab === "chat"} />
+        {settingsOpen && (
+          <div className="settings-modal-backdrop" onClick={() => setSettingsOpen(false)}>
+            <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+              <SettingsPage settings={settings} onSave={handleSaveSettings} onClose={() => setSettingsOpen(false)} />
+            </div>
           </div>
-          {activeTab === "kitchen"  && <KitchenPage />}
-          {activeTab === "settings" && (
-            <SettingsPage settings={settings} onSave={handleSaveSettings} />
-          )}
-        </main>
+        )}
       </div>
-    </div>
     </SessionContext.Provider>
   );
 }

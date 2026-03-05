@@ -29,20 +29,22 @@ interface WorkspaceInfo {
 interface SettingsPageProps {
   settings: AppSettings;
   onSave: (settings: AppSettings) => Promise<void>;
+  onClose?: () => void;
 }
 
 type SettingsTab = "profiles" | "model" | "tools" | "advanced";
 
-const TABS: { id: SettingsTab; label: string; icon: string }[] = [
-  { id: "profiles", label: "配置档案", icon: "◈" },
-  { id: "model", label: "模型配置", icon: "⬡" },
-  { id: "tools", label: "工具权限", icon: "⚙" },
-  { id: "advanced", label: "高级", icon: "⚑" },
+const TABS: { id: SettingsTab; label: string }[] = [
+  { id: "profiles", label: "配置档案" },
+  { id: "model", label: "模型配置" },
+  { id: "tools", label: "工具权限" },
+  { id: "advanced", label: "高级" },
 ];
 
 export function SettingsPage({
   settings,
   onSave,
+  onClose,
 }: SettingsPageProps): ReactElement {
   const [activeTab, setActiveTab] = useState<SettingsTab>("profiles");
   const [draft, setDraft] = useState<AppSettings>(settings);
@@ -199,6 +201,11 @@ export function SettingsPage({
       <nav className="settings-nav">
         <div className="settings-nav-header">
           <span className="settings-nav-title">设置</span>
+          {onClose && (
+            <button className="settings-close-btn" onClick={onClose} type="button" aria-label="关闭">
+              &times;
+            </button>
+          )}
         </div>
         <div className="settings-nav-tabs">
           {TABS.map((tab) => (
@@ -208,7 +215,6 @@ export function SettingsPage({
               onClick={() => setActiveTab(tab.id)}
               type="button"
             >
-              <span className="settings-tab-icon">{tab.icon}</span>
               <span className="settings-tab-label">{tab.label}</span>
             </button>
           ))}
@@ -876,7 +882,7 @@ function ProfileCard({
               <span className="profile-delete-confirm-text">删除？</span>
               <button
                 className="btn btn-ghost btn-sm"
-                style={{ color: "var(--color-error)", borderColor: "var(--color-error)", padding: "2px 8px", fontSize: "11px" }}
+                style={{ color: "var(--color-error)", borderColor: "var(--color-error)", padding: "3px 10px", fontSize: "12px" }}
                 onClick={(e) => { e.stopPropagation(); onDelete(); }}
                 type="button"
               >
@@ -884,7 +890,7 @@ function ProfileCard({
               </button>
               <button
                 className="btn btn-ghost btn-sm"
-                style={{ padding: "2px 8px", fontSize: "11px" }}
+                style={{ padding: "3px 10px", fontSize: "12px" }}
                 onClick={(e) => { e.stopPropagation(); onCancelDelete(); }}
                 type="button"
               >

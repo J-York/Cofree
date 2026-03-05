@@ -1,0 +1,51 @@
+/* ── Chat Input ─────────────────────────────────────────── */
+.chat-input-area {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.chat-input-box {
+  background: var(--surface-1);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  transition: border-color var(--t-med);
+  overflow: hidden;
+}
+
+.chat-input-box:focus-within {
+  border-color: var(--border-focus);
+}
+
+.chat-textarea {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 14px 16px 8px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  color: var(--text-1);
+  resize: none;
+  min-height: 48px;
+  max-height: 200px;
+  line-height: 1.55;
+}
+
+.chat-textarea::placeholder { color: var(--text-3); }
+
+.chat-input-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px 8px;
+}
+
+.chat-input-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+

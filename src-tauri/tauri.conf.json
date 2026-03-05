@@ -12,13 +12,16 @@
   "app": {
     "windows": [
       {
-        "title": "Cofree - AI Programming Cafe",
+        "title": "Cofree",
         "label": "main",
         "width": 1200,
         "height": 820,
         "minWidth": 960,
         "minHeight": 680,
-        "resizable": true
+        "resizable": true,
+        "decorations": true,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay"
       }
     ],
     "security": {

@@ -1,0 +1,41 @@
+/* ── Alerts ─────────────────────────────────────────────── */
+.chat-alert {
+  padding: 10px 14px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.chat-alert-error {
+  background: var(--color-error-bg);
+  border: 1px solid rgba(229,83,75,0.08);
+  color: var(--color-error);
+}
+
+.chat-alert-warning {
+  background: var(--color-warning-bg);
+  border: 1px solid rgba(212,167,44,0.08);
+  color: var(--color-warning);
+}
+
+/* ── Status ─────────────────────────────────────────────── */
+.status-note { margin: 0; font-size: 13px; color: var(--text-3); }
+.status-success { margin: 0; font-size: 13px; color: var(--color-success); }
+.status-error { margin: 0; font-size: 13px; color: var(--color-error); }
+.status-warning { margin: 0; font-size: 13px; color: var(--color-warning); }
+
+.divider { height: 1px; background: var(--border-1); margin: 4px 0; }
+
+/* ── Error Banner ───────────────────────────────────────── */
+.error-banner { padding: 12px 14px; border-radius: var(--r-sm); border: 1px solid rgba(229,83,75,0.10); border-left: 2px solid var(--color-error); background: var(--color-error-bg); display: flex; flex-direction: column; gap: 6px; }
+.error-banner-header { display: flex; align-items: center; justify-content: space-between; }
+.error-banner-title-row { display: flex; align-items: center; gap: 6px; }
+.error-banner-icon { font-size: 14px; }
+.error-banner-title { font-size: 13px; font-weight: 600; color: var(--color-error); }
+.error-banner-dismiss { background: none; border: none; color: var(--text-3); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: var(--r-xs); }
+.error-banner-dismiss:hover { color: var(--text-1); }
+.error-banner-message { margin: 0; font-size: 13px; color: var(--text-1); line-height: 1.4; }
+.error-banner-guidance { margin: 0; font-size: 12px; color: var(--text-2); line-height: 1.4; }
+.error-banner-actions { display: flex; gap: 6px; align-items: center; }
+.error-banner-raw { margin: 2px 0 0; padding: 10px 12px; background: var(--surface-0); border: 1px solid var(--border-1); border-radius: var(--r-xs); font-family: var(--font-mono); font-size: 11px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow: auto; }
+

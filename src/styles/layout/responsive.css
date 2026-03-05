@@ -1,0 +1,25 @@
+/* ── Responsive ─────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .conv-panel { width: 200px; }
+
+  .kitchen-stats-grid { grid-template-columns: repeat(3,1fr); }
+  .grid-2 { grid-template-columns: 1fr; }
+  .action-grid { grid-template-columns: 1fr; }
+  .diff-split-container { grid-template-columns: 1fr; }
+
+  .settings-modal { width: 95vw; height: 85vh; }
+  .settings-nav { width: 140px; }
+}
+
+@media (max-width: 700px) {
+  .conv-panel { width: 0; border-right: none; opacity: 0; pointer-events: none; }
+
+  .titlebar { padding-left: 12px; }
+
+  .kitchen-stats-grid { grid-template-columns: repeat(2,1fr); }
+  .settings-nav { width: 48px; }
+  .settings-tab-label { display: none; }
+  .settings-nav-title, .settings-nav-workspace { display: none; }
+  .settings-tab-btn { justify-content: center; padding: 8px; }
+  .settings-tab-btn::before { display: none; }
+}

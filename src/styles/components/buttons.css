@@ -1,0 +1,60 @@
+/* ── Buttons ────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: none;
+  border-radius: var(--r-sm);
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+  white-space: nowrap;
+  outline: none;
+}
+
+.btn:focus-visible { box-shadow: 0 0 0 2px rgba(139,159,192,0.2); }
+.btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.btn-primary {
+  background: rgba(139,159,192,0.10);
+  color: var(--accent-solid);
+  border: 1px solid rgba(139,159,192,0.15);
+}
+.btn-primary:hover:not(:disabled) {
+  background: rgba(139,159,192,0.16);
+  border-color: rgba(139,159,192,0.25);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border-1);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: rgba(255,255,255,0.02);
+  color: var(--text-1);
+  border-color: var(--border-2);
+}
+
+.btn-danger {
+  background: rgba(229,83,75,0.06);
+  color: var(--color-error);
+  border: 1px solid rgba(229,83,75,0.10);
+}
+.btn-danger:hover:not(:disabled) {
+  background: rgba(229,83,75,0.12);
+  border-color: rgba(229,83,75,0.18);
+}
+
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn-xs { padding: 4px 8px; font-size: 11px; }
+.btn-icon { padding: 6px; }
+.btn-row { display: flex; gap: 6px; align-items: center; }
+
+/* ── Icon spin animation ────────────────────────────────── */
+.icon-spin { animation: tool-spin 1s linear infinite; }
+

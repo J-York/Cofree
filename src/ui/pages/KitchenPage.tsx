@@ -139,9 +139,9 @@ export function KitchenPage(): ReactElement {
         </div>
         {state.toolTraces.length === 0 ? (
           <div style={{ textAlign: "center", padding: "32px 0" }}>
-            <div style={{ fontSize: "28px", opacity: 0.3, marginBottom: "8px" }}>📊</div>
+            <div style={{ fontSize: "32px", opacity: 0.3, marginBottom: "8px" }}>📊</div>
             <p className="status-note">暂无工具调用记录</p>
-            <p style={{ fontSize: "11.5px", color: "var(--text-3)", margin: "4px 0 0" }}>发送消息后将显示详细追踪</p>
+            <p style={{ fontSize: "13px", color: "var(--text-3)", margin: "4px 0 0" }}>发送消息后将显示详细追踪</p>
           </div>
         ) : (
           <div className="kitchen-timeline">

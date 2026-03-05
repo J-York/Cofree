@@ -1,0 +1,125 @@
+/* ── Chat Rows / Bubbles ────────────────────────────────── */
+.chat-row {
+  display: flex;
+  gap: 12px;
+  animation: msg-in 200ms ease-out both;
+}
+
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.chat-row.user {
+  flex-direction: row-reverse;
+}
+
+.chat-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.chat-avatar.user {
+  background: rgba(139,159,192,0.08);
+  border: 1px solid rgba(139,159,192,0.12);
+  color: var(--accent-solid);
+}
+
+.chat-avatar.assistant {
+  background: var(--surface-2);
+  border: 1px solid var(--border-1);
+  color: var(--text-3);
+}
+
+.chat-bubble-wrap {
+  max-width: 80%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-row.user .chat-bubble-wrap {
+  align-items: flex-end;
+}
+
+.chat-meta {
+  font-size: 11px;
+  color: var(--text-3);
+  padding: 0 2px;
+}
+
+.chat-bubble {
+  padding: 14px 18px;
+  border-radius: var(--r-md);
+  word-break: break-word;
+  line-height: 1.6;
+  font-size: 14px;
+}
+
+.chat-bubble.user {
+  background: var(--user-bubble-bg);
+  color: var(--text-1);
+  border: 1px solid var(--user-bubble-border);
+  border-radius: var(--r-md) var(--r-xs) var(--r-md) var(--r-md);
+}
+
+.chat-bubble.assistant {
+  background: var(--surface-1);
+  border: 1px solid var(--border-1);
+  color: var(--text-1);
+  border-radius: var(--r-xs) var(--r-md) var(--r-md) var(--r-md);
+}
+
+/* ── Streaming Cursor ───────────────────────────────────── */
+.chat-markdown p:last-child::after {
+  content: "";
+}
+
+.chat-bubble.assistant.streaming .chat-markdown p:last-child::after {
+  content: "▎";
+  color: var(--accent-solid);
+  animation: blink 1s step-end infinite;
+  opacity: 0.6;
+}
+
+@keyframes blink {
+  0%,100% { opacity: 0.6; }
+  50% { opacity: 0; }
+}
+
+/* ── Chat Waiting ───────────────────────────────────────── */
+.chat-waiting {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.chat-waiting-dots { display: flex; gap: 3px; }
+.chat-waiting-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: var(--r-full);
+  background: var(--accent-solid);
+  opacity: 0.4;
+  animation: dot-fade 1.4s ease-in-out infinite;
+}
+.chat-waiting-dots span:nth-child(2) { animation-delay: 0.2s; }
+.chat-waiting-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes dot-fade {
+  0%,80%,100% { opacity: 0.15; transform: scale(0.8); }
+  40% { opacity: 0.6; transform: scale(1); }
+}
+
