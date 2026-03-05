@@ -34,7 +34,7 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use futures_util::StreamExt;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tracing::info;
 
 // ── Secure API Key 内存缓存 ──────────────────────────────────────────────────
@@ -1439,6 +1439,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            let window = app.get_webview_window("main")
+                .expect("main window not found");
+            #[cfg(not(target_os = "macos"))]
+            window.set_decorations(false)?;
+            window.show()?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             healthcheck,
             select_workspace_folder,
