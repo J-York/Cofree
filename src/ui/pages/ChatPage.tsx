@@ -988,7 +988,12 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
   const [conversations, setConversations] = useState<ConversationMetadata[]>(
     () => {
       migrateGlobalToWorkspace(wsPath);
-      return loadConversationList(wsPath);
+      const list = loadConversationList(wsPath);
+      if (list.length === 0 && wsPath) {
+        createConversation(wsPath, []);
+        return loadConversationList(wsPath);
+      }
+      return list;
     }
   );
   const [activeConversationId, setActiveConversationIdState] = useState<
