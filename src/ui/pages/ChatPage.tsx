@@ -497,9 +497,41 @@ function InlinePlan({
       : [],
   };
 
-  const [expanded, setExpanded] = useState(false);
+  const allResolved =
+    safePlan.proposedActions.length > 0 &&
+    safePlan.proposedActions.every(
+      (a) => a.status !== "pending" && a.status !== "running"
+    );
+
+  const [expanded, setExpanded] = useState(!allResolved);
+
+  const prevAllResolved = useRef(allResolved);
+  useEffect(() => {
+    if (allResolved && !prevAllResolved.current) {
+      setExpanded(false);
+    }
+    prevAllResolved.current = allResolved;
+  }, [allResolved]);
+
+  const approvedCount = safePlan.proposedActions.filter(
+    (a) => a.status === "completed"
+  ).length;
+  const rejectedCount = safePlan.proposedActions.filter(
+    (a) => a.status === "rejected"
+  ).length;
+  const failedCount = safePlan.proposedActions.filter(
+    (a) => a.status === "failed"
+  ).length;
+  const pendingCount = safePlan.proposedActions.filter(
+    (a) => a.status === "pending"
+  ).length;
+
+  const stateLabel = allResolved ? "已完成" : safePlan.state;
+
   return (
-    <div className="inline-plan">
+    <div
+      className={`inline-plan${allResolved && !expanded ? " inline-plan-collapsed" : ""}`}
+    >
       <div
         onClick={() => setExpanded(!expanded)}
         style={{
@@ -521,8 +553,32 @@ function InlinePlan({
           ▶
         </span>
         <p className="inline-plan-title" style={{ margin: 0 }}>
-          执行计划 · {safePlan.state}
+          执行计划 · {stateLabel}
         </p>
+        {!expanded && safePlan.proposedActions.length > 0 && (
+          <span className="plan-summary-badges">
+            {approvedCount > 0 && (
+              <span className="plan-badge plan-badge-approved">
+                ✓ {approvedCount}
+              </span>
+            )}
+            {rejectedCount > 0 && (
+              <span className="plan-badge plan-badge-rejected">
+                ✕ {rejectedCount}
+              </span>
+            )}
+            {failedCount > 0 && (
+              <span className="plan-badge plan-badge-failed">
+                ! {failedCount}
+              </span>
+            )}
+            {pendingCount > 0 && (
+              <span className="plan-badge plan-badge-pending">
+                {pendingCount} 待审批
+              </span>
+            )}
+          </span>
+        )}
       </div>
 
       {expanded && safePlan.steps.length > 0 && (
@@ -545,11 +601,9 @@ function InlinePlan({
         </ol>
       )}
 
-      {safePlan.proposedActions.length > 0 &&
+      {expanded &&
+        safePlan.proposedActions.length > 0 &&
         (() => {
-          const pendingCount = safePlan.proposedActions.filter(
-            (a) => a.status === "pending"
-          ).length;
           const pendingPatchActions = safePlan.proposedActions.filter(
             (
               a
