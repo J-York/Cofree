@@ -1,6 +1,6 @@
 /* ── Chat Input ─────────────────────────────────────────── */
 .chat-input-area {
-  padding: 0 0 16px; /* Floating look, breathing room */
+  padding: 0 0 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -29,12 +29,12 @@
   background: transparent;
   border: none;
   outline: none;
-  padding: 18px 24px 10px;
-  font-size: 15px;
+  padding: 14px 18px 8px;
+  font-size: 14px;
   font-family: var(--font-sans);
   color: var(--text-1);
   resize: none;
-  min-height: 56px;
+  min-height: 48px;
   max-height: 280px;
   line-height: 1.6;
 }
@@ -45,7 +45,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 16px 12px;
+  padding: 6px 14px 10px;
 }
 
 .chat-input-actions {

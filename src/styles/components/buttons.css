@@ -3,11 +3,11 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
   border: none;
   border-radius: var(--r-md);
-  padding: 10px 20px;
-  font-size: 14px;
+  padding: 8px 16px;
+  font-size: 13px;
   font-weight: 500;
   font-family: var(--font-sans);
   cursor: pointer;
@@ -61,10 +61,10 @@
   box-shadow: var(--shadow-sm);
 }
 
-.btn-sm { padding: 6px 14px; font-size: 13px; border-radius: var(--r-sm); }
-.btn-xs { padding: 4px 10px; font-size: 12px; border-radius: var(--r-xs); }
-.btn-icon { padding: 8px; border-radius: var(--r-md); }
-.btn-row { display: flex; gap: 10px; align-items: center; }
+.btn-sm { padding: 5px 12px; font-size: 12px; border-radius: var(--r-sm); }
+.btn-xs { padding: 3px 8px; font-size: 11px; border-radius: var(--r-xs); }
+.btn-icon { padding: 6px; border-radius: var(--r-md); }
+.btn-row { display: flex; gap: 8px; align-items: center; }
 
 /* ── Icon spin animation ────────────────────────────────── */
 .icon-spin { animation: tool-spin 1s linear infinite; }
