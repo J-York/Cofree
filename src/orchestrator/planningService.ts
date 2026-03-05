@@ -3756,6 +3756,27 @@ function containsCapabilityDenial(text: string): boolean {
   return hints.some((hint) => corpus.includes(hint.toLowerCase()));
 }
 
+const APPROVAL_CARD_CLAIM_HINTS = [
+  "审批卡片",
+  "待审批动作",
+  "查看下方",
+  "查看审批",
+  "审批面板",
+];
+
+function containsApprovalCardClaim(text: string): boolean {
+  const corpus = text.toLowerCase();
+  return APPROVAL_CARD_CLAIM_HINTS.some((hint) => corpus.includes(hint));
+}
+
+function stripApprovalCardClaims(text: string): string {
+  const sentences = text.split(/(?<=[。！？\n])/);
+  const kept = sentences.filter(
+    (s) => !APPROVAL_CARD_CLAIM_HINTS.some((h) => s.includes(h))
+  );
+  return kept.join("").trim();
+}
+
 function reconcileAssistantReply(params: {
   assistantReply: string;
   proposedActions: ActionProposal[];
@@ -3777,6 +3798,21 @@ function reconcileAssistantReply(params: {
       return "工具调用已结束。";
     }
     // 最终兜底：确保不返回空字符串
+    return "处理完成。";
+  }
+
+  // 反向修正：LLM 文本声称生成了审批卡片，但实际 proposedActions 为空
+  if (proposedActions.length === 0 && containsApprovalCardClaim(normalized)) {
+    const cleaned = stripApprovalCardClaims(normalized);
+    if (cleaned) {
+      return cleaned;
+    }
+    if (toolTrace.length > 0) {
+      const hasSuccess = toolTrace.some((t) => t.status === "success");
+      return hasSuccess
+        ? "已完成工具调用，但未能生成有效的审批动作。请检查任务描述后重试。"
+        : "工具调用未能成功生成审批动作，请检查任务描述后重试。";
+    }
     return "处理完成。";
   }
 
