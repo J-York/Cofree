@@ -74,12 +74,22 @@ import { useSession } from "../../lib/sessionContext";
 
 interface ChatPageProps {
   settings: AppSettings;
+  isVisible?: boolean;
 }
 
 interface RunChatCycleOptions {
   visibleUserMessage?: boolean;
   internalSystemNote?: string;
   phase?: PlanningSessionPhase;
+}
+
+interface BackgroundStreamState {
+  messages: ChatMessageRecord[];
+  isStreaming: boolean;
+  tokenCount: number | null;
+  sessionNote: string;
+  liveToolCalls: LiveToolCall[];
+  error: CategorizedError | null;
 }
 
 function createMessageId(role: "user" | "assistant" | "tool"): string {
@@ -966,7 +976,7 @@ function TokenUsageRing({
 }
 
 /* ── Main ChatPage ────────────────────────────────────────── */
-export function ChatPage({ settings }: ChatPageProps): ReactElement {
+export function ChatPage({ settings, isVisible }: ChatPageProps): ReactElement {
   const { actions: session } = useSession();
 
   const wsPath = settings.workspacePath;
@@ -1034,17 +1044,25 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   );
   const lastPromptRef = useRef<string>("");
   const threadRef = useRef<HTMLDivElement | null>(null);
-  const streamBufferRef = useRef<string>("");
-  const rafIdRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const activeConversationIdRef = useRef<string | null>(activeConversationId);
+  const backgroundStreamsRef = useRef(new Map<string, BackgroundStreamState>());
+  const abortControllersRef = useRef(new Map<string, AbortController>());
 
   const localOnlyBlocked =
     !settings.allowCloudModels && !isLocalProvider(settings.provider ?? "");
   const noWorkspaceSelected = !settings.workspacePath;
   const chatBlocked = localOnlyBlocked || noWorkspaceSelected;
 
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
   const handleCancel = (): void => {
-    abortControllerRef.current?.abort();
+    if (activeConversationId) {
+      abortControllersRef.current.get(activeConversationId)?.abort();
+    }
   };
 
   // Save conversation when messages change
@@ -1071,7 +1089,12 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     if (prevWsPathRef.current === wsPath) return;
     prevWsPathRef.current = wsPath;
 
-    // Abort any in-flight stream
+    // Abort all in-flight streams (foreground + background)
+    for (const ctrl of abortControllersRef.current.values()) {
+      ctrl.abort();
+    }
+    abortControllersRef.current.clear();
+    backgroundStreamsRef.current.clear();
     abortControllerRef.current?.abort();
 
     // Migrate global data if needed
@@ -1123,15 +1146,24 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
 
   useEffect(
     () => () => {
-      abortControllerRef.current?.abort();
+      for (const ctrl of abortControllersRef.current.values()) {
+        ctrl.abort();
+      }
     },
     []
   );
+
   useEffect(() => {
     if (threadRef.current) {
       threadRef.current.scrollTop = threadRef.current.scrollHeight;
     }
   }, [messages, isStreaming]);
+
+  useEffect(() => {
+    if (isVisible && threadRef.current) {
+      threadRef.current.scrollTop = threadRef.current.scrollHeight;
+    }
+  }, [isVisible]);
 
   /* Auto-resize textarea */
   useEffect(() => {
@@ -1261,11 +1293,15 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     options: RunChatCycleOptions & { isContinuation?: boolean } = {}
   ): Promise<void> => {
     if (!promptText || isStreaming) return;
+    const streamConvId = currentConversation?.id ?? null;
+    if (!streamConvId) return;
+
     const visibleUserMessage = options.visibleUserMessage !== false;
     if (visibleUserMessage) {
       resetHitlContinuationMemory(getChatSessionId());
     }
     const controller = new AbortController();
+    abortControllersRef.current.set(streamConvId, controller);
     abortControllerRef.current = controller;
     lastPromptRef.current = promptText;
     const conversationHistory = toConversationHistory(messagesRef.current);
@@ -1279,6 +1315,65 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
       plan: null,
     };
 
+    let localStreamBuffer = "";
+    let localRafId: number | null = null;
+    const isActive = () => activeConversationIdRef.current === streamConvId;
+
+    const guardedSetMessages = (
+      updater: (prev: ChatMessageRecord[]) => ChatMessageRecord[]
+    ) => {
+      if (isActive()) {
+        setMessages((prev) => {
+          const next = updater(prev);
+          messagesRef.current = next;
+          return next;
+        });
+      } else {
+        const bg = backgroundStreamsRef.current.get(streamConvId);
+        if (bg) bg.messages = updater(bg.messages);
+      }
+    };
+    const guardedSetNote = (note: string) => {
+      if (isActive()) setSessionNote(note);
+      else {
+        const bg = backgroundStreamsRef.current.get(streamConvId);
+        if (bg) bg.sessionNote = note;
+      }
+    };
+    const guardedSetTokens = (tokens: number | null) => {
+      if (isActive()) setLiveContextTokens(tokens);
+      else {
+        const bg = backgroundStreamsRef.current.get(streamConvId);
+        if (bg) bg.tokenCount = tokens;
+      }
+    };
+    const guardedSetToolCalls = (
+      updater: LiveToolCall[] | ((prev: LiveToolCall[]) => LiveToolCall[])
+    ) => {
+      if (isActive()) {
+        setLiveToolCalls(updater as LiveToolCall[] | ((prev: LiveToolCall[]) => LiveToolCall[]));
+      } else {
+        const bg = backgroundStreamsRef.current.get(streamConvId);
+        if (bg)
+          bg.liveToolCalls =
+            typeof updater === "function" ? updater(bg.liveToolCalls) : updater;
+      }
+    };
+    const guardedSetError = (error: CategorizedError | null) => {
+      if (isActive()) setCategorizedError(error);
+      else {
+        const bg = backgroundStreamsRef.current.get(streamConvId);
+        if (bg) bg.error = error;
+      }
+    };
+    const guardedSetIsStreaming = (streaming: boolean) => {
+      if (isActive()) setIsStreaming(streaming);
+      else {
+        const bg = backgroundStreamsRef.current.get(streamConvId);
+        if (bg) bg.isStreaming = streaming;
+      }
+    };
+
     if (visibleUserMessage) {
       const userMsg: ChatMessageRecord = {
         id: createMessageId("user"),
@@ -1287,9 +1382,17 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
         createdAt: now,
         plan: null,
       };
-      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      setMessages((prev) => {
+        const next = [...prev, userMsg, assistantMsg];
+        messagesRef.current = next;
+        return next;
+      });
     } else {
-      setMessages((prev) => [...prev, assistantMsg]);
+      setMessages((prev) => {
+        const next = [...prev, assistantMsg];
+        messagesRef.current = next;
+        return next;
+      });
     }
 
     setIsStreaming(true);
@@ -1314,13 +1417,13 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
             ),
         signal: controller.signal,
         onAssistantChunk: (chunk) => {
-          streamBufferRef.current += chunk;
-          if (rafIdRef.current === null) {
-            rafIdRef.current = requestAnimationFrame(() => {
-              const buffered = streamBufferRef.current;
-              streamBufferRef.current = "";
-              rafIdRef.current = null;
-              setMessages((prev) =>
+          localStreamBuffer += chunk;
+          if (localRafId === null) {
+            localRafId = requestAnimationFrame(() => {
+              const buffered = localStreamBuffer;
+              localStreamBuffer = "";
+              localRafId = null;
+              guardedSetMessages((prev) =>
                 prev.map((m) =>
                   m.id === assistantMessageId
                     ? { ...m, content: `${m.content}${buffered}` }
@@ -1332,7 +1435,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
         },
         onToolCallEvent: (event: ToolCallEvent) => {
           if (event.type === "start") {
-            setLiveToolCalls((prev) => [
+            guardedSetToolCalls((prev) => [
               ...prev,
               {
                 callId: event.callId,
@@ -1342,7 +1445,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
               },
             ]);
           } else {
-            setLiveToolCalls((prev) =>
+            guardedSetToolCalls((prev) =>
               prev.map((call) =>
                 call.callId === event.callId
                   ? {
@@ -1356,18 +1459,17 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
           }
         },
         onContextUpdate: (estimatedTokens) => {
-          setLiveContextTokens(estimatedTokens);
+          guardedSetTokens(estimatedTokens);
         },
       });
 
-      // Cancel any pending streaming buffer before final overwrite
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current);
-        rafIdRef.current = null;
+      if (localRafId !== null) {
+        cancelAnimationFrame(localRafId);
+        localRafId = null;
       }
-      streamBufferRef.current = "";
+      localStreamBuffer = "";
 
-      setMessages((prev) =>
+      guardedSetMessages((prev) =>
         prev.map((m) => {
           if (m.id === assistantMessageId) {
             let tool_calls: any[] | undefined = undefined;
@@ -1401,11 +1503,8 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
         })
       );
 
-      // Update session context for kitchen page
       session.updatePlan(result.assistantReply);
       session.appendToolTraces(result.toolTrace ?? []);
-      // Record token usage for kitchen page stats.
-      // Use actual API-reported totals (inputTokens = full context, outputTokens = response).
       session.appendRequestSummary({
         requestId: `chat-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
         model: settings.model,
@@ -1414,8 +1513,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
         outputTokens: result.tokenUsage.outputTokens,
         durationMs: Date.now() - new Date(now).getTime(),
       });
-      // Update the displayed token count to reflect the actual usage (input + output)
-      setLiveContextTokens(result.tokenUsage.inputTokens + result.tokenUsage.outputTokens);
+      guardedSetTokens(result.tokenUsage.inputTokens + result.tokenUsage.outputTokens);
       if (result.plan.proposedActions.length > 0) {
         session.setWorkflowPhase("human_review");
       } else {
@@ -1429,40 +1527,55 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
         result.toolTrace,
         getHitlContinuationMemory(getChatSessionId())
       ).catch((err) =>
-        setSessionNote(
+        guardedSetNote(
           `审批点未保存：${err instanceof Error ? err.message : "未知错误"}`
         )
       );
 
-      setSessionNote(
+      guardedSetNote(
         result.plan.proposedActions.length > 0
           ? "已进入 HITL 审批阶段，请逐项审批"
           : "回复完成"
       );
     } catch (error) {
       if (controller.signal.aborted) {
-        setMessages((prev) =>
+        guardedSetMessages((prev) =>
           prev.filter(
             (m) => m.id !== assistantMessageId || m.content.trim() !== ""
           )
         );
-        setSessionNote("已取消");
+        guardedSetNote("已取消");
         return;
       }
-      setCategorizedError(classifyError(error));
-      setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
-      setSessionNote("回复失败");
+      guardedSetError(classifyError(error));
+      guardedSetMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
+      guardedSetNote("回复失败");
     } finally {
-      // Clean up any remaining stream state
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current);
-        rafIdRef.current = null;
+      if (localRafId !== null) {
+        cancelAnimationFrame(localRafId);
       }
-      streamBufferRef.current = "";
+      guardedSetIsStreaming(false);
+      guardedSetToolCalls([]);
+      abortControllersRef.current.delete(streamConvId);
       if (abortControllerRef.current === controller)
         abortControllerRef.current = null;
-      setIsStreaming(false);
-      setLiveToolCalls([]);
+
+      if (!isActive()) {
+        const bg = backgroundStreamsRef.current.get(streamConvId);
+        if (bg) {
+          const convData = loadConversation(wsPath, streamConvId);
+          if (convData) {
+            saveConversation(wsPath, {
+              ...convData,
+              messages: bg.messages,
+              lastTokenCount: bg.tokenCount,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          backgroundStreamsRef.current.delete(streamConvId);
+          setConversations(loadConversationList(wsPath));
+        }
+      }
     }
   };
 
@@ -1654,20 +1767,60 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     setConversations(loadConversationList(wsPath));
   };
 
+  const snapshotToBackground = () => {
+    if (isStreaming && activeConversationId) {
+      backgroundStreamsRef.current.set(activeConversationId, {
+        messages: [...messagesRef.current],
+        isStreaming: true,
+        tokenCount: liveContextTokens,
+        sessionNote,
+        liveToolCalls: [...liveToolCalls],
+        error: categorizedError,
+      });
+    }
+  };
+
+  const restoreConversationView = (conv: Conversation) => {
+    const bg = backgroundStreamsRef.current.get(conv.id);
+    if (bg) {
+      setMessages(bg.messages);
+      messagesRef.current = bg.messages;
+      setLiveContextTokens(bg.tokenCount);
+      setIsStreaming(bg.isStreaming);
+      setSessionNote(bg.sessionNote);
+      setLiveToolCalls(bg.liveToolCalls);
+      setCategorizedError(bg.error);
+      backgroundStreamsRef.current.delete(conv.id);
+    } else {
+      setMessages(conv.messages);
+      messagesRef.current = conv.messages;
+      setLiveContextTokens(conv.lastTokenCount ?? null);
+      setIsStreaming(false);
+      setCategorizedError(null);
+      setSessionNote(conv.messages.length ? "已切换对话" : "");
+      setLiveToolCalls([]);
+    }
+  };
+
   // Conversation management handlers
   const handleNewConversation = (): void => {
-    if (isStreaming || Boolean(executingActionId)) return;
+    if (Boolean(executingActionId)) return;
+
+    snapshotToBackground();
 
     const newConv = createConversation(wsPath, []);
+    activeConversationIdRef.current = newConv.id;
     setCurrentConversation(newConv);
     setActiveConversationIdState(newConv.id);
     setMessages([]);
+    messagesRef.current = [];
     setLiveContextTokens(null);
+    setIsStreaming(false);
     setCategorizedError(null);
     setSessionNote("");
+    setLiveToolCalls([]);
     setConversations(loadConversationList(wsPath));
 
-    // Reset session state
     const previousSessionId = getChatSessionId();
     resetChatSessionId();
     resetHitlContinuationMemory(previousSessionId);
@@ -1675,21 +1828,21 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   };
 
   const handleSelectConversation = (conversationId: string): void => {
-    if (isStreaming || Boolean(executingActionId)) return;
+    if (Boolean(executingActionId)) return;
     if (conversationId === activeConversationId) return;
+
+    snapshotToBackground();
 
     const conv = loadConversation(wsPath, conversationId);
     if (!conv) return;
 
+    activeConversationIdRef.current = conversationId;
     setCurrentConversation(conv);
     setActiveConversationIdState(conv.id);
     setActiveConversationId(wsPath, conv.id);
-    setMessages(conv.messages);
-    setLiveContextTokens(conv.lastTokenCount ?? null);
-    setCategorizedError(null);
-    setSessionNote(conv.messages.length ? "已切换对话" : "");
 
-    // Reset session state for new conversation
+    restoreConversationView(conv);
+
     const previousSessionId = getChatSessionId();
     resetChatSessionId();
     resetHitlContinuationMemory(previousSessionId);
@@ -1697,7 +1850,14 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
   };
 
   const handleDeleteConversation = (conversationId: string): void => {
-    if (isStreaming || Boolean(executingActionId)) return;
+    const isConvStreaming =
+      (conversationId === activeConversationId && isStreaming) ||
+      backgroundStreamsRef.current.get(conversationId)?.isStreaming;
+    if (isConvStreaming || Boolean(executingActionId)) return;
+
+    abortControllersRef.current.get(conversationId)?.abort();
+    abortControllersRef.current.delete(conversationId);
+    backgroundStreamsRef.current.delete(conversationId);
 
     const wasActiveConversation = conversationId === activeConversationId;
 
@@ -1705,20 +1865,17 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     const updatedList = loadConversationList(wsPath);
     setConversations(updatedList);
 
-    // If deleted current conversation, switch to another or create new
     if (wasActiveConversation) {
       if (updatedList.length > 0) {
         const nextConversation = loadConversation(wsPath, updatedList[0].id);
         if (nextConversation) {
+          activeConversationIdRef.current = nextConversation.id;
           setCurrentConversation(nextConversation);
           setActiveConversationIdState(nextConversation.id);
           setActiveConversationId(wsPath, nextConversation.id);
-          setMessages(nextConversation.messages);
-          setLiveContextTokens(nextConversation.lastTokenCount ?? null);
-          setCategorizedError(null);
-          setSessionNote(nextConversation.messages.length ? "已切换对话" : "");
 
-          // Reset session state for switched conversation
+          restoreConversationView(nextConversation);
+
           const previousSessionId = getChatSessionId();
           resetChatSessionId();
           resetHitlContinuationMemory(previousSessionId);

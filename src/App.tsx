@@ -195,7 +195,9 @@ export default function App(): ReactElement {
 
         {/* ── Main ── */}
         <main className="app-main">
-          {activeTab === "chat"     && <ChatPage settings={settings} />}
+          <div style={{ display: activeTab === "chat" ? "contents" : "none" }}>
+            <ChatPage settings={settings} isVisible={activeTab === "chat"} />
+          </div>
           {activeTab === "kitchen"  && <KitchenPage />}
           {activeTab === "settings" && (
             <SettingsPage settings={settings} onSave={handleSaveSettings} />
