@@ -15,6 +15,7 @@ import {
   setActiveConversationId,
   migrateOldChatHistory,
   migrateGlobalToWorkspace,
+  generateConversationTitle,
   type ConversationMetadata,
   type Conversation,
 } from "../../lib/conversationStore";
@@ -1051,6 +1052,7 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
   const backgroundStreamsRef = useRef(new Map<string, BackgroundStreamState>());
   const abortControllersRef = useRef(new Map<string, AbortController>());
+  const skipNextTimestampRef = useRef(true);
 
   const localOnlyBlocked =
     !settings.allowCloudModels && !isLocalProvider(settings.provider ?? "");
@@ -1071,16 +1073,27 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
   useEffect(() => {
     messagesRef.current = messages;
     if (currentConversation) {
+      const skipTimestamp = skipNextTimestampRef.current;
+      skipNextTimestampRef.current = false;
+
+      let title = currentConversation.title;
+      if (title === "新对话" && messages.length > 0) {
+        const generated = generateConversationTitle(messages);
+        if (generated !== "新对话") title = generated;
+      }
+
       const updatedConversation: Conversation = {
         ...currentConversation,
+        title,
         messages,
         lastTokenCount: liveContextTokens,
-        updatedAt: new Date().toISOString(),
+        updatedAt: skipTimestamp
+          ? currentConversation.updatedAt
+          : new Date().toISOString(),
       };
       saveConversation(wsPath, updatedConversation);
       setCurrentConversation(updatedConversation);
 
-      // Update conversation list
       setConversations(loadConversationList(wsPath));
     }
   }, [messages, currentConversation?.id]);
@@ -1106,6 +1119,7 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
     const list = loadConversationList(wsPath);
     setConversations(list);
 
+    skipNextTimestampRef.current = true;
     const activeId = getActiveConversationId(wsPath);
     const conv = activeId ? loadConversation(wsPath, activeId) : null;
 
@@ -1811,6 +1825,7 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
     snapshotToBackground();
 
     const newConv = createConversation(wsPath, []);
+    skipNextTimestampRef.current = true;
     activeConversationIdRef.current = newConv.id;
     setCurrentConversation(newConv);
     setActiveConversationIdState(newConv.id);
@@ -1838,6 +1853,7 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
     const conv = loadConversation(wsPath, conversationId);
     if (!conv) return;
 
+    skipNextTimestampRef.current = true;
     activeConversationIdRef.current = conversationId;
     setCurrentConversation(conv);
     setActiveConversationIdState(conv.id);

@@ -66,7 +66,7 @@ function generateConversationId(): string {
   return `conv-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
-function generateConversationTitle(messages: ChatMessageRecord[]): string {
+export function generateConversationTitle(messages: ChatMessageRecord[]): string {
   const firstUserMessage = messages.find((m) => m.role === "user");
   if (firstUserMessage && firstUserMessage.content.trim()) {
     const preview = firstUserMessage.content.trim().slice(0, 30);
