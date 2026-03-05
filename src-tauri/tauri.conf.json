@@ -19,6 +19,7 @@
         "minWidth": 960,
         "minHeight": 680,
         "resizable": true,
+        "visible": false,
         "decorations": true,
         "hiddenTitle": true,
         "titleBarStyle": "Overlay"

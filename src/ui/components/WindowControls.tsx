@@ -1,4 +1,4 @@
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type Platform = "macos" | "windows" | "linux";
@@ -11,19 +11,8 @@ function detectPlatform(): Platform {
 }
 
 export function WindowControls(): ReactElement {
-  const [platform] = useState<Platform>(detectPlatform);
+  const platform = detectPlatform();
 
-  useEffect(() => {
-    // On Windows/Linux: programmatically disable system decorations
-    // so our custom buttons take over. On macOS this is handled by
-    // titleBarStyle: "Overlay" in tauri.conf.json which keeps the
-    // native traffic-light buttons.
-    if (platform !== "macos") {
-      void getCurrentWindow().setDecorations(false);
-    }
-  }, [platform]);
-
-  // macOS: native traffic lights are shown via titleBarStyle "Overlay"
   if (platform === "macos") return <></>;
 
   const win = getCurrentWindow();
