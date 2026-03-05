@@ -1117,7 +1117,9 @@ function parseToolCalls(raw: unknown): { parsed: ToolCallRecord[]; droppedCount:
       const fnRecord = fn as Record<string, unknown>;
       if (
         typeof fnRecord.name !== "string" ||
-        typeof fnRecord.arguments !== "string"
+        typeof fnRecord.arguments !== "string" ||
+        !fnRecord.name.trim() ||
+        !fnRecord.arguments.trim()
       ) {
         dropped += 1;
         return null;
@@ -1130,8 +1132,8 @@ function parseToolCalls(raw: unknown): { parsed: ToolCallRecord[]; droppedCount:
         id,
         type: "function" as const,
         function: {
-          name: fnRecord.name,
-          arguments: fnRecord.arguments,
+          name: fnRecord.name.trim(),
+          arguments: fnRecord.arguments.trim(),
         },
       };
     })

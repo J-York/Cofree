@@ -1977,6 +1977,20 @@ async fn post_litellm_chat_completions_stream(
             "role": "assistant",
             "content": full_content,
         });
+        tool_calls_json.retain(|entry| {
+            let function = entry.get("function");
+            let name_ok = function
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+                .map(|name| !name.trim().is_empty())
+                .unwrap_or(false);
+            let args_ok = function
+                .and_then(|f| f.get("arguments"))
+                .and_then(Value::as_str)
+                .map(|args| !args.trim().is_empty())
+                .unwrap_or(false);
+            name_ok && args_ok
+        });
         if !tool_calls_json.is_empty() {
             message["tool_calls"] = Value::Array(tool_calls_json);
         }
