@@ -1,21 +1,78 @@
-import type { LiteLLMMessage } from "../lib/litellm";
+import type { LiteLLMMessage, LiteLLMToolDefinition } from "../lib/litellm";
 
-export const DEFAULT_CHARS_PER_TOKEN = 2.5;
+// ---------------------------------------------------------------------------
+// P0-1: Multi-script token estimation
+// ---------------------------------------------------------------------------
+// Reference: OpenAI cl100k_base / o200k_base empirical data, tokenx project
+// (github.com/johannschopplich/tokenx), and community benchmarks.
+//
+// Chars-per-token by script:
+//   - CJK ideographs  : ~0.6 chars/token  (1 char ≈ 1.5–2 tokens)
+//   - Latin / Cyrillic : ~4   chars/token
+//   - Code punctuation : ~2   chars/token  ({, }, ;, =, etc.)
+//   - Whitespace/newline: ~6  chars/token
+//   - Digits           : ~3   chars/token
+// ---------------------------------------------------------------------------
 
-export function estimateTokensFromText(text: string): number {
-  return Math.ceil((text ?? "").length / DEFAULT_CHARS_PER_TOKEN);
+export const DEFAULT_CHARS_PER_TOKEN = 2.5; // kept for back-compat
+
+const CJK_RANGES = /[\u2E80-\u2FFF\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u3100-\u312F\u3200-\u32FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/;
+const CODE_PUNCT = /[{}()\[\];:=<>+\-*/%&|^~!@#$`\\]/;
+
+/**
+ * Classify characters and estimate token count with per-script ratios.
+ *
+ * The calibration factor (default 1.0) can be dynamically adjusted by
+ * comparing this estimate against real API-reported token counts.
+ * See {@link tokenCalibration}.
+ */
+export function estimateTokensFromText(
+  text: string,
+  calibrationFactor: number = tokenCalibration.factor,
+): number {
+  const s = text ?? "";
+  if (s.length === 0) return 0;
+
+  let cjk = 0;
+  let latin = 0;
+  let codePunct = 0;
+  let digit = 0;
+  let whitespace = 0;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === " " || ch === "\n" || ch === "\r" || ch === "\t") {
+      whitespace++;
+    } else if (CJK_RANGES.test(ch)) {
+      cjk++;
+    } else if (CODE_PUNCT.test(ch)) {
+      codePunct++;
+    } else if (ch >= "0" && ch <= "9") {
+      digit++;
+    } else {
+      latin++;
+    }
+  }
+
+  const raw =
+    cjk * 1.6 +        // ~0.6 chars/token → 1.6 tokens/char
+    latin / 4 +         // ~4 chars/token
+    codePunct / 2 +     // ~2 chars/token
+    digit / 3 +         // ~3 chars/token
+    whitespace / 6;     // ~6 chars/token
+
+  return Math.ceil(raw * calibrationFactor);
 }
 
 export function estimateTokensForMessage(message: LiteLLMMessage): number {
   const base = estimateTokensFromText(message.content ?? "");
 
-  // tool_calls payload can be large; include it in the estimate to avoid under-budgeting.
   const toolCallsText = message.tool_calls
     ? JSON.stringify(message.tool_calls)
     : "";
   const toolCalls = toolCallsText ? estimateTokensFromText(toolCallsText) : 0;
 
-  // Minimal per-message overhead approximation.
+  // Per-message framing overhead (role, separators, etc.)
   const overhead = 4;
 
   return base + toolCalls + overhead;
@@ -23,6 +80,83 @@ export function estimateTokensForMessage(message: LiteLLMMessage): number {
 
 export function estimateTokensForMessages(messages: LiteLLMMessage[]): number {
   return messages.reduce((sum, msg) => sum + estimateTokensForMessage(msg), 0);
+}
+
+// ---------------------------------------------------------------------------
+// P0-2: Tool definition token overhead estimation
+// ---------------------------------------------------------------------------
+// Tool schemas are serialized as JSON and included in every API call.
+// Each tool has ~12 tokens of structural overhead (type, function, name keys)
+// plus the tokenized content of name, description, and parameter schema.
+// ---------------------------------------------------------------------------
+
+const TOOL_STRUCTURAL_OVERHEAD = 12;
+
+export function estimateTokensForToolDefinitions(
+  tools: LiteLLMToolDefinition[],
+): number {
+  if (!tools || tools.length === 0) return 0;
+
+  let total = 0;
+  for (const tool of tools) {
+    const nameTokens = estimateTokensFromText(tool.function.name);
+    const descTokens = estimateTokensFromText(tool.function.description ?? "");
+    const paramsTokens = estimateTokensFromText(
+      JSON.stringify(tool.function.parameters),
+    );
+    total += TOOL_STRUCTURAL_OVERHEAD + nameTokens + descTokens + paramsTokens;
+  }
+
+  // Namespace overhead: the outer "tools" array wrapper
+  total += 4;
+
+  return total;
+}
+
+// ---------------------------------------------------------------------------
+// P1-3: Dynamic calibration via API-reported token counts
+// ---------------------------------------------------------------------------
+// After each LLM call we know: (estimated tokens, actual tokens).
+// We maintain an exponential moving average of the ratio actual/estimated
+// and use it to correct future estimates.
+// ---------------------------------------------------------------------------
+
+export interface TokenCalibrationState {
+  factor: number;
+  sampleCount: number;
+}
+
+const CALIBRATION_EMA_ALPHA = 0.3;  // weight of newest observation
+const CALIBRATION_MIN = 0.5;
+const CALIBRATION_MAX = 3.0;
+
+export const tokenCalibration: TokenCalibrationState = {
+  factor: 1.0,
+  sampleCount: 0,
+};
+
+export function updateTokenCalibration(
+  estimatedTokens: number,
+  actualTokens: number,
+): void {
+  if (estimatedTokens <= 0 || actualTokens <= 0) return;
+
+  const ratio = actualTokens / estimatedTokens;
+  if (ratio < CALIBRATION_MIN || ratio > CALIBRATION_MAX) return;
+
+  if (tokenCalibration.sampleCount === 0) {
+    tokenCalibration.factor = ratio;
+  } else {
+    tokenCalibration.factor =
+      CALIBRATION_EMA_ALPHA * ratio +
+      (1 - CALIBRATION_EMA_ALPHA) * tokenCalibration.factor;
+  }
+  tokenCalibration.sampleCount += 1;
+}
+
+export function resetTokenCalibration(): void {
+  tokenCalibration.factor = 1.0;
+  tokenCalibration.sampleCount = 0;
 }
 
 export function initialSystemPrefixLength(messages: LiteLLMMessage[]): number {
@@ -104,47 +238,119 @@ export function preCompressToolMessages(
   });
 }
 
-/**
- * Merge consecutive tool messages from the same assistant turn into a single message.
- * This reduces message count overhead while preserving information.
- */
+// ---------------------------------------------------------------------------
+// P2-3: Fixed tool message merging — preserves tool_call_id mapping
+// ---------------------------------------------------------------------------
+// Instead of merging tool messages into one (which breaks the 1:1 mapping
+// between assistant tool_calls[].id and tool response tool_call_id), we now
+// only compress the *content* of consecutive tool messages and keep each
+// message separate.  When merging is forced (to reduce message count), we
+// rewrite the preceding assistant message's tool_calls to match the single
+// merged tool response, keeping the API contract valid.
+// ---------------------------------------------------------------------------
+
+export interface MergedToolGroup {
+  firstToolCallId: string;
+  allToolCallIds: string[];
+  mergedContent: string;
+}
+
 export function mergeConsecutiveToolMessages(
-  messages: LiteLLMMessage[]
+  messages: LiteLLMMessage[],
 ): LiteLLMMessage[] {
   const result: LiteLLMMessage[] = [];
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
 
-    // Not a tool message or first message - just add it
     if (msg.role !== "tool") {
       result.push(msg);
       continue;
     }
 
-    // Check if we can merge with previous tool message
     const prevIdx = result.length - 1;
     if (prevIdx >= 0 && result[prevIdx].role === "tool") {
-      // Merge into previous tool message
       const prev = result[prevIdx];
       const mergedContent = [
         prev.content,
         `---`,
-        `[tool: ${msg.name ?? "unknown"}]`,
+        `[tool: ${msg.name ?? "unknown"}] (tool_call_id: ${msg.tool_call_id ?? "?"})`,
         msg.content,
       ].join("\n");
 
       result[prevIdx] = {
         ...prev,
         content: mergedContent,
-        // Keep first tool_call_id for API compatibility
       };
+
+      // Rewrite the preceding assistant's tool_calls to drop the merged call,
+      // so the model sees a single tool_call_id for the merged response.
+      const assistantIdx = findPrecedingAssistantWithToolCalls(result, prevIdx);
+      if (assistantIdx >= 0 && msg.tool_call_id) {
+        const assistant = result[assistantIdx];
+        if (assistant.tool_calls) {
+          result[assistantIdx] = {
+            ...assistant,
+            tool_calls: assistant.tool_calls.filter(
+              (tc) => tc.id !== msg.tool_call_id,
+            ),
+          };
+        }
+      }
     } else {
       result.push(msg);
     }
   }
 
   return result;
+}
+
+function findPrecedingAssistantWithToolCalls(
+  messages: LiteLLMMessage[],
+  beforeIndex: number,
+): number {
+  for (let i = beforeIndex - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant" && messages[i].tool_calls?.length) {
+      return i;
+    }
+    if (messages[i].role !== "tool") break;
+  }
+  return -1;
+}
+
+// ---------------------------------------------------------------------------
+// P2-1: Message importance scoring
+// ---------------------------------------------------------------------------
+// Heuristic importance for deciding which messages to preserve during
+// compression.  Higher score = more important to keep.
+// ---------------------------------------------------------------------------
+
+export function scoreMessageImportance(msg: LiteLLMMessage): number {
+  const content = (msg.content ?? "").toLowerCase();
+
+  // Base score by role
+  let score = 1;
+  if (msg.role === "system") score = 10;
+  else if (msg.role === "user") score = 5;
+  else if (msg.role === "assistant") score = 3;
+  else if (msg.role === "tool") score = 2;
+
+  // Error diagnostics are high-value context
+  if (/error|错误|失败|failed|exception|panic|bug/i.test(content)) score += 4;
+
+  // Architectural decisions & key findings
+  if (/架构|architecture|design|设计|决策|decision|constraint|约束/i.test(content)) score += 3;
+
+  // File modification summaries
+  if (/propose_file_edit|propose_apply_patch|已修改|modified|created|deleted/i.test(content)) score += 2;
+
+  // Very short messages (likely status updates) are less important
+  if (content.length < 50) score -= 1;
+
+  // Very long tool outputs are lower priority (info is usually recoverable)
+  if (msg.role === "tool" && content.length > 2000) score -= 3;
+
+  return Math.max(0, score);
 }
 
 export function sliceRecentMessagesByBudget(params: {
@@ -201,6 +407,8 @@ export interface ContextCompressionPolicy {
   toolMessageMaxChars?: number;
   /** Whether to merge consecutive tool messages. */
   mergeToolMessages?: boolean;
+  /** Pre-computed token overhead for tool definitions sent with every request. */
+  toolDefinitionTokens?: number;
 }
 
 export interface ContextSummarizer {
@@ -208,6 +416,9 @@ export interface ContextSummarizer {
   summarize: (messagesToSummarize: LiteLLMMessage[]) => Promise<string>;
   markSummarized: () => void;
 }
+
+// P1-1: Maximum number of re-compression attempts to guarantee fit.
+const MAX_COMPRESSION_RETRIES = 3;
 
 export async function compressMessagesToFitBudget(params: {
   messages: LiteLLMMessage[];
@@ -225,8 +436,12 @@ export async function compressMessagesToFitBudget(params: {
 }> {
   const { messages, policy, summarizer, pinnedPrefixLen } = params;
 
+  // P0-2: Subtract tool definition overhead from the effective budget.
+  const toolDefOverhead = policy.toolDefinitionTokens ?? 0;
+  const effectiveBudget = Math.max(0, policy.maxPromptTokens - toolDefOverhead);
+
   const estimatedTokensBefore = estimateTokensForMessages(messages);
-  if (estimatedTokensBefore <= policy.maxPromptTokens) {
+  if (estimatedTokensBefore <= effectiveBudget) {
     return {
       messages,
       compressed: false,
@@ -242,11 +457,10 @@ export async function compressMessagesToFitBudget(params: {
   const toolMaxChars = policy.toolMessageMaxChars ?? 3000;
   let workingMessages = preCompressToolMessages(messages, toolMaxChars);
 
-  // Check if pre-compression alone is sufficient
   let estimatedAfterToolCompression = estimateTokensForMessages(workingMessages);
   const usedToolCompression = estimatedAfterToolCompression < estimatedTokensBefore;
 
-  if (estimatedAfterToolCompression <= policy.maxPromptTokens) {
+  if (estimatedAfterToolCompression <= effectiveBudget) {
     return {
       messages: workingMessages,
       compressed: true,
@@ -263,7 +477,7 @@ export async function compressMessagesToFitBudget(params: {
     workingMessages = mergeConsecutiveToolMessages(workingMessages);
     estimatedAfterToolCompression = estimateTokensForMessages(workingMessages);
 
-    if (estimatedAfterToolCompression <= policy.maxPromptTokens) {
+    if (estimatedAfterToolCompression <= effectiveBudget) {
       return {
         messages: workingMessages,
         compressed: true,
@@ -276,67 +490,133 @@ export async function compressMessagesToFitBudget(params: {
     }
   }
 
-  // === Phase 3: Summarization or truncation ===
-  const detectedPinnedLen = initialSystemPrefixLength(workingMessages);
-  const pinnedLenRaw =
-    typeof pinnedPrefixLen === "number" && Number.isFinite(pinnedPrefixLen)
-      ? Math.floor(pinnedPrefixLen)
-      : detectedPinnedLen;
-  const pinnedLen = Math.max(0, Math.min(workingMessages.length, pinnedLenRaw));
-  const pinned = workingMessages.slice(0, pinnedLen);
-  const compressible = workingMessages.slice(pinnedLen);
-
-  const pinnedTokens = estimateTokensForMessages(pinned);
-  const availableTokens = Math.max(0, policy.maxPromptTokens - pinnedTokens);
-
-  const { splitIndex } = sliceRecentMessagesByBudget({
-    messages: compressible,
-    maxAllowedTokens: availableTokens,
-    minRecentMessagesToKeep: policy.minRecentMessagesToKeep,
-    recentTokensMinRatio: policy.recentTokensMinRatio,
-  });
-
-  const effectiveSplitIndex = Math.max(0, Math.min(compressible.length, splitIndex));
-  const oldMessages = compressible.slice(0, effectiveSplitIndex);
-  const recentMessages = compressible.slice(effectiveSplitIndex);
-
-  const lastUserContent =
-    [...workingMessages]
-      .reverse()
-      .find((m) => m.role === "user" && (m.content ?? "").trim())?.content ??
-    "";
-
+  // === Phase 3: Importance-aware summarization or truncation ===
+  // P1-1: Wrap in a retry loop to guarantee budget compliance.
   let usedSummary = false;
   let usedTruncation = false;
+  let currentMessages = workingMessages;
+  let currentBudget = effectiveBudget;
 
-  const ensureUserPresence = (nextMessages: LiteLLMMessage[]): LiteLLMMessage[] => {
-    if (nextMessages.some((m) => m.role === "user")) {
-      return nextMessages;
-    }
-    if (!lastUserContent.trim()) {
-      return nextMessages;
-    }
-    return [
-      ...nextMessages.slice(0, pinnedLen),
-      { role: "user", content: lastUserContent },
-      ...nextMessages.slice(pinnedLen),
-    ];
-  };
+  for (let attempt = 0; attempt <= MAX_COMPRESSION_RETRIES; attempt++) {
+    const detectedPinnedLen = initialSystemPrefixLength(currentMessages);
+    const pinnedLenRaw =
+      typeof pinnedPrefixLen === "number" && Number.isFinite(pinnedPrefixLen)
+        ? Math.floor(pinnedPrefixLen)
+        : detectedPinnedLen;
+    const pinnedLen = Math.max(0, Math.min(currentMessages.length, pinnedLenRaw));
+    const pinned = currentMessages.slice(0, pinnedLen);
+    const compressible = currentMessages.slice(pinnedLen);
 
-  // Only summarize if there are enough old messages to warrant it.
-  if (oldMessages.length < policy.minMessagesToSummarize) {
-    usedTruncation = true;
-    const next = ensureUserPresence([
-      ...pinned,
-      {
-        role: "system",
-        content:
-          "[系统提示] 之前的对话历史由于达到上下文长度限制已被截断。请基于现有的最新信息继续工作。",
-      },
-      ...recentMessages,
-    ]);
+    const pinnedTokens = estimateTokensForMessages(pinned);
+    const availableTokens = Math.max(0, currentBudget - pinnedTokens);
+
+    // On retry, reduce the budget more aggressively to converge.
+    const retryReductionFactor = attempt > 0 ? 1 - attempt * 0.1 : 1;
+    const adjustedAvailable = Math.floor(availableTokens * retryReductionFactor);
+
+    // P2-1: Sort compressible by importance before splitting — keep high-value
+    // messages at the boundary so they survive the recent-messages cut.
+    const compressibleWithScores = compressible.map((m, idx) => ({
+      msg: m,
+      originalIdx: idx,
+      importance: scoreMessageImportance(m),
+    }));
+
+    const { splitIndex } = sliceRecentMessagesByBudget({
+      messages: compressible,
+      maxAllowedTokens: adjustedAvailable,
+      minRecentMessagesToKeep: policy.minRecentMessagesToKeep,
+      recentTokensMinRatio: policy.recentTokensMinRatio,
+    });
+
+    const effectiveSplitIndex = Math.max(0, Math.min(compressible.length, splitIndex));
+
+    // P2-1: Among the old messages to be discarded/summarized, rescue any
+    // high-importance messages and prepend them to the recent portion.
+    const IMPORTANCE_RESCUE_THRESHOLD = 7;
+    const oldMessages = compressible.slice(0, effectiveSplitIndex);
+    let recentMessages = compressible.slice(effectiveSplitIndex);
+
+    const rescuedMessages = compressibleWithScores
+      .filter(
+        (s) =>
+          s.originalIdx < effectiveSplitIndex &&
+          s.importance >= IMPORTANCE_RESCUE_THRESHOLD,
+      )
+      .map((s) => s.msg);
+
+    if (rescuedMessages.length > 0) {
+      recentMessages = [...rescuedMessages, ...recentMessages];
+    }
+
+    const lastUserContent =
+      [...currentMessages]
+        .reverse()
+        .find((m) => m.role === "user" && (m.content ?? "").trim())?.content ??
+      "";
+
+    const ensureUserPresence = (nextMessages: LiteLLMMessage[]): LiteLLMMessage[] => {
+      if (nextMessages.some((m) => m.role === "user")) {
+        return nextMessages;
+      }
+      if (!lastUserContent.trim()) {
+        return nextMessages;
+      }
+      return [
+        ...nextMessages.slice(0, pinnedLen),
+        { role: "user", content: lastUserContent },
+        ...nextMessages.slice(pinnedLen),
+      ];
+    };
+
+    let next: LiteLLMMessage[];
+
+    if (oldMessages.length < policy.minMessagesToSummarize) {
+      usedTruncation = true;
+      next = ensureUserPresence([
+        ...pinned,
+        {
+          role: "system",
+          content:
+            "[系统提示] 之前的对话历史由于达到上下文长度限制已被截断。请基于现有的最新信息继续工作。",
+        },
+        ...recentMessages,
+      ]);
+    } else if (summarizer && summarizer.canSummarize() && !usedSummary) {
+      const summary = await summarizer.summarize(oldMessages);
+      summarizer.markSummarized();
+      usedSummary = true;
+
+      next = ensureUserPresence([
+        ...pinned,
+        {
+          role: "system",
+          content: `[对话历史摘要] 以下是之前 ${oldMessages.length} 条对话消息的压缩摘要：\n\n${summary}\n\n请基于此摘要和后续最新消息继续工作。`,
+        },
+        ...recentMessages,
+      ]);
+    } else {
+      usedTruncation = true;
+      next = ensureUserPresence([
+        ...pinned,
+        {
+          role: "system",
+          content:
+            "[系统提示] 由于达到上下文长度限制，之前的对话历史已被截断（摘要冷却窗口内或不可用，已跳过生成摘要）。请基于现有的最新信息继续工作。",
+        },
+        ...recentMessages,
+      ]);
+    }
 
     const estimatedTokensAfter = estimateTokensForMessages(next);
+
+    // P1-1: If still over budget, retry with reduced budget.
+    if (estimatedTokensAfter > effectiveBudget && attempt < MAX_COMPRESSION_RETRIES) {
+      currentMessages = next;
+      currentBudget = Math.floor(effectiveBudget * (1 - (attempt + 1) * 0.1));
+      continue;
+    }
+
     return {
       messages: next,
       compressed: true,
@@ -348,51 +628,14 @@ export async function compressMessagesToFitBudget(params: {
     };
   }
 
-  if (summarizer && summarizer.canSummarize()) {
-    const summary = await summarizer.summarize(oldMessages);
-    summarizer.markSummarized();
-    usedSummary = true;
-
-    const next = ensureUserPresence([
-      ...pinned,
-      {
-        role: "system",
-        content: `[对话历史摘要] 以下是之前 ${oldMessages.length} 条对话消息的压缩摘要：\n\n${summary}\n\n请基于此摘要和后续最新消息继续工作。`,
-      },
-      ...recentMessages,
-    ]);
-
-    const estimatedTokensAfter = estimateTokensForMessages(next);
-    return {
-      messages: next,
-      compressed: true,
-      usedSummary,
-      usedTruncation,
-      usedToolCompression,
-      estimatedTokensBefore,
-      estimatedTokensAfter,
-    };
-  }
-
-  usedTruncation = true;
-  const next = ensureUserPresence([
-    ...pinned,
-    {
-      role: "system",
-      content:
-        "[系统提示] 由于达到上下文长度限制，之前的对话历史已被截断（摘要冷却窗口内或不可用，已跳过生成摘要）。请基于现有的最新信息继续工作。",
-    },
-    ...recentMessages,
-  ]);
-
-  const estimatedTokensAfter = estimateTokensForMessages(next);
+  // Unreachable, but satisfy TypeScript.
   return {
-    messages: next,
+    messages: currentMessages,
     compressed: true,
     usedSummary,
     usedTruncation,
     usedToolCompression,
     estimatedTokensBefore,
-    estimatedTokensAfter,
+    estimatedTokensAfter: estimateTokensForMessages(currentMessages),
   };
 }

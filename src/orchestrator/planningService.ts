@@ -33,7 +33,12 @@ import {
   type CofreeRcConfig,
 } from "../lib/cofreerc";
 import { SummaryCache } from "../lib/summaryCache";
-import { compressMessagesToFitBudget, estimateTokensForMessages } from "./contextBudget";
+import {
+  compressMessagesToFitBudget,
+  estimateTokensForMessages,
+  estimateTokensForToolDefinitions,
+  updateTokenCalibration,
+} from "./contextBudget";
 const MAX_TOOL_LOOP_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 30;
 const MAX_LIST_ENTRIES = 120;
@@ -43,12 +48,55 @@ const MAX_TOOL_RESULT_PREVIEW = 400;
 // --- Phase 4: Context management budgets ---
 const SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000;
 const SUMMARY_CACHE_MAX_ENTRIES = 100;
-const SUMMARY_COOLDOWN_MS = 60 * 1000;
+const BASE_SUMMARY_COOLDOWN_MS = 60 * 1000;
 
 const MIN_MESSAGES_TO_SUMMARIZE = 4;
 const MIN_RECENT_MESSAGES_TO_KEEP = 6;
 const RECENT_TOKENS_MIN_RATIO = 0.4;
-const TOOL_MESSAGE_MAX_CHARS = 3000; // Max chars for individual tool messages during pre-compression
+const TOOL_MESSAGE_MAX_CHARS = 3000;
+
+// P2-2: Dynamic cooldown state — tracks token growth to adjust cooldown.
+const tokenGrowthTracker = new Map<string, { timestamps: number[]; tokenCounts: number[] }>();
+
+function computeDynamicCooldownMs(workspacePath: string | undefined, currentTokens: number): number {
+  const ws = workspacePath?.trim() || "";
+  if (!ws) return BASE_SUMMARY_COOLDOWN_MS;
+
+  let tracker = tokenGrowthTracker.get(ws);
+  if (!tracker) {
+    tracker = { timestamps: [], tokenCounts: [] };
+    tokenGrowthTracker.set(ws, tracker);
+  }
+
+  const now = Date.now();
+  tracker.timestamps.push(now);
+  tracker.tokenCounts.push(currentTokens);
+
+  // Keep only the last 10 samples
+  while (tracker.timestamps.length > 10) {
+    tracker.timestamps.shift();
+    tracker.tokenCounts.shift();
+  }
+
+  if (tracker.timestamps.length < 2) return BASE_SUMMARY_COOLDOWN_MS;
+
+  const timeDelta = tracker.timestamps[tracker.timestamps.length - 1] - tracker.timestamps[0];
+  const tokenDelta = tracker.tokenCounts[tracker.tokenCounts.length - 1] - tracker.tokenCounts[0];
+
+  if (timeDelta <= 0) return BASE_SUMMARY_COOLDOWN_MS;
+
+  // tokens per second growth rate
+  const growthRate = tokenDelta / (timeDelta / 1000);
+
+  // High growth (>500 tok/s) → shorten cooldown to 15s
+  // Normal growth → use base cooldown
+  if (growthRate > 500) return 15_000;
+  if (growthRate > 200) return 30_000;
+  return BASE_SUMMARY_COOLDOWN_MS;
+}
+
+// P1-2: Max chars per chunk for map-reduce summarization
+const SUMMARY_CHUNK_MAX_CHARS = 8000;
 
 const MAX_TOOL_OUTPUT_CHARS = 15000; // hard cap for tool content injected into LLM context
 const MAX_GREP_PREVIEW_MATCHES = 30;
@@ -811,11 +859,13 @@ const summaryCache = new SummaryCache({
 // Cooldown is per workspace to reduce oscillation on retries.
 const lastSummaryAtMsByWorkspace = new Map<string, number>();
 
-function canSummarizeNow(workspacePath: string | undefined): boolean {
+function canSummarizeNow(workspacePath: string | undefined, currentTokens?: number): boolean {
   const ws = workspacePath?.trim() || "";
   if (!ws) return true;
   const last = lastSummaryAtMsByWorkspace.get(ws) ?? 0;
-  return Date.now() - last >= SUMMARY_COOLDOWN_MS;
+  // P2-2: Use dynamic cooldown based on token growth rate.
+  const cooldown = computeDynamicCooldownMs(workspacePath, currentTokens ?? 0);
+  return Date.now() - last >= cooldown;
 }
 
 function markSummarizedNow(workspacePath: string | undefined): void {
@@ -955,6 +1005,94 @@ function normalizeMessageContent(content: unknown): string {
 }
 
 
+// ---------------------------------------------------------------------------
+// P1-2: Map-reduce summarization
+// ---------------------------------------------------------------------------
+// Instead of truncating combined content to 12000 chars, we split messages
+// into chunks that each fit within SUMMARY_CHUNK_MAX_CHARS, summarize each
+// chunk independently (Map), then combine the chunk summaries and produce
+// a final reduced summary (Reduce).
+//
+// Reference: LangChain MapReduceChain pattern.
+// ---------------------------------------------------------------------------
+
+const SUMMARY_SYSTEM_PROMPT = [
+  "你是一个代码助手内置的上下文压缩引擎。你的任务是将冗长的对话历史压缩为高密度的摘要，保留对后续工作至关重要的事实与技术上下文。",
+  "请使用高度结构化、简明扼要的语言（中文）输出，严格控制在 800 字以内，并包含以下部分：",
+  "【核心目标】用户最初的需求是什么？",
+  "【已完成变更】涉及哪些文件的修改？具体做了什么（给出关键函数或组件名）？",
+  "【收集到的事实】发现的重要错误信息、项目的架构约束、特殊的配置结构等。",
+  "【当前进展与下一步】任务停在哪里？接下来立即需要解决的是什么？",
+].join("\n");
+
+const CHUNK_SUMMARY_SYSTEM_PROMPT = [
+  "你是一个代码助手内置的上下文压缩引擎。你的任务是将以下对话片段压缩为简洁的摘要要点。",
+  "保留所有关键技术细节：文件名、函数名、错误信息、架构决策。",
+  "使用简洁的中文输出，严格控制在 400 字以内。",
+].join("\n");
+
+function formatMessagesForSummary(msgs: LiteLLMMessage[]): string {
+  return msgs
+    .map((msg) => {
+      const roleLabel =
+        msg.role === "user"
+          ? "用户"
+          : msg.role === "assistant"
+          ? "助手"
+          : msg.role;
+      return `[${roleLabel}] ${msg.content}`;
+    })
+    .join("\n---\n");
+}
+
+function splitMessagesIntoChunks(
+  messages: LiteLLMMessage[],
+  maxCharsPerChunk: number,
+): LiteLLMMessage[][] {
+  const chunks: LiteLLMMessage[][] = [];
+  let currentChunk: LiteLLMMessage[] = [];
+  let currentChars = 0;
+
+  for (const msg of messages) {
+    const msgChars = (msg.content ?? "").length + 20; // +20 for role label overhead
+    if (currentChunk.length > 0 && currentChars + msgChars > maxCharsPerChunk) {
+      chunks.push(currentChunk);
+      currentChunk = [];
+      currentChars = 0;
+    }
+    currentChunk.push(msg);
+    currentChars += msgChars;
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
+}
+
+async function summarizeSingleChunk(
+  content: string,
+  settings: AppSettings,
+  systemPrompt: string,
+): Promise<string | null> {
+  const messages: LiteLLMMessage[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content },
+  ];
+
+  try {
+    const requestBody = createLiteLLMRequestBody(messages, settings, {});
+    const response = await postLiteLLMChatCompletions(settings, requestBody);
+    const payload = JSON.parse(response.body) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    return payload.choices?.[0]?.message?.content?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function requestSummary(
   messagesToSummarize: LiteLLMMessage[],
   settings: AppSettings,
@@ -975,59 +1113,69 @@ async function requestSummary(
   console.log(`[Context] 开始上下文摘要压缩 | ${messagesToSummarize.length} messages`);
   const sumT0 = performance.now();
 
-  const combinedContent = messagesToSummarize
-    .map((msg) => {
-      const roleLabel =
-        msg.role === "user"
-          ? "用户"
-          : msg.role === "assistant"
-          ? "助手"
-          : msg.role;
-      return `[${roleLabel}] ${msg.content}`;
-    })
-    .join("\n---\n");
+  const combinedContent = formatMessagesForSummary(messagesToSummarize);
 
-  const truncatedContent =
-    combinedContent.length > 12000
-      ? combinedContent.slice(0, 12000) + "\n...(已截断)"
-      : combinedContent;
-
-  const summaryMessages: LiteLLMMessage[] = [
-    {
-      role: "system",
-      content: [
-        "你是一个代码助手内置的上下文压缩引擎。你的任务是将冗长的对话历史压缩为高密度的摘要，保留对后续工作至关重要的事实与技术上下文。",
-        "请使用高度结构化、简明扼要的语言（中文）输出，严格控制在 800 字以内，并包含以下部分：",
-        "【核心目标】用户最初的需求是什么？",
-        "【已完成变更】涉及哪些文件的修改？具体做了什么（给出关键函数或组件名）？",
-        "【收集到的事实】发现的重要错误信息、项目的架构约束、特殊的配置结构等。",
-        "【当前进展与下一步】任务停在哪里？接下来立即需要解决的是什么？",
-      ].join("\n"),
-    },
-    {
-      role: "user",
-      content: truncatedContent,
-    },
-  ];
-
-  try {
-    const requestBody = createLiteLLMRequestBody(summaryMessages, settings, {});
-    const response = await postLiteLLMChatCompletions(settings, requestBody);
-    const payload = JSON.parse(response.body) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const summaryText = payload.choices?.[0]?.message?.content?.trim();
-    if (summaryText) {
-      const sumElapsed = ((performance.now() - sumT0) / 1000).toFixed(2);
-      console.log(`[Context] 摘要完成 | ${sumElapsed}s | ${summaryText.length} chars`);
-      summaryCache.set(cacheKey, summaryText);
-      return summaryText;
+  // If content fits in a single chunk, use direct summarization (fast path).
+  if (combinedContent.length <= SUMMARY_CHUNK_MAX_CHARS) {
+    const result = await summarizeSingleChunk(
+      combinedContent,
+      settings,
+      SUMMARY_SYSTEM_PROMPT,
+    );
+    if (result) {
+      const elapsed = ((performance.now() - sumT0) / 1000).toFixed(2);
+      console.log(`[Context] 摘要完成 (直接) | ${elapsed}s | ${result.length} chars`);
+      summaryCache.set(cacheKey, result);
+      return result;
     }
-  } catch (e) {
-    const sumElapsed = ((performance.now() - sumT0) / 1000).toFixed(2);
-    console.warn(`[Context] 摘要请求失败 (${sumElapsed}s)，使用 fallback`, e);
+  } else {
+    // P1-2: Map-Reduce — split into chunks, summarize each, then reduce.
+    const chunks = splitMessagesIntoChunks(messagesToSummarize, SUMMARY_CHUNK_MAX_CHARS);
+    console.log(`[Context] Map-Reduce 摘要: ${chunks.length} chunks`);
+
+    // Map phase: summarize each chunk
+    const chunkSummaries: string[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkContent = formatMessagesForSummary(chunks[i]);
+      const chunkSummary = await summarizeSingleChunk(
+        chunkContent,
+        settings,
+        CHUNK_SUMMARY_SYSTEM_PROMPT,
+      );
+      if (chunkSummary) {
+        chunkSummaries.push(`[片段 ${i + 1}/${chunks.length}]\n${chunkSummary}`);
+      } else {
+        // Fallback: take first 500 chars of the chunk
+        chunkSummaries.push(
+          `[片段 ${i + 1}/${chunks.length}]\n${chunkContent.slice(0, 500)}...`,
+        );
+      }
+    }
+
+    // Reduce phase: combine chunk summaries into final summary
+    const combinedChunkSummaries = chunkSummaries.join("\n\n");
+    const reducedContent =
+      combinedChunkSummaries.length <= SUMMARY_CHUNK_MAX_CHARS
+        ? combinedChunkSummaries
+        : combinedChunkSummaries.slice(0, SUMMARY_CHUNK_MAX_CHARS) + "\n...(部分片段已省略)";
+
+    const finalSummary = await summarizeSingleChunk(
+      `以下是对话历史分段摘要，请合并为一份完整、结构化的最终摘要：\n\n${reducedContent}`,
+      settings,
+      SUMMARY_SYSTEM_PROMPT,
+    );
+
+    if (finalSummary) {
+      const elapsed = ((performance.now() - sumT0) / 1000).toFixed(2);
+      console.log(
+        `[Context] Map-Reduce 摘要完成 | ${elapsed}s | ${chunks.length} chunks → ${finalSummary.length} chars`,
+      );
+      summaryCache.set(cacheKey, finalSummary);
+      return finalSummary;
+    }
   }
 
+  // Fallback when summarization fails
   const userMessages = messagesToSummarize.filter((m) => m.role === "user");
   const fallbackLines = userMessages
     .map((m) => m.content.slice(0, 100))
@@ -1654,6 +1802,8 @@ async function executeSubAgentTask(
   const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
   const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
   const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
+  // P0-2: Include tool definition overhead for sub-agent.
+  const subToolDefTokens = estimateTokensForToolDefinitions(subAgentTools);
   const compressionPolicy = {
     maxPromptTokens: promptBudgetTarget,
     minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
@@ -1661,9 +1811,13 @@ async function executeSubAgentTask(
     recentTokensMinRatio: RECENT_TOKENS_MIN_RATIO,
     toolMessageMaxChars: TOOL_MESSAGE_MAX_CHARS,
     mergeToolMessages: true,
+    toolDefinitionTokens: subToolDefTokens,
   };
   const summarizer = {
-    canSummarize: () => canSummarizeNow(workspacePath),
+    canSummarize: () => {
+      const estTokens = estimateTokensForMessages(messages);
+      return canSummarizeNow(workspacePath, estTokens);
+    },
     summarize: (messagesToSummarize: LiteLLMMessage[]) =>
       requestSummary(messagesToSummarize, settings, { workspacePath }),
     markSummarized: () => markSummarizedNow(workspacePath),
@@ -1694,6 +1848,12 @@ async function executeSubAgentTask(
       subAgentTools
     );
     messages.push(completion.assistantMessage);
+
+    // P1-3: Calibrate token estimates from sub-agent API responses.
+    if (completion.requestRecord.inputTokens) {
+      const estBeforeCall = estimateTokensForMessages(messages) + subToolDefTokens;
+      updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens);
+    }
 
     if (!completion.toolCalls.length) {
       if (completion.droppedToolCalls > 0) {
@@ -3245,16 +3405,18 @@ async function runNativeToolCallingLoop(
   let consecutiveFailureTurns = 0;
 
   // --- Context window management ---
-  // We reserve a safety buffer for the model's completion + tool-call overhead.
   const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
   const outputBufferTokens = Math.min(
     8000,
     Math.max(512, Math.floor(limitTokens * 0.15))
   );
   const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
-  // Compress a bit before the hard limit because our estimator is approximate.
   const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
   const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
+
+  // P0-2: Pre-compute tool definition overhead and pass to compression policy.
+  const toolDefTokens = estimateTokensForToolDefinitions(activeTools);
+  console.log(`[Loop] 工具定义 token 开销: ~${toolDefTokens} tokens (${activeTools.length} tools)`);
 
   const compressionPolicy = {
     maxPromptTokens: promptBudgetTarget,
@@ -3263,10 +3425,14 @@ async function runNativeToolCallingLoop(
     recentTokensMinRatio: RECENT_TOKENS_MIN_RATIO,
     toolMessageMaxChars: TOOL_MESSAGE_MAX_CHARS,
     mergeToolMessages: true,
+    toolDefinitionTokens: toolDefTokens,
   };
 
   const summarizer = {
-    canSummarize: () => canSummarizeNow(settings.workspacePath),
+    canSummarize: () => {
+      const estTokens = estimateTokensForMessages(messages);
+      return canSummarizeNow(settings.workspacePath, estTokens);
+    },
     summarize: (messagesToSummarize: LiteLLMMessage[]) =>
       requestSummary(messagesToSummarize, settings, {
         workspacePath: settings.workspacePath,
@@ -3316,6 +3482,12 @@ async function runNativeToolCallingLoop(
     );
     requestRecords.push(completion.requestRecord);
     messages.push(completion.assistantMessage);
+
+    // P1-3: Update token calibration with actual API-reported values.
+    if (completion.requestRecord.inputTokens) {
+      const estBeforeCall = estimateTokensForMessages(messages) + toolDefTokens;
+      updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens);
+    }
 
     if (!completion.toolCalls.length) {
       if (completion.droppedToolCalls > 0) {
