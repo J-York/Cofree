@@ -62,8 +62,21 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
+      - name: Validate signing key
+        shell: bash
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is not set."
+            echo "::error::Without it, tauri build will not produce .sig files and latest.json cannot be generated."
+            echo "::error::Go to Settings → Secrets and variables → Actions and add TAURI_SIGNING_PRIVATE_KEY."
+            echo "::error::See docs/BUILD.md for key generation instructions."
+            exit 1
+          fi
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 签名密钥：用于对安装包签名并生成 latest.json（应用内自动更新所需）
