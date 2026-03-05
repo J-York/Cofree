@@ -968,8 +968,12 @@ async function requestSummary(
   );
   const cached = summaryCache.get(cacheKey);
   if (cached) {
+    console.log(`[Context] 摘要命中缓存 (${messagesToSummarize.length} messages)`);
     return cached;
   }
+
+  console.log(`[Context] 开始上下文摘要压缩 | ${messagesToSummarize.length} messages`);
+  const sumT0 = performance.now();
 
   const combinedContent = messagesToSummarize
     .map((msg) => {
@@ -1014,14 +1018,16 @@ async function requestSummary(
     };
     const summaryText = payload.choices?.[0]?.message?.content?.trim();
     if (summaryText) {
+      const sumElapsed = ((performance.now() - sumT0) / 1000).toFixed(2);
+      console.log(`[Context] 摘要完成 | ${sumElapsed}s | ${summaryText.length} chars`);
       summaryCache.set(cacheKey, summaryText);
       return summaryText;
     }
-  } catch {
-    // Fallback: return a simple concatenation-based summary
+  } catch (e) {
+    const sumElapsed = ((performance.now() - sumT0) / 1000).toFixed(2);
+    console.warn(`[Context] 摘要请求失败 (${sumElapsed}s)，使用 fallback`, e);
   }
 
-  // Fallback: extract key lines from user messages
   const userMessages = messagesToSummarize.filter((m) => m.role === "user");
   const fallbackLines = userMessages
     .map((m) => m.content.slice(0, 100))
@@ -1664,7 +1670,11 @@ async function executeSubAgentTask(
   };
   const pinnedPrefixLen = 2;
 
+  console.log(`[SubAgent] 启动 | role=${role} | maxTurns=${maxTurns} | tools=${subAgentTools.length}`);
+
   for (let turn = 0; turn < maxTurns; turn += 1) {
+    console.log(`[SubAgent] ── Turn ${turn + 1}/${maxTurns} ── messages=${messages.length}`);
+
     const compression = await compressMessagesToFitBudget({
       messages,
       policy: compressionPolicy,
@@ -1672,7 +1682,9 @@ async function executeSubAgentTask(
       pinnedPrefixLen,
     });
     if (compression.compressed && compression.messages !== messages) {
+      const beforeLen = messages.length;
       messages.splice(0, messages.length, ...compression.messages);
+      console.log(`[SubAgent] 上下文压缩: ${beforeLen} → ${messages.length} messages`);
     }
 
 
@@ -1685,12 +1697,14 @@ async function executeSubAgentTask(
 
     if (!completion.toolCalls.length) {
       if (completion.droppedToolCalls > 0) {
+        console.warn(`[SubAgent] ${completion.droppedToolCalls} 个工具调用因格式畸形被丢弃`);
         messages.push({
           role: "system",
           content: `系统提示：${completion.droppedToolCalls} 个工具调用因格式畸形被丢弃。请使用正确格式重试。`,
         });
         continue;
       }
+      console.log(`[SubAgent] 完成 | turns=${turn + 1}`);
       return {
         reply: completion.assistantMessage.content.trim(),
         proposedActions,
@@ -1699,15 +1713,24 @@ async function executeSubAgentTask(
       };
     }
 
+    const subToolNames = completion.toolCalls.map((tc) => tc.function.name);
+    console.log(`[SubAgent] Turn ${turn + 1} 收到 ${completion.toolCalls.length} 个工具调用: [${subToolNames.join(", ")}]`);
+
     let subTurnHasToolNotFound = false;
     let subTurnSuccessCount = 0;
     let subTurnFailureCount = 0;
     for (const toolCall of completion.toolCalls) {
+      const subToolT0 = performance.now();
       const { result: toolResult, trace } = await executeToolCallWithRetry(
         toolCall,
         workspacePath,
         toolPermissions,
         settings
+      );
+      const subToolMs = (performance.now() - subToolT0).toFixed(0);
+      console.log(
+        `[SubAgent][Tool] ${toolCall.function.name} → ${trace.status} | ${subToolMs}ms` +
+          (trace.status === "failed" ? ` | ${trace.errorMessage}` : "")
       );
       toolTrace.push(trace);
 
@@ -1742,6 +1765,7 @@ async function executeSubAgentTask(
       subToolNotFoundStrikes = 0;
     }
     if (subToolNotFoundStrikes >= MAX_TOOL_NOT_FOUND_STRIKES) {
+      console.warn(`[SubAgent] 熔断: tool_not_found 连续 ${subToolNotFoundStrikes} 轮`);
       return {
         reply: "Sub-Agent 多次调用不存在的工具，已自动终止。",
         proposedActions,
@@ -1768,6 +1792,7 @@ async function executeSubAgentTask(
       subConsecutiveFailureTurns = 0;
     }
     if (subConsecutiveFailureTurns >= MAX_CONSECUTIVE_FAILURE_TURNS) {
+      console.warn(`[SubAgent] 熔断: 连续 ${subConsecutiveFailureTurns} 轮全部失败`);
       return {
         reply: "Sub-Agent 连续多轮工具调用全部失败，已自动终止。",
         proposedActions,
@@ -1777,6 +1802,7 @@ async function executeSubAgentTask(
     }
   }
 
+  console.warn(`[SubAgent] 达到轮次上限 (${maxTurns})，强制返回`);
   return {
     reply: "Sub-Agent 达到工具调用轮次上限，已返回当前进度。",
     proposedActions,
@@ -2992,8 +3018,16 @@ export async function requestToolCompletion(
     toolChoice: "auto",
   });
 
+  const t0 = performance.now();
+  console.log(
+    `[LLM] 发送请求 (非流式) | model=${settings.model} | messages=${messages.length} | tools=${activeTools.length}`
+  );
+
   const response = await postLiteLLMChatCompletions(settings, body);
+  const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
   if (response.status < 200 || response.status >= 300) {
+    console.warn(`[LLM] 请求失败 | status=${response.status} | ${elapsed}s`);
     const detail = parseErrorMessage(response.body, response.status);
     throw new Error(`服务员响应失败: ${detail}`);
   }
@@ -3011,6 +3045,16 @@ export async function requestToolCompletion(
   }
 
   const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
+
+  const inTok = payload.usage?.prompt_tokens;
+  const outTok = payload.usage?.completion_tokens;
+  console.log(
+    `[LLM] 收到响应 | ${elapsed}s | toolCalls=${toolCalls.length}` +
+      (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
+      (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
+      ` | id=${requestId}`
+  );
+
   const assistantMessage: LiteLLMMessage = {
     role: "assistant",
     content: normalizeMessageContent(rawMessage.content),
@@ -3025,8 +3069,8 @@ export async function requestToolCompletion(
       requestId,
       inputLength: inputLengthOf(messages),
       outputLength: response.body.length,
-      inputTokens: payload.usage?.prompt_tokens || undefined,
-      outputTokens: payload.usage?.completion_tokens || undefined,
+      inputTokens: inTok || undefined,
+      outputTokens: outTok || undefined,
     },
   };
 }
@@ -3054,6 +3098,11 @@ async function requestToolCompletionWithStream(
     toolChoice: "auto",
   });
 
+  const t0 = performance.now();
+  console.log(
+    `[LLM] 发送请求 (流式) | model=${settings.model} | messages=${messages.length} | tools=${activeTools.length}`
+  );
+
   const response = await postLiteLLMChatCompletionsStream(
     settings,
     body,
@@ -3062,7 +3111,10 @@ async function requestToolCompletionWithStream(
     }
   );
 
+  const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
   if (response.status < 200 || response.status >= 300) {
+    console.warn(`[LLM] 请求失败 | status=${response.status} | ${elapsed}s`);
     const detail = parseErrorMessage(response.body, response.status);
     throw new Error(`服务员响应失败: ${detail}`);
   }
@@ -3080,6 +3132,16 @@ async function requestToolCompletionWithStream(
   }
 
   const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
+
+  const inTok = payload.usage?.prompt_tokens;
+  const outTok = payload.usage?.completion_tokens;
+  console.log(
+    `[LLM] 收到响应 | ${elapsed}s | toolCalls=${toolCalls.length}` +
+      (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
+      (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
+      ` | id=${requestId}`
+  );
+
   const assistantMessage: LiteLLMMessage = {
     role: "assistant",
     content: normalizeMessageContent(rawMessage.content),
@@ -3094,8 +3156,8 @@ async function requestToolCompletionWithStream(
       requestId,
       inputLength: inputLengthOf(messages),
       outputLength: response.body.length,
-      inputTokens: payload.usage?.prompt_tokens || undefined,
-      outputTokens: payload.usage?.completion_tokens || undefined,
+      inputTokens: inTok || undefined,
+      outputTokens: outTok || undefined,
     },
   };
 }
@@ -3213,6 +3275,11 @@ async function runNativeToolCallingLoop(
   };
 
   for (let turn = 0; turn < MAX_TOOL_LOOP_TURNS; turn += 1) {
+    const estTokens = estimateTokensForMessages(messages);
+    console.log(
+      `[Loop] ── Turn ${turn + 1}/${MAX_TOOL_LOOP_TURNS} ── messages=${messages.length} | ~${estTokens} tokens`
+    );
+
     if (turn === TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD) {
       messages.push({
         role: "system",
@@ -3224,7 +3291,6 @@ async function runNativeToolCallingLoop(
       });
     }
 
-    // Keep prompt size within budget to avoid context overflow, especially after many tool turns.
     const compression = await compressMessagesToFitBudget({
       messages,
       policy: compressionPolicy,
@@ -3232,7 +3298,11 @@ async function runNativeToolCallingLoop(
       pinnedPrefixLen,
     });
     if (compression.compressed && compression.messages !== messages) {
+      const beforeLen = messages.length;
       messages.splice(0, messages.length, ...compression.messages);
+      console.log(
+        `[Loop] 上下文压缩: ${beforeLen} → ${messages.length} messages | ~${estimateTokensForMessages(messages)} tokens`
+      );
     }
     onContextUpdate?.(estimateTokensForMessages(messages));
 
@@ -3249,6 +3319,7 @@ async function runNativeToolCallingLoop(
 
     if (!completion.toolCalls.length) {
       if (completion.droppedToolCalls > 0) {
+        console.warn(`[Loop] Turn ${turn + 1}: ${completion.droppedToolCalls} 个工具调用因格式畸形被丢弃，要求模型重试`);
         messages.push({
           role: "system",
           content: [
@@ -3259,6 +3330,7 @@ async function runNativeToolCallingLoop(
         });
         continue;
       }
+      console.log(`[Loop] Turn ${turn + 1} 结束: 模型返回文本回复 (无工具调用)`);
       const finalText = completion.assistantMessage.content.trim();
       return {
         assistantReply: finalText,
@@ -3268,13 +3340,17 @@ async function runNativeToolCallingLoop(
       };
     }
 
+    const toolNames = completion.toolCalls.map((tc) => tc.function.name);
+    console.log(
+      `[Loop] Turn ${turn + 1} 收到 ${completion.toolCalls.length} 个工具调用: [${toolNames.join(", ")}]`
+    );
+
     let patchPreflightFailure: string | null = null;
     let createPathUsageFailure: string | null = null;
     let turnHasToolNotFound = false;
     let turnSuccessCount = 0;
     let turnFailureCount = 0;
     for (const toolCall of completion.toolCalls) {
-      // Notify: tool call started
       onToolCallEvent?.({
         type: "start",
         callId: toolCall.id,
@@ -3282,6 +3358,7 @@ async function runNativeToolCallingLoop(
         argsPreview: summarizeToolArgs(toolCall.function.name, toolCall.function.arguments),
       });
 
+      const toolT0 = performance.now();
       const { result: toolResult, trace } = await executeToolCallWithRetry(
         toolCall,
         settings.workspacePath,
@@ -3289,8 +3366,8 @@ async function runNativeToolCallingLoop(
         settings,
         projectConfig
       );
+      const toolMs = (performance.now() - toolT0).toFixed(0);
 
-      // Notify: tool call ended
       onToolCallEvent?.({
         type: "end",
         callId: toolCall.id,
@@ -3298,6 +3375,12 @@ async function runNativeToolCallingLoop(
         result: trace.status,
         resultPreview: trace.resultPreview,
       });
+
+      console.log(
+        `[Tool] ${toolCall.function.name} → ${trace.status} | ${toolMs}ms` +
+          (trace.retried ? ` (retried ×${trace.attempts})` : "") +
+          (trace.status === "failed" ? ` | ${trace.errorCategory}: ${trace.errorMessage}` : "")
+      );
 
       toolTrace.push(trace);
 
@@ -3356,6 +3439,7 @@ async function runNativeToolCallingLoop(
       toolNotFoundStrikes = 0;
     }
     if (toolNotFoundStrikes >= MAX_TOOL_NOT_FOUND_STRIKES) {
+      console.warn(`[Loop] 熔断: tool_not_found 连续 ${toolNotFoundStrikes} 轮，终止循环`);
       return {
         assistantReply:
           "模型多次调用不存在的工具，已自动终止。请检查模型能力或切换至更强的模型。",
@@ -3382,6 +3466,7 @@ async function runNativeToolCallingLoop(
       consecutiveFailureTurns = 0;
     }
     if (consecutiveFailureTurns >= MAX_CONSECUTIVE_FAILURE_TURNS) {
+      console.warn(`[Loop] 熔断: 连续 ${consecutiveFailureTurns} 轮全部失败，终止循环`);
       return {
         assistantReply:
           "连续多轮工具调用全部失败，已自动终止。请检查工具参数或任务描述后重试。",
@@ -3479,6 +3564,7 @@ async function runNativeToolCallingLoop(
     }
   }
 
+  console.warn(`[Loop] 达到主循环轮次上限 (${MAX_TOOL_LOOP_TURNS})，强制返回`);
   return {
     assistantReply: "已达到工具调用轮次上限，请缩小任务范围后重试。",
     requestRecords,
@@ -3738,6 +3824,13 @@ export async function runPlanningSession(
   const phase = input.phase ?? "default";
   const historyMessages = normalizeConversationHistory(input.conversationHistory);
 
+  const sessionT0 = performance.now();
+  console.log(
+    `[Planning] ═══ 会话开始 ═══ | model=${input.settings.model} | phase=${phase} | history=${historyMessages.length} | continuation=${!!input.isContinuation}`
+  );
+  console.log(`[Planning] prompt: "${normalizedPrompt.slice(0, 120)}${normalizedPrompt.length > 120 ? "…" : ""}"`
+  );
+
   let initialInternalNote = input.internalSystemNote;
   let projectConfig: CofreeRcConfig = {};
 
@@ -3869,6 +3962,15 @@ export async function runPlanningSession(
       return sum + (r.outputTokens ?? Math.ceil(r.outputLength / 2.5));
     }, 0);
 
+    const sessionElapsed = ((performance.now() - sessionT0) / 1000).toFixed(2);
+    console.log(
+      `[Planning] ═══ 会话完成 ═══ | ${sessionElapsed}s` +
+        ` | turns=${loopResult.requestRecords.length}` +
+        ` | tools=${loopResult.toolTrace.length}` +
+        ` | actions=${loopResult.proposedActions.length}` +
+        ` | in≈${totalInputTokens} out≈${totalOutputTokens}`
+    );
+
     const proposedActions = buildProposedActions(
       loopResult.proposedActions,
       input.blockedActionFingerprints
@@ -3892,9 +3994,12 @@ export async function runPlanningSession(
     };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
+      const sessionElapsed = ((performance.now() - sessionT0) / 1000).toFixed(2);
+      console.log(`[Planning] 会话被用户中止 | ${sessionElapsed}s`);
       throw error;
     }
-    console.error("runPlanningSession failed:", error);
+    const sessionElapsed = ((performance.now() - sessionT0) / 1000).toFixed(2);
+    console.error(`[Planning] ═══ 会话失败 ═══ | ${sessionElapsed}s |`, error);
     const errorMessage = String(error || "Unknown error");
     const fallbackPlan = initializePlan(normalizedPrompt, input.settings, []);
     return {
