@@ -1122,6 +1122,37 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
     activeConversationIdRef.current = activeConversationId;
   }, [activeConversationId]);
 
+  // Recover from invalid/missing active conversation on startup.
+  // Without this, the first submit may clear input but not send.
+  useEffect(() => {
+    if (currentConversation || conversations.length === 0) {
+      return;
+    }
+
+    const preferredId =
+      activeConversationId &&
+      conversations.some((conversation) => conversation.id === activeConversationId)
+        ? activeConversationId
+        : conversations[0].id;
+    const recoveredConversation = loadConversation(wsPath, preferredId);
+    if (!recoveredConversation) {
+      return;
+    }
+
+    skipNextTimestampRef.current = true;
+    activeConversationIdRef.current = recoveredConversation.id;
+    setCurrentConversation(recoveredConversation);
+    setActiveConversationIdState(recoveredConversation.id);
+    setActiveConversationId(wsPath, recoveredConversation.id);
+    setMessages(recoveredConversation.messages);
+    messagesRef.current = recoveredConversation.messages;
+    setLiveContextTokens(recoveredConversation.lastTokenCount ?? null);
+    setSessionNote(recoveredConversation.messages.length ? "已恢复历史会话" : "");
+    setCategorizedError(null);
+    setLiveToolCalls([]);
+    setIsStreaming(false);
+  }, [wsPath, conversations, activeConversationId, currentConversation]);
+
   const handleCancel = (): void => {
     if (activeConversationId) {
       abortControllersRef.current.get(activeConversationId)?.abort();
@@ -1200,6 +1231,16 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
         setLiveContextTokens(first.lastTokenCount ?? null);
         setSessionNote("已切换工作区");
       }
+    } else if (wsPath) {
+      const newConversation = createConversation(wsPath, []);
+      setConversations(loadConversationList(wsPath));
+      setCurrentConversation(newConversation);
+      setActiveConversationIdState(newConversation.id);
+      setActiveConversationId(wsPath, newConversation.id);
+      setMessages([]);
+      messagesRef.current = [];
+      setLiveContextTokens(null);
+      setSessionNote("");
     } else {
       setCurrentConversation(null);
       setActiveConversationIdState(null);
