@@ -1,4 +1,4 @@
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { defaultModelForProvider } from "./lib/litellm";
 import {
   type AppSettings,
@@ -6,6 +6,7 @@ import {
   loadSettings,
   saveSecureApiKey,
   saveSettings,
+  switchProfile,
 } from "./lib/settingsStore";
 import { ChatPage } from "./ui/pages/ChatPage";
 import { KitchenPage } from "./ui/pages/KitchenPage";
@@ -73,6 +74,9 @@ export default function App(): ReactElement {
     return () => { cancelled = true; };
   }, [settings.workspacePath]);
 
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
   const handleSaveSettings = async (nextSettings: AppSettings): Promise<void> => {
     const normalizedModel =
       nextSettings.model.trim() || defaultModelForProvider(nextSettings.provider ?? "openai");
@@ -81,6 +85,31 @@ export default function App(): ReactElement {
     saveSettings(normalized);
     setSettings(normalized);
   };
+
+  const handleSwitchProfile = useCallback(async (profileId: string) => {
+    let apiKey = "";
+    try { apiKey = await loadSecureApiKey(profileId); } catch { /* ignore */ }
+    const current = settingsRef.current;
+    if (profileId === current.activeProfileId) return;
+    const switched = switchProfile(current, profileId);
+    const next = { ...switched, apiKey };
+    saveSettings(next);
+    setSettings(next);
+  }, []);
+
+  const handleSelectWorkspace = useCallback(async () => {
+    try {
+      const path = await invoke<string | null>("select_workspace_folder");
+      if (!path) return;
+      const current = settingsRef.current;
+      const normalizedModel =
+        current.model.trim() || defaultModelForProvider(current.provider ?? "openai");
+      const next: AppSettings = { ...current, workspacePath: path, model: normalizedModel };
+      await saveSecureApiKey(next.apiKey, next.activeProfileId);
+      saveSettings(next);
+      setSettings(next);
+    } catch { /* ignore */ }
+  }, []);
 
   // ── Global keyboard shortcuts ──
   useEffect(() => {
@@ -124,8 +153,12 @@ export default function App(): ReactElement {
           workspacePath={settings.workspacePath}
           gitBranch={gitBranch}
           currentModel={settings.model || defaultModelForProvider(settings.provider ?? "openai")}
+          profiles={settings.profiles}
+          activeProfileId={settings.activeProfileId}
           onToggleKitchen={() => setKitchenOpen((v) => !v)}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
+          onSwitchProfile={(id) => void handleSwitchProfile(id)}
+          onSelectWorkspace={() => void handleSelectWorkspace()}
           kitchenOpen={kitchenOpen}
         />
 
