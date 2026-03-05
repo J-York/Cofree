@@ -65,6 +65,9 @@ const MAX_CREATE_HINT_REPAIR_ROUNDS = 1;
 const MAX_MULTI_ARTIFACT_REMINDER_ROUNDS = 2;
 const MAX_PROPOSED_ACTIONS_PER_BATCH = 5;
 
+const MAX_TOOL_NOT_FOUND_STRIKES = 3;
+const MAX_CONSECUTIVE_FAILURE_TURNS = 5;
+
 /**
  * Find the nearest line boundary before or at the given index.
  */
@@ -1093,19 +1096,22 @@ function parseCompletionPayload(raw: string): ChatCompletionPayload {
   }
 }
 
-function parseToolCalls(raw: unknown): ToolCallRecord[] {
+function parseToolCalls(raw: unknown): { parsed: ToolCallRecord[]; droppedCount: number } {
   if (!Array.isArray(raw)) {
-    return [];
+    return { parsed: [], droppedCount: 0 };
   }
 
-  return raw
+  let dropped = 0;
+  const parsed = raw
     .map((item, index) => {
       if (!item || typeof item !== "object") {
+        dropped += 1;
         return null;
       }
       const record = item as Record<string, unknown>;
       const fn = record.function;
       if (!fn || typeof fn !== "object") {
+        dropped += 1;
         return null;
       }
       const fnRecord = fn as Record<string, unknown>;
@@ -1113,6 +1119,7 @@ function parseToolCalls(raw: unknown): ToolCallRecord[] {
         typeof fnRecord.name !== "string" ||
         typeof fnRecord.arguments !== "string"
       ) {
+        dropped += 1;
         return null;
       }
       const id =
@@ -1129,6 +1136,7 @@ function parseToolCalls(raw: unknown): ToolCallRecord[] {
       };
     })
     .filter((item): item is ToolCallRecord => Boolean(item));
+  return { parsed, droppedCount: dropped };
 }
 
 function normalizeRelativePath(value: unknown): string {
@@ -1626,6 +1634,8 @@ async function executeSubAgentTask(
 
   const proposedActions: ActionProposal[] = [];
   const toolTrace: ToolExecutionTrace[] = [];
+  let subToolNotFoundStrikes = 0;
+  let subConsecutiveFailureTurns = 0;
 
   // Context window management for sub-agent turns
   const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
@@ -1672,6 +1682,13 @@ async function executeSubAgentTask(
     messages.push(completion.assistantMessage);
 
     if (!completion.toolCalls.length) {
+      if (completion.droppedToolCalls > 0) {
+        messages.push({
+          role: "system",
+          content: `系统提示：${completion.droppedToolCalls} 个工具调用因格式畸形被丢弃。请使用正确格式重试。`,
+        });
+        continue;
+      }
       return {
         reply: completion.assistantMessage.content.trim(),
         proposedActions,
@@ -1680,6 +1697,9 @@ async function executeSubAgentTask(
       };
     }
 
+    let subTurnHasToolNotFound = false;
+    let subTurnSuccessCount = 0;
+    let subTurnFailureCount = 0;
     for (const toolCall of completion.toolCalls) {
       const { result: toolResult, trace } = await executeToolCallWithRetry(
         toolCall,
@@ -1688,6 +1708,15 @@ async function executeSubAgentTask(
         settings
       );
       toolTrace.push(trace);
+
+      if (toolResult.success === false) {
+        subTurnFailureCount += 1;
+        if (toolResult.errorCategory === "tool_not_found") {
+          subTurnHasToolNotFound = true;
+        }
+      } else {
+        subTurnSuccessCount += 1;
+      }
 
       if (toolResult.proposedAction) {
         proposedActions.push(toolResult.proposedAction);
@@ -1702,6 +1731,47 @@ async function executeSubAgentTask(
           toolResult.content
         ),
       });
+    }
+
+    // --- Circuit breaker: tool_not_found ---
+    if (subTurnHasToolNotFound) {
+      subToolNotFoundStrikes += 1;
+    } else {
+      subToolNotFoundStrikes = 0;
+    }
+    if (subToolNotFoundStrikes >= MAX_TOOL_NOT_FOUND_STRIKES) {
+      return {
+        reply: "Sub-Agent 多次调用不存在的工具，已自动终止。",
+        proposedActions,
+        toolTrace,
+        turnCount: turn + 1,
+      };
+    }
+    if (subToolNotFoundStrikes > 0) {
+      const subToolNames = subAgentTools.map((t) => t.function.name);
+      messages.push({
+        role: "system",
+        content: [
+          `系统提示：你调用了不存在的工具（连续 ${subToolNotFoundStrikes} 轮）。`,
+          `你只能使用以下工具: [${subToolNames.join(", ")}]`,
+          "请严格从上述列表中选择工具，不要臆造工具名称。",
+        ].join("\n"),
+      });
+    }
+
+    // --- Circuit breaker: consecutive all-failure turns ---
+    if (subTurnSuccessCount === 0 && subTurnFailureCount > 0) {
+      subConsecutiveFailureTurns += 1;
+    } else {
+      subConsecutiveFailureTurns = 0;
+    }
+    if (subConsecutiveFailureTurns >= MAX_CONSECUTIVE_FAILURE_TURNS) {
+      return {
+        reply: "Sub-Agent 连续多轮工具调用全部失败，已自动终止。",
+        proposedActions,
+        toolTrace,
+        turnCount: turn + 1,
+      };
     }
   }
 
@@ -2799,7 +2869,9 @@ async function executeToolCall(
     }
 
     return {
-      content: JSON.stringify({ error: `未知工具: ${call.function.name}` }),
+      content: JSON.stringify({
+        error: `"${call.function.name}" is not a valid tool, try one of [${ALL_TOOL_NAMES.join(", ")}].`,
+      }),
       success: false,
       errorCategory: "tool_not_found",
       errorMessage: `未知工具: ${call.function.name}`,
@@ -2904,6 +2976,7 @@ export async function requestToolCompletion(
 ): Promise<{
   assistantMessage: LiteLLMMessage;
   toolCalls: ToolCallRecord[];
+  droppedToolCalls: number;
   requestRecord: RequestRecord;
 }> {
   if (signal?.aborted) {
@@ -2935,7 +3008,7 @@ export async function requestToolCompletion(
     throw new Error("模型响应缺少 message。");
   }
 
-  const toolCalls = parseToolCalls(rawMessage.tool_calls);
+  const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
   const assistantMessage: LiteLLMMessage = {
     role: "assistant",
     content: normalizeMessageContent(rawMessage.content),
@@ -2945,6 +3018,7 @@ export async function requestToolCompletion(
   return {
     assistantMessage,
     toolCalls,
+    droppedToolCalls: droppedCount,
     requestRecord: {
       requestId,
       inputLength: inputLengthOf(messages),
@@ -2964,6 +3038,7 @@ async function requestToolCompletionWithStream(
 ): Promise<{
   assistantMessage: LiteLLMMessage;
   toolCalls: ToolCallRecord[];
+  droppedToolCalls: number;
   requestRecord: RequestRecord;
 }> {
   if (signal?.aborted) {
@@ -3002,7 +3077,7 @@ async function requestToolCompletionWithStream(
     throw new Error("模型响应缺少 message。");
   }
 
-  const toolCalls = parseToolCalls(rawMessage.tool_calls);
+  const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
   const assistantMessage: LiteLLMMessage = {
     role: "assistant",
     content: normalizeMessageContent(rawMessage.content),
@@ -3012,6 +3087,7 @@ async function requestToolCompletionWithStream(
   return {
     assistantMessage,
     toolCalls,
+    droppedToolCalls: droppedCount,
     requestRecord: {
       requestId,
       inputLength: inputLengthOf(messages),
@@ -3101,6 +3177,8 @@ async function runNativeToolCallingLoop(
   let patchRepairRounds = 0;
   let createHintRepairRounds = 0;
   let multiArtifactReminderRounds = 0;
+  let toolNotFoundStrikes = 0;
+  let consecutiveFailureTurns = 0;
 
   // --- Context window management ---
   // We reserve a safety buffer for the model's completion + tool-call overhead.
@@ -3168,6 +3246,17 @@ async function runNativeToolCallingLoop(
     messages.push(completion.assistantMessage);
 
     if (!completion.toolCalls.length) {
+      if (completion.droppedToolCalls > 0) {
+        messages.push({
+          role: "system",
+          content: [
+            `系统提示：模型尝试了 ${completion.droppedToolCalls} 个工具调用，但全部因格式畸形被丢弃（缺少 function.name 或 arguments 不是字符串）。`,
+            `可用工具: [${ALL_TOOL_NAMES.join(", ")}]`,
+            "请使用正确的工具调用格式重试。",
+          ].join("\n"),
+        });
+        continue;
+      }
       const finalText = completion.assistantMessage.content.trim();
       return {
         assistantReply: finalText,
@@ -3179,6 +3268,9 @@ async function runNativeToolCallingLoop(
 
     let patchPreflightFailure: string | null = null;
     let createPathUsageFailure: string | null = null;
+    let turnHasToolNotFound = false;
+    let turnSuccessCount = 0;
+    let turnFailureCount = 0;
     for (const toolCall of completion.toolCalls) {
       // Notify: tool call started
       onToolCallEvent?.({
@@ -3206,6 +3298,16 @@ async function runNativeToolCallingLoop(
       });
 
       toolTrace.push(trace);
+
+      if (toolResult.success === false) {
+        turnFailureCount += 1;
+        if (toolResult.errorCategory === "tool_not_found") {
+          turnHasToolNotFound = true;
+        }
+      } else {
+        turnSuccessCount += 1;
+      }
+
       if (
         toolResult.success === false &&
         toolResult.errorCategory === "validation" &&
@@ -3244,6 +3346,48 @@ async function runNativeToolCallingLoop(
 
     // Notify caller of updated context size after all tool results are added
     onContextUpdate?.(estimateTokensForMessages(messages));
+
+    // --- Circuit breaker: tool_not_found ---
+    if (turnHasToolNotFound) {
+      toolNotFoundStrikes += 1;
+    } else {
+      toolNotFoundStrikes = 0;
+    }
+    if (toolNotFoundStrikes >= MAX_TOOL_NOT_FOUND_STRIKES) {
+      return {
+        assistantReply:
+          "模型多次调用不存在的工具，已自动终止。请检查模型能力或切换至更强的模型。",
+        requestRecords,
+        proposedActions,
+        toolTrace,
+      };
+    }
+    if (toolNotFoundStrikes > 0 && toolNotFoundStrikes < MAX_TOOL_NOT_FOUND_STRIKES) {
+      messages.push({
+        role: "system",
+        content: [
+          `系统提示：你调用了不存在的工具（连续 ${toolNotFoundStrikes} 轮）。`,
+          `你只能使用以下工具: [${ALL_TOOL_NAMES.join(", ")}]`,
+          "请严格从上述列表中选择工具，不要臆造工具名称。",
+        ].join("\n"),
+      });
+    }
+
+    // --- Circuit breaker: consecutive all-failure turns ---
+    if (turnSuccessCount === 0 && turnFailureCount > 0) {
+      consecutiveFailureTurns += 1;
+    } else {
+      consecutiveFailureTurns = 0;
+    }
+    if (consecutiveFailureTurns >= MAX_CONSECUTIVE_FAILURE_TURNS) {
+      return {
+        assistantReply:
+          "连续多轮工具调用全部失败，已自动终止。请检查工具参数或任务描述后重试。",
+        requestRecords,
+        proposedActions,
+        toolTrace,
+      };
+    }
 
     if (
       !proposedActions.length &&
