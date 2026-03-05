@@ -1177,6 +1177,16 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
         setLiveContextTokens(first.lastTokenCount ?? null);
         setSessionNote("已切换工作区");
       }
+    } else if (wsPath) {
+      const newConversation = createConversation(wsPath, []);
+      setConversations(loadConversationList(wsPath));
+      setCurrentConversation(newConversation);
+      setActiveConversationIdState(newConversation.id);
+      setActiveConversationId(wsPath, newConversation.id);
+      setMessages([]);
+      messagesRef.current = [];
+      setLiveContextTokens(null);
+      setSessionNote("");
     } else {
       setCurrentConversation(null);
       setActiveConversationIdState(null);
