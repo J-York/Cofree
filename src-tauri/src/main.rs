@@ -1,3 +1,4 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 /*
  * Cofree - AI Programming Cafe
  * Tauri 入口：presentation 层 commands 与 run()。
