@@ -65,11 +65,14 @@ export function KitchenPage(): ReactElement {
     }
   };
 
+  const successTraces = state.toolTraces.filter(t => t.status === "success").length;
+  const failedTraces = state.toolTraces.filter(t => t.status !== "success").length;
+
   return (
     <div className="page-content">
       <div className="page-header">
-        <h1 className="page-title">厨房</h1>
-        <p className="page-subtitle">工作流状态 · 工具追踪 · 审计日志</p>
+        <h1 className="page-title">控制台</h1>
+        <p className="page-subtitle">工作流监控 · 工具追踪 · 审计日志</p>
       </div>
 
       {/* ── Workflow Phase ── */}
@@ -97,11 +100,11 @@ export function KitchenPage(): ReactElement {
       <div className="kitchen-stats-grid">
         <div className="kitchen-stat">
           <span className="kitchen-stat-value">{state.requestSummaries.length}</span>
-          <span className="kitchen-stat-label">LLM 请求数</span>
+          <span className="kitchen-stat-label">LLM 请求</span>
         </div>
         <div className="kitchen-stat">
           <span className="kitchen-stat-value">{state.toolTraces.length}</span>
-          <span className="kitchen-stat-label">工具调用数</span>
+          <span className="kitchen-stat-label">工具调用</span>
         </div>
         <div className="kitchen-stat">
           <span className="kitchen-stat-value">
@@ -125,9 +128,21 @@ export function KitchenPage(): ReactElement {
 
       {/* ── Tool Call Timeline ── */}
       <div className="card">
-        <p className="card-title">工具调用追踪</p>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
+          <p className="card-title" style={{ margin: 0 }}>工具调用追踪</p>
+          {state.toolTraces.length > 0 && (
+            <div style={{ display: "flex", gap: "8px" }}>
+              <span className="badge badge-success">{successTraces} 成功</span>
+              {failedTraces > 0 && <span className="badge badge-error">{failedTraces} 失败</span>}
+            </div>
+          )}
+        </div>
         {state.toolTraces.length === 0 ? (
-          <p className="status-note">暂无工具调用记录。发送消息后将显示详细追踪。</p>
+          <div style={{ textAlign: "center", padding: "32px 0" }}>
+            <div style={{ fontSize: "28px", opacity: 0.3, marginBottom: "8px" }}>📊</div>
+            <p className="status-note">暂无工具调用记录</p>
+            <p style={{ fontSize: "11.5px", color: "var(--text-3)", margin: "4px 0 0" }}>发送消息后将显示详细追踪</p>
+          </div>
         ) : (
           <div className="kitchen-timeline">
             {state.toolTraces.map((trace, i) => (
@@ -200,7 +215,9 @@ export function KitchenPage(): ReactElement {
         {auditTab === "llm" && (
           <div className="audit-list">
             {llmRecords.length === 0 ? (
-              <p className="status-note">暂无 LLM 请求记录。</p>
+              <div style={{ textAlign: "center", padding: "24px 0" }}>
+                <p className="status-note">暂无 LLM 请求记录</p>
+              </div>
             ) : (
               llmRecords.slice(0, 50).map((r) => (
                 <div key={r.requestId} className="audit-item">
@@ -221,7 +238,9 @@ export function KitchenPage(): ReactElement {
         {auditTab === "action" && (
           <div className="audit-list">
             {actionRecords.length === 0 ? (
-              <p className="status-note">暂无敏感操作记录。</p>
+              <div style={{ textAlign: "center", padding: "24px 0" }}>
+                <p className="status-note">暂无敏感操作记录</p>
+              </div>
             ) : (
               actionRecords.slice(0, 50).map((r) => (
                 <div key={r.actionId} className="audit-item">
