@@ -85,5 +85,5 @@ jobs:
             详见 [BUILD.md](https://github.com/J-York/Cofree/blob/main/docs/BUILD.md)
           releaseDraft: true
           prerelease: false
-          updaterJsonKeepUniversal: true
+          uploadUpdaterJson: true
           args: --target ${{ matrix.platform.target }} --bundles ${{ matrix.platform.bundles }}
