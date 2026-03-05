@@ -30,7 +30,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app", "msi", "nsis"],
+    "targets": ["dmg", "app", "updater", "msi", "nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -38,5 +38,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/J-York/Cofree/releases/latest/download/latest.json"
+      ],
+      "pubkey": "YOUR_PUBKEY_HERE__run__pnpm_tauri_signer_generate__to_create"
+    }
   }
 }

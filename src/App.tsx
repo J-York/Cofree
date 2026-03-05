@@ -12,6 +12,8 @@ import { ChatPage } from "./ui/pages/ChatPage";
 import { KitchenPage } from "./ui/pages/KitchenPage";
 import { SettingsPage } from "./ui/pages/SettingsPage";
 import { TitleBar } from "./ui/components/TitleBar";
+import { UpdateBanner } from "./ui/components/UpdateBanner";
+import { useUpdater } from "./hooks/useUpdater";
 import {
   SessionContext,
   initialSessionState,
@@ -27,6 +29,7 @@ interface WorkspaceInfo {
 export default function App(): ReactElement {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [sessionState, setSessionState] = useState<SessionState>(initialSessionState);
+  const updater = useUpdater();
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -194,6 +197,12 @@ export default function App(): ReactElement {
             </div>
           </div>
         )}
+
+        <UpdateBanner
+          {...updater}
+          onInstall={updater.installUpdate}
+          onDismiss={updater.dismiss}
+        />
       </div>
     </SessionContext.Provider>
   );

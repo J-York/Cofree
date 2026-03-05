@@ -7,6 +7,8 @@
     "core:default",
     "core:window:default",
     "core:window:allow-start-dragging",
-    "core:event:default"
+    "core:event:default",
+    "process:default",
+    "updater:default"
   ]
 }

@@ -66,6 +66,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Cofree ${{ github.ref_name }}'
@@ -77,8 +79,11 @@ jobs:
             - **macOS (Intel)**：下载 `*_x64.dmg`
             - **Windows**：下载 `.msi` 或 `-setup.exe`
             
+            已安装用户可在应用内自动收到更新提示。
+            
             ### 安装说明
             详见 [BUILD.md](https://github.com/J-York/Cofree/blob/main/docs/BUILD.md)
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.platform.target }} --bundles ${{ matrix.platform.bundles }}
+          updaterJsonKeepUniversal: true
+          args: --target ${{ matrix.platform.target }} --bundles ${{ matrix.platform.bundles }},updater

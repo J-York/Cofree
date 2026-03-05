@@ -17,6 +17,7 @@
 @import './styles/components/cards.css';
 @import './styles/components/alerts.css';
 @import './styles/components/dialogs.css';
+@import './styles/components/update-banner.css';
 
 /* 4. Features/Business */
 @import './styles/features/chat/panel.css';
