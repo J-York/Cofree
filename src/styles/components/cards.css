@@ -2,32 +2,41 @@
 .card {
   background: var(--surface-1);
   border: 1px solid var(--border-1);
-  border-radius: var(--r-md);
-  padding: 20px 22px;
+  border-radius: var(--r-lg);
+  padding: 24px 28px;
+  box-shadow: var(--shadow-md);
+  transition: all var(--t-med);
 }
+
+.card:hover {
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-2px);
+  border-color: var(--border-2);
+}
+
 .card-title {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-3);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  margin: 0 0 14px;
+  letter-spacing: 0.08em;
+  margin: 0 0 16px;
 }
 
 /* ── Badge ──────────────────────────────────────────────── */
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 3px 8px;
-  border-radius: var(--r-xs);
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--r-full);
   font-size: 11px;
   font-weight: 500;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  letter-spacing: 0.02em;
 }
-.badge-default { background: var(--surface-3); color: var(--text-2); border: 1px solid var(--border-1); }
-.badge-success { background: var(--color-success-bg); color: var(--color-success); border: 1px solid rgba(61,214,140,0.08); }
-.badge-error { background: var(--color-error-bg); color: var(--color-error); border: 1px solid rgba(229,83,75,0.08); }
-.badge-warning { background: var(--color-warning-bg); color: var(--color-warning); border: 1px solid rgba(212,167,44,0.08); }
-.badge-accent { background: var(--accent-muted); color: var(--accent-solid); border: 1px solid rgba(139,159,192,0.08); }
-
+.badge-default { background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border-1); }
+.badge-success { background: var(--color-success-bg); color: var(--color-success); border: 1px solid rgba(74,222,128,0.15); }
+.badge-error { background: var(--color-error-bg); color: var(--color-error); border: 1px solid rgba(248,113,113,0.15); }
+.badge-warning { background: var(--color-warning-bg); color: var(--color-warning); border: 1px solid rgba(250,204,21,0.15); }
+.badge-accent { background: var(--accent-muted); color: var(--accent-solid); border: 1px solid rgba(143,166,208,0.15); }

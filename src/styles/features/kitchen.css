@@ -1,67 +1,75 @@
 /* ── Kitchen Page (panel mode) ──────────────────────────── */
 .kitchen-panel-container {
   flex-shrink: 0;
-  height: 260px;
+  height: 320px; /* Slightly taller */
   display: flex;
   flex-direction: column;
   background: var(--surface-1);
   border-top: 1px solid var(--border-1);
+  box-shadow: 0 -8px 30px rgba(0,0,0,0.3); /* Float effect upwards */
   overflow: hidden;
+  z-index: 20;
 }
 
 .kitchen-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 16px;
+  padding: 12px 24px;
+  background: var(--surface-1);
   border-bottom: 1px solid var(--border-1);
   flex-shrink: 0;
 }
 
 .kitchen-panel-title {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  color: var(--text-3);
+  color: var(--text-2);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
 }
 
 .kitchen-panel-close {
-  background: none;
-  border: none;
-  color: var(--text-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-1);
+  color: var(--text-2);
   cursor: pointer;
   font-size: 16px;
-  padding: 2px 6px;
-  border-radius: var(--r-xs);
-  transition: color var(--t-fast);
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-full);
+  transition: all var(--t-fast);
 }
-.kitchen-panel-close:hover { color: var(--text-1); }
+.kitchen-panel-close:hover { color: var(--text-1); background: var(--surface-3); transform: scale(1.05); }
 
 .kitchen-panel-container .page-content {
-  padding: 12px 16px;
-  gap: 12px;
+  padding: 20px 24px;
+  gap: 16px;
   overflow-y: auto;
+  background: var(--surface-0);
 }
 
-.kitchen-flow { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.kitchen-flow-step { display: flex; align-items: center; gap: 4px; }
-.kitchen-flow-label { padding: 3px 10px; border-radius: var(--r-xs); font-size: 11px; font-weight: 500; background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border-1); }
-.kitchen-flow-label.active { background: var(--accent-muted); color: var(--accent-solid); border-color: rgba(139,159,192,0.12); }
-.kitchen-flow-arrow { color: var(--text-3); font-size: 10px; opacity: 0.4; }
+.kitchen-flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.kitchen-flow-step { display: flex; align-items: center; gap: 6px; }
+.kitchen-flow-label { padding: 4px 12px; border-radius: var(--r-full); font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border-1); box-shadow: var(--shadow-sm); }
+.kitchen-flow-label.active { background: var(--accent-muted); color: var(--accent-solid); border-color: rgba(143,166,208,0.2); }
+.kitchen-flow-arrow { color: var(--text-3); font-size: 12px; opacity: 0.5; }
 
-.kitchen-stats-grid { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 8px; }
-.kitchen-stat { background: var(--surface-1); border: 1px solid var(--border-1); border-radius: var(--r-sm); padding: 12px 10px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.kitchen-stat-value { font-size: 18px; font-weight: 600; color: var(--text-1); font-family: var(--font-mono); }
-.kitchen-stat-label { font-size: 10px; color: var(--text-3); text-align: center; text-transform: uppercase; letter-spacing: 0.06em; }
+.kitchen-stats-grid { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 12px; }
+.kitchen-stat { background: var(--surface-1); border: 1px solid var(--border-1); border-radius: var(--r-lg); padding: 16px 12px; display: flex; flex-direction: column; align-items: center; gap: 6px; box-shadow: var(--shadow-md); transition: transform var(--t-fast); }
+.kitchen-stat:hover { transform: translateY(-2px); }
+.kitchen-stat-value { font-size: 22px; font-weight: 600; color: var(--text-1); font-family: var(--font-mono); }
+.kitchen-stat-label { font-size: 11px; font-weight: 600; color: var(--text-3); text-align: center; text-transform: uppercase; letter-spacing: 0.08em; }
 
-.kitchen-timeline { display: flex; flex-direction: column; padding-left: 16px; border-left: 1px solid var(--border-1); margin-left: 6px; }
-.kitchen-timeline-item { display: flex; gap: 10px; padding: 10px 0; position: relative; }
-.kitchen-timeline-dot { position: absolute; left: -21px; top: 14px; width: 6px; height: 6px; border-radius: var(--r-full); background: var(--surface-3); border: 1px solid var(--border-2); }
-.kitchen-timeline-item.success .kitchen-timeline-dot { background: var(--color-success); border-color: rgba(61,214,140,0.2); }
-.kitchen-timeline-item.failed .kitchen-timeline-dot { background: var(--color-error); border-color: rgba(229,83,75,0.2); }
-.kitchen-timeline-content { flex: 1; display: flex; flex-direction: column; gap: 4px; }
-.kitchen-timeline-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.kitchen-timeline-name { font-family: var(--font-mono); font-size: 11px; color: var(--text-1); font-weight: 500; }
-.kitchen-timeline-preview { margin: 0; padding: 6px 10px; background: var(--surface-0); border: 1px solid var(--border-1); border-radius: var(--r-xs); font-family: var(--font-mono); font-size: 10px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; max-height: 60px; overflow: auto; }
-
+.kitchen-timeline { display: flex; flex-direction: column; padding-left: 20px; border-left: 2px solid var(--surface-3); margin-left: 8px; margin-top: 8px; }
+.kitchen-timeline-item { display: flex; gap: 16px; padding: 16px 0; position: relative; }
+.kitchen-timeline-dot { position: absolute; left: -27px; top: 20px; width: 10px; height: 10px; border-radius: var(--r-full); background: var(--surface-4); border: 2px solid var(--surface-1); box-shadow: 0 0 0 1px var(--border-2); }
+.kitchen-timeline-item.success .kitchen-timeline-dot { background: var(--color-success); box-shadow: 0 0 0 2px rgba(74,222,128,0.2); }
+.kitchen-timeline-item.failed .kitchen-timeline-dot { background: var(--color-error); box-shadow: 0 0 0 2px rgba(248,113,113,0.2); }
+.kitchen-timeline-content { flex: 1; display: flex; flex-direction: column; gap: 6px; background: var(--surface-1); border: 1px solid var(--border-1); border-radius: var(--r-md); padding: 12px 16px; box-shadow: var(--shadow-sm); }
+.kitchen-timeline-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kitchen-timeline-name { font-family: var(--font-mono); font-size: 13px; color: var(--text-1); font-weight: 600; }
+.kitchen-timeline-preview { margin: 0; padding: 10px 14px; background: var(--surface-0); border: 1px solid var(--border-1); border-radius: var(--r-sm); font-family: var(--font-mono); font-size: 12px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; max-height: 80px; overflow: auto; box-shadow: inset 0 2px 6px rgba(0,0,0,0.1); }

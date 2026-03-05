@@ -5,6 +5,7 @@ import { IconSettings, IconPanelBottom, IconBranch, IconFolder } from "./Icons";
 interface TitleBarProps {
   workspacePath: string;
   gitBranch?: string;
+  currentModel?: string; // Add currentModel to props
   onToggleKitchen: () => void;
   onToggleSettings: () => void;
   kitchenOpen: boolean;
@@ -13,6 +14,7 @@ interface TitleBarProps {
 export function TitleBar({
   workspacePath,
   gitBranch,
+  currentModel,
   onToggleKitchen,
   onToggleSettings,
   kitchenOpen,
@@ -40,6 +42,16 @@ export function TitleBar({
         )}
       </div>
 
+      {/* Center Model Display */}
+      {currentModel && (
+        <div className="titlebar-center" data-tauri-drag-region>
+          <div className="titlebar-model-badge">
+            <span className="titlebar-model-dot" />
+            <span className="titlebar-model-text">{currentModel}</span>
+          </div>
+        </div>
+      )}
+
       <div className="titlebar-right">
         <button
           className={`titlebar-btn${kitchenOpen ? " active" : ""}`}
@@ -55,7 +67,7 @@ export function TitleBar({
           type="button"
           title="设置 (⌘,)"
         >
-          <IconSettings size={14} />
+          <IconSettings size={15} />
         </button>
         <WindowControls />
       </div>

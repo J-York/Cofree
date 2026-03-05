@@ -1,66 +1,68 @@
 /* ============================================================
-   Cofree Design System — v5  "Precision Tool"
-   Cold neutral surfaces · Minimal chrome · Keyboard-first
+   Cofree Design System — v5  "Elegant Card"
+   Floating surfaces · Gentle shadows · Spacious typography
    ============================================================ */
 
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
 
 /* ── Tokens ─────────────────────────────────────────────── */
 :root {
-  --surface-0: #08080A;
-  --surface-1: #0E0E11;
-  --surface-2: #151518;
-  --surface-3: #1C1C20;
-  --surface-4: #232328;
-  --surface-5: #2A2A30;
+  --surface-0: #121214;
+  --surface-1: #18181B;
+  --surface-2: #212125;
+  --surface-3: #2A2A30;
+  --surface-4: #33333A;
+  --surface-5: #3F3F46;
 
-  --text-1: #D4D4D8;
-  --text-2: #71717A;
-  --text-3: #3F3F46;
-  --text-link: #8B9FC0;
+  --text-1: #F4F4F5;
+  --text-2: #A1A1AA;
+  --text-3: #71717A;
+  --text-link: #8FA6D0;
 
-  --border-1: rgba(255,255,255,0.04);
-  --border-2: rgba(255,255,255,0.07);
-  --border-3: rgba(255,255,255,0.11);
-  --border-focus: rgba(140,160,192,0.35);
+  --border-1: rgba(255,255,255,0.06);
+  --border-2: rgba(255,255,255,0.12);
+  --border-3: rgba(255,255,255,0.18);
+  --border-focus: rgba(143,166,208,0.40);
 
-  --accent-solid: #8B9FC0;
-  --accent-muted: rgba(139,159,192,0.07);
+  --accent-solid: #8FA6D0;
+  --accent-muted: rgba(143,166,208,0.15);
 
-  --color-success: #3DD68C;
-  --color-success-bg: rgba(61,214,140,0.06);
-  --color-error: #E5534B;
-  --color-error-bg: rgba(229,83,75,0.06);
-  --color-warning: #D4A72C;
-  --color-warning-bg: rgba(212,167,44,0.06);
-  --color-info: #5B9BD5;
-  --color-info-bg: rgba(91,155,213,0.06);
+  --color-success: #4ADE80;
+  --color-success-bg: rgba(74,222,128,0.1);
+  --color-error: #F87171;
+  --color-error-bg: rgba(248,113,113,0.1);
+  --color-warning: #FACC15;
+  --color-warning-bg: rgba(250,204,21,0.1);
+  --color-info: #60A5FA;
+  --color-info-bg: rgba(96,165,250,0.1);
 
-  --user-bubble-bg: rgba(139,159,192,0.06);
-  --user-bubble-border: rgba(139,159,192,0.10);
+  --user-bubble-bg: linear-gradient(135deg, #2D333B 0%, #252A30 100%);
+  --user-bubble-border: rgba(255,255,255,0.08);
 
   --font-sans: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
 
-  --r-xs: 3px;
-  --r-sm: 6px;
-  --r-md: 8px;
-  --r-lg: 10px;
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 24px;
   --r-full: 9999px;
 
-  --shadow-sm: 0 2px 8px rgba(0,0,0,0.4);
-  --shadow-md: 0 4px 16px rgba(0,0,0,0.45);
-  --shadow-lg: 0 8px 32px rgba(0,0,0,0.5);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.15);
+  --shadow-md: 0 6px 16px rgba(0,0,0,0.25);
+  --shadow-lg: 0 16px 40px rgba(0,0,0,0.40);
+  --shadow-float: 0 12px 36px rgba(0,0,0,0.45), 0 0 0 1px var(--border-1);
 
-  --t-fast: 80ms ease;
-  --t-med: 150ms ease;
-  --t-slow: 250ms cubic-bezier(0.16,1,0.3,1);
+  --t-fast: 120ms ease-out;
+  --t-med: 250ms cubic-bezier(0.16,1,0.3,1);
+  --t-slow: 400ms cubic-bezier(0.16,1,0.3,1);
+  --t-spring: 500ms cubic-bezier(0.175, 0.885, 0.32, 1.1);
 
   color-scheme: dark;
   font-family: var(--font-sans);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.6;
   color: var(--text-1);
   -webkit-font-smoothing: antialiased;
 }
-

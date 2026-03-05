@@ -123,6 +123,7 @@ export default function App(): ReactElement {
         <TitleBar
           workspacePath={settings.workspacePath}
           gitBranch={gitBranch}
+          currentModel={settings.model || defaultModelForProvider(settings.provider ?? "openai")}
           onToggleKitchen={() => setKitchenOpen((v) => !v)}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
           kitchenOpen={kitchenOpen}
