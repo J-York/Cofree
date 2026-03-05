@@ -1899,19 +1899,20 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                       (message.toolTrace?.length ?? 0) > 0 && (
                         <ToolTracePanel traces={message.toolTrace!} />
                       )}
-                    {message.plan && (
-                      <InlinePlan
-                        plan={message.plan}
-                        messageId={message.id}
-                        executingActionId={executingActionId}
-                        onPlanUpdate={handlePlanUpdate}
-                        onApprove={handleApproveAction}
-                        onReject={handleRejectAction}
-                        onComment={handleCommentAction}
-                        onApproveAll={handleApproveAllActions}
-                        onRejectAll={handleRejectAllActions}
-                      />
-                    )}
+                    {message.plan &&
+                      message.plan.proposedActions.length > 0 && (
+                        <InlinePlan
+                          plan={message.plan}
+                          messageId={message.id}
+                          executingActionId={executingActionId}
+                          onPlanUpdate={handlePlanUpdate}
+                          onApprove={handleApproveAction}
+                          onReject={handleRejectAction}
+                          onComment={handleCommentAction}
+                          onApproveAll={handleApproveAllActions}
+                          onRejectAll={handleRejectAllActions}
+                        />
+                      )}
                   </div>
                 </div>
               ))
