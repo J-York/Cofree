@@ -11,6 +11,12 @@
   gap: 10px;
 }
 
+.inline-plan-collapsed {
+  padding: 8px 16px;
+  gap: 0;
+  border-left-color: var(--border-2);
+}
+
 .inline-plan-title {
   font-size: 11px;
   font-weight: 600;
@@ -18,6 +24,42 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
   margin: 0;
+}
+
+.plan-summary-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.plan-badge {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  font-weight: 500;
+  white-space: nowrap;
+  line-height: 1.6;
+}
+
+.plan-badge-approved {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+
+.plan-badge-rejected {
+  background: var(--color-error-bg);
+  color: var(--color-error);
+}
+
+.plan-badge-failed {
+  background: var(--color-error-bg);
+  color: var(--color-error);
+}
+
+.plan-badge-pending {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
 }
 
 .plan-item {
