@@ -86,4 +86,4 @@ jobs:
           releaseDraft: true
           prerelease: false
           updaterJsonKeepUniversal: true
-          args: --target ${{ matrix.platform.target }} --bundles ${{ matrix.platform.bundles }},updater
+          args: --target ${{ matrix.platform.target }} --bundles ${{ matrix.platform.bundles }}
