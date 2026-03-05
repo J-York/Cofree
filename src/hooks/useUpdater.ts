@@ -27,14 +27,18 @@ const INITIAL: UpdateState = {
 };
 
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const IS_DEV = import.meta.env.DEV;
 
 export function useUpdater() {
   const [state, setState] = useState<UpdateState>(INITIAL);
   const updateRef = useRef<Update | null>(null);
   const dismissedVersion = useRef<string | null>(null);
+  const checkingRef = useRef(false);
 
   const checkForUpdate = useCallback(async () => {
-    if (state.status === "downloading" || state.status === "installing") return;
+    if (IS_DEV) return;
+    if (checkingRef.current) return;
+    checkingRef.current = true;
     setState((s) => ({ ...s, status: "checking", error: "" }));
 
     try {
@@ -63,8 +67,10 @@ export function useUpdater() {
       } else {
         setState((s) => ({ ...s, status: "error", error: msg }));
       }
+    } finally {
+      checkingRef.current = false;
     }
-  }, [state.status]);
+  }, []);
 
   const installUpdate = useCallback(async () => {
     const update = updateRef.current;
@@ -113,6 +119,8 @@ export function useUpdater() {
   }, [state.version]);
 
   useEffect(() => {
+    if (IS_DEV) return;
+
     const timer = setTimeout(() => {
       void checkForUpdate();
     }, 3000);
