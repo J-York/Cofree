@@ -1735,6 +1735,11 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
     }
   };
 
+  const handleSuggestionClick = (text: string) => {
+    setPrompt(text);
+    textareaRef.current?.focus();
+  };
+
   return (
     <div className="chat-layout-with-sidebar">
       <ConversationSidebar
@@ -1750,23 +1755,8 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
       <div className="chat-main-area">
         <div className="page-content chat-layout">
           {/* ── Top bar ── */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: "12px",
-              flexShrink: 0,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                minWidth: 0,
-              }}
-            >
+          <div className="chat-top-bar">
+            <div className="chat-top-bar-left">
               <button
                 className="chat-sidebar-toggle"
                 onClick={() => setSidebarOpen((v) => !v)}
@@ -1783,48 +1773,19 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                   />
                 </svg>
               </button>
-              <span
-                style={{
-                  fontSize: "12px",
-                  color: "var(--text-3)",
-                  flexShrink: 0,
-                }}
-              >
-                工作区
-              </span>
               {settings.workspacePath ? (
-                <span
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "12px",
-                    color: "var(--text-2)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {settings.workspacePath}
+                <span className="chat-workspace-path">
+                  {settings.workspacePath.split("/").pop() || settings.workspacePath}
                 </span>
               ) : (
-                <span
-                  style={{ fontSize: "12px", color: "var(--color-warning)" }}
-                >
+                <span className="chat-workspace-warning">
                   ⚠ 未选择工作区
                 </span>
               )}
             </div>
-            <div
-              style={{
-                display: "flex",
-                gap: "8px",
-                alignItems: "center",
-                flexShrink: 0,
-              }}
-            >
+            <div className="chat-top-bar-right">
               {sessionNote && (
-                <span style={{ fontSize: "12px", color: "var(--text-3)" }}>
-                  {sessionNote}
-                </span>
+                <span className="chat-session-note">{sessionNote}</span>
               )}
               <button
                 className="btn btn-ghost btn-sm"
@@ -1843,31 +1804,12 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
 
           {/* ── Alerts ── */}
           {localOnlyBlocked && (
-            <div
-              style={{
-                padding: "10px 14px",
-                background: "var(--color-error-bg)",
-                border: "1px solid rgba(248,113,113,0.2)",
-                borderRadius: "var(--r-md)",
-                fontSize: "13px",
-                color: "var(--color-error)",
-              }}
-            >
-              Local-only 模式已开启，当前 provider
-              不是本地模型，请前往设置页切换。
+            <div className="chat-alert chat-alert-error">
+              Local-only 模式已开启，当前 provider 不是本地模型，请前往设置页切换。
             </div>
           )}
           {noWorkspaceSelected && (
-            <div
-              style={{
-                padding: "10px 14px",
-                background: "var(--color-warning-bg)",
-                border: "1px solid rgba(251,191,36,0.2)",
-                borderRadius: "var(--r-md)",
-                fontSize: "13px",
-                color: "var(--color-warning)",
-              }}
-            >
+            <div className="chat-alert chat-alert-warning">
               请先在设置页选择工作区（Git 仓库文件夹）
             </div>
           )}
@@ -1877,7 +1819,38 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
             {messages.length === 0 ? (
               <div className="chat-empty">
                 <div className="chat-empty-icon">☕</div>
-                <p className="chat-empty-text">开始你的第一条消息</p>
+                <p className="chat-empty-text">你好，有什么可以帮到你？</p>
+                <p className="chat-empty-subtext">描述你的编码任务，我来帮你完成</p>
+                <div className="chat-suggestions">
+                  <button
+                    className="chat-suggestion-chip"
+                    onClick={() => handleSuggestionClick("帮我分析一下这个项目的代码结构")}
+                    type="button"
+                  >
+                    <span>📁</span> 分析代码结构
+                  </button>
+                  <button
+                    className="chat-suggestion-chip"
+                    onClick={() => handleSuggestionClick("帮我查找并修复代码中的问题")}
+                    type="button"
+                  >
+                    <span>🔍</span> 查找问题
+                  </button>
+                  <button
+                    className="chat-suggestion-chip"
+                    onClick={() => handleSuggestionClick("帮我写一个新功能")}
+                    type="button"
+                  >
+                    <span>✨</span> 新功能开发
+                  </button>
+                  <button
+                    className="chat-suggestion-chip"
+                    onClick={() => handleSuggestionClick("帮我优化这个项目的性能")}
+                    type="button"
+                  >
+                    <span>⚡</span> 性能优化
+                  </button>
+                </div>
               </div>
             ) : (
               messages
@@ -1905,7 +1878,6 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                         role={message.role}
                       />
                     </div>
-                    {/* Live tool status - show during streaming for last assistant message */}
                     {message.role === "assistant" &&
                       isStreaming &&
                       message === messages[messages.length - 1] &&
@@ -1975,7 +1947,7 @@ export function ChatPage({ settings }: ChatPageProps): ReactElement {
                   placeholder={
                     chatBlocked
                       ? "请先完成设置…"
-                      : "输入消息，Enter 发送，Shift+Enter 换行"
+                      : "描述你的编码任务…  Enter 发送，Shift+Enter 换行"
                   }
                   rows={1}
                 />

@@ -21,8 +21,8 @@ import {
 } from "./lib/sessionContext";
 
 const NAV_ITEMS: Array<{ key: AppTab; icon: string; label: string }> = [
-  { key: "chat",     icon: "💬", label: "聊天" },
-  { key: "kitchen",  icon: "🍳", label: "厨房" },
+  { key: "chat",     icon: "💬", label: "对话" },
+  { key: "kitchen",  icon: "📊", label: "控制台" },
   { key: "settings", icon: "⚙️", label: "设置" },
 ];
 
@@ -127,7 +127,7 @@ export default function App(): ReactElement {
               <div className="sidebar-logo-icon">☕</div>
               <span className="sidebar-logo-text">Cofree</span>
             </div>
-            <p className="sidebar-tagline">AI Programming Café</p>
+            <p className="sidebar-tagline">AI Programming Assistant</p>
           </div>
 
           <nav className="sidebar-nav" aria-label="Primary">

@@ -590,8 +590,8 @@ export function SettingsPage({
         {activeTab === "advanced" && (
           <div className="settings-pane">
             <div className="settings-pane-header">
-              <h2 className="settings-pane-title">高级</h2>
-              <p className="settings-pane-desc">危险操作与数据管理。</p>
+              <h2 className="settings-pane-title">高级设置</h2>
+              <p className="settings-pane-desc">数据管理与危险操作区域，请谨慎操作。</p>
             </div>
 
             <div className="settings-danger-zone">
@@ -606,8 +606,7 @@ export function SettingsPage({
                   <div className="settings-danger-confirm">
                     <span className="settings-danger-confirm-text">确认清除？</span>
                     <button
-                      className="btn btn-ghost btn-sm"
-                      style={{ color: "var(--color-error)", borderColor: "var(--color-error)" }}
+                      className="btn btn-danger btn-sm"
                       onClick={() => {
                         setConfirmClear(false);
                         clearAllConversations();
@@ -617,7 +616,7 @@ export function SettingsPage({
                       }}
                       type="button"
                     >
-                      确认
+                      确认清除
                     </button>
                     <button
                       className="btn btn-ghost btn-sm"
@@ -629,8 +628,7 @@ export function SettingsPage({
                   </div>
                 ) : (
                   <button
-                    className="btn btn-ghost btn-sm"
-                    style={{ color: "var(--color-error)", borderColor: "var(--color-error)" }}
+                    className="btn btn-danger btn-sm"
                     onClick={() => setConfirmClear(true)}
                     type="button"
                   >
