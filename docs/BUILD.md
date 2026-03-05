@@ -90,6 +90,60 @@ git push origin v0.2.0
 3. 点击 "Run workflow" 按钮
 4. 选择分支并运行
 
+### 应用内自动更新签名配置
+
+Cofree 使用 Tauri 的更新插件（`tauri-plugin-updater`）实现应用内自动更新。更新时需要对安装包进行签名，以确保更新包的真实性。
+
+#### 工作原理
+
+1. 构建时，`TAURI_SIGNING_PRIVATE_KEY` 私钥对安装包进行签名，生成 `.sig` 签名文件
+2. `tauri-action` 将签名信息汇总到 `latest.json` 并上传至 GitHub Release
+3. 应用启动时，从 `latest.json` 获取最新版本信息
+4. 下载更新包后，用 `tauri.conf.json` 中的 `pubkey` 公钥验证签名
+
+#### 配置步骤（首次设置或更换密钥）
+
+1. **生成新的密钥对**（需要安装 Node.js）
+
+   ```bash
+   npx @tauri-apps/cli@2 signer generate -w tauri_signing_key
+   ```
+
+   这会生成两个文件：
+   - `tauri_signing_key`：私钥文件（**妥善保管，不要提交到代码库！**）
+   - `tauri_signing_key.pub`：公钥文件
+
+2. **更新 `src-tauri/tauri.conf.json` 中的公钥**
+
+   将 `tauri_signing_key.pub` 文件的内容（即 base64 字符串）替换 `plugins.updater.pubkey` 的值：
+
+   ```json
+   "plugins": {
+     "updater": {
+       "pubkey": "<tauri_signing_key.pub 文件的内容>"
+     }
+   }
+   ```
+
+3. **在 GitHub 仓库配置 Secrets**
+
+   前往 `Settings → Secrets and variables → Actions`，添加或更新以下 Secrets：
+
+   | Secret 名称 | 值 |
+   |---|---|
+   | `TAURI_SIGNING_PRIVATE_KEY` | `tauri_signing_key` 文件的完整内容 |
+   | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 生成密钥时设置的密码（无密码则留空） |
+
+4. **验证**：推送 tag 触发构建后，检查 GitHub Release Assets 中是否出现 `latest.json`
+
+#### 故障排查：`latest.json` 未生成
+
+如果 Release 中没有 `latest.json`，通常是签名配置问题：
+
+- **现象**：Actions 日志出现 `Signature not found for the updater JSON. Skipping upload...`
+- **原因**：`TAURI_SIGNING_PRIVATE_KEY` 未设置、格式错误或与 `tauri.conf.json` 中的 `pubkey` 不匹配
+- **解决**：参照上述"配置步骤"重新生成密钥对并更新配置
+
 ### 故障排查
 
 **构建失败**：

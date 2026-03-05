@@ -66,6 +66,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 签名密钥：用于对安装包签名并生成 latest.json（应用内自动更新所需）
+          # 配置方式：Settings → Secrets and variables → Actions
+          # - TAURI_SIGNING_PRIVATE_KEY: 私钥文件内容（base64）
+          # - TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 私钥密码（无密码则留空）
+          # 详见 docs/BUILD.md 中"应用内自动更新签名配置"章节
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
