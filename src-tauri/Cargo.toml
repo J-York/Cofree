@@ -1,6 +1,6 @@
 [package]
 name = "cofree"
-version = "0.0.4-alpha"
+version = "0.0.4"
 description = "Cofree desktop shell"
 authors = ["Cofree Team"]
 license = "MIT"
