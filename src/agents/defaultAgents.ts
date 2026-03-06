@@ -24,7 +24,17 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     tools: ["list_files", "read_file", "grep", "glob", "git_status", "git_diff"],
     sensitiveActionAllowed: false,
     allowAsSubAgent: true,
-    subAgentMaxTurns: 15
+    subAgentMaxTurns: 15,
+    outputSchemaHint: [
+      "完成分析后，请在回复末尾附上结构化输出：",
+      "```json",
+      "{",
+      '  "tasks": [{"title": "...", "description": "...", "targetFiles": ["..."], "estimatedComplexity": "low|medium|high"}],',
+      '  "riskAssessment": "...",',
+      '  "architectureNotes": "..."',
+      "}",
+      "```",
+    ].join("\n"),
   },
   {
     role: "coder",
@@ -33,7 +43,18 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     tools: ["read_file", "grep", "glob", "propose_file_edit", "propose_apply_patch"],
     sensitiveActionAllowed: false,
     allowAsSubAgent: true,
-    subAgentMaxTurns: 25
+    subAgentMaxTurns: 25,
+    outputSchemaHint: [
+      "完成实现后，请在回复末尾附上结构化输出：",
+      "```json",
+      "{",
+      '  "changedFiles": ["..."],',
+      '  "summary": "...",',
+      '  "implementationNotes": "...",',
+      '  "knownIssues": ["..."]',
+      "}",
+      "```",
+    ].join("\n"),
   },
   {
     role: "tester",
@@ -42,6 +63,16 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     tools: ["read_file", "grep", "glob", "propose_shell"],
     sensitiveActionAllowed: false,
     allowAsSubAgent: true,
-    subAgentMaxTurns: 15
-  }
+    subAgentMaxTurns: 15,
+    outputSchemaHint: [
+      "完成测试分析后，请在回复末尾附上结构化输出：",
+      "```json",
+      "{",
+      '  "testPlan": [{"testCase": "...", "steps": ["..."], "expectedResult": "...", "passed": true|false}],',
+      '  "riskLevel": "low|medium|high",',
+      '  "coverageGaps": ["..."]',
+      "}",
+      "```",
+    ].join("\n"),
+  },
 ];

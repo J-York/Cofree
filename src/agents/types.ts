@@ -25,7 +25,49 @@ export interface SubAgentDefinition {
   sensitiveActionAllowed: boolean;
   allowAsSubAgent?: boolean;
   subAgentMaxTurns?: number;
+  /** Hint appended to sub-agent system prompt to guide structured JSON output. */
+  outputSchemaHint?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Sub-agent structured output (Phase 2)
+// ---------------------------------------------------------------------------
+
+export interface PlannerOutput {
+  tasks: Array<{
+    title: string;
+    description: string;
+    targetFiles: string[];
+    estimatedComplexity: "low" | "medium" | "high";
+    dependencies?: string[];
+  }>;
+  riskAssessment?: string;
+  architectureNotes?: string;
+}
+
+export interface CoderOutput {
+  changedFiles: string[];
+  summary: string;
+  implementationNotes?: string;
+  knownIssues?: string[];
+}
+
+export interface TesterOutput {
+  testPlan: Array<{
+    testCase: string;
+    steps: string[];
+    expectedResult: string;
+    actualResult?: string;
+    passed?: boolean;
+  }>;
+  riskLevel: "low" | "medium" | "high";
+  coverageGaps?: string[];
+}
+
+export type StructuredSubAgentOutput =
+  | { role: "planner"; data: PlannerOutput }
+  | { role: "coder"; data: CoderOutput }
+  | { role: "tester"; data: TesterOutput };
 
 // ---------------------------------------------------------------------------
 // ChatAgent layer (user-selectable, top-level)

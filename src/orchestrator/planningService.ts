@@ -42,10 +42,19 @@ import {
   estimateTokensForToolDefinitions,
   updateTokenCalibration,
 } from "./contextBudget";
-import type { ResolvedAgentRuntime, SubAgentRole, ConversationAgentBinding } from "../agents/types";
+import type { ResolvedAgentRuntime, SubAgentRole, ConversationAgentBinding, StructuredSubAgentOutput } from "../agents/types";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { assembleSystemPrompt, assembleRuntimeContext } from "../agents/promptAssembly";
 import { selectAgentTools } from "../agents/toolPolicy";
+import { tryExtractStructuredOutput } from "../agents/structuredOutput";
+import {
+  createWorkingMemory,
+  extractFileKnowledge,
+  addDiscoveredFact,
+  recordSubAgentExecution,
+  serializeWorkingMemory,
+  type WorkingMemory,
+} from "./workingMemory";
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
 const MAX_LIST_ENTRIES = 120;
@@ -1753,6 +1762,7 @@ interface SubAgentResult {
   proposedActions: ActionProposal[];
   toolTrace: ToolExecutionTrace[];
   turnCount: number;
+  structuredOutput?: StructuredSubAgentOutput;
 }
 
 async function executeSubAgentTask(
@@ -1760,7 +1770,8 @@ async function executeSubAgentTask(
   taskDescription: string,
   workspacePath: string,
   settings: AppSettings,
-  toolPermissions: ToolPermissions
+  toolPermissions: ToolPermissions,
+  workingMemory?: WorkingMemory,
 ): Promise<SubAgentResult> {
   const agentDef = DEFAULT_AGENTS.find(
     (agent) => agent.role === role && agent.allowAsSubAgent
@@ -1779,14 +1790,32 @@ async function executeSubAgentTask(
     agentDef.tools.filter((toolName) => toolName !== "task")
   );
 
+  // Compute context budgets for sub-agent
+  const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
+  const outputBufferTokens = Math.min(8000, Math.max(512, Math.floor(limitTokens * 0.15)));
+  const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
+  const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
+  const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
+
+  // Inject shared Working Memory context (at most 15% of token budget)
+  const memoryContext = workingMemory
+    ? serializeWorkingMemory(
+        workingMemory,
+        Math.floor(promptBudgetTarget * 0.15),
+        role as SubAgentRole,
+      )
+    : "";
+
   const subAgentSystemPrompt = [
     `你是 Cofree 的 ${agentDef.displayName} Sub-Agent。`,
     `你的专长：${agentDef.promptIntent}`,
     `当前工作区: ${workspacePath}`,
+    memoryContext ? `\n## 已知上下文\n${memoryContext}` : "",
     "你正在执行一个被委派的子任务。请专注于完成任务并返回结果。",
     "完成任务后，请简洁地汇报结果。不要提出超出任务范围的额外建议。",
     "严禁输出伪工具调用标签。回复语言与任务描述保持一致。",
-  ].join("\n");
+    agentDef.outputSchemaHint ? `\n${agentDef.outputSchemaHint}` : "",
+  ].filter(Boolean).join("\n");
 
   const messages: LiteLLMMessage[] = [
     { role: "system", content: subAgentSystemPrompt },
@@ -1798,15 +1827,6 @@ async function executeSubAgentTask(
   let subToolNotFoundStrikes = 0;
   let subConsecutiveFailureTurns = 0;
 
-  // Context window management for sub-agent turns
-  const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
-  const outputBufferTokens = Math.min(
-    8000,
-    Math.max(512, Math.floor(limitTokens * 0.15))
-  );
-  const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
-  const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
-  const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
   // P0-2: Include tool definition overhead for sub-agent.
   const subToolDefTokens = estimateTokensForToolDefinitions(subAgentTools);
   const compressionPolicy = {
@@ -1870,11 +1890,17 @@ async function executeSubAgentTask(
         continue;
       }
       console.log(`[SubAgent] 完成 | turns=${turn + 1}`);
+      const finalReply = completion.assistantMessage.content.trim();
+      const structuredOutput = tryExtractStructuredOutput(role as SubAgentRole, finalReply);
+      if (structuredOutput) {
+        console.log(`[SubAgent] 提取到结构化输出 | role=${structuredOutput.role}`);
+      }
       return {
-        reply: completion.assistantMessage.content.trim(),
+        reply: finalReply,
         proposedActions,
         toolTrace,
         turnCount: turn + 1,
+        structuredOutput,
       };
     }
 
@@ -1909,6 +1935,23 @@ async function executeSubAgentTask(
         }
       } else {
         subTurnSuccessCount += 1;
+        // Feed successful tool results back into shared Working Memory
+        if (workingMemory) {
+          try {
+            const parsedArgs = JSON.parse(toolCall.function.arguments || "{}");
+            const knowledge = extractFileKnowledge(
+              toolCall.function.name,
+              parsedArgs,
+              toolResult.content,
+              role,
+            );
+            if (knowledge) {
+              workingMemory.fileKnowledge.set(knowledge.relativePath, knowledge);
+            }
+          } catch {
+            // Ignore parse errors for working memory extraction
+          }
+        }
       }
 
       if (toolResult.proposedAction) {
@@ -2037,6 +2080,7 @@ async function executeToolCall(
   projectConfig?: CofreeRcConfig,
   allowedSubAgents?: SubAgentRole[],
   enabledToolNames?: string[],
+  workingMemory?: WorkingMemory,
 ): Promise<ToolExecutionResult> {
   const safeWorkspace = workspacePath.trim();
   if (!safeWorkspace) {
@@ -2936,8 +2980,34 @@ async function executeToolCall(
         description,
         safeWorkspace,
         settings,
-        toolPermissions
+        toolPermissions,
+        workingMemory,
       );
+
+      // Record sub-agent execution in Working Memory
+      if (workingMemory) {
+        const keyFindings: string[] = [];
+        if (subResult.structuredOutput?.role === "planner") {
+          const plannerData = subResult.structuredOutput.data;
+          if (plannerData.architectureNotes) {
+            addDiscoveredFact(workingMemory, {
+              category: "architecture",
+              content: plannerData.architectureNotes,
+              source: `planner:${description.slice(0, 100)}`,
+              confidence: "high",
+            });
+          }
+          keyFindings.push(...plannerData.tasks.map((t) => t.title));
+        }
+        recordSubAgentExecution(workingMemory, {
+          role: role as SubAgentRole,
+          taskDescription: description,
+          replySummary: subResult.reply.slice(0, 500),
+          proposedActionCount: subResult.proposedActions.length,
+          keyFindings,
+        });
+      }
+
       const responsePayload: Record<string, unknown> = {
         ok: true,
         action_type: "sub_agent_task",
@@ -2946,6 +3016,7 @@ async function executeToolCall(
         reply: subResult.reply,
         proposed_action_count: subResult.proposedActions.length,
         tool_call_count: subResult.toolTrace.length,
+        structured_output: subResult.structuredOutput?.data ?? null,
       };
       const result: ToolExecutionResult = {
         content: JSON.stringify(responsePayload),
@@ -3093,6 +3164,7 @@ async function executeToolCallWithRetry(
   projectConfig?: CofreeRcConfig,
   allowedSubAgents?: SubAgentRole[],
   enabledToolNames?: string[],
+  workingMemory?: WorkingMemory,
 ): Promise<{
   result: ToolExecutionResult;
   trace: ToolExecutionTrace;
@@ -3116,6 +3188,7 @@ async function executeToolCallWithRetry(
       projectConfig,
       allowedSubAgents,
       enabledToolNames,
+      workingMemory,
     );
     const success = current.success !== false;
     const errorCategory =
@@ -3423,6 +3496,14 @@ async function runNativeToolCallingLoop(
 
   // --- Context window management ---
   const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
+
+  // --- Shared Working Memory for multi-agent collaboration ---
+  const workingMemory = createWorkingMemory({
+    maxTokenBudget: Math.floor(
+      Math.max(0, limitTokens - Math.min(8000, Math.max(512, Math.floor(limitTokens * 0.15)))) * 0.9 * 0.2
+    ),
+    projectContext: internalSystemNote?.slice(0, 500) ?? "",
+  });
   const outputBufferTokens = Math.min(
     8000,
     Math.max(512, Math.floor(limitTokens * 0.15))
@@ -3566,6 +3647,7 @@ async function runNativeToolCallingLoop(
         projectConfig,
         runtime.allowedSubAgents,
         enabledToolNames,
+        workingMemory,
       );
       const toolMs = (performance.now() - toolT0).toFixed(0);
 
@@ -3592,6 +3674,21 @@ async function runNativeToolCallingLoop(
         }
       } else {
         turnSuccessCount += 1;
+        // Extract file knowledge from successful tool results into Working Memory
+        try {
+          const parsedArgs = JSON.parse(toolCall.function.arguments || "{}");
+          const knowledge = extractFileKnowledge(
+            toolCall.function.name,
+            parsedArgs,
+            toolResult.content,
+            "main",
+          );
+          if (knowledge) {
+            workingMemory.fileKnowledge.set(knowledge.relativePath, knowledge);
+          }
+        } catch {
+          // Ignore parse errors for working memory extraction
+        }
       }
 
       if (
