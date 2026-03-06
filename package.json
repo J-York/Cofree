@@ -24,6 +24,9 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^19.0.0",
