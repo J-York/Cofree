@@ -42,8 +42,8 @@ import {
   estimateTokensForToolDefinitions,
   updateTokenCalibration,
 } from "./contextBudget";
-const MAX_TOOL_LOOP_TURNS = 50;
-const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 30;
+const TOOL_LOOP_CHECKPOINT_TURNS = 50;
+const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
 const MAX_LIST_ENTRIES = 120;
 const MAX_FILE_PREVIEW_CHARS = 15000;
 const MAX_TOOL_RESULT_PREVIEW = 400;
@@ -641,9 +641,8 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "fetch",
       description:
-        "Fetch content from a URL. Only allowed for whitelisted domains including: " +
-        "api.github.com, raw.githubusercontent.com, docs.rs, npmjs.com, pypi.org, stackoverflow.com, developer.mozilla.org, etc.\n\n" +
-        "Use this to retrieve API documentation, code examples, library READMEs, or technical references. " +
+        "Fetch content from a URL. Any accessible URL is allowed.\n\n" +
+        "Use this to retrieve API documentation, code examples, library READMEs, technical references, or any web content. " +
         "Maximum response size is 512KB, content will be truncated if larger.\n\n" +
         "Example: fetch(url='https://raw.githubusercontent.com/user/repo/main/README.md')",
       parameters: {
@@ -3473,17 +3472,27 @@ async function runNativeToolCallingLoop(
     markSummarized: () => markSummarizedNow(settings.workspacePath),
   };
 
-  for (let turn = 0; turn < MAX_TOOL_LOOP_TURNS; turn += 1) {
+  for (let turn = 0; ; turn += 1) {
+    if (turn > 0 && turn % TOOL_LOOP_CHECKPOINT_TURNS === 0) {
+      console.log(`[Loop] 已运行 ${turn} 轮，到达检查点，暂停等待用户确认`);
+      return {
+        assistantReply: `已经持续调用了 ${turn} 轮工具，任务仍在进行中。如果需要继续，请回复"继续"。`,
+        requestRecords,
+        proposedActions,
+        toolTrace,
+      };
+    }
+
     const estTokens = estimateTokensForMessages(messages);
     console.log(
-      `[Loop] ── Turn ${turn + 1}/${MAX_TOOL_LOOP_TURNS} ── messages=${messages.length} | ~${estTokens} tokens`
+      `[Loop] ── Turn ${turn + 1} ── messages=${messages.length} | ~${estTokens} tokens`
     );
 
     if (turn === TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD) {
       messages.push({
         role: "system",
         content: [
-          `系统提示：你已经使用了 ${turn} 轮工具调用，接近上限 ${MAX_TOOL_LOOP_TURNS} 轮。`,
+          `系统提示：你已经使用了 ${turn} 轮工具调用。`,
           "请注意效率，优先使用 grep/glob 批量搜索而非逐个文件阅读。",
           "如果任务已基本完成，请尽快给出最终总结；如果确实需要继续，请集中处理剩余关键步骤。",
         ].join("\n"),
@@ -3769,9 +3778,9 @@ async function runNativeToolCallingLoop(
     }
   }
 
-  console.warn(`[Loop] 达到主循环轮次上限 (${MAX_TOOL_LOOP_TURNS})，强制返回`);
+  console.warn(`[Loop] 主循环意外退出`);
   return {
-    assistantReply: "已达到工具调用轮次上限，请缩小任务范围后重试。",
+    assistantReply: "工具调用循环已结束。如果任务尚未完成，请回复"继续"。",
     requestRecords,
     proposedActions,
     toolTrace,

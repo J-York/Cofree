@@ -1030,20 +1030,6 @@ fn validate_shell_safety(shell: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn is_domain_allowed(url: &str) -> bool {
-    let parsed = match url::Url::parse(url) {
-        Ok(u) => u,
-        Err(_) => return false,
-    };
-    let host = match parsed.host_str() {
-        Some(h) => h.to_lowercase(),
-        None => return false,
-    };
-    config::FETCH_ALLOWED_DOMAINS.iter().any(|allowed| {
-        host == *allowed || host.ends_with(&format!(".{}", allowed))
-    })
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
 // TAURI COMMANDS (presentation layer)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1821,12 +1807,6 @@ async fn fetch_url(
     let url_trimmed = url.trim();
     if url_trimmed.is_empty() {
         return Err("URL 不能为空".to_string());
-    }
-    if !is_domain_allowed(url_trimmed) {
-        return Ok(FetchResult {
-            success: false, url: url_trimmed.to_string(), content_type: None, content: String::new(), truncated: false,
-            error: Some(format!("域名不在白名单中。允许的域名: {}", config::FETCH_ALLOWED_DOMAINS.join(", "))),
-        });
     }
     let max_bytes = max_size.unwrap_or(config::FETCH_DEFAULT_MAX_BYTES).min(config::FETCH_DEFAULT_MAX_BYTES);
     let client = build_reqwest_client_with_proxy(proxy, 30)?;

@@ -20,34 +20,6 @@ pub const DEFAULT_IGNORED_DIRS: &[&str] = &[
     ".vscode",
 ];
 
-/// HTTP fetch 允许的域名白名单
-pub const FETCH_ALLOWED_DOMAINS: &[&str] = &[
-    "api.github.com",
-    "raw.githubusercontent.com",
-    "docs.rs",
-    "doc.rust-lang.org",
-    "npmjs.com",
-    "www.npmjs.com",
-    "registry.npmjs.org",
-    "pypi.org",
-    "stackoverflow.com",
-    "developer.mozilla.org",
-    "crates.io",
-    "pkg.go.dev",
-    "docs.python.org",
-    "nodejs.org",
-    "typescriptlang.org",
-    "www.typescriptlang.org",
-    "reactjs.org",
-    "react.dev",
-    "vuejs.org",
-    "angular.io",
-    "svelte.dev",
-    "nextjs.org",
-    "deno.land",
-    "bun.sh",
-];
-
 /// Grep 默认与最大结果数
 pub const GREP_DEFAULT_MAX_RESULTS: usize = 50;
 pub const GREP_ABSOLUTE_MAX_RESULTS: usize = 200;
