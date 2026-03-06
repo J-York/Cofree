@@ -818,7 +818,7 @@ export function updateVendor(
 }
 
 export function deleteVendor(settings: AppSettings, vendorId: string): AppSettings {
-  if (vendorId === DEFAULT_VENDOR_ID || settings.vendors.length <= 1) {
+  if (settings.vendors.length <= 1) {
     return settings;
   }
 

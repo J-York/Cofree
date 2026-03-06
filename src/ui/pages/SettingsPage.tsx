@@ -292,7 +292,7 @@ export function SettingsPage({
   const handleDeleteVendor = async (vendorId: string) => {
     const nextSettings = deleteVendor(draft, vendorId);
     if (nextSettings === draft) {
-      setVendorMessage("默认供应商或唯一供应商不能删除");
+      setVendorMessage("唯一供应商不能删除");
       setTimeout(() => setVendorMessage(""), 3000);
       return;
     }
@@ -659,8 +659,7 @@ export function SettingsPage({
 
                   <div className="vendor-card-list">
                     {draft.vendors.map((vendor) => {
-                      const canDeleteVendor =
-                        draft.vendors.length > 1 && vendor.id !== "vendor-default";
+                      const canDeleteVendor = draft.vendors.length > 1;
                       return (
                         <div
                           key={vendor.id}
@@ -706,7 +705,7 @@ export function SettingsPage({
                                 disabled={!canDeleteVendor}
                                 onClick={() => setConfirmDeleteVendorId(vendor.id)}
                                 type="button"
-                                title={canDeleteVendor ? "删除供应商" : "默认供应商或唯一供应商不能删除"}
+                                title={canDeleteVendor ? "删除供应商" : "唯一供应商不能删除"}
                               >
                                 删除供应商
                               </button>
