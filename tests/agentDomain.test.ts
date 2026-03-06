@@ -6,9 +6,12 @@ import {
   getChatAgentOrDefault,
 } from "../src/agents/builtinChatAgents";
 import { resolveAgentRuntime, createAgentBinding } from "../src/agents/resolveAgentRuntime";
+import { assembleSystemPrompt, assembleRuntimeContext } from "../src/agents/promptAssembly";
+import { selectAgentTools } from "../src/agents/toolPolicy";
 import { buildScopedSessionKey } from "../src/orchestrator/checkpointStore";
 import { DEFAULT_SETTINGS, createVendorConfig, createManagedModel } from "../src/lib/settingsStore";
 import type { AppSettings } from "../src/lib/settingsStore";
+import type { LiteLLMToolDefinition } from "../src/lib/litellm";
 
 function makeSettings(overrides?: Partial<AppSettings>): AppSettings {
   return { ...DEFAULT_SETTINGS, ...overrides };
@@ -187,5 +190,97 @@ describe("settings v3 migration", () => {
     expect(Array.isArray(DEFAULT_SETTINGS.customAgents)).toBe(true);
     expect(DEFAULT_SETTINGS.customAgents.length).toBe(0);
     expect(DEFAULT_SETTINGS.builtinAgentOverrides).toEqual({});
+  });
+});
+
+// --- Sub-Agent delegation wiring tests ---
+
+const FAKE_TOOL_DEFS: LiteLLMToolDefinition[] = [
+  { type: "function", function: { name: "list_files", description: "", parameters: { type: "object" } } },
+  { type: "function", function: { name: "read_file", description: "", parameters: { type: "object" } } },
+  { type: "function", function: { name: "grep", description: "", parameters: { type: "object" } } },
+  { type: "function", function: { name: "glob", description: "", parameters: { type: "object" } } },
+  { type: "function", function: { name: "git_status", description: "", parameters: { type: "object" } } },
+  { type: "function", function: { name: "git_diff", description: "", parameters: { type: "object" } } },
+  { type: "function", function: { name: "propose_file_edit", description: "", parameters: { type: "object" } } },
+  { type: "function", function: { name: "propose_apply_patch", description: "", parameters: { type: "object" } } },
+  { type: "function", function: { name: "propose_shell", description: "", parameters: { type: "object" } } },
+  { type: "function", function: { name: "diagnostics", description: "", parameters: { type: "object" } } },
+  { type: "function", function: { name: "fetch", description: "", parameters: { type: "object" } } },
+  { type: "function", function: { name: "task", description: "", parameters: { type: "object", properties: { role: { type: "string", enum: ["planner", "coder", "tester"] } } } } },
+];
+
+describe("selectAgentTools", () => {
+  it("code reviewer does not see propose_file_edit or propose_apply_patch", () => {
+    const runtime = resolveAgentRuntime("agent-code-reviewer", makeSettings());
+    const ctx = selectAgentTools(runtime, FAKE_TOOL_DEFS);
+    const toolNames = ctx.visibleToolDefs.map((t) => t.function.name);
+    expect(toolNames).not.toContain("propose_file_edit");
+    expect(toolNames).not.toContain("propose_apply_patch");
+    expect(toolNames).toContain("read_file");
+    expect(toolNames).toContain("grep");
+  });
+
+  it("fullstack agent sees all tools including task", () => {
+    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+    const ctx = selectAgentTools(runtime, FAKE_TOOL_DEFS);
+    const toolNames = ctx.visibleToolDefs.map((t) => t.function.name);
+    expect(toolNames).toContain("propose_file_edit");
+    expect(toolNames).toContain("task");
+  });
+
+  it("QA agent allowedSubAgents is only tester", () => {
+    const runtime = resolveAgentRuntime("agent-qa", makeSettings());
+    expect(runtime.allowedSubAgents).toEqual(["tester"]);
+  });
+
+  it("fullstack agent allowedSubAgents includes all three roles", () => {
+    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+    expect(runtime.allowedSubAgents).toEqual(["planner", "coder", "tester"]);
+  });
+});
+
+describe("assembleSystemPrompt", () => {
+  it("includes agent-specific prompt template", () => {
+    const runtime = resolveAgentRuntime("agent-code-reviewer", makeSettings());
+    const prompt = assembleSystemPrompt(runtime);
+    expect(prompt).toContain("代码审查员");
+  });
+
+  it("includes base workflow rules", () => {
+    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+    const prompt = assembleSystemPrompt(runtime);
+    expect(prompt).toContain("propose_file_edit");
+    expect(prompt).toContain("Sub-Agent");
+  });
+
+  it("different agents produce different prompts", () => {
+    const fullstackPrompt = assembleSystemPrompt(resolveAgentRuntime("agent-fullstack", makeSettings()));
+    const reviewerPrompt = assembleSystemPrompt(resolveAgentRuntime("agent-code-reviewer", makeSettings()));
+    expect(fullstackPrompt).not.toBe(reviewerPrompt);
+  });
+});
+
+describe("assembleRuntimeContext", () => {
+  it("includes workspace path", () => {
+    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings({ workspacePath: "/test/workspace" }));
+    const ctx = assembleRuntimeContext(runtime, "/test/workspace");
+    expect(ctx).toContain("/test/workspace");
+  });
+
+  it("lists only allowed sub-agent roles for the agent", () => {
+    const reviewerRuntime = resolveAgentRuntime("agent-code-reviewer", makeSettings());
+    const ctx = assembleRuntimeContext(reviewerRuntime, "/test");
+    expect(ctx).toContain("planner");
+    expect(ctx).not.toContain("coder");
+    expect(ctx).not.toContain("tester");
+  });
+
+  it("lists all three roles for fullstack agent", () => {
+    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+    const ctx = assembleRuntimeContext(runtime, "/test");
+    expect(ctx).toContain("planner");
+    expect(ctx).toContain("coder");
+    expect(ctx).toContain("tester");
   });
 });

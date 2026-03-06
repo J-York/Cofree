@@ -42,6 +42,10 @@ import {
   estimateTokensForToolDefinitions,
   updateTokenCalibration,
 } from "./contextBudget";
+import type { ResolvedAgentRuntime, SubAgentRole, ConversationAgentBinding } from "../agents/types";
+import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
+import { assembleSystemPrompt, assembleRuntimeContext } from "../agents/promptAssembly";
+import { selectAgentTools } from "../agents/toolPolicy";
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
 const MAX_LIST_ENTRIES = 120;
@@ -237,64 +241,6 @@ interface PatchApplyResult {
   files: string[];
 }
 
-const ASSISTANT_SYSTEM_PROMPT = [
-  "你是 Cofree 的服务员。你的目标是作为一名顶级的全栈工程师协助用户。",
-  "你必须优先通过可用工具获取事实，再给出答案。必须严格遵守以下工作流原则（Vibe Coding 原则）：",
-  "1) **Show, don't tell**：少废话，多干活。直接执行任务，不要在回复中长篇大论解释代码原理、功能特点，除非用户明确要求解释。",
-  "2) **信任系统回调**：当系统提示动作成功（如 apply_patch, shell 等）时，直接信任结果并继续执行。不要做无意义重复读取；但在 patch/编辑失败后，允许有针对性地重新读取相关片段并修复。",
-  "3) **极简交流**：在报告完成任务时，只需简短回答“已完成”或指明结果位置。绝对不要为了凑字数而列举无关内容。",
-  "当用户要求新增/修改/删除文件、执行命令时：",
-  "1) 不要直接执行副作用；",
-  "2) 必须通过当前已暴露的 propose_* 工具提出待审批动作（不要假设未暴露工具可用）。",
-  "2.1) 单文件、小中型改动优先用 propose_file_edit；它支持 replace / insert / delete / create，也支持 line/start_line/end_line 按行定位，系统会自动把编辑转换为 patch。",
-  "2.2) 仅在明确需要 raw diff/patch 时使用 propose_apply_patch，并确保 patch 是合法 unified diff。",
-  "2.3) 如果目标是执行任何命令（构建、测试、删除、git 操作等），使用 propose_shell。命令将显示给用户审批后执行。",
-  "2.4) 如果收到 patch 预检失败反馈，优先重新读取必要片段后修正，并在一次自动修复重试内完成。",
-  '**重要**：调用 propose_* 工具后，立即停止生成文本。不要预测审批结果，不要说"用户未批准"或"等待用户批准"等话。系统会自动处理审批流程并在执行后通知你结果。',
-  "3) 如果用户仅在询问信息或解释且不需要落盘，不要提出审批动作。",
-  "4) 不要为了兜底提出无关审批动作；当用户请求包含多个交付物时，可以在同一轮提出多个紧密相关动作（建议 ≤5）以减少往返审批。",
-  "4.1) **多文件编辑原子性**：当一个功能变更涉及多个文件时（如修改接口定义并同步更新所有调用方），尽量在同一轮工具调用中提出所有相关的 propose_file_edit，系统会将它们打包为一次原子审批。全部成功才生效，任何一个失败则全部回滚。",
-  "4.2) 先完成所有必要的上下文收集（grep/read_file），然后在一轮中集中提出所有相关编辑，避免分散在多轮中逐个提出。",
-  "",
-  "## 工具选择关键规则",
-  "- **创建新文件**：必须使用 propose_file_edit，设置 operation='create'、relative_path 和 content。绝对不要用 cat/echo 重定向。",
-  "- **删除文件/目录**：使用 propose_shell，shell='rm -r <路径>' 或 'rm <文件>'。",
-  "- **命令执行**：使用 propose_shell，可以使用完整 shell 语法（管道、重定向、&& 等）。示例：propose_shell(shell='npm install && npm test')。",
-  "- **Git 操作**：使用 propose_shell，shell='git add .' 或 'git commit -m \"message\"' 或 'git checkout -b branch'。注意：Git 操作仅在 Git 仓库中有效，非 Git 目录会返回空结果。",
-  "- **propose_file_edit 的 relative_path 是必填参数**，所有操作都必须提供。",
-  "- **replace 操作**必须提供 search（要替换的原文）或 start_line/end_line（行范围）。如果文件不存在，请改用 operation='create'。",
-  "- 当工具调用失败时，仔细阅读错误信息并调整参数重试，而不是盲目切换工具。",
-  "",
-  "## Sub-Agent 委派",
-  "- 当任务可以拆分为独立子任务时，可使用 task 工具委派给专业 Sub-Agent（planner/coder/tester）。",
-  "- Sub-Agent 会独立运行工具调用循环并返回结果摘要。",
-  "- 适用场景：需要并行分析、实现和验证的复杂任务。",
-  "- 注意：Sub-Agent 无法嵌套调用 task 工具，避免循环委派。",
-  "",
-  "## 搜索与文件读取策略",
-  "当深入一个文件或功能时，利用 grep 积极追踪 import 路径和函数调用链，扩充上下文理解，避免盲目猜测。",
-  "定位代码（函数定义、变量使用、导入语句等）时，优先使用 grep 搜索关键词，而非逐个文件盲读。",
-  "当查找文件时，优先使用 glob 匹配模式（如 '**/*.tsx'），而非逐层 list_files。",
-  "grep 和 glob 会自动排除 .git、node_modules、target 等目录。",
-  "当读取文件系统信息时，必须调用 list_files/read_file/grep/glob/git_status/git_diff，而不是伪造结果。",
-  "read_file 返回带行号的内容（格式: `行号│内容`）、total_lines（文件总行数）和 showing_lines（当前显示的行范围）。",
-  "**注意**：行号前缀 `行号│` 仅用于定位参考，不是文件实际内容。在 propose_file_edit 的 search/anchor 字段中，不要包含行号前缀。",
-  "- 小文件（<400 行）：直接读取，无需指定 start_line/end_line。",
-  "- 大文件（400+ 行）：分段读取。先不带参数调用 read_file 查看前半部分，根据 total_lines 和 truncated 标志决定是否需要继续读取。",
-  "  - 若 truncated=true，使用 start_line/end_line 读取后续部分（如 start_line=301, end_line=600）。",
-  "  - 每次读取 ~300 行为宜。如果只需要特定函数或区域，根据行号精确读取该范围即可。",
-  "- 修改文件前必须先读取相关部分，确保 search 字段精确匹配原文（不含行号前缀）。",
-  "",
-  "## 任务完成判断",
-  "**关键原则**：当系统通知你审批动作已执行完毕时，你必须判断任务是否真正完成：",
-  "1) **已完成的情况**：如果所有要求的交付物已生成，且执行结果显示成功，直接回复“已完成”。**不要**重复读取文件验证，**不要**提出新的修改。",
-  "2) **需要继续的情况**：如果还有明确的剩余工作（如用户要求 3 个文件但只创建了 2 个），才提出下一步动作。",
-  "3) **禁止过度优化**：不要主动“优化”、“改进”、“重构”已完成的代码，除非用户明确要求。",
-  "4) **避免循环**：如果你已经连续 2 次修改同一个文件，停下来并告诉用户当前状态，让用户决定下一步。",
-  "",
-  "严禁输出伪工具调用标签（如 <tool_call>）。",
-  "回复语言与用户保持一致。",
-].join("\n");
 const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
   {
     type: "function",
@@ -903,8 +849,33 @@ function selectToolDefinitions(toolNames: string[]): LiteLLMToolDefinition[] {
   return TOOL_DEFINITIONS.filter((tool) => enabled.has(tool.function.name));
 }
 
-function getAllToolNames(): string[] {
-  return [...ALL_TOOL_NAMES];
+/**
+ * Build tool definitions tailored for a specific agent runtime.
+ * The `task` tool's role enum is set to the agent's allowedSubAgents;
+ * if the agent has no allowed sub-agents, `task` is excluded entirely.
+ */
+function buildAgentToolDefs(runtime: ResolvedAgentRuntime): LiteLLMToolDefinition[] {
+  const allowedRoles = runtime.allowedSubAgents;
+  return TOOL_DEFINITIONS.map((td) => {
+    if (td.function.name !== "task") return td;
+    if (allowedRoles.length === 0) return null;
+    return {
+      ...td,
+      function: {
+        ...td.function,
+        parameters: {
+          ...td.function.parameters,
+          properties: {
+            ...(td.function.parameters as any).properties,
+            role: {
+              ...(td.function.parameters as any).properties.role,
+              enum: [...allowedRoles],
+            },
+          },
+        },
+      },
+    };
+  }).filter((td): td is LiteLLMToolDefinition => td !== null);
 }
 
 export class LocalOnlyPolicyError extends Error {
@@ -926,6 +897,8 @@ export interface ToolCallEvent {
 export interface RunPlanningSessionInput {
   prompt: string;
   settings: AppSettings;
+  /** Agent identifier or conversation binding. Determines system prompt, tool set, and sub-agent permissions. */
+  agentId?: string | ConversationAgentBinding;
   phase?: PlanningSessionPhase;
   conversationHistory?: Array<{
     role: "user" | "assistant" | "tool";
@@ -1917,7 +1890,10 @@ async function executeSubAgentTask(
         toolCall,
         workspacePath,
         toolPermissions,
-        settings
+        settings,
+        undefined,
+        [],
+        agentDef.tools,
       );
       const subToolMs = (performance.now() - subToolT0).toFixed(0);
       console.log(
@@ -2058,7 +2034,9 @@ async function executeToolCall(
   workspacePath: string,
   toolPermissions: ToolPermissions = DEFAULT_TOOL_PERMISSIONS,
   settings?: AppSettings,
-  projectConfig?: CofreeRcConfig
+  projectConfig?: CofreeRcConfig,
+  allowedSubAgents?: SubAgentRole[],
+  enabledToolNames?: string[],
 ): Promise<ToolExecutionResult> {
   const safeWorkspace = workspacePath.trim();
   if (!safeWorkspace) {
@@ -2930,13 +2908,13 @@ async function executeToolCall(
           errorMessage: message,
         };
       }
-      const validRoles = DEFAULT_AGENTS.filter(
-        (agent) => agent.allowAsSubAgent
-      ).map((agent) => agent.role);
-      if (!validRoles.includes(role as any)) {
-        const message = `无效的 Sub-Agent 角色: "${role}"。可用角色: ${validRoles.join(
-          ", "
-        )}`;
+      const validRoles: string[] = allowedSubAgents !== undefined
+        ? [...allowedSubAgents]
+        : DEFAULT_AGENTS.filter((agent) => agent.allowAsSubAgent).map((agent) => agent.role);
+      if (!validRoles.includes(role)) {
+        const message = allowedSubAgents !== undefined
+          ? `当前 Agent 不允许委派给 "${role}" 角色。可用角色: ${validRoles.join(", ") || "(无)"}`
+          : `无效的 Sub-Agent 角色: "${role}"。可用角色: ${validRoles.join(", ")}`;
         return {
           content: JSON.stringify({ error: message }),
           success: false,
@@ -3090,7 +3068,7 @@ async function executeToolCall(
 
     return {
       content: JSON.stringify({
-        error: `"${call.function.name}" is not a valid tool, try one of [${ALL_TOOL_NAMES.join(", ")}].`,
+        error: `"${call.function.name}" is not a valid tool, try one of [${(enabledToolNames ?? ALL_TOOL_NAMES).join(", ")}].`,
       }),
       success: false,
       errorCategory: "tool_not_found",
@@ -3112,7 +3090,9 @@ async function executeToolCallWithRetry(
   workspacePath: string,
   toolPermissions: ToolPermissions = DEFAULT_TOOL_PERMISSIONS,
   settings?: AppSettings,
-  projectConfig?: CofreeRcConfig
+  projectConfig?: CofreeRcConfig,
+  allowedSubAgents?: SubAgentRole[],
+  enabledToolNames?: string[],
 ): Promise<{
   result: ToolExecutionResult;
   trace: ToolExecutionTrace;
@@ -3133,7 +3113,9 @@ async function executeToolCallWithRetry(
       workspacePath,
       toolPermissions,
       settings,
-      projectConfig
+      projectConfig,
+      allowedSubAgents,
+      enabledToolNames,
     );
     const success = current.success !== false;
     const errorCategory =
@@ -3357,6 +3339,7 @@ async function requestToolCompletionWithStream(
 async function runNativeToolCallingLoop(
   prompt: string,
   settings: AppSettings,
+  runtime: ResolvedAgentRuntime,
   phase: PlanningSessionPhase,
   conversationHistory: LiteLLMMessage[],
   internalSystemNote?: string,
@@ -3373,10 +3356,11 @@ async function runNativeToolCallingLoop(
   proposedActions: ActionProposal[];
   toolTrace: ToolExecutionTrace[];
 }> {
-  const allToolNames = getAllToolNames();
-  const activeTools = selectToolDefinitions(allToolNames);
-  // Merge tool permissions: settings take priority, then .cofreerc overrides defaults
-  const basePermissions = settings.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS;
+  const agentToolCtx = selectAgentTools(runtime, buildAgentToolDefs(runtime));
+  const activeTools = agentToolCtx.visibleToolDefs;
+  const enabledToolNames = runtime.enabledTools;
+  // Merge tool permissions: runtime (agent-specific) take priority, then .cofreerc overrides
+  const basePermissions = runtime.toolPermissions as unknown as ToolPermissions;
   const toolPermissions: ToolPermissions = projectConfig?.toolPermissions
     ? ({
         ...basePermissions,
@@ -3387,7 +3371,8 @@ async function runNativeToolCallingLoop(
     "请读取必要文件片段后，重新调用 propose_file_edit。";
   const createPathRepairInstruction =
     "若目标是新建文件，请调用 propose_file_edit 并设置 operation='create'；若目录不存在，可先调用 propose_shell 执行 mkdir -p <目录>。";
-  const runtimeContext = createRuntimeContextPrompt(settings);
+  const agentSystemPrompt = assembleSystemPrompt(runtime);
+  const runtimeContext = assembleRuntimeContext(runtime, settings.workspacePath);
   const requestedArtifactCount =
     phase === "default" ? estimateRequestedArtifactCount(prompt) : 0;
   const blockedFingerprints = blockedActionFingerprints
@@ -3396,7 +3381,7 @@ async function runNativeToolCallingLoop(
   const pinnedPrefixLen = 2 + (blockedFingerprints.length > 0 ? 1 : 0);
 
   const messages: LiteLLMMessage[] = [
-    { role: "system", content: ASSISTANT_SYSTEM_PROMPT },
+    { role: "system", content: agentSystemPrompt },
     { role: "system", content: runtimeContext },
     ...(blockedFingerprints.length > 0
       ? [
@@ -3538,7 +3523,7 @@ async function runNativeToolCallingLoop(
           role: "system",
           content: [
             `系统提示：模型尝试了 ${completion.droppedToolCalls} 个工具调用，但全部因格式畸形被丢弃（缺少 function.name 或 arguments 不是字符串）。`,
-            `可用工具: [${ALL_TOOL_NAMES.join(", ")}]`,
+            `可用工具: [${enabledToolNames.join(", ")}]`,
             "请使用正确的工具调用格式重试。",
           ].join("\n"),
         });
@@ -3578,7 +3563,9 @@ async function runNativeToolCallingLoop(
         settings.workspacePath,
         toolPermissions,
         settings,
-        projectConfig
+        projectConfig,
+        runtime.allowedSubAgents,
+        enabledToolNames,
       );
       const toolMs = (performance.now() - toolT0).toFixed(0);
 
@@ -3667,7 +3654,7 @@ async function runNativeToolCallingLoop(
         role: "system",
         content: [
           `系统提示：你调用了不存在的工具（连续 ${toolNotFoundStrikes} 轮）。`,
-          `你只能使用以下工具: [${ALL_TOOL_NAMES.join(", ")}]`,
+          `你只能使用以下工具: [${enabledToolNames.join(", ")}]`,
           "请严格从上述列表中选择工具，不要臆造工具名称。",
         ].join("\n"),
       });
@@ -3924,39 +3911,6 @@ function validateProposedAction(action: ActionProposal): string | null {
   return null;
 }
 
-function createRuntimeContextPrompt(settings: AppSettings): string {
-  const workspacePath = settings.workspacePath.trim();
-  const workspaceLine = workspacePath
-    ? `当前工作区: ${workspacePath}`
-    : "当前工作区: 未选择";
-  const agentLines = DEFAULT_AGENTS.map(
-    (agent) =>
-      `- ${agent.role}: tools=[${agent.tools.join(
-        ", "
-      )}], sensitiveActionAllowed=${agent.sensitiveActionAllowed}`
-  );
-  const permissions = settings.toolPermissions ?? DEFAULT_TOOL_PERMISSIONS;
-  const autoTools = Object.entries(permissions)
-    .filter(([, level]) => level === "auto")
-    .map(([name]) => name);
-  const askTools = Object.entries(permissions)
-    .filter(([, level]) => level === "ask")
-    .map(([name]) => name);
-
-  return [
-    "运行时上下文：",
-    workspaceLine,
-    `本轮可用工具: [${ALL_TOOL_NAMES.join(", ")}]`,
-    `自动执行工具（无需审批）: [${autoTools.join(", ")}]`,
-    `需审批工具: [${askTools.join(", ")}]`,
-    "当前阶段可按需读取事实或提出待审批动作。",
-    "可用角色与能力：",
-    ...agentLines,
-    "权限说明：自动执行工具的调用结果会直接返回；需审批工具会生成待审批动作，由用户确认后执行。",
-    "Git 工具说明：git_status 和 git_diff 在非 Git 仓库中会返回空结果，这是正常的。",
-    "如需文件系统信息，必须通过已定义工具调用，不得臆测。",
-  ].join("\n");
-}
 
 function containsCapabilityDenial(text: string): boolean {
   const corpus = text.toLowerCase();
@@ -4073,10 +4027,11 @@ export async function runPlanningSession(
   assertLocalOnlyPolicy(input.settings);
   const phase = input.phase ?? "default";
   const historyMessages = normalizeConversationHistory(input.conversationHistory);
+  const runtime = resolveAgentRuntime(input.agentId ?? null, input.settings);
 
   const sessionT0 = performance.now();
   console.log(
-    `[Planning] ═══ 会话开始 ═══ | model=${input.settings.model} | phase=${phase} | history=${historyMessages.length} | continuation=${!!input.isContinuation}`
+    `[Planning] ═══ 会话开始 ═══ | agent=${runtime.agentId} | model=${input.settings.model} | phase=${phase} | history=${historyMessages.length} | continuation=${!!input.isContinuation}`
   );
   console.log(`[Planning] prompt: "${normalizedPrompt.slice(0, 120)}${normalizedPrompt.length > 120 ? "…" : ""}"`
   );
@@ -4178,6 +4133,7 @@ export async function runPlanningSession(
     const loopResult = await runNativeToolCallingLoop(
       normalizedPrompt,
       input.settings,
+      runtime,
       phase,
       historyMessages,
       initialInternalNote,

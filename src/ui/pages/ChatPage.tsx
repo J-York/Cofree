@@ -1634,6 +1634,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       const result = await runPlanningSession({
         prompt: promptText,
         settings: executionSettings,
+        agentId: currentConversation?.agentBinding ?? activeAgent.id,
         phase: options.phase,
         conversationHistory,
         isContinuation: options.isContinuation,
