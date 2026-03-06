@@ -79,6 +79,7 @@ import {
 import type {
   ActionProposal,
   OrchestrationPlan,
+  SubAgentProgressEvent,
 } from "../../orchestrator/types";
 import { useSession } from "../../lib/sessionContext";
 import type { ChatAgentDefinition } from "../../agents/types";
@@ -409,6 +410,45 @@ function LiveToolStatus({ calls }: { calls: LiveToolCall[] }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ── Sub-Agent Progress Status ──────────────────────────────── */
+interface SubAgentStatusItem {
+  role: string;
+  lastEvent: SubAgentProgressEvent;
+  updatedAt: number;
+}
+
+function SubAgentStatusPanel({ items }: { items: SubAgentStatusItem[] }) {
+  if (items.length === 0) return null;
+
+  return (
+    <div className="live-tool-status" style={{ marginBottom: 4 }}>
+      {items.map((item) => {
+        const event = item.lastEvent;
+        let label = "";
+        let icon = "◐";
+        if (event.kind === "tool_start") {
+          label = `${item.role}: ${event.toolName}...`;
+        } else if (event.kind === "tool_complete") {
+          label = `${item.role}: ${event.toolName} ${event.success ? "✓" : "✕"} (${event.durationMs}ms)`;
+          icon = event.success ? "✓" : "✕";
+        } else if (event.kind === "summary") {
+          label = `${item.role}: ${event.message}`;
+          icon = "ℹ";
+        } else if (event.kind === "action_proposed") {
+          label = `${item.role}: 提出 ${event.actionType}`;
+          icon = "⚑";
+        }
+        return (
+          <div key={item.role} className="live-tool-item running">
+            <span className="live-tool-icon">{icon}</span>
+            <span className="live-tool-name">{label}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1173,6 +1213,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   const [executingActionId, setExecutingActionId] = useState<string>("");
   const [_sidebarOpenLegacy] = useState<boolean>(false);
   const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
+  const [subAgentStatus, setSubAgentStatus] = useState<SubAgentStatusItem[]>([]);
   const [liveContextTokens, setLiveContextTokens] = useState<number | null>(
     () => currentConversation?.lastTokenCount ?? null
   );
@@ -1239,6 +1280,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     setSessionNote(recoveredConversation.messages.length ? "已恢复历史会话" : "");
     setCategorizedError(null);
     setLiveToolCalls([]);
+    setSubAgentStatus([]);
     setIsStreaming(false);
   }, [wsPath, conversations, activeConversationId, currentConversation]);
 
@@ -1689,6 +1731,19 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         },
         onContextUpdate: (estimatedTokens) => {
           guardedSetTokens(estimatedTokens);
+        },
+        onSubAgentProgress: (role: string, event: SubAgentProgressEvent) => {
+          if (isActive()) {
+            setSubAgentStatus((prev) => {
+              const existing = prev.find((s) => s.role === role);
+              if (existing) {
+                return prev.map((s) =>
+                  s.role === role ? { ...s, lastEvent: event, updatedAt: Date.now() } : s
+                );
+              }
+              return [...prev, { role, lastEvent: event, updatedAt: Date.now() }];
+            });
+          }
         },
       });
 
@@ -2247,6 +2302,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                       message === messages[messages.length - 1] &&
                       liveToolCalls.length > 0 && (
                         <LiveToolStatus calls={liveToolCalls} />
+                      )}
+                    {message.role === "assistant" &&
+                      isStreaming &&
+                      message === messages[messages.length - 1] &&
+                      subAgentStatus.length > 0 && (
+                        <SubAgentStatusPanel items={subAgentStatus} />
                       )}
                     {message.role === "assistant" &&
                       (message.toolTrace?.length ?? 0) > 0 && (

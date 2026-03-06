@@ -25,7 +25,7 @@ import {
   type AppSettings,
   type ToolPermissions,
 } from "../lib/settingsStore";
-import type { ActionProposal, OrchestrationPlan, PlanStep } from "./types";
+import type { ActionProposal, OrchestrationPlan, PlanStep, SubAgentProgressEvent } from "./types";
 import {
   summarizeWorkspaceFiles,
   type WorkspaceOverviewBudget,
@@ -42,12 +42,30 @@ import {
   estimateTokensForToolDefinitions,
   updateTokenCalibration,
 } from "./contextBudget";
-import type { ResolvedAgentRuntime, SubAgentRole, ConversationAgentBinding } from "../agents/types";
+import type {
+  ResolvedAgentRuntime,
+  SubAgentRole,
+  ConversationAgentBinding,
+  StructuredSubAgentOutput,
+  SubAgentCompletionStatus,
+  SubAgentFeedback,
+} from "../agents/types";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { assembleSystemPrompt, assembleRuntimeContext } from "../agents/promptAssembly";
 import { selectAgentTools } from "../agents/toolPolicy";
+import { tryExtractStructuredOutput, tryExtractFeedback } from "../agents/structuredOutput";
+import { runWithConcurrencyLimit } from "../lib/concurrency";
+import {
+  createWorkingMemory,
+  extractFileKnowledge,
+  addDiscoveredFact,
+  recordSubAgentExecution,
+  serializeWorkingMemory,
+  type WorkingMemory,
+} from "./workingMemory";
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
+const MAX_PARALLEL_SUB_AGENTS = 3;
 const MAX_LIST_ENTRIES = 120;
 const MAX_FILE_PREVIEW_CHARS = 15000;
 const MAX_TOOL_RESULT_PREVIEW = 400;
@@ -534,9 +552,10 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
       name: "task",
       description:
         "Delegate a sub-task to a specialized sub-agent. The sub-agent runs an independent tool-calling loop with its own context and returns a summary of results. " +
-        "Use this to parallelize work or delegate specialized tasks (e.g. ask the planner to analyze, the coder to implement, or the tester to validate).\n\n" +
+        "Multiple task calls in the same turn will be executed in parallel. Use this for independent tasks that don't depend on each other's results.\n\n" +
         "The sub-agent inherits the current workspace and tool permissions but operates with a focused system prompt based on its role. " +
-        "Sub-agent results (including any proposed actions) are collected and returned to you.\n\n" +
+        "Sub-agent results (including any proposed actions) are collected and returned to you. " +
+        "If a sub-agent needs clarification, it will be automatically retried with additional context.\n\n" +
         "Example: task(role='coder', description='Implement the UserService class with CRUD methods in src/services/userService.ts')",
       parameters: {
         type: "object",
@@ -915,6 +934,8 @@ export interface RunPlanningSessionInput {
   onToolCallEvent?: (event: ToolCallEvent) => void;
   /** Called with the estimated context token count after each LLM turn (including tool results). */
   onContextUpdate?: (estimatedTokens: number) => void;
+  /** Called with sub-agent progress events during task tool execution. */
+  onSubAgentProgress?: (role: string, event: SubAgentProgressEvent) => void;
 }
 
 export interface PlanningSessionResult {
@@ -1747,12 +1768,16 @@ function renderListEntries(entries: FileEntry[]): string {
 }
 
 const SUB_AGENT_MAX_TURNS_DEFAULT = 20;
+const MAX_SUB_AGENT_RETRIES = 2;
 
 interface SubAgentResult {
   reply: string;
+  status: SubAgentCompletionStatus;
   proposedActions: ActionProposal[];
   toolTrace: ToolExecutionTrace[];
   turnCount: number;
+  structuredOutput?: StructuredSubAgentOutput;
+  feedback?: SubAgentFeedback;
 }
 
 async function executeSubAgentTask(
@@ -1760,7 +1785,10 @@ async function executeSubAgentTask(
   taskDescription: string,
   workspacePath: string,
   settings: AppSettings,
-  toolPermissions: ToolPermissions
+  toolPermissions: ToolPermissions,
+  workingMemory?: WorkingMemory,
+  onProgress?: (event: SubAgentProgressEvent) => void,
+  signal?: AbortSignal,
 ): Promise<SubAgentResult> {
   const agentDef = DEFAULT_AGENTS.find(
     (agent) => agent.role === role && agent.allowAsSubAgent
@@ -1768,6 +1796,7 @@ async function executeSubAgentTask(
   if (!agentDef) {
     return {
       reply: `角色 "${role}" 不可用作 Sub-Agent。`,
+      status: "failed" as SubAgentCompletionStatus,
       proposedActions: [],
       toolTrace: [],
       turnCount: 0,
@@ -1779,14 +1808,42 @@ async function executeSubAgentTask(
     agentDef.tools.filter((toolName) => toolName !== "task")
   );
 
+  // Compute context budgets for sub-agent
+  const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
+  const outputBufferTokens = Math.min(8000, Math.max(512, Math.floor(limitTokens * 0.15)));
+  const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
+  const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
+  const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
+
+  // Inject shared Working Memory context (at most 15% of token budget)
+  const memoryContext = workingMemory
+    ? serializeWorkingMemory(
+        workingMemory,
+        Math.floor(promptBudgetTarget * 0.15),
+        role as SubAgentRole,
+      )
+    : "";
+
   const subAgentSystemPrompt = [
     `你是 Cofree 的 ${agentDef.displayName} Sub-Agent。`,
     `你的专长：${agentDef.promptIntent}`,
     `当前工作区: ${workspacePath}`,
+    memoryContext ? `\n## 已知上下文\n${memoryContext}` : "",
     "你正在执行一个被委派的子任务。请专注于完成任务并返回结果。",
     "完成任务后，请简洁地汇报结果。不要提出超出任务范围的额外建议。",
     "严禁输出伪工具调用标签。回复语言与任务描述保持一致。",
-  ].join("\n");
+    agentDef.outputSchemaHint ? `\n${agentDef.outputSchemaHint}` : "",
+    [
+      "\n如果你发现任务描述不够清晰或缺少必要信息，请在回复中使用以下 JSON 格式标记：",
+      '```json',
+      '{"status": "need_clarification", "reason": "...", "missingContext": ["..."]}',
+      '```',
+      "如果遇到阻塞无法继续，请标记：",
+      '```json',
+      '{"status": "blocked", "reason": "...", "blockedBy": "...", "suggestedAction": "..."}',
+      '```',
+    ].join("\n"),
+  ].filter(Boolean).join("\n");
 
   const messages: LiteLLMMessage[] = [
     { role: "system", content: subAgentSystemPrompt },
@@ -1798,15 +1855,6 @@ async function executeSubAgentTask(
   let subToolNotFoundStrikes = 0;
   let subConsecutiveFailureTurns = 0;
 
-  // Context window management for sub-agent turns
-  const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
-  const outputBufferTokens = Math.min(
-    8000,
-    Math.max(512, Math.floor(limitTokens * 0.15))
-  );
-  const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
-  const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
-  const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
   // P0-2: Include tool definition overhead for sub-agent.
   const subToolDefTokens = estimateTokensForToolDefinitions(subAgentTools);
   const compressionPolicy = {
@@ -1830,8 +1878,22 @@ async function executeSubAgentTask(
   const pinnedPrefixLen = 2;
 
   console.log(`[SubAgent] 启动 | role=${role} | maxTurns=${maxTurns} | tools=${subAgentTools.length}`);
+  onProgress?.({ kind: "summary", message: `${agentDef.displayName} Sub-Agent 已启动` });
 
   for (let turn = 0; turn < maxTurns; turn += 1) {
+    // Check for user abort
+    if (signal?.aborted) {
+      console.log(`[SubAgent] 用户中断 | turn=${turn}`);
+      onProgress?.({ kind: "summary", message: `${agentDef.displayName} 已被用户中断` });
+      return {
+        reply: "Sub-Agent 已被用户中断。",
+        status: "partial" as SubAgentCompletionStatus,
+        proposedActions,
+        toolTrace,
+        turnCount: turn,
+      };
+    }
+
     console.log(`[SubAgent] ── Turn ${turn + 1}/${maxTurns} ── messages=${messages.length}`);
 
     const compression = await compressMessagesToFitBudget({
@@ -1870,11 +1932,24 @@ async function executeSubAgentTask(
         continue;
       }
       console.log(`[SubAgent] 完成 | turns=${turn + 1}`);
+      const finalReply = completion.assistantMessage.content.trim();
+      const structuredOutput = tryExtractStructuredOutput(role as SubAgentRole, finalReply);
+      if (structuredOutput) {
+        console.log(`[SubAgent] 提取到结构化输出 | role=${structuredOutput.role}`);
+      }
+      const feedbackResult = tryExtractFeedback(finalReply);
+      const resolvedStatus: SubAgentCompletionStatus = feedbackResult?.status ?? "completed";
+      if (feedbackResult) {
+        console.log(`[SubAgent] 提取到反馈 | status=${resolvedStatus} | reason=${feedbackResult.feedback?.reason}`);
+      }
       return {
-        reply: completion.assistantMessage.content.trim(),
+        reply: finalReply,
+        status: resolvedStatus,
         proposedActions,
         toolTrace,
         turnCount: turn + 1,
+        structuredOutput,
+        feedback: feedbackResult?.feedback,
       };
     }
 
@@ -1885,6 +1960,7 @@ async function executeSubAgentTask(
     let subTurnSuccessCount = 0;
     let subTurnFailureCount = 0;
     for (const toolCall of completion.toolCalls) {
+      onProgress?.({ kind: "tool_start", toolName: toolCall.function.name, turn, maxTurns });
       const subToolT0 = performance.now();
       const { result: toolResult, trace } = await executeToolCallWithRetry(
         toolCall,
@@ -1895,7 +1971,14 @@ async function executeSubAgentTask(
         [],
         agentDef.tools,
       );
-      const subToolMs = (performance.now() - subToolT0).toFixed(0);
+      const subToolDurationMs = performance.now() - subToolT0;
+      const subToolMs = subToolDurationMs.toFixed(0);
+      onProgress?.({
+        kind: "tool_complete",
+        toolName: toolCall.function.name,
+        success: toolResult.success !== false,
+        durationMs: Math.round(subToolDurationMs),
+      });
       console.log(
         `[SubAgent][Tool] ${toolCall.function.name} → ${trace.status} | ${subToolMs}ms` +
           (trace.status === "failed" ? ` | ${trace.errorMessage}` : "")
@@ -1909,10 +1992,32 @@ async function executeSubAgentTask(
         }
       } else {
         subTurnSuccessCount += 1;
+        // Feed successful tool results back into shared Working Memory
+        if (workingMemory) {
+          try {
+            const parsedArgs = JSON.parse(toolCall.function.arguments || "{}");
+            const knowledge = extractFileKnowledge(
+              toolCall.function.name,
+              parsedArgs,
+              toolResult.content,
+              role,
+            );
+            if (knowledge) {
+              workingMemory.fileKnowledge.set(knowledge.relativePath, knowledge);
+            }
+          } catch {
+            // Ignore parse errors for working memory extraction
+          }
+        }
       }
 
       if (toolResult.proposedAction) {
         proposedActions.push(toolResult.proposedAction);
+        onProgress?.({
+          kind: "action_proposed",
+          actionType: toolResult.proposedAction.type,
+          description: toolResult.proposedAction.description,
+        });
       }
 
       messages.push({
@@ -1936,6 +2041,7 @@ async function executeSubAgentTask(
       console.warn(`[SubAgent] 熔断: tool_not_found 连续 ${subToolNotFoundStrikes} 轮`);
       return {
         reply: "Sub-Agent 多次调用不存在的工具，已自动终止。",
+        status: "failed" as SubAgentCompletionStatus,
         proposedActions,
         toolTrace,
         turnCount: turn + 1,
@@ -1963,6 +2069,7 @@ async function executeSubAgentTask(
       console.warn(`[SubAgent] 熔断: 连续 ${subConsecutiveFailureTurns} 轮全部失败`);
       return {
         reply: "Sub-Agent 连续多轮工具调用全部失败，已自动终止。",
+        status: "failed" as SubAgentCompletionStatus,
         proposedActions,
         toolTrace,
         turnCount: turn + 1,
@@ -1973,10 +2080,46 @@ async function executeSubAgentTask(
   console.warn(`[SubAgent] 达到轮次上限 (${maxTurns})，强制返回`);
   return {
     reply: "Sub-Agent 达到工具调用轮次上限，已返回当前进度。",
+    status: "partial" as SubAgentCompletionStatus,
     proposedActions,
     toolTrace,
     turnCount: maxTurns,
   };
+}
+
+function buildRetryDescription(
+  originalDescription: string,
+  previousResult: SubAgentResult,
+  workingMemory?: WorkingMemory,
+): string {
+  const parts = [originalDescription];
+
+  if (previousResult.feedback) {
+    parts.push(
+      "\n## 上一次尝试的反馈",
+      `状态: ${previousResult.status}`,
+      `原因: ${previousResult.feedback.reason}`,
+    );
+    if (previousResult.feedback.missingContext?.length) {
+      parts.push(`缺少的上下文: ${previousResult.feedback.missingContext.join(", ")}`);
+      // Try to supplement from Working Memory
+      if (workingMemory) {
+        for (const ctx of previousResult.feedback.missingContext) {
+          const matchingFile = [...workingMemory.fileKnowledge.values()].find(
+            (fk) => fk.relativePath.includes(ctx) || ctx.includes(fk.relativePath),
+          );
+          if (matchingFile) {
+            parts.push(`补充信息 - ${matchingFile.relativePath}: ${matchingFile.summary}`);
+          }
+        }
+      }
+    }
+    if (previousResult.feedback.suggestedAction) {
+      parts.push(`建议: ${previousResult.feedback.suggestedAction}`);
+    }
+  }
+
+  return parts.join("\n");
 }
 
 interface DiagnosticEntry {
@@ -2037,6 +2180,9 @@ async function executeToolCall(
   projectConfig?: CofreeRcConfig,
   allowedSubAgents?: SubAgentRole[],
   enabledToolNames?: string[],
+  workingMemory?: WorkingMemory,
+  onSubAgentProgress?: (event: SubAgentProgressEvent) => void,
+  signal?: AbortSignal,
 ): Promise<ToolExecutionResult> {
   const safeWorkspace = workspacePath.trim();
   if (!safeWorkspace) {
@@ -2931,21 +3077,76 @@ async function executeToolCall(
           errorMessage: message,
         };
       }
-      const subResult = await executeSubAgentTask(
-        role,
-        description,
-        safeWorkspace,
-        settings,
-        toolPermissions
-      );
+      // --- Retry loop: Sub-Agent may request clarification ---
+      let lastResult: SubAgentResult | null = null;
+      for (let attempt = 0; attempt <= MAX_SUB_AGENT_RETRIES; attempt++) {
+        const enrichedDescription = attempt === 0
+          ? description
+          : buildRetryDescription(description, lastResult!, workingMemory);
+
+        const subResult = await executeSubAgentTask(
+          role,
+          enrichedDescription,
+          safeWorkspace,
+          settings,
+          toolPermissions,
+          workingMemory,
+          onSubAgentProgress,
+          signal,
+        );
+        lastResult = subResult;
+
+        if (subResult.status === "completed" || attempt >= MAX_SUB_AGENT_RETRIES) {
+          break;
+        }
+        if (subResult.status === "need_clarification" && subResult.feedback) {
+          console.log(`[SubAgent] 需要澄清 (attempt ${attempt + 1}): ${subResult.feedback.reason}`);
+          continue;
+        }
+        if (subResult.status === "blocked") {
+          break;
+        }
+        // For partial/failed without feedback, no point retrying
+        break;
+      }
+
+      const subResult = lastResult!;
+
+      // Record sub-agent execution in Working Memory
+      if (workingMemory) {
+        const keyFindings: string[] = [];
+        if (subResult.structuredOutput?.role === "planner") {
+          const plannerData = subResult.structuredOutput.data;
+          if (plannerData.architectureNotes) {
+            addDiscoveredFact(workingMemory, {
+              category: "architecture",
+              content: plannerData.architectureNotes,
+              source: `planner:${description.slice(0, 100)}`,
+              confidence: "high",
+            });
+          }
+          keyFindings.push(...plannerData.tasks.map((t) => t.title));
+        }
+        recordSubAgentExecution(workingMemory, {
+          role: role as SubAgentRole,
+          taskDescription: description,
+          replySummary: subResult.reply.slice(0, 500),
+          proposedActionCount: subResult.proposedActions.length,
+          keyFindings,
+        });
+      }
+
       const responsePayload: Record<string, unknown> = {
-        ok: true,
+        ok: subResult.status === "completed",
         action_type: "sub_agent_task",
         role,
+        status: subResult.status,
         turn_count: subResult.turnCount,
         reply: subResult.reply,
         proposed_action_count: subResult.proposedActions.length,
         tool_call_count: subResult.toolTrace.length,
+        structured_output: subResult.structuredOutput?.data ?? null,
+        feedback: subResult.feedback ?? null,
       };
       const result: ToolExecutionResult = {
         content: JSON.stringify(responsePayload),
@@ -3093,6 +3294,9 @@ async function executeToolCallWithRetry(
   projectConfig?: CofreeRcConfig,
   allowedSubAgents?: SubAgentRole[],
   enabledToolNames?: string[],
+  workingMemory?: WorkingMemory,
+  onSubAgentProgress?: (event: SubAgentProgressEvent) => void,
+  signal?: AbortSignal,
 ): Promise<{
   result: ToolExecutionResult;
   trace: ToolExecutionTrace;
@@ -3116,6 +3320,9 @@ async function executeToolCallWithRetry(
       projectConfig,
       allowedSubAgents,
       enabledToolNames,
+      workingMemory,
+      onSubAgentProgress,
+      signal,
     );
     const success = current.success !== false;
     const errorCategory =
@@ -3349,7 +3556,8 @@ async function runNativeToolCallingLoop(
   isContinuation?: boolean,
   projectConfig?: CofreeRcConfig,
   onToolCallEvent?: (event: ToolCallEvent) => void,
-  onContextUpdate?: (estimatedTokens: number) => void
+  onContextUpdate?: (estimatedTokens: number) => void,
+  onSubAgentProgress?: (role: string, event: SubAgentProgressEvent) => void,
 ): Promise<{
   assistantReply: string;
   requestRecords: RequestRecord[];
@@ -3423,6 +3631,14 @@ async function runNativeToolCallingLoop(
 
   // --- Context window management ---
   const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
+
+  // --- Shared Working Memory for multi-agent collaboration ---
+  const workingMemory = createWorkingMemory({
+    maxTokenBudget: Math.floor(
+      Math.max(0, limitTokens - Math.min(8000, Math.max(512, Math.floor(limitTokens * 0.15)))) * 0.9 * 0.2
+    ),
+    projectContext: internalSystemNote?.slice(0, 500) ?? "",
+  });
   const outputBufferTokens = Math.min(
     8000,
     Math.max(512, Math.floor(limitTokens * 0.15))
@@ -3549,13 +3765,27 @@ async function runNativeToolCallingLoop(
     let turnHasToolNotFound = false;
     let turnSuccessCount = 0;
     let turnFailureCount = 0;
-    for (const toolCall of completion.toolCalls) {
+
+    // Helper: execute a single tool call and collect results
+    const executeSingleToolCall = async (toolCall: ToolCallRecord) => {
       onToolCallEvent?.({
         type: "start",
         callId: toolCall.id,
         toolName: toolCall.function.name,
         argsPreview: summarizeToolArgs(toolCall.function.name, toolCall.function.arguments),
       });
+
+      // Build role-scoped progress callback for sub-agent tasks
+      let progressForCall: ((event: SubAgentProgressEvent) => void) | undefined;
+      if (onSubAgentProgress && toolCall.function.name === "task") {
+        try {
+          const taskArgs = JSON.parse(toolCall.function.arguments || "{}");
+          const taskRole = String(taskArgs.role ?? "unknown");
+          progressForCall = (event: SubAgentProgressEvent) => onSubAgentProgress(taskRole, event);
+        } catch {
+          // Ignore parse errors
+        }
+      }
 
       const toolT0 = performance.now();
       const { result: toolResult, trace } = await executeToolCallWithRetry(
@@ -3566,6 +3796,9 @@ async function runNativeToolCallingLoop(
         projectConfig,
         runtime.allowedSubAgents,
         enabledToolNames,
+        workingMemory,
+        progressForCall,
+        signal,
       );
       const toolMs = (performance.now() - toolT0).toFixed(0);
 
@@ -3583,6 +3816,15 @@ async function runNativeToolCallingLoop(
           (trace.status === "failed" ? ` | ${trace.errorCategory}: ${trace.errorMessage}` : "")
       );
 
+      return { toolCall, toolResult, trace };
+    };
+
+    // Helper: process a tool result (update counters, extract knowledge, push messages)
+    const processToolResult = (
+      toolCall: ToolCallRecord,
+      toolResult: ToolExecutionResult,
+      trace: ToolExecutionTrace,
+    ) => {
       toolTrace.push(trace);
 
       if (toolResult.success === false) {
@@ -3592,6 +3834,20 @@ async function runNativeToolCallingLoop(
         }
       } else {
         turnSuccessCount += 1;
+        try {
+          const parsedArgs = JSON.parse(toolCall.function.arguments || "{}");
+          const knowledge = extractFileKnowledge(
+            toolCall.function.name,
+            parsedArgs,
+            toolResult.content,
+            "main",
+          );
+          if (knowledge) {
+            workingMemory.fileKnowledge.set(knowledge.relativePath, knowledge);
+          }
+        } catch {
+          // Ignore parse errors for working memory extraction
+        }
       }
 
       if (
@@ -3628,6 +3884,36 @@ async function runNativeToolCallingLoop(
           toolResult.content
         ),
       });
+    };
+
+    // --- Phase 4: Split task calls from other calls for parallel execution ---
+    const taskCalls = completion.toolCalls.filter((tc) => tc.function.name === "task");
+    const otherCalls = completion.toolCalls.filter((tc) => tc.function.name !== "task");
+
+    // Execute non-task tools serially (they may have ordering dependencies)
+    for (const toolCall of otherCalls) {
+      const { toolResult, trace } = await executeSingleToolCall(toolCall);
+      processToolResult(toolCall, toolResult, trace);
+    }
+
+    // Execute task calls in parallel (with concurrency limit)
+    if (taskCalls.length > 1) {
+      console.log(`[Orchestrator] 并行执行 ${taskCalls.length} 个 Sub-Agent 任务`);
+      const parallelResults = await runWithConcurrencyLimit(
+        taskCalls.map((tc) => () => executeSingleToolCall(tc)),
+        MAX_PARALLEL_SUB_AGENTS,
+      );
+      for (const settled of parallelResults) {
+        if (settled.status === "fulfilled") {
+          const { toolCall, toolResult, trace } = settled.value;
+          processToolResult(toolCall, toolResult, trace);
+        } else {
+          console.error(`[Orchestrator] 并行 Sub-Agent 执行异常:`, settled.reason);
+        }
+      }
+    } else if (taskCalls.length === 1) {
+      const { toolCall, toolResult, trace } = await executeSingleToolCall(taskCalls[0]);
+      processToolResult(toolCall, toolResult, trace);
     }
 
     // Notify caller of updated context size after all tool results are added
@@ -4143,7 +4429,8 @@ export async function runPlanningSession(
       input.isContinuation,
       projectConfig,
       input.onToolCallEvent,
-      input.onContextUpdate
+      input.onContextUpdate,
+      input.onSubAgentProgress,
     );
     for (const record of loopResult.requestRecords) {
       recordLLMAudit({

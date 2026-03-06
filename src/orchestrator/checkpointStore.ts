@@ -15,6 +15,10 @@ import { redactSensitiveText, sanitizeForPersistence } from "../lib/redaction";
 import { normalizeOrchestrationPlan } from "./planGuards";
 import type { ToolErrorCategory, ToolExecutionTrace } from "./planningService";
 import { normalizeHitlContinuationMemory, type HitlContinuationMemory } from "./hitlContinuationMachine";
+import {
+  type WorkingMemorySnapshot,
+  normalizeWorkingMemorySnapshot,
+} from "./workingMemory";
 
 const CHAT_SESSION_KEY = "cofree.chat.session.v1";
 
@@ -138,6 +142,7 @@ export interface WorkflowCheckpointPayload {
   toolTrace?: ToolExecutionTrace[];
   continuationMemory?: HitlContinuationMemory;
   agentId?: string;
+  workingMemory?: WorkingMemorySnapshot;
 }
 
 function isToolErrorCategory(value: unknown): value is ToolErrorCategory {
@@ -252,7 +257,8 @@ export async function loadLatestWorkflowCheckpoint(
     payload: {
       plan: normalizedPlan,
       toolTrace: normalizeToolTrace(parsed.toolTrace),
-      continuationMemory: normalizeHitlContinuationMemory(parsed.continuationMemory)
+      continuationMemory: normalizeHitlContinuationMemory(parsed.continuationMemory),
+      workingMemory: normalizeWorkingMemorySnapshot(parsed.workingMemory) ?? undefined,
     }
   };
 }

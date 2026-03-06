@@ -92,3 +92,14 @@ export interface OrchestrationPlan {
   proposedActions: ActionProposal[];
   workspacePath?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Sub-Agent progress events (Phase 5)
+// ---------------------------------------------------------------------------
+
+export type SubAgentProgressEvent =
+  | { kind: "tool_start"; toolName: string; turn: number; maxTurns: number }
+  | { kind: "tool_complete"; toolName: string; success: boolean; durationMs: number }
+  | { kind: "thinking"; partialContent: string }
+  | { kind: "action_proposed"; actionType: SensitiveActionType; description: string }
+  | { kind: "summary"; message: string };

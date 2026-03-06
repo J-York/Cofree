@@ -108,6 +108,12 @@ export function KitchenPage(): ReactElement {
         </div>
         <div className="kitchen-stat">
           <span className="kitchen-stat-value">
+            {state.toolTraces.filter(t => t.name === "task").length || "—"}
+          </span>
+          <span className="kitchen-stat-label">Sub-Agent 任务</span>
+        </div>
+        <div className="kitchen-stat">
+          <span className="kitchen-stat-value">
             {totalInputTokens > 0 ? `${Math.round(totalInputTokens / 1000)}k` : "—"}
           </span>
           <span className="kitchen-stat-label">输入 Tokens</span>
