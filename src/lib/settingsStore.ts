@@ -105,6 +105,7 @@ export interface AppSettings {
   toolPermissions: ToolPermissions;
   proxy: ProxySettings;
   activeProfileId: string | null;
+  activeAgentId: string | null;
   profiles: ModelProfile[];
   vendors: VendorConfig[];
   managedModels: ManagedModel[];
@@ -202,6 +203,7 @@ function createInitialSettings(): AppSettings {
       noProxy: "",
     },
     activeProfileId: defaults.profile.id,
+    activeAgentId: null,
     profiles: [defaults.profile],
     vendors: [defaults.vendor],
     managedModels: [defaults.model],
@@ -510,6 +512,8 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): AppSetting
     apiKey: "",
     activeProfileId:
       typeof parsed.activeProfileId === "string" ? parsed.activeProfileId : DEFAULT_SETTINGS.activeProfileId,
+    activeAgentId:
+      typeof (parsed as Record<string, unknown>).activeAgentId === "string" ? (parsed as Record<string, unknown>).activeAgentId as string : null,
     profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
     vendors: Array.isArray(parsed.vendors) ? parsed.vendors : [],
     managedModels: Array.isArray(parsed.managedModels) ? parsed.managedModels : [],
@@ -763,6 +767,10 @@ export function switchProfile(settings: AppSettings, profileId: string): AppSett
     return settings;
   }
   return syncRuntimeSettings({ ...settings, activeProfileId: profileId });
+}
+
+export function switchAgent(settings: AppSettings, agentId: string): AppSettings {
+  return { ...settings, activeAgentId: agentId };
 }
 
 export function createVendor(
