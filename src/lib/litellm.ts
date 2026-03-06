@@ -372,11 +372,7 @@ function toOpenAIResponsesInput(messages: LiteLLMMessage[]): unknown[] {
 
     if (message.role === "assistant") {
       if (message.content.trim()) {
-        items.push({
-          type: "message",
-          role: "assistant",
-          content: [{ type: "output_text", text: message.content }],
-        });
+        items.push({ role: "assistant", content: message.content });
       }
       for (const toolCall of message.tool_calls ?? []) {
         items.push({
@@ -481,7 +477,7 @@ function normalizeToolChoice(
     return protocol === "anthropic-messages" ? { type: "auto" } : "auto";
   }
   if (toolChoice === "none") {
-    return protocol === "anthropic-messages" ? { type: "auto" } : "none";
+    return protocol === "anthropic-messages" ? { type: "none" } : "none";
   }
   if (protocol === "anthropic-messages") {
     return { type: "tool", name: toolChoice.function.name };
@@ -560,7 +556,7 @@ function createAnthropicRequestBody(
     body.system = anthropic.system;
   }
 
-  if (options?.tools?.length) {
+  if (options?.tools?.length && options.toolChoice !== "none") {
     body.tools = options.tools.map((tool) => ({
       name: tool.function.name,
       description: tool.function.description,
@@ -572,8 +568,6 @@ function createAnthropicRequestBody(
     );
   }
 
-  // Anthropic Messages API 不支持 OpenAI 风格的 JSON schema/responseFormat；
-  // 这里只是显式消费该参数以避免未使用变量告警。
   void options?.responseFormat;
   return body;
 }
@@ -860,26 +854,7 @@ export async function postLiteLLMChatCompletionsStream(
   onChunk: (content: string) => void
 ): Promise<LiteLLMHttpResponse> {
   const protocol = getActiveProtocol(settings);
-  if (protocol !== "openai-chat-completions") {
-    const response = await postLiteLLMChatCompletions(settings, {
-      ...body,
-      stream: false,
-    });
-    try {
-      const payload = JSON.parse(response.body) as {
-        choices?: Array<{ message?: { content?: string } }>;
-      };
-      const content = payload.choices?.[0]?.message?.content ?? "";
-      if (content) {
-        onChunk(content);
-      }
-    } catch (_error) {
-      // ignore parsing error and return the normalized body
-    }
-    return response;
-  }
-
-  const baseUrl = settings.liteLLMBaseUrl;
+  const baseUrl = getActiveVendor(settings)?.baseUrl || settings.liteLLMBaseUrl;
   const apiKey = settings.apiKey;
 
   const requestId = `stream-${Date.now()}-${Math.random()
