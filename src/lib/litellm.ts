@@ -572,17 +572,18 @@ function createAnthropicRequestBody(
     );
   }
 
+  // Anthropic Messages API 不支持 OpenAI 风格的 JSON schema/responseFormat；
+  // 这里只是显式消费该参数以避免未使用变量告警。
   void options?.responseFormat;
   return body;
 }
 
 export async function postLiteLLMChatCompletions(
-  settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey" | "proxy">,
+  settings: AppSettings,
   body: Record<string, unknown>
 ): Promise<LiteLLMHttpResponse> {
-  const fullSettings = settings as AppSettings;
-  const protocol = getActiveProtocol(fullSettings);
-  const baseUrl = getActiveVendor(fullSettings)?.baseUrl || settings.liteLLMBaseUrl;
+  const protocol = getActiveProtocol(settings);
+  const baseUrl = getActiveVendor(settings)?.baseUrl || settings.liteLLMBaseUrl;
   const isTauri =
     typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -634,11 +635,10 @@ export async function postLiteLLMChatCompletions(
 }
 
 export async function fetchLiteLLMModelIds(
-  settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey" | "proxy">
+  settings: AppSettings
 ): Promise<string[]> {
-  const fullSettings = settings as AppSettings;
-  const protocol = getActiveProtocol(fullSettings);
-  const baseUrl = getActiveVendor(fullSettings)?.baseUrl || settings.liteLLMBaseUrl;
+  const protocol = getActiveProtocol(settings);
+  const baseUrl = getActiveVendor(settings)?.baseUrl || settings.liteLLMBaseUrl;
   return fetchModelIdsWithProtocol({
     baseUrl,
     apiKey: settings.apiKey,
@@ -911,6 +911,7 @@ export async function postLiteLLMChatCompletionsStream(
       {
         baseUrl,
         apiKey,
+        protocol,
         body,
         requestId,
         proxy: settings.proxy,

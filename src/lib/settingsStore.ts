@@ -127,8 +127,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
-  const trimmed = baseUrl.trim();
-  return trimmed ? trimmed.replace(/\/$/, "") : DEFAULT_BASE_URL;
+  return baseUrl.trim();
 }
 
 function buildProfileSnapshot(
@@ -142,7 +141,7 @@ function buildProfileSnapshot(
     modelId: managedModel?.id,
     provider: undefined,
     model: managedModel?.name?.trim() || profile.model?.trim() || DEFAULT_MODEL_NAME,
-    liteLLMBaseUrl: vendor?.baseUrl || profile.liteLLMBaseUrl || DEFAULT_BASE_URL,
+    liteLLMBaseUrl: vendor?.baseUrl ?? profile.liteLLMBaseUrl ?? "",
   };
 }
 
@@ -268,7 +267,7 @@ export function createDefaultProfile(
     name: name.trim() || "默认配置",
     provider: undefined,
     model: formatLegacyModelRef(provider, model),
-    liteLLMBaseUrl: normalizeBaseUrl(baseUrl),
+    liteLLMBaseUrl: normalizeBaseUrl(baseUrl) || DEFAULT_BASE_URL,
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -459,7 +458,9 @@ function migrateLegacyProfilesToManagedSettings(
           ? "默认供应商"
           : `${sourceProfile.name.trim()} 供应商`,
       protocol: "openai-chat-completions",
-      baseUrl: normalizeBaseUrl(sourceProfile.liteLLMBaseUrl || settings.liteLLMBaseUrl),
+      baseUrl:
+        normalizeBaseUrl(sourceProfile.liteLLMBaseUrl || settings.liteLLMBaseUrl) ||
+        DEFAULT_BASE_URL,
       createdAt: sourceProfile.createdAt || timestamp,
       updatedAt: timestamp,
     };
@@ -631,11 +632,46 @@ function vendorSecretSlot(vendorId: string): string {
   return `vendor:${vendorId}`;
 }
 
+function legacyVendorSecretSlot(vendorId: string): string | null | undefined {
+  if (vendorId === DEFAULT_VENDOR_ID) {
+    return undefined;
+  }
+
+  if (vendorId.startsWith("vendor-profile-")) {
+    return vendorId.slice("vendor-".length);
+  }
+
+  return null;
+}
+
 export async function loadVendorApiKey(vendorId?: string | null): Promise<string> {
   if (!vendorId) {
     return "";
   }
-  return loadSecureApiKey(vendorSecretSlot(vendorId));
+
+  const currentSlot = vendorSecretSlot(vendorId);
+  const currentKey = await loadSecureApiKey(currentSlot);
+  if (currentKey) {
+    return currentKey;
+  }
+
+  const legacySlot = legacyVendorSecretSlot(vendorId);
+  if (legacySlot === null) {
+    return "";
+  }
+
+  const legacyKey = await loadSecureApiKey(legacySlot);
+  if (!legacyKey) {
+    return "";
+  }
+
+  try {
+    await saveSecureApiKey(legacyKey, currentSlot);
+  } catch {
+    // Ignore migration persistence failure and still return the recovered key.
+  }
+
+  return legacyKey;
 }
 
 export async function saveVendorApiKey(vendorId: string, apiKey: string): Promise<void> {
@@ -836,21 +872,24 @@ export function isLocalVendor(vendor: VendorConfig | null | undefined): boolean 
 }
 
 export function isManagedModelLocal(settings: AppSettings, modelId?: string | null): boolean {
-  const managedModel = getManagedModelById(settings, modelId);
-  const vendor = getVendorById(settings, managedModel?.vendorId);
-  if (!managedModel || !vendor) {
-    return false;
-  }
+  const selection = modelId
+    ? settings.profiles
+        .map((profile) => getProfileSelection(settings, profile))
+        .find((candidate) => candidate?.managedModel.id === modelId) ??
+      (() => {
+        const managedModel = getManagedModelById(settings, modelId);
+        const vendor = getVendorById(settings, managedModel?.vendorId);
+        return managedModel && vendor ? { vendor, managedModel } : null;
+      })()
+    : getProfileSelection(settings, getActiveProfile(settings));
 
-  if (managedModel.name.startsWith("ollama/")) {
-    return true;
-  }
-
-  return isLocalVendor(vendor);
+  return isLocalVendor(selection?.vendor);
 }
 
 export function isActiveModelLocal(settings: AppSettings): boolean {
-  return isManagedModelLocal(settings, getActiveProfile(settings)?.modelId);
+  return isLocalVendor(
+    getProfileSelection(settings, getActiveProfile(settings))?.vendor
+  );
 }
 
 export function maskApiKey(key: string): string {

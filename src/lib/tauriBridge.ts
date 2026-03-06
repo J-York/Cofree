@@ -235,6 +235,7 @@ export function postLitellmChatCompletions(params: {
 export function postLitellmChatCompletionsStream(params: {
   baseUrl: string;
   apiKey: string;
+  protocol?: string;
   body: unknown;
   requestId: string;
   proxy?: ProxySettings;
@@ -242,6 +243,7 @@ export function postLitellmChatCompletionsStream(params: {
   return invoke<LiteLLMHttpResponse>("post_litellm_chat_completions_stream", {
     baseUrl: params.baseUrl,
     apiKey: params.apiKey,
+    protocol: params.protocol,
     body: params.body,
     requestId: params.requestId,
     proxy: params.proxy,
