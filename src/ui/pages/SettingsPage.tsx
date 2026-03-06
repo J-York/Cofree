@@ -44,6 +44,7 @@ import {
   type ChatAgentDefinition,
   type SubAgentRole,
 } from "../../agents/types";
+import { BUILTIN_TEAMS } from "../../agents/agentTeam";
 import { clearAllConversations } from "../../lib/conversationStore";
 
 interface WorkspaceInfo {
@@ -576,6 +577,40 @@ export function SettingsPage({
                   onCancelDelete={() => setConfirmDeleteAgentId(null)}
                 />
               )}
+
+              <header className="settings-pane-header" style={{ marginTop: "32px" }}>
+                <h2 className="settings-pane-title">内置工作流团队 (Agent Teams)</h2>
+                <p className="settings-pane-desc">
+                  多智能体团队编排，通过固定流程协作完成复杂任务。可以在聊天或通过任务请求委派。
+                </p>
+              </header>
+              <div className="agent-card-list">
+                {BUILTIN_TEAMS.map((team) => (
+                  <div key={team.id} className="agent-card" style={{ cursor: "default" }}>
+                    <div className="agent-card-header">
+                      <span className="agent-card-name" style={{ fontFamily: "monospace" }}>{team.id}</span>
+                      <span className="agent-card-badge">内置团队</span>
+                    </div>
+                    <span className="agent-card-desc" style={{ marginBottom: "12px", display: "inline-block" }}>
+                      {team.name} - {team.description}
+                    </span>
+                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                      {team.pipeline.map((stage, idx) => (
+                        <span key={idx} style={{ 
+                          fontSize: "11px", 
+                          background: "var(--bg-3)", 
+                          padding: "2px 8px", 
+                          borderRadius: "10px",
+                          border: "1px solid var(--border-color)",
+                          color: "var(--text-1)"
+                        }}>
+                          {idx + 1}. {stage.stageLabel}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </>
           )}
 
@@ -1421,6 +1456,8 @@ const SUB_AGENT_ROLES: { role: SubAgentRole; label: string }[] = [
   { role: "planner", label: "Planner（规划）" },
   { role: "coder", label: "Coder（编码）" },
   { role: "tester", label: "Tester（测试）" },
+  { role: "debugger", label: "Debugger（调试）" },
+  { role: "reviewer", label: "Reviewer（代码审查）" },
 ];
 
 function AgentEditor({

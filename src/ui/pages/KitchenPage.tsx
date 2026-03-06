@@ -110,7 +110,7 @@ export function KitchenPage(): ReactElement {
           <span className="kitchen-stat-value">
             {state.toolTraces.filter(t => t.name === "task").length || "—"}
           </span>
-          <span className="kitchen-stat-label">Sub-Agent 任务</span>
+          <span className="kitchen-stat-label">子 Agent / 团队任务</span>
         </div>
         <div className="kitchen-stat">
           <span className="kitchen-stat-value">
@@ -177,7 +177,7 @@ export function KitchenPage(): ReactElement {
                   </div>
                   {trace.resultPreview && (
                     <pre className="kitchen-timeline-preview">
-                      {trace.resultPreview.slice(0, 200)}
+                      {trace.resultPreview.slice(0, 300)}
                     </pre>
                   )}
                 </div>

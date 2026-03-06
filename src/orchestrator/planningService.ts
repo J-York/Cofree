@@ -55,6 +55,8 @@ import { assembleSystemPrompt, assembleRuntimeContext } from "../agents/promptAs
 import { selectAgentTools } from "../agents/toolPolicy";
 import { tryExtractStructuredOutput, tryExtractFeedback } from "../agents/structuredOutput";
 import { runWithConcurrencyLimit } from "../lib/concurrency";
+import { BUILTIN_TEAMS } from "../agents/agentTeam";
+import { executeAgentTeam } from "./teamExecutor";
 import {
   createWorkingMemory,
   extractFileKnowledge,
@@ -559,19 +561,23 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
         "Example: task(role='coder', description='Implement the UserService class with CRUD methods in src/services/userService.ts')",
       parameters: {
         type: "object",
-        required: ["role", "description"],
+        required: ["description"],
         additionalProperties: false,
         properties: {
           role: {
             type: "string",
             enum: ["planner", "coder", "tester"],
-            description: "The role of the sub-agent to delegate to.",
+            description: "The role of the sub-agent to delegate to. Required unless 'team' is provided.",
+          },
+          team: {
+            type: "string",
+            description: "Optional ID of a predefined Agent Team to execute. If provided, overrides 'role'.",
           },
           description: {
             type: "string",
             minLength: 1,
             description:
-              "Detailed description of the sub-task for the sub-agent to execute.",
+              "Detailed description of the sub-task for the sub-agent or team to execute.",
           },
         },
       },
@@ -1770,7 +1776,7 @@ function renderListEntries(entries: FileEntry[]): string {
 const SUB_AGENT_MAX_TURNS_DEFAULT = 20;
 const MAX_SUB_AGENT_RETRIES = 2;
 
-interface SubAgentResult {
+export interface SubAgentResult {
   reply: string;
   status: SubAgentCompletionStatus;
   proposedActions: ActionProposal[];
@@ -1780,7 +1786,7 @@ interface SubAgentResult {
   feedback?: SubAgentFeedback;
 }
 
-async function executeSubAgentTask(
+export async function executeSubAgentTask(
   role: string,
   taskDescription: string,
   workspacePath: string,
@@ -1828,6 +1834,7 @@ async function executeSubAgentTask(
     `你是 Cofree 的 ${agentDef.displayName} Sub-Agent。`,
     `你的专长：${agentDef.promptIntent}`,
     `当前工作区: ${workspacePath}`,
+    agentDef.workflowTemplate ? `\n## 标准工作流\n${agentDef.workflowTemplate}` : "",
     memoryContext ? `\n## 已知上下文\n${memoryContext}` : "",
     "你正在执行一个被委派的子任务。请专注于完成任务并返回结果。",
     "完成任务后，请简洁地汇报结果。不要提出超出任务范围的额外建议。",
@@ -3035,9 +3042,10 @@ async function executeToolCall(
 
     if (call.function.name === "task") {
       const role = asString(args.role).trim();
+      const teamId = asString(args.team).trim();
       const description = asString(args.description).trim();
-      if (!role) {
-        const message = "role 不能为空";
+      if (!role && !teamId) {
+        const message = "role 和 team 不能同时为空";
         return {
           content: JSON.stringify({ error: message }),
           success: false,
@@ -3053,6 +3061,59 @@ async function executeToolCall(
           errorCategory: "validation",
           errorMessage: message,
         };
+      }
+
+      if (teamId) {
+        const teamDef = BUILTIN_TEAMS.find((t) => t.id === teamId);
+        if (!teamDef) {
+          const validTeams = BUILTIN_TEAMS.map((t) => t.id).join(", ");
+          const message = `无效的 Team ID: "${teamId}"。可用团队: ${validTeams}`;
+          return {
+            content: JSON.stringify({ error: message }),
+            success: false,
+            errorCategory: "validation",
+            errorMessage: message,
+          };
+        }
+        if (!settings) {
+          const message = "task 工具需要 settings 上下文，当前调用缺少 settings";
+          return {
+            content: JSON.stringify({ error: message }),
+            success: false,
+            errorCategory: "validation",
+            errorMessage: message,
+          };
+        }
+
+        const teamResult = await executeAgentTeam({
+          team: teamDef,
+          taskDescription: description,
+          workspacePath: safeWorkspace,
+          settings,
+          toolPermissions,
+          workingMemory,
+          onStageProgress: (stage, event) => {
+            onSubAgentProgress?.({
+              ...event,
+              kind: "summary",
+              message: `[${stage}] ${event.kind === "summary" ? event.message : event.kind}`
+            });
+          },
+          signal
+        });
+
+        const responsePayload: Record<string, unknown> = {
+          ok: teamResult.status === "completed",
+          action_type: "team_task",
+          team: teamId,
+          status: teamResult.status,
+          reply: teamResult.finalReply,
+        };
+        const result: ToolExecutionResult = {
+          content: JSON.stringify(responsePayload),
+          success: true,
+        };
+        return result;
       }
       const validRoles: string[] = allowedSubAgents !== undefined
         ? [...allowedSubAgents]

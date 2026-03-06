@@ -15,7 +15,7 @@ import type { ModelSelection } from "../lib/modelSelection";
 // Sub-agent layer (internal orchestrator roles, NOT user-selectable)
 // ---------------------------------------------------------------------------
 
-export type SubAgentRole = "planner" | "coder" | "tester";
+export type SubAgentRole = "planner" | "coder" | "tester" | "debugger" | "reviewer";
 
 export interface SubAgentDefinition {
   role: SubAgentRole;
@@ -27,6 +27,10 @@ export interface SubAgentDefinition {
   subAgentMaxTurns?: number;
   /** Hint appended to sub-agent system prompt to guide structured JSON output. */
   outputSchemaHint?: string;
+  /** Phase 6: Sub-agent specific workflow instructions to inject into system prompt. */
+  workflowTemplate?: string;
+  /** Phase 6: Specific context keys to inject from working memory. */
+  requiredContextKeys?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -64,10 +68,33 @@ export interface TesterOutput {
   coverageGaps?: string[];
 }
 
+export interface DebuggerOutput {
+  hypotheses: Array<{
+    description: string;
+    evidence: string;
+    status: "confirmed" | "rejected" | "pending";
+  }>;
+  rootCause?: string;
+  fix?: string;
+}
+
+export interface ReviewerOutput {
+  issues: Array<{
+    severity: "critical" | "warning" | "suggestion";
+    file: string;
+    line: number;
+    message: string;
+  }>;
+  overallAssessment: "approve" | "request_changes" | "comment";
+  summary: string;
+}
+
 export type StructuredSubAgentOutput =
   | { role: "planner"; data: PlannerOutput }
   | { role: "coder"; data: CoderOutput }
-  | { role: "tester"; data: TesterOutput };
+  | { role: "tester"; data: TesterOutput }
+  | { role: "debugger"; data: DebuggerOutput }
+  | { role: "reviewer"; data: ReviewerOutput };
 
 // ---------------------------------------------------------------------------
 // Sub-agent completion status and feedback (Phase 3)

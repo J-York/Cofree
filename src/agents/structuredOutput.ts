@@ -16,6 +16,8 @@ import type {
   PlannerOutput,
   CoderOutput,
   TesterOutput,
+  DebuggerOutput,
+  ReviewerOutput,
 } from "./types";
 
 /**
@@ -109,6 +111,10 @@ function validateAndNormalize(
       return validateCoderOutput(parsed);
     case "tester":
       return validateTesterOutput(parsed);
+    case "debugger":
+      return validateDebuggerOutput(parsed);
+    case "reviewer":
+      return validateReviewerOutput(parsed);
     default:
       return undefined;
   }
@@ -184,6 +190,55 @@ function validateTesterOutput(
   return { role: "tester", data: output };
 }
 
+function validateDebuggerOutput(
+  data: Record<string, unknown>,
+): StructuredSubAgentOutput | undefined {
+  if (!Array.isArray(data.hypotheses)) return undefined;
+
+  const hypotheses = data.hypotheses
+    .filter((h): h is Record<string, unknown> => h && typeof h === "object")
+    .map((h) => ({
+      description: String(h.description ?? ""),
+      evidence: String(h.evidence ?? ""),
+      status: normalizeHypothesisStatus(h.status),
+    }))
+    .filter((h) => h.description.length > 0);
+
+  const output: DebuggerOutput = {
+    hypotheses,
+    rootCause: typeof data.rootCause === "string" ? data.rootCause : undefined,
+    fix: typeof data.fix === "string" ? data.fix : undefined,
+  };
+
+  return { role: "debugger", data: output };
+}
+
+function validateReviewerOutput(
+  data: Record<string, unknown>,
+): StructuredSubAgentOutput | undefined {
+  if (!Array.isArray(data.issues)) return undefined;
+
+  const issues = data.issues
+    .filter((i): i is Record<string, unknown> => i && typeof i === "object")
+    .map((i) => ({
+      severity: normalizeSeverity(i.severity),
+      file: String(i.file ?? ""),
+      line: typeof i.line === "number" ? i.line : 0,
+      message: String(i.message ?? ""),
+    }))
+    .filter((i) => i.message.length > 0);
+
+  const summary = typeof data.summary === "string" ? data.summary : "";
+
+  const output: ReviewerOutput = {
+    issues,
+    overallAssessment: normalizeAssessment(data.overallAssessment),
+    summary,
+  };
+
+  return { role: "reviewer", data: output };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -196,4 +251,19 @@ function normalizeComplexity(value: unknown): "low" | "medium" | "high" {
 function normalizeRiskLevel(value: unknown): "low" | "medium" | "high" {
   if (value === "low" || value === "medium" || value === "high") return value;
   return "medium";
+}
+
+function normalizeHypothesisStatus(value: unknown): "confirmed" | "rejected" | "pending" {
+  if (value === "confirmed" || value === "rejected" || value === "pending") return value;
+  return "pending";
+}
+
+function normalizeSeverity(value: unknown): "critical" | "warning" | "suggestion" {
+  if (value === "critical" || value === "warning" || value === "suggestion") return value;
+  return "suggestion";
+}
+
+function normalizeAssessment(value: unknown): "approve" | "request_changes" | "comment" {
+  if (value === "approve" || value === "request_changes" || value === "comment") return value;
+  return "comment";
 }
