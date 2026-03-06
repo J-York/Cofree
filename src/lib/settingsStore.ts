@@ -1,21 +1,28 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/lib/settingsStore.ts
- * Milestone: 1
- * Task: 1.3
- * Status: Completed
- * Owner: Codex-GPT-5
- * Last Modified: 2026-02-27
- * Description: Local persistence for API key and model settings.
+ * Description: 持久化模型供应商、模型库与配置档案。
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { defaultModelForProvider } from "./litellm";
 
 export const SETTINGS_STORAGE_KEY = "cofree.settings.v1";
 export const SETTINGS_STORAGE_KEY_V2 = "cofree.settings.v2";
 
+const DEFAULT_BASE_URL = "http://localhost:4000";
+const DEFAULT_MODEL_NAME = "openai/gpt-4o-mini";
+const DEFAULT_VENDOR_ID = "vendor-default";
+const DEFAULT_MODEL_ID = "model-default";
+const DEFAULT_PROFILE_ID = "profile-default";
+const FIXED_TIMESTAMP = "2026-03-06T00:00:00.000Z";
+
 export type ToolPermissionLevel = "auto" | "ask";
+export type VendorProtocol =
+  | "openai-chat-completions"
+  | "openai-responses"
+  | "anthropic-messages";
+export type ProxyMode = "off" | "http" | "https" | "socks5";
+export type ManagedModelSource = "manual" | "fetched";
 
 export interface ToolPermissions {
   list_files: ToolPermissionLevel;
@@ -45,25 +52,41 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = {
   fetch: "ask",
 };
 
-export type ProxyMode = "off" | "http" | "https" | "socks5";
-
 export interface ProxySettings {
   mode: ProxyMode;
-  url: string; // e.g. http://127.0.0.1:7890, socks5://127.0.0.1:1080
+  url: string;
   username?: string;
   password?: string;
-  // Comma-separated host patterns, e.g. "localhost,127.0.0.1,*.local"
-  // (We keep it as a string to simplify the UI; Rust side can split/trim.)
   noProxy?: string;
+}
+
+export interface VendorConfig {
+  id: string;
+  name: string;
+  protocol: VendorProtocol;
+  baseUrl: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ManagedModel {
+  id: string;
+  vendorId: string;
+  name: string;
+  source: ManagedModelSource;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** 单个模型配置档案 */
 export interface ModelProfile {
-  id: string;                   // 唯一ID: "profile-{timestamp}"
-  name: string;                 // 用户命名: "Claude 日常", "GPT-4 生产"
-  provider?: string;            // 供应商: "anthropic", "openai", "ollama"
-  model: string;                // 模型名
-  liteLLMBaseUrl: string;       // Base URL
+  id: string;
+  name: string;
+  vendorId?: string;
+  modelId?: string;
+  provider?: string;
+  model: string;
+  liteLLMBaseUrl: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -81,41 +104,157 @@ export interface AppSettings {
   workspacePath: string;
   toolPermissions: ToolPermissions;
   proxy: ProxySettings;
-  // V2 新增字段
   activeProfileId: string | null;
   profiles: ModelProfile[];
+  vendors: VendorConfig[];
+  managedModels: ManagedModel[];
 }
-
-export const DEFAULT_SETTINGS: AppSettings = {
-  apiKey: "",
-  liteLLMBaseUrl: "http://localhost:4000",
-  model: defaultModelForProvider("openai"),
-  allowCloudModels: true,
-  maxSnippetLines: 500,
-  maxContextTokens: 128000,
-  sendRelativePathOnly: true,
-  lastSavedAt: null,
-  workspacePath: "",
-  toolPermissions: { ...DEFAULT_TOOL_PERMISSIONS },
-  proxy: {
-    mode: "off",
-    url: "",
-    username: "",
-    password: "",
-    noProxy: "",
-  },
-  activeProfileId: null,
-  profiles: [],
-};
 
 type PersistedSettings = Omit<AppSettings, "apiKey"> & { apiKey?: string };
 
-/** 生成唯一的 profile ID */
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function formatLegacyModelRef(provider?: string, model?: string): string {
+  const trimmedModel = model?.trim() || DEFAULT_MODEL_NAME;
+  const trimmedProvider = provider?.trim();
+  return trimmedProvider ? `${trimmedProvider}/${trimmedModel}` : trimmedModel;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function normalizeBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim();
+  return trimmed ? trimmed.replace(/\/$/, "") : DEFAULT_BASE_URL;
+}
+
+function buildProfileSnapshot(
+  profile: ModelProfile,
+  vendor?: VendorConfig | null,
+  managedModel?: ManagedModel | null
+): ModelProfile {
+  return {
+    ...profile,
+    vendorId: vendor?.id,
+    modelId: managedModel?.id,
+    provider: undefined,
+    model: managedModel?.name?.trim() || profile.model?.trim() || DEFAULT_MODEL_NAME,
+    liteLLMBaseUrl: vendor?.baseUrl || profile.liteLLMBaseUrl || DEFAULT_BASE_URL,
+  };
+}
+
+function createFixedDefaultEntities(): {
+  vendor: VendorConfig;
+  model: ManagedModel;
+  profile: ModelProfile;
+} {
+  const vendor: VendorConfig = {
+    id: DEFAULT_VENDOR_ID,
+    name: "默认供应商",
+    protocol: "openai-chat-completions",
+    baseUrl: DEFAULT_BASE_URL,
+    createdAt: FIXED_TIMESTAMP,
+    updatedAt: FIXED_TIMESTAMP,
+  };
+  const model: ManagedModel = {
+    id: DEFAULT_MODEL_ID,
+    vendorId: vendor.id,
+    name: DEFAULT_MODEL_NAME,
+    source: "manual",
+    createdAt: FIXED_TIMESTAMP,
+    updatedAt: FIXED_TIMESTAMP,
+  };
+  const profile: ModelProfile = {
+    id: DEFAULT_PROFILE_ID,
+    name: "默认配置",
+    vendorId: vendor.id,
+    modelId: model.id,
+    provider: undefined,
+    model: model.name,
+    liteLLMBaseUrl: vendor.baseUrl,
+    createdAt: FIXED_TIMESTAMP,
+    updatedAt: FIXED_TIMESTAMP,
+  };
+  return { vendor, model, profile };
+}
+
+function createInitialSettings(): AppSettings {
+  const defaults = createFixedDefaultEntities();
+  return {
+    apiKey: "",
+    liteLLMBaseUrl: defaults.vendor.baseUrl,
+    provider: defaults.vendor.name,
+    model: defaults.model.name,
+    allowCloudModels: true,
+    maxSnippetLines: 500,
+    maxContextTokens: 128000,
+    sendRelativePathOnly: true,
+    lastSavedAt: null,
+    workspacePath: "",
+    toolPermissions: { ...DEFAULT_TOOL_PERMISSIONS },
+    proxy: {
+      mode: "off",
+      url: "",
+      username: "",
+      password: "",
+      noProxy: "",
+    },
+    activeProfileId: defaults.profile.id,
+    profiles: [defaults.profile],
+    vendors: [defaults.vendor],
+    managedModels: [defaults.model],
+  };
+}
+
+export const DEFAULT_SETTINGS: AppSettings = createInitialSettings();
+
 export function generateProfileId(): string {
   return `profile-${Date.now()}`;
 }
 
-/** 创建默认的 profile */
+export function generateVendorId(): string {
+  return `vendor-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+export function generateManagedModelId(): string {
+  return `model-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+export function createVendorConfig(
+  name: string,
+  protocol: VendorProtocol,
+  baseUrl: string
+): VendorConfig {
+  const timestamp = nowIso();
+  return {
+    id: generateVendorId(),
+    name: name.trim() || "新供应商",
+    protocol,
+    baseUrl: normalizeBaseUrl(baseUrl),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+export function createManagedModel(
+  vendorId: string,
+  name: string,
+  source: ManagedModelSource = "manual"
+): ManagedModel {
+  const timestamp = nowIso();
+  return {
+    id: generateManagedModelId(),
+    vendorId,
+    name: name.trim(),
+    source,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
 export function createDefaultProfile(
   id: string,
   name: string,
@@ -123,40 +262,295 @@ export function createDefaultProfile(
   provider?: string,
   model?: string
 ): ModelProfile {
-  const now = new Date().toISOString();
+  const timestamp = nowIso();
   return {
     id,
-    name,
-    provider,
-    model: model || defaultModelForProvider(provider || "openai"),
-    liteLLMBaseUrl: baseUrl,
-    createdAt: now,
-    updatedAt: now,
+    name: name.trim() || "默认配置",
+    provider: undefined,
+    model: formatLegacyModelRef(provider, model),
+    liteLLMBaseUrl: normalizeBaseUrl(baseUrl),
+    createdAt: timestamp,
+    updatedAt: timestamp,
   };
 }
 
-/** 从 V1 设置迁移到 V2 */
-function migrateSettingsV1ToV2(v1Settings: Partial<PersistedSettings>): AppSettings {
-  const legacyProfileId = "profile-legacy";
-  const now = new Date().toISOString();
+export function getVendorById(
+  settings: Pick<AppSettings, "vendors">,
+  vendorId?: string | null
+): VendorConfig | null {
+  if (!vendorId) {
+    return null;
+  }
+  return settings.vendors.find((vendor) => vendor.id === vendorId) || null;
+}
 
-  const legacyProfile: ModelProfile = {
-    id: legacyProfileId,
-    name: "默认配置",
-    provider: v1Settings.provider,
-    model: v1Settings.model?.trim() || defaultModelForProvider(v1Settings.provider || "openai"),
-    liteLLMBaseUrl: v1Settings.liteLLMBaseUrl || DEFAULT_SETTINGS.liteLLMBaseUrl,
-    createdAt: now,
-    updatedAt: now,
-  };
+export function getManagedModelById(
+  settings: Pick<AppSettings, "managedModels">,
+  modelId?: string | null
+): ManagedModel | null {
+  if (!modelId) {
+    return null;
+  }
+  return settings.managedModels.find((model) => model.id === modelId) || null;
+}
+
+export function listManagedModelsForVendor(
+  settings: Pick<AppSettings, "managedModels">,
+  vendorId?: string | null
+): ManagedModel[] {
+  if (!vendorId) {
+    return [];
+  }
+  return settings.managedModels.filter((model) => model.vendorId === vendorId);
+}
+
+function findSelectionForProfile(
+  settings: Pick<AppSettings, "vendors" | "managedModels">,
+  profile: ModelProfile | null | undefined
+): { vendor: VendorConfig; managedModel: ManagedModel } | null {
+  if (!profile) {
+    return null;
+  }
+
+  const directModel = getManagedModelById(settings, profile.modelId);
+  const directVendor = getVendorById(settings, directModel?.vendorId ?? profile.vendorId);
+  if (directModel && directVendor) {
+    return { vendor: directVendor, managedModel: directModel };
+  }
+
+  const modelName = profile.model.trim();
+  const scopedModels = listManagedModelsForVendor(settings, profile.vendorId);
+  const modelByName =
+    scopedModels.find((entry) => entry.name === modelName) ||
+    settings.managedModels.find((entry) => entry.name === modelName);
+  const vendor =
+    getVendorById(settings, modelByName?.vendorId) ||
+    getVendorById(settings, profile.vendorId);
+  if (modelByName && vendor) {
+    return { vendor, managedModel: modelByName };
+  }
+
+  const [firstVendor] = settings.vendors;
+  const firstModel = settings.managedModels.find(
+    (entry) => entry.vendorId === firstVendor?.id
+  );
+  if (firstVendor && firstModel) {
+    return { vendor: firstVendor, managedModel: firstModel };
+  }
+
+  return null;
+}
+
+export function getProfileSelection(
+  settings: Pick<AppSettings, "vendors" | "managedModels">,
+  profile: ModelProfile | null | undefined
+): { vendor: VendorConfig; managedModel: ManagedModel } | null {
+  return findSelectionForProfile(settings, profile);
+}
+
+export function getActiveProfile(settings: AppSettings): ModelProfile | null {
+  if (!settings.activeProfileId) {
+    return settings.profiles[0] ?? null;
+  }
+  return (
+    settings.profiles.find((profile) => profile.id === settings.activeProfileId) ||
+    settings.profiles[0] ||
+    null
+  );
+}
+
+export function getActiveVendor(settings: AppSettings): VendorConfig | null {
+  return getProfileSelection(settings, getActiveProfile(settings))?.vendor ?? null;
+}
+
+export function getActiveManagedModel(settings: AppSettings): ManagedModel | null {
+  return getProfileSelection(settings, getActiveProfile(settings))?.managedModel ?? null;
+}
+
+function withSynchronizedProfiles(settings: AppSettings): AppSettings {
+  const profiles =
+    settings.profiles.length > 0 ? settings.profiles : [...DEFAULT_SETTINGS.profiles];
+  const synchronized = profiles.map((profile) => {
+    const selection = findSelectionForProfile(settings, profile);
+    if (!selection) {
+      return profile;
+    }
+    return buildProfileSnapshot(profile, selection.vendor, selection.managedModel);
+  });
+  return { ...settings, profiles: synchronized };
+}
+
+function withRuntimeSelection(settings: AppSettings, apiKey = settings.apiKey): AppSettings {
+  const profiles = settings.profiles.length > 0 ? settings.profiles : [...DEFAULT_SETTINGS.profiles];
+  const activeProfileId =
+    settings.activeProfileId && profiles.some((profile) => profile.id === settings.activeProfileId)
+      ? settings.activeProfileId
+      : (profiles[0]?.id ?? null);
+  const activeProfile =
+    profiles.find((profile) => profile.id === activeProfileId) || profiles[0] || null;
+  const selection = findSelectionForProfile(
+    { vendors: settings.vendors, managedModels: settings.managedModels },
+    activeProfile
+  );
+
+  if (!selection) {
+    return {
+      ...DEFAULT_SETTINGS,
+      ...settings,
+      apiKey,
+      profiles,
+      activeProfileId,
+      vendors: settings.vendors.length ? settings.vendors : DEFAULT_SETTINGS.vendors,
+      managedModels: settings.managedModels.length
+        ? settings.managedModels
+        : DEFAULT_SETTINGS.managedModels,
+    };
+  }
+
+  const nextProfiles = profiles.map((profile) =>
+    profile.id === activeProfile?.id
+      ? buildProfileSnapshot(profile, selection.vendor, selection.managedModel)
+      : profile
+  );
 
   return {
-    ...DEFAULT_SETTINGS,
-    ...v1Settings,
-    apiKey: "",
-    activeProfileId: legacyProfileId,
-    profiles: [legacyProfile],
+    ...settings,
+    apiKey,
+    activeProfileId,
+    profiles: nextProfiles,
+    provider: selection.vendor.name,
+    model: selection.managedModel.name,
+    liteLLMBaseUrl: selection.vendor.baseUrl,
   };
+}
+
+export function syncRuntimeSettings(settings: AppSettings, apiKey = settings.apiKey): AppSettings {
+  return withRuntimeSelection(withSynchronizedProfiles(settings), apiKey);
+}
+
+function migrateLegacyProfilesToManagedSettings(
+  settings: AppSettings
+): AppSettings {
+  const sourceProfiles =
+    settings.profiles.length > 0
+      ? settings.profiles
+      : [
+          createDefaultProfile(
+            DEFAULT_PROFILE_ID,
+            "默认配置",
+            settings.liteLLMBaseUrl || DEFAULT_BASE_URL,
+            settings.provider,
+            settings.model
+          ),
+        ];
+
+  const vendors: VendorConfig[] = [];
+  const managedModels: ManagedModel[] = [];
+  const profiles: ModelProfile[] = [];
+
+  for (const sourceProfile of sourceProfiles) {
+    const timestamp = sourceProfile.updatedAt || sourceProfile.createdAt || nowIso();
+    const vendorId = sourceProfile.vendorId || `vendor-${sourceProfile.id}`;
+    const modelId = sourceProfile.modelId || `model-${sourceProfile.id}`;
+    const vendor: VendorConfig = {
+      id: vendorId,
+      name:
+        sourceProfile.name.trim() === "默认配置"
+          ? "默认供应商"
+          : `${sourceProfile.name.trim()} 供应商`,
+      protocol: "openai-chat-completions",
+      baseUrl: normalizeBaseUrl(sourceProfile.liteLLMBaseUrl || settings.liteLLMBaseUrl),
+      createdAt: sourceProfile.createdAt || timestamp,
+      updatedAt: timestamp,
+    };
+    const managedModel: ManagedModel = {
+      id: modelId,
+      vendorId,
+      name: formatLegacyModelRef(sourceProfile.provider, sourceProfile.model),
+      source: "manual",
+      createdAt: sourceProfile.createdAt || timestamp,
+      updatedAt: timestamp,
+    };
+
+    vendors.push(vendor);
+    managedModels.push(managedModel);
+    profiles.push(
+      buildProfileSnapshot(
+        {
+          ...sourceProfile,
+          vendorId,
+          modelId,
+          provider: undefined,
+          updatedAt: timestamp,
+        },
+        vendor,
+        managedModel
+      )
+    );
+  }
+
+  return syncRuntimeSettings({
+    ...settings,
+    apiKey: "",
+    activeProfileId:
+      settings.activeProfileId && profiles.some((profile) => profile.id === settings.activeProfileId)
+        ? settings.activeProfileId
+        : profiles[0]?.id ?? null,
+    profiles,
+    vendors,
+    managedModels,
+  });
+}
+
+function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): AppSettings {
+  const base: AppSettings = {
+    ...DEFAULT_SETTINGS,
+    ...parsed,
+    apiKey: "",
+    activeProfileId:
+      typeof parsed.activeProfileId === "string" ? parsed.activeProfileId : DEFAULT_SETTINGS.activeProfileId,
+    profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
+    vendors: Array.isArray(parsed.vendors) ? parsed.vendors : [],
+    managedModels: Array.isArray(parsed.managedModels) ? parsed.managedModels : [],
+    proxy: {
+      ...DEFAULT_SETTINGS.proxy,
+      ...(isRecord(parsed.proxy) ? parsed.proxy : {}),
+    },
+    toolPermissions: {
+      ...DEFAULT_TOOL_PERMISSIONS,
+      ...(isRecord(parsed.toolPermissions) ? parsed.toolPermissions : {}),
+    } as ToolPermissions,
+  };
+
+  if (!base.vendors.length || !base.managedModels.length) {
+    return migrateLegacyProfilesToManagedSettings(base);
+  }
+
+  const settingsWithFallbackProfiles =
+    base.profiles.length > 0
+      ? base
+      : {
+          ...base,
+          profiles: [
+            buildProfileSnapshot(
+              {
+                ...DEFAULT_SETTINGS.profiles[0],
+                id: DEFAULT_PROFILE_ID,
+                name: "默认配置",
+              },
+              base.vendors[0],
+              base.managedModels.find((model) => model.vendorId === base.vendors[0]?.id) ??
+                base.managedModels[0]
+            ),
+          ],
+          activeProfileId: DEFAULT_PROFILE_ID,
+        };
+
+  return syncRuntimeSettings(settingsWithFallbackProfiles);
+}
+
+function migrateSettingsV1ToV2(v1Settings: Partial<PersistedSettings>): AppSettings {
+  return normalizeLoadedSettings(v1Settings);
 }
 
 export function loadSettings(): AppSettings {
@@ -164,24 +558,16 @@ export function loadSettings(): AppSettings {
     return DEFAULT_SETTINGS;
   }
 
-  // 优先尝试加载 V2 设置
   const rawV2 = window.localStorage.getItem(SETTINGS_STORAGE_KEY_V2);
   if (rawV2) {
     try {
       const parsed = JSON.parse(rawV2) as Partial<PersistedSettings>;
-      return {
-        ...DEFAULT_SETTINGS,
-        ...parsed,
-        apiKey: "",
-        profiles: parsed.profiles || [],
-        activeProfileId: parsed.activeProfileId || null,
-      };
+      return normalizeLoadedSettings(parsed);
     } catch (_error) {
-      // V2 解析失败，继续尝试 V1
+      // ignore and continue to V1 migration
     }
   }
 
-  // 尝试加载 V1 设置并迁移
   const rawV1 = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
   if (!rawV1) {
     return DEFAULT_SETTINGS;
@@ -190,17 +576,15 @@ export function loadSettings(): AppSettings {
   try {
     const parsed = JSON.parse(rawV1) as Partial<PersistedSettings>;
     const migrated = migrateSettingsV1ToV2(parsed);
-
-    // 保存迁移后的 V2 设置
-    window.localStorage.setItem(SETTINGS_STORAGE_KEY_V2, JSON.stringify({
-      ...migrated,
-      apiKey: "",
-      lastSavedAt: new Date().toISOString(),
-    }));
-
-    // 删除旧的 V1 设置
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY_V2,
+      JSON.stringify({
+        ...migrated,
+        apiKey: "",
+        lastSavedAt: nowIso(),
+      })
+    );
     window.localStorage.removeItem(SETTINGS_STORAGE_KEY);
-
     return migrated;
   } catch (_error) {
     return DEFAULT_SETTINGS;
@@ -213,15 +597,12 @@ export function saveSettings(settings: AppSettings): void {
   }
 
   const withTimestamp: PersistedSettings = {
-    ...settings,
+    ...syncRuntimeSettings(settings),
     apiKey: "",
-    lastSavedAt: new Date().toISOString(),
+    lastSavedAt: nowIso(),
   };
 
-  window.localStorage.setItem(
-    SETTINGS_STORAGE_KEY_V2,
-    JSON.stringify(withTimestamp)
-  );
+  window.localStorage.setItem(SETTINGS_STORAGE_KEY_V2, JSON.stringify(withTimestamp));
 }
 
 export async function loadSecureApiKey(profileId?: string | null): Promise<string> {
@@ -246,87 +627,230 @@ export async function deleteSecureApiKey(profileId: string): Promise<void> {
   await invoke("delete_secure_api_key", { profileId });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Profile CRUD 操作
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** 创建新的配置档案 */
-export function createProfile(
-  settings: AppSettings,
-  name: string,
-  baseUrl: string,
-  provider?: string,
-  model?: string
-): { settings: AppSettings; profile: ModelProfile } {
-  const id = generateProfileId();
-  const profile = createDefaultProfile(id, name, baseUrl, provider, model);
-
-  const newSettings: AppSettings = {
-    ...settings,
-    profiles: [...settings.profiles, profile],
-    activeProfileId: id,
-  };
-
-  return { settings: newSettings, profile };
+function vendorSecretSlot(vendorId: string): string {
+  return `vendor:${vendorId}`;
 }
 
-/** 更新配置档案 */
+export async function loadVendorApiKey(vendorId?: string | null): Promise<string> {
+  if (!vendorId) {
+    return "";
+  }
+  return loadSecureApiKey(vendorSecretSlot(vendorId));
+}
+
+export async function saveVendorApiKey(vendorId: string, apiKey: string): Promise<void> {
+  await saveSecureApiKey(apiKey, vendorSecretSlot(vendorId));
+}
+
+export async function deleteVendorApiKey(vendorId: string): Promise<void> {
+  await deleteSecureApiKey(vendorSecretSlot(vendorId));
+}
+
+export function createProfile(
+  settings: AppSettings,
+  name: string
+): { settings: AppSettings; profile: ModelProfile } {
+  const id = generateProfileId();
+  const activeProfile = getActiveProfile(settings) || DEFAULT_SETTINGS.profiles[0];
+  const timestamp = nowIso();
+  const profile: ModelProfile = {
+    ...activeProfile,
+    id,
+    name: name.trim() || "新配置",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+
+  return {
+    profile,
+    settings: syncRuntimeSettings({
+      ...settings,
+      profiles: [...settings.profiles, profile],
+      activeProfileId: id,
+    }),
+  };
+}
+
 export function updateProfile(
   settings: AppSettings,
   profileId: string,
   updates: Partial<Omit<ModelProfile, "id" | "createdAt">>
 ): AppSettings {
-  const profiles = settings.profiles.map((p) =>
-    p.id === profileId
-      ? { ...p, ...updates, updatedAt: new Date().toISOString() }
-      : p
-  );
+  const profiles = settings.profiles.map((profile) => {
+    if (profile.id !== profileId) {
+      return profile;
+    }
+    const updated = {
+      ...profile,
+      ...updates,
+      updatedAt: nowIso(),
+    };
+    const selection = findSelectionForProfile(settings, updated);
+    return buildProfileSnapshot(updated, selection?.vendor, selection?.managedModel);
+  });
 
-  return { ...settings, profiles };
+  return syncRuntimeSettings({ ...settings, profiles });
 }
 
-/** 删除配置档案 */
-export function deleteProfile(
+export function setProfileModelSelection(
   settings: AppSettings,
-  profileId: string
+  profileId: string,
+  modelId: string
 ): AppSettings {
-  const profiles = settings.profiles.filter((p) => p.id !== profileId);
-
-  // 如果删除的是当前激活的配置，切换到第一个可用的配置
-  let activeProfileId = settings.activeProfileId;
-  if (activeProfileId === profileId) {
-    activeProfileId = profiles.length > 0 ? profiles[0].id : null;
-  }
-
-  return { ...settings, profiles, activeProfileId };
-}
-
-/** 切换到指定的配置档案 */
-export function switchProfile(
-  settings: AppSettings,
-  profileId: string
-): AppSettings {
-  const profile = settings.profiles.find((p) => p.id === profileId);
-  if (!profile) {
+  const managedModel = getManagedModelById(settings, modelId);
+  const vendor = getVendorById(settings, managedModel?.vendorId);
+  if (!managedModel || !vendor) {
     return settings;
   }
 
+  return updateProfile(settings, profileId, {
+    vendorId: vendor.id,
+    modelId: managedModel.id,
+    model: managedModel.name,
+    liteLLMBaseUrl: vendor.baseUrl,
+  });
+}
+
+export function deleteProfile(settings: AppSettings, profileId: string): AppSettings {
+  const profiles = settings.profiles.filter((profile) => profile.id !== profileId);
+  const activeProfileId =
+    settings.activeProfileId === profileId ? profiles[0]?.id ?? null : settings.activeProfileId;
+  return syncRuntimeSettings({ ...settings, profiles, activeProfileId });
+}
+
+export function switchProfile(settings: AppSettings, profileId: string): AppSettings {
+  if (!settings.profiles.some((profile) => profile.id === profileId)) {
+    return settings;
+  }
+  return syncRuntimeSettings({ ...settings, activeProfileId: profileId });
+}
+
+export function createVendor(
+  settings: AppSettings,
+  params: {
+    name: string;
+    protocol: VendorProtocol;
+    baseUrl: string;
+  }
+): { settings: AppSettings; vendor: VendorConfig } {
+  const vendor = createVendorConfig(params.name, params.protocol, params.baseUrl);
   return {
-    ...settings,
-    activeProfileId: profileId,
-    // 同步 profile 的配置到顶层设置
-    provider: profile.provider,
-    model: profile.model,
-    liteLLMBaseUrl: profile.liteLLMBaseUrl,
+    vendor,
+    settings: {
+      ...settings,
+      vendors: [...settings.vendors, vendor],
+    },
   };
 }
 
-/** 获取当前激活的配置档案 */
-export function getActiveProfile(settings: AppSettings): ModelProfile | null {
-  if (!settings.activeProfileId) {
-    return null;
+export function updateVendor(
+  settings: AppSettings,
+  vendorId: string,
+  updates: Partial<Omit<VendorConfig, "id" | "createdAt">>
+): AppSettings {
+  const vendors = settings.vendors.map((vendor) =>
+    vendor.id === vendorId
+      ? {
+          ...vendor,
+          ...updates,
+          name: (updates.name ?? vendor.name).trim() || vendor.name,
+          baseUrl: normalizeBaseUrl(updates.baseUrl ?? vendor.baseUrl),
+          updatedAt: nowIso(),
+        }
+      : vendor
+  );
+
+  const updatedSettings = { ...settings, vendors };
+  return syncRuntimeSettings(withSynchronizedProfiles(updatedSettings));
+}
+
+export function addModelsToVendor(
+  settings: AppSettings,
+  vendorId: string,
+  modelNames: string[],
+  source: ManagedModelSource
+): { settings: AppSettings; added: ManagedModel[] } {
+  const normalizedNames = Array.from(
+    new Set(
+      modelNames
+        .map((name) => name.trim())
+        .filter(Boolean)
+    )
+  );
+  if (!normalizedNames.length) {
+    return { settings, added: [] };
   }
-  return settings.profiles.find((p) => p.id === settings.activeProfileId) || null;
+
+  const existingNames = new Set(
+    settings.managedModels
+      .filter((model) => model.vendorId === vendorId)
+      .map((model) => model.name)
+  );
+  const added = normalizedNames
+    .filter((name) => !existingNames.has(name))
+    .map((name) => createManagedModel(vendorId, name, source));
+
+  if (!added.length) {
+    return { settings, added: [] };
+  }
+
+  return {
+    added,
+    settings: syncRuntimeSettings({
+      ...settings,
+      managedModels: [...settings.managedModels, ...added],
+    }),
+  };
+}
+
+export function updateManagedModel(
+  settings: AppSettings,
+  modelId: string,
+  updates: Partial<Omit<ManagedModel, "id" | "vendorId" | "createdAt">>
+): AppSettings {
+  const managedModels = settings.managedModels.map((model) =>
+    model.id === modelId
+      ? {
+          ...model,
+          ...updates,
+          name: (updates.name ?? model.name).trim() || model.name,
+          updatedAt: nowIso(),
+        }
+      : model
+  );
+  return syncRuntimeSettings({ ...settings, managedModels });
+}
+
+export function isLocalVendor(vendor: VendorConfig | null | undefined): boolean {
+  if (!vendor) {
+    return false;
+  }
+
+  try {
+    const url = new URL(vendor.baseUrl);
+    const host = url.hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch (_error) {
+    return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(vendor.baseUrl);
+  }
+}
+
+export function isManagedModelLocal(settings: AppSettings, modelId?: string | null): boolean {
+  const managedModel = getManagedModelById(settings, modelId);
+  const vendor = getVendorById(settings, managedModel?.vendorId);
+  if (!managedModel || !vendor) {
+    return false;
+  }
+
+  if (managedModel.name.startsWith("ollama/")) {
+    return true;
+  }
+
+  return isLocalVendor(vendor);
+}
+
+export function isActiveModelLocal(settings: AppSettings): boolean {
+  return isManagedModelLocal(settings, getActiveProfile(settings)?.modelId);
 }
 
 export function maskApiKey(key: string): string {

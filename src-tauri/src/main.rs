@@ -124,6 +124,61 @@ fn normalize_base_url(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_string()
 }
 
+fn normalize_protocol(protocol: &str) -> &str {
+    match protocol.trim() {
+        "openai-responses" => "openai-responses",
+        "anthropic-messages" => "anthropic-messages",
+        _ => "openai-chat-completions",
+    }
+}
+
+fn build_protocol_endpoints(base_url: &str, protocol: &str, models_only: bool) -> Vec<String> {
+    let normalized = normalize_base_url(base_url);
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    let suffix = if models_only {
+        "models"
+    } else {
+        match normalize_protocol(protocol) {
+            "openai-responses" => "responses",
+            "anthropic-messages" => "messages",
+            _ => "chat/completions",
+        }
+    };
+
+    let mut endpoints = vec![format!("{}/{}", normalized, suffix)];
+    if !normalized.ends_with("/v1") {
+        endpoints.push(format!("{}/v1/{}", normalized, suffix));
+    }
+    endpoints
+}
+
+fn apply_protocol_headers(
+    mut request: reqwest::RequestBuilder,
+    protocol: &str,
+    api_key: &str,
+    accept: &str,
+) -> reqwest::RequestBuilder {
+    request = request.header(ACCEPT, accept);
+    match normalize_protocol(protocol) {
+        "anthropic-messages" => {
+            request = request.header("anthropic-version", "2023-06-01");
+            if !api_key.trim().is_empty() {
+                request = request.header("x-api-key", api_key.trim());
+            }
+            request
+        }
+        _ => {
+            if !api_key.trim().is_empty() {
+                request = request.bearer_auth(api_key.trim());
+            }
+            request
+        }
+    }
+}
+
 fn extract_error_message(payload: &Value) -> Option<String> {
     if let Some(message) = payload.get("message").and_then(Value::as_str) {
         return Some(message.to_string());
@@ -176,13 +231,15 @@ fn extract_model_ids(payload: &Value) -> Vec<String> {
 async fn fetch_models_from_endpoint(
     client: &reqwest::Client,
     endpoint: &str,
+    protocol: &str,
     api_key: &str,
 ) -> Result<Vec<String>, String> {
-    let mut request = client.get(endpoint).header(ACCEPT, "application/json");
-    if !api_key.trim().is_empty() {
-        request = request.bearer_auth(api_key.trim());
-    }
-    let response = request
+    let response = apply_protocol_headers(
+        client.get(endpoint),
+        protocol,
+        api_key,
+        "application/json",
+    )
         .send()
         .await
         .map_err(|e| format!("{} 请求失败: {}", endpoint, e))?;
@@ -205,17 +262,16 @@ async fn fetch_models_from_endpoint(
 async fn post_chat_completion_to_endpoint(
     client: &reqwest::Client,
     endpoint: &str,
+    protocol: &str,
     api_key: &str,
     body: &Value,
 ) -> Result<LiteLLMHttpResponse, String> {
-    let mut request = client
-        .post(endpoint)
-        .header(ACCEPT, "application/json")
-        .json(body);
-    if !api_key.trim().is_empty() {
-        request = request.bearer_auth(api_key.trim());
-    }
-    let response = request
+    let response = apply_protocol_headers(
+        client.post(endpoint).json(body),
+        protocol,
+        api_key,
+        "application/json",
+    )
         .send()
         .await
         .map_err(|e| format!("{} 请求失败: {}", endpoint, e))?;
@@ -1042,6 +1098,7 @@ fn load_latest_workflow_checkpoint(session_id: String) -> Result<RecoveryResult,
 async fn fetch_litellm_models(
     base_url: String,
     api_key: String,
+    protocol: String,
     proxy: Option<ProxySettings>,
 ) -> Result<Vec<String>, String> {
     let normalized = normalize_base_url(&base_url);
@@ -1049,13 +1106,10 @@ async fn fetch_litellm_models(
         return Err("LiteLLM Base URL 不能为空".to_string());
     }
     let client = build_reqwest_client_with_proxy(proxy, 120)?;
-    let mut endpoints = vec![format!("{}/models", normalized)];
-    if !normalized.ends_with("/v1") {
-        endpoints.push(format!("{}/v1/models", normalized));
-    }
+    let endpoints = build_protocol_endpoints(&normalized, &protocol, true);
     let mut errors = Vec::new();
     for endpoint in endpoints {
-        match fetch_models_from_endpoint(&client, &endpoint, &api_key).await {
+        match fetch_models_from_endpoint(&client, &endpoint, &protocol, &api_key).await {
             Ok(models) => return Ok(models),
             Err(error) => errors.push(error),
         }
@@ -1067,6 +1121,7 @@ async fn fetch_litellm_models(
 async fn post_litellm_chat_completions(
     base_url: String,
     api_key: String,
+    protocol: String,
     body: Value,
     proxy: Option<ProxySettings>,
 ) -> Result<LiteLLMHttpResponse, String> {
@@ -1075,13 +1130,10 @@ async fn post_litellm_chat_completions(
         return Err("LiteLLM Base URL 不能为空".to_string());
     }
     let client = build_reqwest_client_with_proxy(proxy, 120)?;
-    let mut endpoints = vec![format!("{}/chat/completions", normalized)];
-    if !normalized.ends_with("/v1") {
-        endpoints.push(format!("{}/v1/chat/completions", normalized));
-    }
+    let endpoints = build_protocol_endpoints(&normalized, &protocol, false);
     let mut errors = Vec::new();
     for (index, endpoint) in endpoints.iter().enumerate() {
-        match post_chat_completion_to_endpoint(&client, endpoint, &api_key, &body).await {
+        match post_chat_completion_to_endpoint(&client, endpoint, &protocol, &api_key, &body).await {
             Ok(response) => {
                 if response.status == 404 && index + 1 < endpoints.len() {
                     errors.push(format!("{} 返回 HTTP 404", endpoint));

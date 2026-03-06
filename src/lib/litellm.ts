@@ -1,15 +1,15 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/lib/litellm.ts
- * Milestone: 2
- * Task: 2.1
- * Status: Completed
- * Owner: Codex-GPT-5
- * Last Modified: 2026-02-27
- * Description: LiteLLM provider/model registry, fetch helpers, and request config builders.
+ * Description: 多协议 LLM 请求、模型拉取与响应归一化。
  */
 
-import type { AppSettings } from "./settingsStore";
+import {
+  type AppSettings,
+  type VendorProtocol,
+  getActiveManagedModel,
+  getActiveVendor,
+} from "./settingsStore";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -19,40 +19,6 @@ export interface StreamChunkEvent {
   done: boolean;
   finish_reason: string | null;
 }
-
-export interface ModelProvider {
-  id: string;
-  label: string;
-  models: string[];
-  localOnly: boolean;
-}
-
-export const MODEL_PROVIDERS: ModelProvider[] = [
-  {
-    id: "openai",
-    label: "OpenAI",
-    models: ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
-    localOnly: false,
-  },
-  {
-    id: "anthropic",
-    label: "Anthropic",
-    models: ["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"],
-    localOnly: false,
-  },
-  {
-    id: "xai",
-    label: "xAI",
-    models: ["grok-2-latest", "grok-2-vision-latest"],
-    localOnly: false,
-  },
-  {
-    id: "ollama",
-    label: "Ollama (Local)",
-    models: ["llama3.1:8b", "qwen2.5-coder:7b"],
-    localOnly: true,
-  },
-];
 
 export interface LiteLLMMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -73,6 +39,7 @@ export interface LiteLLMClientConfig {
   endpoint: string;
   headers: Record<string, string>;
   modelRef: string;
+  protocol: VendorProtocol;
 }
 
 export interface LiteLLMHttpResponse {
@@ -99,23 +66,38 @@ export interface LiteLLMToolDefinition {
   };
 }
 
-export function listProviderIds(): string[] {
-  return MODEL_PROVIDERS.map((provider) => provider.id);
+export interface VendorProtocolOption {
+  id: VendorProtocol;
+  label: string;
+  endpointLabel: string;
 }
 
-export function listModelsByProvider(providerId: string): string[] {
-  const provider = MODEL_PROVIDERS.find((item) => item.id === providerId);
-  return provider ? provider.models : [];
+export const VENDOR_PROTOCOLS: VendorProtocolOption[] = [
+  {
+    id: "openai-chat-completions",
+    label: "OpenAI Chat Completions",
+    endpointLabel: "/chat/completions",
+  },
+  {
+    id: "openai-responses",
+    label: "OpenAI Responses",
+    endpointLabel: "/responses",
+  },
+  {
+    id: "anthropic-messages",
+    label: "Anthropic Messages",
+    endpointLabel: "/v1/messages",
+  },
+];
+
+export function getProtocolLabel(protocol: VendorProtocol): string {
+  return (
+    VENDOR_PROTOCOLS.find((item) => item.id === protocol)?.label ?? protocol
+  );
 }
 
-export function isLocalProvider(providerId: string): boolean {
-  const provider = MODEL_PROVIDERS.find((item) => item.id === providerId);
-  return provider?.localOnly ?? false;
-}
-
-export function defaultModelForProvider(providerId: string): string {
-  const [firstModel] = listModelsByProvider(providerId);
-  return firstModel ?? "";
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
 }
 
 export function formatModelRef(providerId: string, model: string): string {
@@ -149,19 +131,48 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/$/, "");
 }
 
-function buildChatCompletionEndpoints(baseUrl: string): string[] {
+function buildProtocolEndpoints(
+  baseUrl: string,
+  protocol: VendorProtocol,
+  resource: "models" | "invoke"
+): string[] {
   const normalized = normalizeBaseUrl(baseUrl);
-  const endpoints = [`${normalized}/chat/completions`];
-  if (!normalized.endsWith("/v1")) {
-    endpoints.push(`${normalized}/v1/chat/completions`);
+  if (!normalized) {
+    return [];
   }
+
+  const suffix =
+    resource === "models"
+      ? "models"
+      : protocol === "openai-chat-completions"
+      ? "chat/completions"
+      : protocol === "openai-responses"
+      ? "responses"
+      : "messages";
+
+  const endpoints = [`${normalized}/${suffix}`];
+  if (!normalized.endsWith("/v1")) {
+    endpoints.push(`${normalized}/v1/${suffix}`);
+  }
+
   return endpoints;
 }
 
-function createAuthHeaders(apiKey: string): Record<string, string> {
+function createAuthHeaders(
+  protocol: VendorProtocol,
+  apiKey: string
+): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
+
+  if (protocol === "anthropic-messages") {
+    headers["anthropic-version"] = "2023-06-01";
+    if (apiKey.trim()) {
+      headers["x-api-key"] = apiKey.trim();
+    }
+    return headers;
+  }
 
   if (apiKey.trim()) {
     headers.Authorization = `Bearer ${apiKey.trim()}`;
@@ -235,82 +246,48 @@ function extractErrorMessage(payload: unknown): string {
 export function createLiteLLMClientConfig(
   settings: AppSettings
 ): LiteLLMClientConfig {
-  const [endpoint] = buildChatCompletionEndpoints(settings.liteLLMBaseUrl);
-  const headers = createAuthHeaders(settings.apiKey);
-  const modelRef = settings.provider
-    ? formatModelRef(settings.provider, settings.model)
-    : settings.model;
+  const activeVendor = getActiveVendor(settings);
+  const activeModel = getActiveManagedModel(settings);
+  const protocol = activeVendor?.protocol ?? "openai-chat-completions";
+  const [endpoint] = buildProtocolEndpoints(
+    activeVendor?.baseUrl || settings.liteLLMBaseUrl,
+    protocol,
+    "invoke"
+  );
+  const headers = createAuthHeaders(protocol, settings.apiKey);
+  const modelRef = activeModel?.name || settings.model;
 
   return {
     endpoint,
     headers,
     modelRef,
+    protocol,
   };
 }
 
-export async function postLiteLLMChatCompletions(
-  settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey" | "proxy">,
-  body: Record<string, unknown>
-): Promise<LiteLLMHttpResponse> {
-  const isTauri =
-    typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
-  try {
-    return await invoke<LiteLLMHttpResponse>("post_litellm_chat_completions", {
-      baseUrl: settings.liteLLMBaseUrl,
-      apiKey: settings.apiKey,
-      body,
-      proxy: settings.proxy,
-    });
-  } catch (error) {
-    // If we're in Tauri, don't fallback to browser fetch (which will fail with CORS).
-    // Throw the real Rust error so the user sees the actual problem.
-    if (isTauri) {
-      throw error;
-    }
-    // Fallback to frontend fetch for non-Tauri environments.
-  }
-
-  const errors: string[] = [];
-  const endpoints = buildChatCompletionEndpoints(settings.liteLLMBaseUrl);
-  for (let index = 0; index < endpoints.length; index += 1) {
-    const endpoint = endpoints[index];
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: createAuthHeaders(settings.apiKey),
-        body: JSON.stringify(body),
-      });
-      const rawBody = await response.text();
-      if (response.status === 404 && index < endpoints.length - 1) {
-        errors.push(`endpoint ${endpoint} 返回 404`);
-        continue;
-      }
-
-      return {
-        status: response.status,
-        body: rawBody,
-        endpoint,
-      };
-    } catch (error) {
-      errors.push(String(error || "Unknown error"));
-    }
-  }
-
-  throw new Error(errors.join(" | ") || "请求 LiteLLM 失败。");
+function getActiveProtocol(settings: AppSettings): VendorProtocol {
+  return getActiveVendor(settings)?.protocol ?? "openai-chat-completions";
 }
 
-export async function fetchLiteLLMModelIds(
-  settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey" | "proxy">
-): Promise<string[]> {
+function getModelName(settings: AppSettings): string {
+  return getActiveManagedModel(settings)?.name || settings.model;
+}
+
+async function fetchModelIdsWithProtocol(params: {
+  baseUrl: string;
+  apiKey: string;
+  protocol: VendorProtocol;
+  proxy?: AppSettings["proxy"];
+}): Promise<string[]> {
   const isTauri =
     typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
   try {
     const viaTauri = await invoke<string[]>("fetch_litellm_models", {
-      baseUrl: settings.liteLLMBaseUrl,
-      apiKey: settings.apiKey,
-      proxy: settings.proxy,
+      baseUrl: params.baseUrl,
+      apiKey: params.apiKey,
+      protocol: params.protocol,
+      proxy: params.proxy,
     });
     const normalized = Array.from(
       new Set(
@@ -323,32 +300,27 @@ export async function fetchLiteLLMModelIds(
       return normalized;
     }
   } catch (error) {
-    // If we're in Tauri, don't fallback to browser fetch (which will fail with CORS).
-    // Throw the real Rust error so the user sees the actual problem.
     if (isTauri) {
       throw error;
     }
-    // Fallback to frontend fetch for non-Tauri environments.
   }
-  const normalizedBaseUrl = normalizeBaseUrl(settings.liteLLMBaseUrl);
-  const endpoints = [`${normalizedBaseUrl}/models`];
-  if (!normalizedBaseUrl.endsWith("/v1")) {
-    endpoints.push(`${normalizedBaseUrl}/v1/models`);
-  }
+
+  const endpoints = buildProtocolEndpoints(params.baseUrl, params.protocol, "models");
   const errors: string[] = [];
   for (const endpoint of endpoints) {
     try {
       const response = await fetch(endpoint, {
         method: "GET",
-        headers: createAuthHeaders(settings.apiKey),
+        headers: createAuthHeaders(params.protocol, params.apiKey),
       });
       const payload = (await response.json().catch(() => null)) as unknown;
       if (!response.ok) {
         const detail = extractErrorMessage(payload);
-        const message = detail
-          ? `拉取模型失败（${response.status}）：${detail}`
-          : `拉取模型失败（${response.status}）`;
-        throw new Error(message);
+        throw new Error(
+          detail
+            ? `拉取模型失败（${response.status}）：${detail}`
+            : `拉取模型失败（${response.status}）`
+        );
       }
       const modelIds = Array.from(
         new Set(
@@ -365,10 +337,314 @@ export async function fetchLiteLLMModelIds(
       errors.push(String(error || "Unknown error"));
     }
   }
+
   if (errors.length > 0) {
     throw new Error(errors.join(" | "));
   }
-  throw new Error("未获取到可用模型，请确认 LiteLLM 已正确配置。");
+  throw new Error("未获取到可用模型，请确认模型供应商配置正确。");
+}
+
+export function fetchVendorModelIds(params: {
+  baseUrl: string;
+  apiKey: string;
+  protocol: VendorProtocol;
+  proxy?: AppSettings["proxy"];
+}): Promise<string[]> {
+  return fetchModelIdsWithProtocol(params);
+}
+
+function toOpenAIChatMessages(messages: LiteLLMMessage[]): LiteLLMMessage[] {
+  return messages;
+}
+
+function toOpenAIResponsesInput(messages: LiteLLMMessage[]): unknown[] {
+  const items: unknown[] = [];
+
+  for (const message of messages) {
+    if (message.role === "system" || message.role === "user") {
+      items.push({
+        type: "message",
+        role: message.role,
+        content: [{ type: "input_text", text: message.content }],
+      });
+      continue;
+    }
+
+    if (message.role === "assistant") {
+      if (message.content.trim()) {
+        items.push({
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: message.content }],
+        });
+      }
+      for (const toolCall of message.tool_calls ?? []) {
+        items.push({
+          type: "function_call",
+          call_id: toolCall.id,
+          name: toolCall.function.name,
+          arguments: toolCall.function.arguments,
+        });
+      }
+      continue;
+    }
+
+    if (message.role === "tool" && message.tool_call_id) {
+      items.push({
+        type: "function_call_output",
+        call_id: message.tool_call_id,
+        output: message.content,
+      });
+    }
+  }
+
+  return items;
+}
+
+function toAnthropicMessages(
+  messages: LiteLLMMessage[]
+): { system?: string; messages: Array<Record<string, unknown>> } {
+  const systemParts: string[] = [];
+  const anthropicMessages: Array<Record<string, unknown>> = [];
+
+  for (const message of messages) {
+    if (message.role === "system") {
+      if (message.content.trim()) {
+        systemParts.push(message.content.trim());
+      }
+      continue;
+    }
+
+    if (message.role === "user") {
+      anthropicMessages.push({
+        role: "user",
+        content: [{ type: "text", text: message.content }],
+      });
+      continue;
+    }
+
+    if (message.role === "assistant") {
+      const content: Array<Record<string, unknown>> = [];
+      if (message.content.trim()) {
+        content.push({ type: "text", text: message.content });
+      }
+      for (const toolCall of message.tool_calls ?? []) {
+        let parsedInput: unknown = toolCall.function.arguments;
+        try {
+          parsedInput = JSON.parse(toolCall.function.arguments);
+        } catch (_error) {
+          parsedInput = { raw: toolCall.function.arguments };
+        }
+        content.push({
+          type: "tool_use",
+          id: toolCall.id,
+          name: toolCall.function.name,
+          input: parsedInput,
+        });
+      }
+      anthropicMessages.push({
+        role: "assistant",
+        content,
+      });
+      continue;
+    }
+
+    if (message.role === "tool" && message.tool_call_id) {
+      anthropicMessages.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: message.tool_call_id,
+            content: message.content,
+          },
+        ],
+      });
+    }
+  }
+
+  return {
+    system: systemParts.length ? systemParts.join("\n\n") : undefined,
+    messages: anthropicMessages,
+  };
+}
+
+function normalizeToolChoice(
+  toolChoice:
+    | "auto"
+    | "none"
+    | { type: "function"; function: { name: string } }
+    | undefined,
+  protocol: VendorProtocol
+): unknown {
+  if (!toolChoice || toolChoice === "auto") {
+    return protocol === "anthropic-messages" ? { type: "auto" } : "auto";
+  }
+  if (toolChoice === "none") {
+    return protocol === "anthropic-messages" ? { type: "auto" } : "none";
+  }
+  if (protocol === "anthropic-messages") {
+    return { type: "tool", name: toolChoice.function.name };
+  }
+  return toolChoice;
+}
+
+function createOpenAIResponsesRequestBody(
+  messages: LiteLLMMessage[],
+  settings: AppSettings,
+  options?: {
+    responseFormat?: JsonSchemaResponseFormat;
+    stream?: boolean;
+    temperature?: number;
+    tools?: LiteLLMToolDefinition[];
+    toolChoice?:
+      | "auto"
+      | "none"
+      | { type: "function"; function: { name: string } };
+  }
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: getModelName(settings),
+    input: toOpenAIResponsesInput(messages),
+    temperature: options?.temperature ?? 0.2,
+    stream: options?.stream ?? false,
+  };
+
+  if (options?.tools?.length) {
+    body.tools = options.tools.map((tool) => ({
+      type: "function",
+      name: tool.function.name,
+      description: tool.function.description,
+      parameters: tool.function.parameters,
+      strict: true,
+    }));
+    body.tool_choice = normalizeToolChoice(
+      options.toolChoice,
+      "openai-responses"
+    );
+  }
+
+  if (options?.responseFormat) {
+    body.text = {
+      format: options.responseFormat,
+    };
+  }
+
+  return body;
+}
+
+function createAnthropicRequestBody(
+  messages: LiteLLMMessage[],
+  settings: AppSettings,
+  options?: {
+    responseFormat?: JsonSchemaResponseFormat;
+    stream?: boolean;
+    temperature?: number;
+    tools?: LiteLLMToolDefinition[];
+    toolChoice?:
+      | "auto"
+      | "none"
+      | { type: "function"; function: { name: string } };
+  }
+): Record<string, unknown> {
+  const anthropic = toAnthropicMessages(messages);
+  const body: Record<string, unknown> = {
+    model: getModelName(settings),
+    messages: anthropic.messages,
+    max_tokens: 4096,
+    temperature: options?.temperature ?? 0.2,
+    stream: options?.stream ?? false,
+  };
+
+  if (anthropic.system) {
+    body.system = anthropic.system;
+  }
+
+  if (options?.tools?.length) {
+    body.tools = options.tools.map((tool) => ({
+      name: tool.function.name,
+      description: tool.function.description,
+      input_schema: tool.function.parameters,
+    }));
+    body.tool_choice = normalizeToolChoice(
+      options.toolChoice,
+      "anthropic-messages"
+    );
+  }
+
+  void options?.responseFormat;
+  return body;
+}
+
+export async function postLiteLLMChatCompletions(
+  settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey" | "proxy">,
+  body: Record<string, unknown>
+): Promise<LiteLLMHttpResponse> {
+  const fullSettings = settings as AppSettings;
+  const protocol = getActiveProtocol(fullSettings);
+  const baseUrl = getActiveVendor(fullSettings)?.baseUrl || settings.liteLLMBaseUrl;
+  const isTauri =
+    typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+  try {
+    const viaTauri = await invoke<LiteLLMHttpResponse>("post_litellm_chat_completions", {
+      baseUrl,
+      apiKey: settings.apiKey,
+      protocol,
+      body,
+      proxy: settings.proxy,
+    });
+    return {
+      ...viaTauri,
+      body: normalizeResponseBody(protocol, viaTauri.body),
+    };
+  } catch (error) {
+    if (isTauri) {
+      throw error;
+    }
+  }
+
+  const errors: string[] = [];
+  const endpoints = buildProtocolEndpoints(baseUrl, protocol, "invoke");
+  for (let index = 0; index < endpoints.length; index += 1) {
+    const endpoint = endpoints[index];
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: createAuthHeaders(protocol, settings.apiKey),
+        body: JSON.stringify(body),
+      });
+      const rawBody = await response.text();
+      if (response.status === 404 && index < endpoints.length - 1) {
+        errors.push(`endpoint ${endpoint} 返回 404`);
+        continue;
+      }
+
+      return {
+        status: response.status,
+        body: normalizeResponseBody(protocol, rawBody),
+        endpoint,
+      };
+    } catch (error) {
+      errors.push(String(error || "Unknown error"));
+    }
+  }
+
+  throw new Error(errors.join(" | ") || "请求 LiteLLM 失败。");
+}
+
+export async function fetchLiteLLMModelIds(
+  settings: Pick<AppSettings, "liteLLMBaseUrl" | "apiKey" | "proxy">
+): Promise<string[]> {
+  const fullSettings = settings as AppSettings;
+  const protocol = getActiveProtocol(fullSettings);
+  const baseUrl = getActiveVendor(fullSettings)?.baseUrl || settings.liteLLMBaseUrl;
+  return fetchModelIdsWithProtocol({
+    baseUrl,
+    apiKey: settings.apiKey,
+    protocol,
+    proxy: settings.proxy,
+  });
 }
 
 export function createLiteLLMRequestBody(
@@ -385,12 +661,20 @@ export function createLiteLLMRequestBody(
       | { type: "function"; function: { name: string } };
   }
 ): Record<string, unknown> {
-  const modelRef = settings.provider
-    ? formatModelRef(settings.provider, settings.model)
-    : settings.model;
+  const protocol = getActiveProtocol(settings);
+  const modelRef = getModelName(settings);
+
+  if (protocol === "openai-responses") {
+    return createOpenAIResponsesRequestBody(messages, settings, options);
+  }
+
+  if (protocol === "anthropic-messages") {
+    return createAnthropicRequestBody(messages, settings, options);
+  }
+
   const body: Record<string, unknown> = {
     model: modelRef,
-    messages,
+    messages: toOpenAIChatMessages(messages),
     temperature: options?.temperature ?? 0.2,
     stream: options?.stream ?? true,
   };
@@ -407,11 +691,194 @@ export function createLiteLLMRequestBody(
   return body;
 }
 
+function normalizeOpenAIResponsesBody(raw: string): string {
+  const payload = JSON.parse(raw) as Record<string, unknown>;
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  const textParts: string[] = [];
+  const toolCalls: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }> = [];
+
+  for (const item of output) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    if (record.type === "message" && Array.isArray(record.content)) {
+      for (const block of record.content) {
+        if (!block || typeof block !== "object") {
+          continue;
+        }
+        const contentBlock = block as Record<string, unknown>;
+        const text =
+          typeof contentBlock.text === "string"
+            ? contentBlock.text
+            : typeof contentBlock.output_text === "string"
+            ? contentBlock.output_text
+            : "";
+        if (text) {
+          textParts.push(text);
+        }
+      }
+    }
+
+    if (record.type === "function_call") {
+      toolCalls.push({
+        id:
+          typeof record.call_id === "string" && record.call_id.trim()
+            ? record.call_id
+            : `call-${toolCalls.length + 1}`,
+        type: "function",
+        function: {
+          name: typeof record.name === "string" ? record.name : "",
+          arguments:
+            typeof record.arguments === "string"
+              ? record.arguments
+              : JSON.stringify(record.arguments ?? {}),
+        },
+      });
+    }
+  }
+
+  if (!textParts.length && typeof payload.output_text === "string") {
+    textParts.push(payload.output_text);
+  }
+
+  const usage: Record<string, unknown> = isRecord(payload.usage)
+    ? payload.usage
+    : {};
+  return JSON.stringify({
+    id: payload.id,
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: textParts.join(""),
+          tool_calls: toolCalls.length ? toolCalls : undefined,
+        },
+      },
+    ],
+    usage: {
+      prompt_tokens:
+        typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+      completion_tokens:
+        typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
+      total_tokens:
+        typeof usage.total_tokens === "number" ? usage.total_tokens : 0,
+    },
+  });
+}
+
+function normalizeAnthropicMessagesBody(raw: string): string {
+  const payload = JSON.parse(raw) as Record<string, unknown>;
+  const content = Array.isArray(payload.content) ? payload.content : [];
+  const textParts: string[] = [];
+  const toolCalls: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }> = [];
+
+  for (const item of content) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    if (record.type === "text" && typeof record.text === "string") {
+      textParts.push(record.text);
+      continue;
+    }
+    if (record.type === "tool_use") {
+      toolCalls.push({
+        id:
+          typeof record.id === "string" && record.id.trim()
+            ? record.id
+            : `toolu-${toolCalls.length + 1}`,
+        type: "function",
+        function: {
+          name: typeof record.name === "string" ? record.name : "",
+          arguments: JSON.stringify(record.input ?? {}),
+        },
+      });
+    }
+  }
+
+  const usage: Record<string, unknown> = isRecord(payload.usage)
+    ? payload.usage
+    : {};
+  return JSON.stringify({
+    id: payload.id,
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: textParts.join(""),
+          tool_calls: toolCalls.length ? toolCalls : undefined,
+        },
+        finish_reason:
+          typeof payload.stop_reason === "string" ? payload.stop_reason : "stop",
+      },
+    ],
+    usage: {
+      prompt_tokens:
+        typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+      completion_tokens:
+        typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
+      total_tokens:
+        typeof usage.input_tokens === "number" &&
+        typeof usage.output_tokens === "number"
+          ? usage.input_tokens + usage.output_tokens
+          : 0,
+    },
+  });
+}
+
+function normalizeResponseBody(protocol: VendorProtocol, raw: string): string {
+  if (!raw.trim()) {
+    return raw;
+  }
+
+  try {
+    if (protocol === "openai-responses") {
+      return normalizeOpenAIResponsesBody(raw);
+    }
+    if (protocol === "anthropic-messages") {
+      return normalizeAnthropicMessagesBody(raw);
+    }
+  } catch (_error) {
+    return raw;
+  }
+
+  return raw;
+}
+
 export async function postLiteLLMChatCompletionsStream(
   settings: AppSettings,
   body: Record<string, unknown>,
   onChunk: (content: string) => void
 ): Promise<LiteLLMHttpResponse> {
+  const protocol = getActiveProtocol(settings);
+  if (protocol !== "openai-chat-completions") {
+    const response = await postLiteLLMChatCompletions(settings, {
+      ...body,
+      stream: false,
+    });
+    try {
+      const payload = JSON.parse(response.body) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const content = payload.choices?.[0]?.message?.content ?? "";
+      if (content) {
+        onChunk(content);
+      }
+    } catch (_error) {
+      // ignore parsing error and return the normalized body
+    }
+    return response;
+  }
+
   const baseUrl = settings.liteLLMBaseUrl;
   const apiKey = settings.apiKey;
 

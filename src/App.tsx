@@ -1,12 +1,13 @@
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { defaultModelForProvider } from "./lib/litellm";
 import {
   type AppSettings,
-  loadSecureApiKey,
+  getActiveVendor,
   loadSettings,
-  saveSecureApiKey,
+  loadVendorApiKey,
   saveSettings,
+  saveVendorApiKey,
   switchProfile,
+  syncRuntimeSettings,
 } from "./lib/settingsStore";
 import { ChatPage } from "./ui/pages/ChatPage";
 import { KitchenPage } from "./ui/pages/KitchenPage";
@@ -60,7 +61,7 @@ export default function App(): ReactElement {
   useEffect(() => {
     let cancelled = false;
     const hydrate = async () => {
-      const apiKey = await loadSecureApiKey(settings.activeProfileId);
+      const apiKey = await loadVendorApiKey(getActiveVendor(settings)?.id);
       if (cancelled) return;
       setSettings((current) => (current.apiKey === apiKey ? current : { ...current, apiKey }));
     };
@@ -80,21 +81,28 @@ export default function App(): ReactElement {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
-  const handleSaveSettings = async (nextSettings: AppSettings): Promise<void> => {
-    const normalizedModel =
-      nextSettings.model.trim() || defaultModelForProvider(nextSettings.provider ?? "openai");
-    const normalized: AppSettings = { ...nextSettings, model: normalizedModel };
-    await saveSecureApiKey(normalized.apiKey, normalized.activeProfileId);
+  const handleSaveSettings = async (
+    nextSettings: AppSettings,
+    vendorApiKeys?: Record<string, string>
+  ): Promise<void> => {
+    const normalized = syncRuntimeSettings(nextSettings);
+    const apiKeyEntries = Object.entries(vendorApiKeys ?? {});
+    for (const [vendorId, apiKey] of apiKeyEntries) {
+      await saveVendorApiKey(vendorId, apiKey);
+    }
+    const activeVendorId = getActiveVendor(normalized)?.id;
+    const activeApiKey =
+      (activeVendorId ? vendorApiKeys?.[activeVendorId] : undefined) ?? normalized.apiKey;
     saveSettings(normalized);
-    setSettings(normalized);
+    setSettings({ ...normalized, apiKey: activeApiKey });
   };
 
   const handleSwitchProfile = useCallback(async (profileId: string) => {
     let apiKey = "";
-    try { apiKey = await loadSecureApiKey(profileId); } catch { /* ignore */ }
     const current = settingsRef.current;
     if (profileId === current.activeProfileId) return;
     const switched = switchProfile(current, profileId);
+    try { apiKey = await loadVendorApiKey(getActiveVendor(switched)?.id); } catch { /* ignore */ }
     const next = { ...switched, apiKey };
     saveSettings(next);
     setSettings(next);
@@ -105,10 +113,7 @@ export default function App(): ReactElement {
       const path = await invoke<string | null>("select_workspace_folder");
       if (!path) return;
       const current = settingsRef.current;
-      const normalizedModel =
-        current.model.trim() || defaultModelForProvider(current.provider ?? "openai");
-      const next: AppSettings = { ...current, workspacePath: path, model: normalizedModel };
-      await saveSecureApiKey(next.apiKey, next.activeProfileId);
+      const next: AppSettings = syncRuntimeSettings({ ...current, workspacePath: path });
       saveSettings(next);
       setSettings(next);
     } catch { /* ignore */ }
@@ -155,7 +160,7 @@ export default function App(): ReactElement {
         <TitleBar
           workspacePath={settings.workspacePath}
           gitBranch={gitBranch}
-          currentModel={settings.model || defaultModelForProvider(settings.provider ?? "openai")}
+          currentModel={settings.model}
           profiles={settings.profiles}
           activeProfileId={settings.activeProfileId}
           onToggleKitchen={() => setKitchenOpen((v) => !v)}
@@ -193,7 +198,11 @@ export default function App(): ReactElement {
         {settingsOpen && (
           <div className="settings-modal-backdrop" onClick={() => setSettingsOpen(false)}>
             <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
-              <SettingsPage settings={settings} onSave={handleSaveSettings} onClose={() => setSettingsOpen(false)} />
+              <SettingsPage
+                settings={settings}
+                onSave={handleSaveSettings}
+                onClose={() => setSettingsOpen(false)}
+              />
             </div>
           </div>
         )}

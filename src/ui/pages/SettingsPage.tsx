@@ -1,23 +1,33 @@
 import { invoke } from "@tauri-apps/api/core";
 import { type ReactElement, useEffect, useState } from "react";
 import {
+  VENDOR_PROTOCOLS,
   createLiteLLMClientConfig,
-  formatModelRef,
-  parseModelRef,
+  fetchVendorModelIds,
+  getProtocolLabel,
 } from "../../lib/litellm";
 import {
   type AppSettings,
+  type ManagedModel,
   type ModelProfile,
   type ToolPermissionLevel,
+  type VendorProtocol,
   DEFAULT_TOOL_PERMISSIONS,
+  addModelsToVendor,
   createProfile,
+  createVendor,
   deleteProfile,
-  deleteSecureApiKey,
   getActiveProfile,
-  loadSecureApiKey,
+  getActiveVendor,
+  getVendorById,
+  listManagedModelsForVendor,
+  loadVendorApiKey,
   maskApiKey,
+  setProfileModelSelection,
   switchProfile,
+  syncRuntimeSettings,
   updateProfile,
+  updateVendor,
 } from "../../lib/settingsStore";
 import { clearAllConversations } from "../../lib/conversationStore";
 
@@ -28,7 +38,10 @@ interface WorkspaceInfo {
 
 interface SettingsPageProps {
   settings: AppSettings;
-  onSave: (settings: AppSettings) => Promise<void>;
+  onSave: (
+    settings: AppSettings,
+    vendorApiKeys?: Record<string, string>
+  ) => Promise<void>;
   onClose?: () => void;
 }
 
@@ -59,6 +72,18 @@ export function SettingsPage({
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [editingProfileName, setEditingProfileName] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [selectedVendorId, setSelectedVendorId] = useState<string | null>(
+    getActiveVendor(settings)?.id ?? settings.vendors[0]?.id ?? null
+  );
+  const [vendorApiKeys, setVendorApiKeys] = useState<Record<string, string>>({});
+  const [showNewVendor, setShowNewVendor] = useState(false);
+  const [newVendorName, setNewVendorName] = useState("");
+  const [newVendorProtocol, setNewVendorProtocol] =
+    useState<VendorProtocol>("openai-chat-completions");
+  const [newVendorBaseUrl, setNewVendorBaseUrl] = useState("https://");
+  const [manualModelName, setManualModelName] = useState("");
+  const [vendorMessage, setVendorMessage] = useState("");
+  const [fetchingVendorId, setFetchingVendorId] = useState<string | null>(null);
 
   const loadWorkspaceInfo = async (path: string) => {
     if (!path) {
@@ -82,31 +107,56 @@ export function SettingsPage({
 
   useEffect(() => {
     setDraft(settings);
+    setSelectedVendorId(getActiveVendor(settings)?.id ?? settings.vendors[0]?.id ?? null);
+    setVendorApiKeys({});
   }, [settings]);
 
   const activeProfile = getActiveProfile(draft);
+  const activeVendor = getActiveVendor(draft);
+  const selectedVendor = getVendorById(draft, selectedVendorId);
+  const activeVendorModels = listManagedModelsForVendor(draft, activeProfile?.vendorId);
+  const selectedVendorModels = listManagedModelsForVendor(draft, selectedVendorId);
+
+  useEffect(() => {
+    if (!selectedVendorId || vendorApiKeys[selectedVendorId] !== undefined) {
+      return;
+    }
+    let cancelled = false;
+    loadVendorApiKey(selectedVendorId)
+      .then((apiKey) => {
+        if (cancelled) {
+          return;
+        }
+        setVendorApiKeys((current) =>
+          current[selectedVendorId] === undefined
+            ? { ...current, [selectedVendorId]: apiKey }
+            : current
+        );
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setVendorApiKeys((current) =>
+          current[selectedVendorId] === undefined
+            ? { ...current, [selectedVendorId]: "" }
+            : current
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedVendorId, vendorApiKeys]);
 
   const handleSave = async (): Promise<void> => {
-    let settingsToSave = { ...draft };
-    if (settingsToSave.activeProfileId) {
-      settingsToSave = updateProfile(
-        settingsToSave,
-        settingsToSave.activeProfileId,
-        {
-          provider: settingsToSave.provider,
-          model: settingsToSave.model,
-          liteLLMBaseUrl: settingsToSave.liteLLMBaseUrl,
-        }
-      );
-    }
-    const parsed = parseModelRef(settingsToSave.model);
-    const normalized = {
-      ...settingsToSave,
-      provider: parsed.provider || settingsToSave.provider || undefined,
-      model: parsed.model || settingsToSave.model,
-    };
+    const normalized = syncRuntimeSettings({
+      ...draft,
+      apiKey: activeVendor
+        ? vendorApiKeys[activeVendor.id] ?? draft.apiKey
+        : draft.apiKey,
+    });
     try {
-      await onSave(normalized);
+      await onSave(normalized, vendorApiKeys);
       setSaveMessage("已保存");
       setTimeout(() => setSaveMessage(""), 3000);
     } catch (error) {
@@ -135,14 +185,13 @@ export function SettingsPage({
 
   const handleCreateProfile = () => {
     const name = newProfileName.trim() || "新配置";
-    const { settings: newSettings } = createProfile(
-      draft,
-      name,
-      draft.liteLLMBaseUrl,
-      draft.provider,
-      draft.model
-    );
-    setDraft({ ...newSettings, apiKey: "" });
+    const { settings: newSettings } = createProfile(draft, name);
+    const switchedVendorId = getActiveVendor(newSettings)?.id ?? null;
+    setDraft({
+      ...newSettings,
+      apiKey: switchedVendorId ? vendorApiKeys[switchedVendorId] ?? "" : "",
+    });
+    setSelectedVendorId(switchedVendorId);
     setShowNewProfile(false);
     setNewProfileName("");
   };
@@ -150,31 +199,34 @@ export function SettingsPage({
   const handleSwitchProfile = async (profileId: string) => {
     if (profileId === draft.activeProfileId) return;
     const switched = switchProfile(draft, profileId);
+    const vendorId = getActiveVendor(switched)?.id ?? null;
     try {
-      const apiKey = await loadSecureApiKey(profileId);
+      const apiKey = await loadVendorApiKey(vendorId);
+      if (vendorId) {
+        setVendorApiKeys((current) => ({ ...current, [vendorId]: apiKey }));
+      }
       setDraft({ ...switched, apiKey });
+      setSelectedVendorId(vendorId);
     } catch {
       setDraft({ ...switched, apiKey: "" });
+      setSelectedVendorId(vendorId);
     }
   };
 
   const handleDeleteProfile = async (profileId: string) => {
     if (draft.profiles.length <= 1) return;
     const newSettings = deleteProfile(draft, profileId);
-    try {
-      await deleteSecureApiKey(profileId);
-    } catch {
-      // ignore
-    }
     if (
       newSettings.activeProfileId !== draft.activeProfileId &&
       newSettings.activeProfileId
     ) {
       try {
-        const apiKey = await loadSecureApiKey(newSettings.activeProfileId);
+        const apiKey = await loadVendorApiKey(getActiveVendor(newSettings)?.id);
         setDraft({ ...newSettings, apiKey });
+        setSelectedVendorId(getActiveVendor(newSettings)?.id ?? null);
       } catch {
         setDraft({ ...newSettings, apiKey: "" });
+        setSelectedVendorId(getActiveVendor(newSettings)?.id ?? null);
       }
     } else {
       setDraft(newSettings);
@@ -193,7 +245,114 @@ export function SettingsPage({
     setEditingProfileName("");
   };
 
+  const handleCreateVendor = () => {
+    const { settings: nextSettings, vendor } = createVendor(draft, {
+      name: newVendorName.trim() || "新供应商",
+      protocol: newVendorProtocol,
+      baseUrl: newVendorBaseUrl.trim() || "https://",
+    });
+    setDraft(nextSettings);
+    setSelectedVendorId(vendor.id);
+    setVendorApiKeys((current) => ({ ...current, [vendor.id]: "" }));
+    setShowNewVendor(false);
+    setNewVendorName("");
+    setNewVendorProtocol("openai-chat-completions");
+    setNewVendorBaseUrl("https://");
+  };
+
+  const handleAssignFirstModelForVendor = (vendorId: string) => {
+    if (!activeProfile) {
+      return;
+    }
+    const [firstModel] = listManagedModelsForVendor(draft, vendorId);
+    if (!firstModel) {
+      return;
+    }
+    setDraft((current) =>
+      setProfileModelSelection(current, activeProfile.id, firstModel.id)
+    );
+  };
+
+  const handleFetchVendorModels = async () => {
+    if (!selectedVendor) {
+      return;
+    }
+    setFetchingVendorId(selectedVendor.id);
+    setVendorMessage("");
+    try {
+      const modelIds = await fetchVendorModelIds({
+        baseUrl: selectedVendor.baseUrl,
+        apiKey: vendorApiKeys[selectedVendor.id] ?? "",
+        protocol: selectedVendor.protocol,
+        proxy: draft.proxy,
+      });
+      let nextSettings = draft;
+      const { settings: updatedSettings, added } = addModelsToVendor(
+        draft,
+        selectedVendor.id,
+        modelIds,
+        "fetched"
+      );
+      nextSettings = updatedSettings;
+      if (
+        activeProfile &&
+        activeProfile.vendorId === selectedVendor.id &&
+        !activeProfile.modelId &&
+        added[0]
+      ) {
+        nextSettings = setProfileModelSelection(
+          updatedSettings,
+          activeProfile.id,
+          added[0].id
+        );
+      }
+      setDraft(nextSettings);
+      setVendorMessage(
+        added.length > 0
+          ? `已添加 ${added.length} 个模型`
+          : "未发现新模型，已保留现有列表"
+      );
+    } catch (error) {
+      setVendorMessage(
+        `拉取失败：${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      setFetchingVendorId(null);
+      setTimeout(() => setVendorMessage(""), 4000);
+    }
+  };
+
+  const handleAddManualModel = () => {
+    if (!selectedVendor) {
+      return;
+    }
+    const name = manualModelName.trim();
+    if (!name) {
+      return;
+    }
+    const { settings: nextSettings, added } = addModelsToVendor(
+      draft,
+      selectedVendor.id,
+      [name],
+      "manual"
+    );
+    setDraft(nextSettings);
+    setManualModelName("");
+    setVendorMessage(added.length ? "模型已添加" : "该模型已存在");
+    setTimeout(() => setVendorMessage(""), 3000);
+  };
+
+  const handleSetProfileModel = (modelId: string) => {
+    if (!activeProfile) {
+      return;
+    }
+    setDraft((current) => setProfileModelSelection(current, activeProfile.id, modelId));
+  };
+
   const runtimeConfig = createLiteLLMClientConfig(draft);
+  const selectedVendorApiKey =
+    (selectedVendorId && vendorApiKeys[selectedVendorId]) ?? "";
+  const selectedVendorModelCount = selectedVendorModels.length;
 
   return (
     <div className="settings-layout">
@@ -357,56 +516,309 @@ export function SettingsPage({
                 )}
               </h2>
               <p className="settings-pane-desc">
-                配置 LiteLLM 代理地址、API Key 和模型名称。
+                为 Cofree 管理多个供应商，并为当前配置档案选择要使用的模型。
               </p>
             </div>
 
             <div className="settings-fields">
-              <div className="field">
-                <label className="field-label">LiteLLM Base URL</label>
-                <input
-                  className="input"
-                  value={draft.liteLLMBaseUrl}
-                  onChange={(e) =>
-                    setDraft((p) => ({ ...p, liteLLMBaseUrl: e.target.value }))
-                  }
-                  placeholder="http://localhost:4000"
-                  type="text"
-                />
+              <div className="settings-card">
+                <div className="settings-card-header">
+                  <div>
+                    <h3 className="settings-card-title">当前档案使用的模型</h3>
+                    <p className="settings-card-desc">
+                      当前聊天会使用这里选中的供应商与模型。
+                    </p>
+                  </div>
+                  {activeVendor && (
+                    <span className="settings-card-badge">
+                      {getProtocolLabel(activeVendor.protocol)}
+                    </span>
+                  )}
+                </div>
+                <div className="settings-fields">
+                  <div className="field">
+                    <label className="field-label">当前供应商</label>
+                    <select
+                      className="select"
+                      value={activeProfile?.vendorId ?? ""}
+                      onChange={(e) => handleAssignFirstModelForVendor(e.target.value)}
+                    >
+                      {draft.vendors.map((vendor) => (
+                        <option key={vendor.id} value={vendor.id}>
+                          {vendor.name} · {getProtocolLabel(vendor.protocol)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label className="field-label">当前模型</label>
+                    <select
+                      className="select"
+                      value={activeProfile?.modelId ?? ""}
+                      onChange={(e) => handleSetProfileModel(e.target.value)}
+                    >
+                      {activeVendorModels.length > 0 ? (
+                        activeVendorModels.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.name}
+                          </option>
+                        ))
+                      ) : (
+                        <option value="">该供应商下暂无模型</option>
+                      )}
+                    </select>
+                  </div>
+                </div>
               </div>
 
-              <div className="field">
-                <label className="field-label">API Key</label>
-                <input
-                  className="input"
-                  value={draft.apiKey}
-                  onChange={(e) =>
-                    setDraft((p) => ({ ...p, apiKey: e.target.value.trim() }))
-                  }
-                  placeholder="sk-..."
-                  type="password"
-                />
-                <div className="api-key-display">{maskApiKey(draft.apiKey)}</div>
+              <div className="settings-card">
+                <div className="settings-card-header">
+                  <div>
+                    <h3 className="settings-card-title">供应商管理</h3>
+                    <p className="settings-card-desc">
+                      每个供应商独立配置 Base URL、API Key 与 API 协议。
+                    </p>
+                  </div>
+                </div>
+
+                <div className="vendor-card-list">
+                  {draft.vendors.map((vendor) => (
+                    <button
+                      key={vendor.id}
+                      className={`vendor-card${selectedVendorId === vendor.id ? " active" : ""}`}
+                      onClick={() => setSelectedVendorId(vendor.id)}
+                      type="button"
+                    >
+                      <div className="vendor-card-header">
+                        <span className="vendor-card-name">{vendor.name}</span>
+                        <span className="vendor-card-badge">
+                          {getProtocolLabel(vendor.protocol)}
+                        </span>
+                      </div>
+                      <span className="vendor-card-url">{vendor.baseUrl}</span>
+                      <span className="vendor-card-meta">
+                        {listManagedModelsForVendor(draft, vendor.id).length} 个模型
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {showNewVendor ? (
+                  <div className="settings-card-subsection">
+                    <div className="grid-2">
+                      <input
+                        className="input"
+                        value={newVendorName}
+                        onChange={(e) => setNewVendorName(e.target.value)}
+                        placeholder="供应商名称，如 OpenAI Official"
+                        type="text"
+                      />
+                      <select
+                        className="select"
+                        value={newVendorProtocol}
+                        onChange={(e) =>
+                          setNewVendorProtocol(e.target.value as VendorProtocol)
+                        }
+                      >
+                        {VENDOR_PROTOCOLS.map((protocol) => (
+                          <option key={protocol.id} value={protocol.id}>
+                            {protocol.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <input
+                      className="input"
+                      value={newVendorBaseUrl}
+                      onChange={(e) => setNewVendorBaseUrl(e.target.value)}
+                      placeholder="https://api.example.com/v1"
+                      type="text"
+                    />
+                    <div className="btn-row">
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={handleCreateVendor}
+                        type="button"
+                      >
+                        创建供应商
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => setShowNewVendor(false)}
+                        type="button"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    className="btn btn-ghost btn-sm profile-add-btn"
+                    onClick={() => setShowNewVendor(true)}
+                    type="button"
+                  >
+                    + 新建供应商
+                  </button>
+                )}
               </div>
 
-              <div className="field">
-                <label className="field-label">Model Name</label>
-                <input
-                  className="input"
-                  value={formatModelRef(draft.provider || "", draft.model)}
-                  onChange={(e) => {
-                    const input = e.target.value;
-                    const parsed = parseModelRef(input);
-                    setDraft((p) => ({
-                      ...p,
-                      provider: parsed.provider,
-                      model: parsed.model,
-                    }));
-                  }}
-                  placeholder="e.g. openai/gpt-4o"
-                  type="text"
-                />
-              </div>
+              {selectedVendor && (
+                <div className="settings-card">
+                  <div className="settings-card-header">
+                    <div>
+                      <h3 className="settings-card-title">编辑供应商</h3>
+                      <p className="settings-card-desc">
+                        可从该供应商按协议拉取模型，也可以手动补充模型。
+                      </p>
+                    </div>
+                    <span className="settings-card-badge">
+                      {selectedVendorModelCount} 个模型
+                    </span>
+                  </div>
+
+                  <div className="settings-fields">
+                    <div className="grid-2">
+                      <div className="field">
+                        <label className="field-label">供应商名称</label>
+                        <input
+                          className="input"
+                          value={selectedVendor.name}
+                          onChange={(e) =>
+                            setDraft((current) =>
+                              updateVendor(current, selectedVendor.id, {
+                                name: e.target.value,
+                              })
+                            )
+                          }
+                          type="text"
+                        />
+                      </div>
+                      <div className="field">
+                        <label className="field-label">API 协议</label>
+                        <select
+                          className="select"
+                          value={selectedVendor.protocol}
+                          onChange={(e) =>
+                            setDraft((current) =>
+                              updateVendor(current, selectedVendor.id, {
+                                protocol: e.target.value as VendorProtocol,
+                              })
+                            )
+                          }
+                        >
+                          {VENDOR_PROTOCOLS.map((protocol) => (
+                            <option key={protocol.id} value={protocol.id}>
+                              {protocol.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="field">
+                      <label className="field-label">Base URL</label>
+                      <input
+                        className="input"
+                        value={selectedVendor.baseUrl}
+                        onChange={(e) =>
+                          setDraft((current) =>
+                            updateVendor(current, selectedVendor.id, {
+                              baseUrl: e.target.value,
+                            })
+                          )
+                        }
+                        placeholder="https://api.example.com/v1"
+                        type="text"
+                      />
+                    </div>
+
+                    <div className="field">
+                      <label className="field-label">API Key</label>
+                      <input
+                        className="input"
+                        value={selectedVendorApiKey}
+                        onChange={(e) => {
+                          const value = e.target.value.trim();
+                          setVendorApiKeys((current) => ({
+                            ...current,
+                            [selectedVendor.id]: value,
+                          }));
+                          if (activeVendor?.id === selectedVendor.id) {
+                            setDraft((current) => ({ ...current, apiKey: value }));
+                          }
+                        }}
+                        placeholder="sk-..."
+                        type="password"
+                      />
+                      <div className="api-key-display">
+                        {maskApiKey(selectedVendorApiKey)}
+                      </div>
+                    </div>
+
+                    <div className="settings-card-actions">
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={fetchingVendorId === selectedVendor.id}
+                        onClick={() => void handleFetchVendorModels()}
+                        type="button"
+                      >
+                        {fetchingVendorId === selectedVendor.id
+                          ? "拉取中..."
+                          : "Fetch 可用模型"}
+                      </button>
+                    </div>
+
+                    <div className="field">
+                      <label className="field-label">手动添加模型</label>
+                      <div className="grid-2">
+                        <input
+                          className="input"
+                          value={manualModelName}
+                          onChange={(e) => setManualModelName(e.target.value)}
+                          placeholder="如 gpt-4.1、claude-sonnet-4-5 或 openai/gpt-4o"
+                          type="text"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              handleAddManualModel();
+                            }
+                          }}
+                        />
+                        <button
+                          className="btn btn-ghost"
+                          onClick={handleAddManualModel}
+                          type="button"
+                        >
+                          添加模型
+                        </button>
+                      </div>
+                    </div>
+
+                    {vendorMessage && (
+                      <div className="settings-inline-feedback">{vendorMessage}</div>
+                    )}
+
+                    <div className="field">
+                      <label className="field-label">该供应商下的模型</label>
+                      {selectedVendorModels.length > 0 ? (
+                        <div className="vendor-model-list">
+                          {selectedVendorModels.map((model) => (
+                            <VendorModelRow
+                              key={model.id}
+                              model={model}
+                              isActive={activeProfile?.modelId === model.id}
+                              onSelect={() => handleSetProfileModel(model.id)}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="settings-empty-hint">
+                          暂无模型。你可以先 Fetch，可手动添加。
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="settings-divider">
                 <span>代理设置</span>
@@ -820,7 +1232,7 @@ function ProfileCard({
   onDelete,
   onCancelDelete,
 }: ProfileCardProps): ReactElement {
-  const modelDisplay = formatModelRef(profile.provider || "", profile.model);
+  const modelDisplay = profile.model;
 
   return (
     <div
@@ -921,6 +1333,36 @@ function ProfileCard({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+interface VendorModelRowProps {
+  model: ManagedModel;
+  isActive: boolean;
+  onSelect: () => void;
+}
+
+function VendorModelRow({
+  model,
+  isActive,
+  onSelect,
+}: VendorModelRowProps): ReactElement {
+  return (
+    <div className={`vendor-model-row${isActive ? " active" : ""}`}>
+      <div className="vendor-model-row-info">
+        <span className="vendor-model-row-name">{model.name}</span>
+        <span className="vendor-model-row-source">
+          {model.source === "fetched" ? "Fetch" : "Manual"}
+        </span>
+      </div>
+      <button
+        className={`btn btn-sm ${isActive ? "btn-primary" : "btn-ghost"}`}
+        onClick={onSelect}
+        type="button"
+      >
+        {isActive ? "当前使用中" : "用于当前档案"}
+      </button>
     </div>
   );
 }
