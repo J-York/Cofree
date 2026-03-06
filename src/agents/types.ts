@@ -70,6 +70,24 @@ export type StructuredSubAgentOutput =
   | { role: "tester"; data: TesterOutput };
 
 // ---------------------------------------------------------------------------
+// Sub-agent completion status and feedback (Phase 3)
+// ---------------------------------------------------------------------------
+
+export type SubAgentCompletionStatus =
+  | "completed"
+  | "partial"
+  | "need_clarification"
+  | "blocked"
+  | "failed";
+
+export interface SubAgentFeedback {
+  reason: string;
+  missingContext?: string[];
+  suggestedAction?: string;
+  blockedBy?: string;
+}
+
+// ---------------------------------------------------------------------------
 // ChatAgent layer (user-selectable, top-level)
 // ---------------------------------------------------------------------------
 
