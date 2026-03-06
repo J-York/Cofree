@@ -91,6 +91,10 @@ export function SettingsPage({
   const [confirmDeleteModelId, setConfirmDeleteModelId] = useState<string | null>(null);
   const [vendorMessage, setVendorMessage] = useState("");
   const [fetchingVendorId, setFetchingVendorId] = useState<string | null>(null);
+  const [fetchedModelIds, setFetchedModelIds] = useState<string[]>([]);
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [modelPickerSearch, setModelPickerSearch] = useState("");
+  const [modelPickerSelected, setModelPickerSelected] = useState<Set<string>>(new Set());
 
   const loadWorkspaceInfo = async (path: string) => {
     if (!path) {
@@ -164,6 +168,13 @@ export function SettingsPage({
     return () => {
       cancelled = true;
     };
+  }, [selectedVendorId]);
+
+  useEffect(() => {
+    setShowModelPicker(false);
+    setFetchedModelIds([]);
+    setModelPickerSelected(new Set());
+    setModelPickerSearch("");
   }, [selectedVendorId]);
 
   const handleSave = async (): Promise<void> => {
@@ -359,40 +370,64 @@ export function SettingsPage({
         protocol: selectedVendor.protocol,
         proxy: draft.proxy,
       });
-      let nextSettings = draft;
-      const { settings: updatedSettings, added } = addModelsToVendor(
-        draft,
-        selectedVendor.id,
-        modelIds,
-        "fetched"
-      );
-      nextSettings = updatedSettings;
-      if (
-        activeProfile &&
-        activeProfile.vendorId === selectedVendor.id &&
-        !activeProfile.modelId &&
-        added[0]
-      ) {
-        nextSettings = setProfileModelSelection(
-          updatedSettings,
-          activeProfile.id,
-          added[0].id
-        );
-      }
-      setDraft(nextSettings);
-      setVendorMessage(
-        added.length > 0
-          ? `已添加 ${added.length} 个模型`
-          : "未发现新模型，已保留现有列表"
-      );
+      setFetchedModelIds(modelIds);
+      setModelPickerSearch("");
+      setModelPickerSelected(new Set());
+      setShowModelPicker(true);
     } catch (error) {
       setVendorMessage(
         `拉取失败：${error instanceof Error ? error.message : String(error)}`
       );
+      setTimeout(() => setVendorMessage(""), 4000);
     } finally {
       setFetchingVendorId(null);
-      setTimeout(() => setVendorMessage(""), 4000);
     }
+  };
+
+  const handleConfirmModelPick = () => {
+    if (!selectedVendor || modelPickerSelected.size === 0) {
+      setShowModelPicker(false);
+      return;
+    }
+    const modelNames = Array.from(modelPickerSelected);
+    let nextSettings = draft;
+    const { settings: updatedSettings, added } = addModelsToVendor(
+      draft,
+      selectedVendor.id,
+      modelNames,
+      "fetched"
+    );
+    nextSettings = updatedSettings;
+    if (
+      activeProfile &&
+      activeProfile.vendorId === selectedVendor.id &&
+      !activeProfile.modelId &&
+      added[0]
+    ) {
+      nextSettings = setProfileModelSelection(
+        updatedSettings,
+        activeProfile.id,
+        added[0].id
+      );
+    }
+    setDraft(nextSettings);
+    setShowModelPicker(false);
+    setFetchedModelIds([]);
+    setModelPickerSelected(new Set());
+    setModelPickerSearch("");
+    setVendorMessage(
+      added.length > 0
+        ? `已添加 ${added.length} 个模型`
+        : "所选模型均已存在"
+    );
+    setTimeout(() => setVendorMessage(""), 4000);
+  };
+
+  const handleCloseModelPicker = () => {
+    setShowModelPicker(false);
+    setFetchedModelIds([]);
+    setModelPickerSelected(new Set());
+    setModelPickerSearch("");
   };
 
   const handleAddManualModel = () => {
@@ -1223,6 +1258,36 @@ export function SettingsPage({
           {saveMessage && <span className="save-feedback">{saveMessage}</span>}
         </footer>
       </section>
+
+      {showModelPicker && selectedVendor && (
+        <ModelPickerOverlay
+          fetchedModelIds={fetchedModelIds}
+          existingModelNames={new Set(selectedVendorModels.map((m) => m.name))}
+          search={modelPickerSearch}
+          onSearchChange={setModelPickerSearch}
+          selected={modelPickerSelected}
+          onToggle={(modelId) => {
+            setModelPickerSelected((prev) => {
+              const next = new Set(prev);
+              if (next.has(modelId)) {
+                next.delete(modelId);
+              } else {
+                next.add(modelId);
+              }
+              return next;
+            });
+          }}
+          onSelectAllNew={() => {
+            const existingNames = new Set(selectedVendorModels.map((m) => m.name));
+            setModelPickerSelected(
+              new Set(fetchedModelIds.filter((id) => !existingNames.has(id)))
+            );
+          }}
+          onDeselectAll={() => setModelPickerSelected(new Set())}
+          onConfirm={handleConfirmModelPick}
+          onCancel={handleCloseModelPicker}
+        />
+      )}
     </div>
   );
 }
@@ -1472,6 +1537,142 @@ function VendorModelRow({
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+interface ModelPickerOverlayProps {
+  fetchedModelIds: string[];
+  existingModelNames: Set<string>;
+  search: string;
+  onSearchChange: (value: string) => void;
+  selected: Set<string>;
+  onToggle: (modelId: string) => void;
+  onSelectAllNew: () => void;
+  onDeselectAll: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+function ModelPickerOverlay({
+  fetchedModelIds,
+  existingModelNames,
+  search,
+  onSearchChange,
+  selected,
+  onToggle,
+  onSelectAllNew,
+  onDeselectAll,
+  onConfirm,
+  onCancel,
+}: ModelPickerOverlayProps): ReactElement {
+  const query = search.toLowerCase().trim();
+  const filtered = query
+    ? fetchedModelIds.filter((id) => id.toLowerCase().includes(query))
+    : fetchedModelIds;
+  const newModels = filtered.filter((id) => !existingModelNames.has(id));
+  const existingModels = filtered.filter((id) => existingModelNames.has(id));
+  const newTotal = fetchedModelIds.filter((id) => !existingModelNames.has(id)).length;
+  const selectedNewCount = Array.from(selected).filter(
+    (id) => !existingModelNames.has(id)
+  ).length;
+
+  return (
+    <div className="model-picker-backdrop" onClick={onCancel}>
+      <div className="model-picker" onClick={(e) => e.stopPropagation()}>
+        <div className="model-picker-header">
+          <h3 className="model-picker-title">选择要添加的模型</h3>
+          <p className="model-picker-desc">
+            共获取到 {fetchedModelIds.length} 个模型，其中 {newTotal} 个为新模型
+          </p>
+          <input
+            className="input model-picker-search"
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="搜索模型名称..."
+            type="text"
+            autoFocus
+          />
+        </div>
+
+        <div className="model-picker-toolbar">
+          <span className="model-picker-stats">
+            已选 {selectedNewCount} / {newTotal} 个新模型
+          </span>
+          <div className="model-picker-toolbar-actions">
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={onSelectAllNew}
+              type="button"
+            >
+              全选新模型
+            </button>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={onDeselectAll}
+              type="button"
+            >
+              取消全选
+            </button>
+          </div>
+        </div>
+
+        <div className="model-picker-list">
+          {newModels.map((modelId) => {
+            const isSelected = selected.has(modelId);
+            return (
+              <label
+                key={modelId}
+                className={`model-picker-item${isSelected ? " selected" : ""}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => onToggle(modelId)}
+                />
+                <span className="model-picker-item-name">{modelId}</span>
+              </label>
+            );
+          })}
+          {existingModels.length > 0 && (
+            <>
+              <div className="model-picker-divider">
+                <span>已存在的模型</span>
+              </div>
+              {existingModels.map((modelId) => (
+                <label key={modelId} className="model-picker-item exists">
+                  <input type="checkbox" checked disabled />
+                  <span className="model-picker-item-name">{modelId}</span>
+                  <span className="model-picker-item-badge">已添加</span>
+                </label>
+              ))}
+            </>
+          )}
+          {filtered.length === 0 && (
+            <div className="model-picker-empty">
+              {query ? "没有匹配的模型" : "没有可用模型"}
+            </div>
+          )}
+        </div>
+
+        <div className="model-picker-footer">
+          <button
+            className="btn btn-primary btn-sm"
+            disabled={selectedNewCount === 0}
+            onClick={onConfirm}
+            type="button"
+          >
+            添加所选模型 ({selectedNewCount})
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={onCancel}
+            type="button"
+          >
+            取消
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

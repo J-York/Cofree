@@ -793,7 +793,12 @@ export function updateVendor(
       ? {
           ...vendor,
           ...updates,
-          name: (updates.name ?? vendor.name).trim() || vendor.name,
+          name:
+            updates.name !== undefined
+              ? updates.name === ""
+                ? ""
+                : updates.name.trim() || vendor.name
+              : vendor.name,
           baseUrl: normalizeBaseUrl(updates.baseUrl ?? vendor.baseUrl),
           updatedAt: nowIso(),
         }
@@ -896,7 +901,12 @@ export function updateManagedModel(
       ? {
           ...model,
           ...updates,
-          name: (updates.name ?? model.name).trim() || model.name,
+          name:
+            updates.name !== undefined
+              ? updates.name === ""
+                ? ""
+                : updates.name.trim() || model.name
+              : model.name,
           updatedAt: nowIso(),
         }
       : model
