@@ -1,45 +1,72 @@
-# Cofree 开发规范（AI & Human 必须严格遵守）— v0.0.2 修订版
+# Cofree 文档与协作约定（v0.0.7）
 
-## 1. 进度同步机制（最重要）
-- **核心文件**：根目录 `PROGRESS.md`
-- **文件头注释**：鼓励在源代码文件顶部添加以下注释块（非强制，部分文件已有）：
+本文件描述当前仓库的文档维护原则，重点是保证 `docs/` 始终反映真实实现。
 
-```ts
-/**
- * Cofree - AI Programming Cafe
- * File: src/orchestrator/types.ts
- * Milestone: 2
- * Status: Completed
- * Last Modified: 2026-03-01
- * Description: 工作流状态与动作类型定义
- */
-```
+## 1. 文档优先级
 
-## 2. 文档优先（Docs-as-Code）
-v0.1 的"可控自主"依赖文档约束。任何会影响安全边界/数据外泄/交付流程的改动，都必须先更新对应文档：
-- 范围与黄金路径：`docs/MVP.md`
-- 安全与隐私：`docs/SECURITY_PRIVACY.md`
-- Guardrails 与审批门：`docs/GUARDRAILS.md`
-- Git 支持范围：`docs/GIT_SUPPORT.md`
+如果代码、旧文档、口头约定三者不一致，优先级应是：
 
-## 3. HITL（Human-in-the-loop）硬性规则
+1. 当前代码与配置
+2. 当前 `docs/`
+3. 旧计划、旧 milestone、历史讨论
 
-v0.0.2 使用**自研的 TypeScript 工具调用编排循环**（非 LangGraph）实现 HITL，支持 Sub-Agent 委派：
+换句话说，主文档不应继续引用已过时的早期设想。
 
-1) LLM 通过 `propose_*` 工具生成待审批动作，系统暂停等待用户审批（`ask` 模式）。
-2) 若工具权限配置为 `auto` 模式，则跳过审批直接执行。
-3) 审批前不执行任何副作用（写盘、命令、git 写操作）（`ask` 模式下）。
-4) 审批状态通过 SQLite checkpoint 持久化，支持会话恢复。
-5) 审批结果（approve/reject/comment）通过 `hitlService.ts` 处理，支持批量审批。
-6) 审批完成后通过 `hitlContinuationController.ts` 自动续跑剩余任务。
+## 2. 哪些改动必须同步更新文档
 
-## 4. 审批门（Approval Gates）必须覆盖的动作
-以下动作一律视为"敏感动作"，必须经过 UI 审批门并写入审计日志：
-- **Gate A**：写文件 / 删除文件内容 / 创建文件（通过 propose_file_edit 或 propose_apply_patch）
-- **Gate B**：执行任何 shell 命令、git 写操作、文件删除（通过 propose_shell）
+### 2.1 产品行为变化
+- 聊天页、设置页、控制台页的主要行为变化
+- Agent 角色、工具集、审批流变化
 
-## 5. 术语一致性
-- v0.0.2 使用 **Guardrails** 表述安全边界；不要在没有强隔离实现的前提下使用"Sandbox"误导。
-- "100% 本地"必须同时参考 `docs/SECURITY_PRIVACY.md` 的 Data Egress Policy。
-- 编排架构描述为"LLM 工具调用循环 + Sub-Agent 委派"，不使用"LangGraph"。
-- 版本号使用 `v0.0.x` 格式（当前 v0.0.2），不使用 `v0.1`。
+对应文档：
+- `docs/PRD.md`
+- `docs/MVP.md`
+- `docs/ARCHITECTURE.md`
+
+### 2.2 安全边界变化
+- 新增或修改副作用工具
+- 调整默认工具权限
+- 改变数据外发边界、凭据存储或回滚方式
+
+对应文档：
+- `docs/GUARDRAILS.md`
+- `docs/SECURITY_PRIVACY.md`
+
+### 2.3 Git 与交付方式变化
+- Git 能力变化
+- 版本发布流程变化
+- 构建目标变化
+
+对应文档：
+- `docs/GIT_SUPPORT.md`
+- `docs/BUILD.md`
+
+## 3. 术语要求
+
+- 使用“Guardrails”描述当前安全控制，不夸大为强隔离 sandbox。
+- 使用“桌面应用 / Tauri 应用”描述产品形态，不写成 Web SaaS。
+- 使用“工具调用循环 + 审批门 + 子 Agent 委派”描述编排架构。
+- 如果文档写到版本号，应使用当前真实版本，而不是沿用历史示例。
+
+## 4. 关于未来规划
+
+当前 `docs/` 默认不承载未来路线图。
+
+如果需要讨论未来能力，应单独创建提案、issue 或 ADR，而不是直接写进状态文档。`docs/ROADMAP.md` 现在只保留这一约定和历史说明。
+
+## 5. 版本信息来源
+
+版本号的权威来源固定为：
+
+- `package.json`
+- `src-tauri/Cargo.toml`
+- `src-tauri/tauri.conf.json`
+
+更新版本时，应先保证这三处一致，再更新文档中的显式版本引用。
+
+## 6. 文档写作要求
+
+- 只写当前可验证事实。
+- 尽量写清“已实现什么”和“没有实现什么”。
+- 不用模糊词替代真实边界，例如“应该支持”“未来会支持”。
+- 当实现和旧文档冲突时，应直接修正文档，而不是保留模糊表述。

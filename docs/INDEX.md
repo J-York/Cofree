@@ -1,24 +1,24 @@
-# Cofree 文档索引（AI Maintainers 必读）
+# Cofree 文档索引（v0.0.7）
 
-目标：让 AI/人类协作者在最少上下文下，仍能按同一套规范推进开发。
+本文档集只描述 **当前仓库已经实现并可从代码验证的事实**，不再把早期设想、未来规划或里程碑猜测混在主文档里。
 
-## 必读（v0.0.2 — 2026-03-03 修订版）
-- [PRD](./PRD.md) — 产品需求与验收标准
-- [MVP](./MVP.md) — 黄金路径与非目标（范围锁定）
-- [Architecture](./ARCHITECTURE.md) — 技术架构（实际实现，含 Sub-Agent 委派 + 12 工具集）
-- [Roadmap](./ROADMAP.md) — M1-M4 已完成 + M5-M7 后续规划
-- [Guardrails](./GUARDRAILS.md) — Gate A/B 审批门 + 工具权限系统 + 安全边界 + 审计/回滚
-- [Security & Privacy](./SECURITY_PRIVACY.md) — Data Egress Policy + Key 存储 + 日志约束
-- [Git Support](./GIT_SUPPORT.md) — Git 支持矩阵与失败 UX
-- [Development Guidelines](./DEVELOPMENT_GUIDELINES.md) — 协作规范（进度同步、HITL 规则等）
-- [Build](./BUILD.md) — 打包指南（GitHub Actions CI/CD + 本地打包）
+## 建议阅读顺序
+- [PRD](./PRD.md) — 当前产品定位、目标用户、核心页面与能力边界
+- [MVP](./MVP.md) — 当前交付范围、黄金路径、非目标与验收基线
+- [ARCHITECTURE](./ARCHITECTURE.md) — 桌面端架构、模块分工、工具链路、持久化与运行流
 
-## 贡献与进度
-- 根目录 [PROGRESS.md](../PROGRESS.md) — 唯一进度源（含架构偏移说明）
+## 专题文档
+- [GUARDRAILS](./GUARDRAILS.md) — 审批门、默认工具权限、路径/命令安全边界、回滚与恢复
+- [SECURITY_PRIVACY](./SECURITY_PRIVACY.md) — 数据外发边界、API Key 存储、审计日志与本地数据落点
+- [GIT_SUPPORT](./GIT_SUPPORT.md) — 当前 Git 相关能力、限制和失败行为
+- [BUILD](./BUILD.md) — 本地开发、桌面构建、版本发布与 CI 流水线
+- [DEVELOPMENT_GUIDELINES](./DEVELOPMENT_GUIDELINES.md) — 文档维护与协作约定
 
-## 文档维护规则（必须遵守）
-1) 改 PRD/架构/范围时：必须同步更新 INDEX 的链接与相关文档的交叉引用。
-2) 任何新增"敏感动作"（写盘/命令/git 写）都必须先更新 Guardrails 与 Security/Privacy。
-3) Roadmap 里程碑必须以"可演示产物"描述，而不是抽象能力。
-4) 文档描述必须反映**实际实现**，而非初期设想。如有偏移须在 PROGRESS.md 记录。
-5) 版本号使用 `v0.0.x` 格式（当前 v0.0.2），不使用 `v0.1`。
+## 历史说明
+- [ROADMAP](./ROADMAP.md) — 仅保留文档重构后的历史说明，不再承载未来规划
+
+## 文档维护原则
+1. 文档必须以当前代码和配置为准，不能沿用过时版本描述。
+2. 涉及安全边界、审批策略、数据外发、存储位置的改动，必须同步更新对应专题文档。
+3. 如需提出未来想法，应单独写提案或 issue，不直接写入当前状态文档。
+4. 版本信息以 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 为准。
