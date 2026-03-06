@@ -3476,7 +3476,7 @@ async function runNativeToolCallingLoop(
     if (turn > 0 && turn % TOOL_LOOP_CHECKPOINT_TURNS === 0) {
       console.log(`[Loop] 已运行 ${turn} 轮，到达检查点，暂停等待用户确认`);
       return {
-        assistantReply: `已经持续调用了 ${turn} 轮工具，任务仍在进行中。如果需要继续，请回复"继续"。`,
+        assistantReply: `已经持续调用了 ${turn} 轮工具，任务仍在进行中。如果需要继续，请回复「继续」。`,
         requestRecords,
         proposedActions,
         toolTrace,
@@ -3780,7 +3780,7 @@ async function runNativeToolCallingLoop(
 
   console.warn(`[Loop] 主循环意外退出`);
   return {
-    assistantReply: "工具调用循环已结束。如果任务尚未完成，请回复"继续"。",
+    assistantReply: "工具调用循环已结束。如果任务尚未完成，请回复「继续」。",
     requestRecords,
     proposedActions,
     toolTrace,
