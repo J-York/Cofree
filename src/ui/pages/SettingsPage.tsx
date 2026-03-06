@@ -497,22 +497,6 @@ export function SettingsPage({
           ))}
         </div>
 
-        <div className="settings-nav-workspace">
-          <div className="settings-workspace-mini">
-            <span className="settings-workspace-mini-icon">📁</span>
-            <div className="settings-workspace-mini-info">
-              <div className="settings-workspace-mini-path">
-                {draft.workspacePath || "未选择工作区"}
-              </div>
-              {workspaceInfo?.git_branch && (
-                <div className="settings-workspace-mini-branch">
-                  {workspaceInfo.repo_name || "Git 仓库"} · {workspaceInfo.git_branch}
-                </div>
-              )}
-            </div>
-          </div>
-          {workspaceError && <p className="settings-workspace-error">{workspaceError}</p>}
-        </div>
       </nav>
 
       {/* Right content */}
