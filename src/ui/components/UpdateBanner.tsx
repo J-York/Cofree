@@ -71,12 +71,20 @@ export function UpdateBanner({
           <>
             <span className="update-banner-icon">⚠</span>
             <span className="update-banner-text">
-              更新失败：{error || "未知错误"}
+              v{version || "最新版本"} 更新失败：{error || "未知错误"}
             </span>
+            <button
+              type="button"
+              className="btn btn-xs btn-primary update-banner-action"
+              onClick={onInstall}
+            >
+              重试更新
+            </button>
             <button
               type="button"
               className="update-banner-dismiss"
               onClick={onDismiss}
+              title="关闭提示"
             >
               ✕
             </button>

@@ -29,6 +29,24 @@ const INITIAL: UpdateState = {
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const IS_DEV = import.meta.env.DEV;
 
+function normalizeUpdateError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (/cancel/i.test(message)) {
+    return "更新已取消。";
+  }
+
+  if (/signature|verify|pubkey/i.test(message)) {
+    return "更新包校验失败，请稍后重试或联系开发者检查发布签名。";
+  }
+
+  if (/install|extract|replace|mount|permission|os error 13/i.test(message)) {
+    return "更新包已下载，但安装失败。请关闭应用后手动安装，或稍后重试。";
+  }
+
+  return message;
+}
+
 export function useUpdater() {
   const [state, setState] = useState<UpdateState>(INITIAL);
   const updateRef = useRef<Update | null>(null);
@@ -38,6 +56,10 @@ export function useUpdater() {
   const checkForUpdate = useCallback(async () => {
     if (IS_DEV) return;
     if (checkingRef.current) return;
+    if (dismissedVersion.current && state.status === "error" && state.version === dismissedVersion.current) {
+      return;
+    }
+
     checkingRef.current = true;
     setState((s) => ({ ...s, status: "checking", error: "" }));
 
@@ -57,6 +79,7 @@ export function useUpdater() {
           error: "",
         });
       } else {
+        updateRef.current = null;
         setState(INITIAL);
       }
     } catch (e) {
@@ -65,18 +88,18 @@ export function useUpdater() {
         console.warn("[updater] Signature verification failed — is pubkey configured?", msg);
         setState(INITIAL);
       } else {
-        setState((s) => ({ ...s, status: "error", error: msg }));
+        setState((s) => ({ ...s, status: "error", error: normalizeUpdateError(e) }));
       }
     } finally {
       checkingRef.current = false;
     }
-  }, []);
+  }, [state.status, state.version]);
 
   const installUpdate = useCallback(async () => {
     const update = updateRef.current;
     if (!update) return;
 
-    setState((s) => ({ ...s, status: "downloading", progress: 0 }));
+    setState((s) => ({ ...s, status: "downloading", progress: 0, error: "" }));
 
     try {
       let totalLength = 0;
@@ -105,10 +128,11 @@ export function useUpdater() {
 
       await relaunch();
     } catch (e) {
+      dismissedVersion.current = update.version;
       setState((s) => ({
         ...s,
         status: "error",
-        error: e instanceof Error ? e.message : String(e),
+        error: normalizeUpdateError(e),
       }));
     }
   }, []);
@@ -137,7 +161,11 @@ export function useUpdater() {
 
   return {
     ...state,
-    visible: state.status === "available" || state.status === "downloading" || state.status === "installing",
+    visible:
+      state.status === "available" ||
+      state.status === "downloading" ||
+      state.status === "installing" ||
+      state.status === "error",
     checkForUpdate,
     installUpdate,
     dismiss,
