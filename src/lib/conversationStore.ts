@@ -7,6 +7,7 @@
 
 import type { ChatMessageRecord } from "./chatHistoryStore";
 import type { ConversationAgentBinding } from "../agents/types";
+import type { ModelSelection } from "./modelSelection";
 
 export const CONVERSATIONS_STORAGE_KEY = "cofree.conversations.v1";
 export const ACTIVE_CONVERSATION_KEY = "cofree.activeConversation.v1";
@@ -64,13 +65,96 @@ function normalizeAgentBinding(value: unknown): ConversationAgentBinding | undef
   if (!value || typeof value !== "object") return undefined;
   const obj = value as Record<string, unknown>;
   if (typeof obj.agentId !== "string" || !obj.agentId) return undefined;
+  if (typeof obj.vendorId !== "string" || typeof obj.modelId !== "string") {
+    return undefined;
+  }
   return {
     agentId: obj.agentId,
-    profileId: typeof obj.profileId === "string" ? obj.profileId : "",
+    vendorId: obj.vendorId,
+    modelId: obj.modelId,
     bindingSource: obj.bindingSource === "user-override" ? "user-override" : "default",
     agentNameSnapshot: typeof obj.agentNameSnapshot === "string" ? obj.agentNameSnapshot : obj.agentId,
+    vendorNameSnapshot:
+      typeof obj.vendorNameSnapshot === "string" ? obj.vendorNameSnapshot : undefined,
+    modelNameSnapshot:
+      typeof obj.modelNameSnapshot === "string" ? obj.modelNameSnapshot : undefined,
     boundAt: typeof obj.boundAt === "string" ? obj.boundAt : "",
   };
+}
+
+export function migrateLegacyConversationBindings(
+  legacyProfileSelections: Record<
+    string,
+    ModelSelection & { vendorName?: string; modelName?: string }
+  >,
+): void {
+  if (typeof window === "undefined" || Object.keys(legacyProfileSelections).length === 0) {
+    return;
+  }
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (!key || !key.startsWith(`${CONVERSATIONS_STORAGE_KEY}.ws.`)) {
+      continue;
+    }
+
+    const raw = window.localStorage.getItem(key);
+    if (!raw) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        continue;
+      }
+
+      const binding = (parsed as Record<string, unknown>).agentBinding;
+      if (!binding || typeof binding !== "object") {
+        continue;
+      }
+
+      const bindingRecord = binding as Record<string, unknown>;
+      if (
+        typeof bindingRecord.vendorId === "string" &&
+        typeof bindingRecord.modelId === "string"
+      ) {
+        continue;
+      }
+
+      const legacyProfileId =
+        typeof bindingRecord.profileId === "string" ? bindingRecord.profileId : null;
+      if (!legacyProfileId) {
+        continue;
+      }
+
+      const mapped = legacyProfileSelections[legacyProfileId];
+      if (!mapped) {
+        continue;
+      }
+
+      const migrated = {
+        ...parsed,
+        agentBinding: {
+          ...bindingRecord,
+          vendorId: mapped.vendorId,
+          modelId: mapped.modelId,
+          vendorNameSnapshot:
+            typeof bindingRecord.vendorNameSnapshot === "string"
+              ? bindingRecord.vendorNameSnapshot
+              : mapped.vendorName,
+          modelNameSnapshot:
+            typeof bindingRecord.modelNameSnapshot === "string"
+              ? bindingRecord.modelNameSnapshot
+              : mapped.modelName,
+        },
+      };
+      delete (migrated.agentBinding as Record<string, unknown>).profileId;
+      window.localStorage.setItem(key, JSON.stringify(migrated));
+    } catch {
+      // ignore malformed historical payloads
+    }
+  }
 }
 
 function generateConversationId(): string {

@@ -1,20 +1,21 @@
-/**
- * Cofree - AI Programming Cafe
- * File: src/lib/settingsStore.ts
- * Description: 持久化模型供应商、模型库与配置档案。
- */
-
 import { invoke } from "@tauri-apps/api/core";
-import type { ChatAgentDefinition, ChatAgentOverride, SubAgentRole, ChatAgentToolPolicy } from "../agents/types";
+import { migrateLegacyConversationBindings } from "./conversationStore";
+import type { ModelSelection } from "./modelSelection";
+import type {
+  ChatAgentDefinition,
+  ChatAgentOverride,
+  SubAgentRole,
+  ChatAgentToolPolicy,
+} from "../agents/types";
 
 export const SETTINGS_STORAGE_KEY = "cofree.settings.v1";
 export const SETTINGS_STORAGE_KEY_V2 = "cofree.settings.v2";
+export const SETTINGS_STORAGE_KEY_V3 = "cofree.settings.v3";
 
 const DEFAULT_BASE_URL = "http://localhost:4000";
 const DEFAULT_MODEL_NAME = "openai/gpt-4o-mini";
 const DEFAULT_VENDOR_ID = "vendor-default";
 const DEFAULT_MODEL_ID = "model-default";
-const DEFAULT_PROFILE_ID = "profile-default";
 const FIXED_TIMESTAMP = "2026-03-06T00:00:00.000Z";
 
 export type ToolPermissionLevel = "auto" | "ask";
@@ -79,19 +80,6 @@ export interface ManagedModel {
   updatedAt: string;
 }
 
-/** 单个模型配置档案 */
-export interface ModelProfile {
-  id: string;
-  name: string;
-  vendorId?: string;
-  modelId?: string;
-  provider?: string;
-  model: string;
-  liteLLMBaseUrl: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface AppSettings {
   apiKey: string;
   liteLLMBaseUrl: string;
@@ -105,9 +93,9 @@ export interface AppSettings {
   workspacePath: string;
   toolPermissions: ToolPermissions;
   proxy: ProxySettings;
-  activeProfileId: string | null;
+  activeVendorId: string | null;
+  activeModelId: string | null;
   activeAgentId: string | null;
-  profiles: ModelProfile[];
   vendors: VendorConfig[];
   managedModels: ManagedModel[];
   customAgents: ChatAgentDefinition[];
@@ -116,14 +104,30 @@ export interface AppSettings {
 
 type PersistedSettings = Omit<AppSettings, "apiKey"> & { apiKey?: string };
 
-function nowIso(): string {
-  return new Date().toISOString();
+type LegacyModelProfile = {
+  id?: string;
+  name?: string;
+  vendorId?: string;
+  modelId?: string;
+  provider?: string;
+  model?: string;
+  liteLLMBaseUrl?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type LegacyProfileSelection = ModelSelection & {
+  vendorName?: string;
+  modelName?: string;
+};
+
+interface ResolvedSelection {
+  vendor: VendorConfig;
+  managedModel: ManagedModel;
 }
 
-function formatLegacyModelRef(provider?: string, model?: string): string {
-  const trimmedModel = model?.trim() || DEFAULT_MODEL_NAME;
-  const trimmedProvider = provider?.trim();
-  return trimmedProvider ? `${trimmedProvider}/${trimmedModel}` : trimmedModel;
+function nowIso(): string {
+  return new Date().toISOString();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -134,26 +138,13 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim();
 }
 
-function buildProfileSnapshot(
-  profile: ModelProfile,
-  vendor?: VendorConfig | null,
-  managedModel?: ManagedModel | null
-): ModelProfile {
-  return {
-    ...profile,
-    vendorId: vendor?.id,
-    modelId: managedModel?.id,
-    provider: undefined,
-    model: managedModel?.name?.trim() || profile.model?.trim() || DEFAULT_MODEL_NAME,
-    liteLLMBaseUrl: vendor?.baseUrl ?? profile.liteLLMBaseUrl ?? "",
-  };
+function formatLegacyModelRef(provider?: string, model?: string): string {
+  const trimmedModel = model?.trim() || DEFAULT_MODEL_NAME;
+  const trimmedProvider = provider?.trim();
+  return trimmedProvider ? `${trimmedProvider}/${trimmedModel}` : trimmedModel;
 }
 
-function createFixedDefaultEntities(): {
-  vendor: VendorConfig;
-  model: ManagedModel;
-  profile: ModelProfile;
-} {
+function createFixedDefaultEntities(): { vendor: VendorConfig; model: ManagedModel } {
   const vendor: VendorConfig = {
     id: DEFAULT_VENDOR_ID,
     name: "默认供应商",
@@ -170,18 +161,7 @@ function createFixedDefaultEntities(): {
     createdAt: FIXED_TIMESTAMP,
     updatedAt: FIXED_TIMESTAMP,
   };
-  const profile: ModelProfile = {
-    id: DEFAULT_PROFILE_ID,
-    name: "默认配置",
-    vendorId: vendor.id,
-    modelId: model.id,
-    provider: undefined,
-    model: model.name,
-    liteLLMBaseUrl: vendor.baseUrl,
-    createdAt: FIXED_TIMESTAMP,
-    updatedAt: FIXED_TIMESTAMP,
-  };
-  return { vendor, model, profile };
+  return { vendor, model };
 }
 
 function createInitialSettings(): AppSettings {
@@ -205,9 +185,9 @@ function createInitialSettings(): AppSettings {
       password: "",
       noProxy: "",
     },
-    activeProfileId: defaults.profile.id,
+    activeVendorId: defaults.vendor.id,
+    activeModelId: defaults.model.id,
     activeAgentId: null,
-    profiles: [defaults.profile],
     vendors: [defaults.vendor],
     managedModels: [defaults.model],
     customAgents: [],
@@ -217,22 +197,18 @@ function createInitialSettings(): AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = createInitialSettings();
 
-export function generateProfileId(): string {
-  return `profile-${Date.now()}`;
-}
-
 export function generateVendorId(): string {
-  return `vendor-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  return `vendor-${Date.now()}`;
 }
 
 export function generateManagedModelId(): string {
-  return `model-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  return `model-${Date.now()}`;
 }
 
 export function createVendorConfig(
   name: string,
   protocol: VendorProtocol,
-  baseUrl: string
+  baseUrl: string,
 ): VendorConfig {
   const timestamp = nowIso();
   return {
@@ -248,7 +224,7 @@ export function createVendorConfig(
 export function createManagedModel(
   vendorId: string,
   name: string,
-  source: ManagedModelSource = "manual"
+  source: ManagedModelSource = "manual",
 ): ManagedModel {
   const timestamp = nowIso();
   return {
@@ -261,212 +237,294 @@ export function createManagedModel(
   };
 }
 
-export function createDefaultProfile(
-  id: string,
-  name: string,
-  baseUrl: string,
-  provider?: string,
-  model?: string
-): ModelProfile {
-  const timestamp = nowIso();
+function normalizeVendor(raw: unknown): VendorConfig | null {
+  if (!isRecord(raw) || typeof raw.id !== "string") return null;
+  const createdAt = typeof raw.createdAt === "string" ? raw.createdAt : nowIso();
+  const updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : createdAt;
+  const protocol = raw.protocol;
+  const normalizedProtocol: VendorProtocol =
+    protocol === "openai-responses" || protocol === "anthropic-messages"
+      ? protocol
+      : "openai-chat-completions";
   return {
-    id,
-    name: name.trim() || "默认配置",
-    provider: undefined,
-    model: formatLegacyModelRef(provider, model),
-    liteLLMBaseUrl: normalizeBaseUrl(baseUrl) || DEFAULT_BASE_URL,
-    createdAt: timestamp,
-    updatedAt: timestamp,
+    id: raw.id,
+    name: typeof raw.name === "string" ? raw.name : "供应商",
+    protocol: normalizedProtocol,
+    baseUrl:
+      typeof raw.baseUrl === "string" && raw.baseUrl.trim()
+        ? normalizeBaseUrl(raw.baseUrl)
+        : DEFAULT_BASE_URL,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizeManagedModel(raw: unknown): ManagedModel | null {
+  if (!isRecord(raw) || typeof raw.id !== "string" || typeof raw.vendorId !== "string") {
+    return null;
+  }
+  const createdAt = typeof raw.createdAt === "string" ? raw.createdAt : nowIso();
+  const updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : createdAt;
+  return {
+    id: raw.id,
+    vendorId: raw.vendorId,
+    name: typeof raw.name === "string" ? raw.name : DEFAULT_MODEL_NAME,
+    source: raw.source === "fetched" ? "fetched" : "manual",
+    createdAt,
+    updatedAt,
   };
 }
 
 export function getVendorById(
   settings: Pick<AppSettings, "vendors">,
-  vendorId?: string | null
+  vendorId?: string | null,
 ): VendorConfig | null {
-  if (!vendorId) {
-    return null;
-  }
+  if (!vendorId) return null;
   return settings.vendors.find((vendor) => vendor.id === vendorId) || null;
 }
 
 export function getManagedModelById(
   settings: Pick<AppSettings, "managedModels">,
-  modelId?: string | null
+  modelId?: string | null,
 ): ManagedModel | null {
-  if (!modelId) {
-    return null;
-  }
+  if (!modelId) return null;
   return settings.managedModels.find((model) => model.id === modelId) || null;
 }
 
 export function listManagedModelsForVendor(
   settings: Pick<AppSettings, "managedModels">,
-  vendorId?: string | null
+  vendorId?: string | null,
 ): ManagedModel[] {
-  if (!vendorId) {
-    return [];
-  }
+  if (!vendorId) return [];
   return settings.managedModels.filter((model) => model.vendorId === vendorId);
 }
 
-function findSelectionForProfile(
+function findFirstAvailableSelection(
   settings: Pick<AppSettings, "vendors" | "managedModels">,
-  profile: ModelProfile | null | undefined
-): { vendor: VendorConfig; managedModel: ManagedModel } | null {
-  if (!profile) {
-    return null;
+): ResolvedSelection | null {
+  for (const vendor of settings.vendors) {
+    const managedModel = settings.managedModels.find((model) => model.vendorId === vendor.id);
+    if (managedModel) {
+      return { vendor, managedModel };
+    }
   }
 
-  const directModel = getManagedModelById(settings, profile.modelId);
-  const directVendor = getVendorById(settings, directModel?.vendorId ?? profile.vendorId);
-  if (directModel && directVendor) {
-    return { vendor: directVendor, managedModel: directModel };
+  const fallbackVendor = settings.vendors[0] ?? null;
+  const fallbackModel = settings.managedModels[0] ?? null;
+  if (fallbackVendor && fallbackModel) {
+    return {
+      vendor: getVendorById(settings, fallbackModel.vendorId) ?? fallbackVendor,
+      managedModel: fallbackModel,
+    };
   }
-
-  const modelName = profile.model.trim();
-  const scopedModels = listManagedModelsForVendor(settings, profile.vendorId);
-  const modelByName =
-    scopedModels.find((entry) => entry.name === modelName) ||
-    settings.managedModels.find((entry) => entry.name === modelName);
-  const vendor =
-    getVendorById(settings, modelByName?.vendorId) ||
-    getVendorById(settings, profile.vendorId);
-  if (modelByName && vendor) {
-    return { vendor, managedModel: modelByName };
-  }
-
-  const [firstVendor] = settings.vendors;
-  const firstModel = settings.managedModels.find(
-    (entry) => entry.vendorId === firstVendor?.id
-  );
-  if (firstVendor && firstModel) {
-    return { vendor: firstVendor, managedModel: firstModel };
-  }
-
   return null;
 }
 
-export function getProfileSelection(
+export function resolveManagedModelSelection(
   settings: Pick<AppSettings, "vendors" | "managedModels">,
-  profile: ModelProfile | null | undefined
-): { vendor: VendorConfig; managedModel: ManagedModel } | null {
-  return findSelectionForProfile(settings, profile);
-}
-
-export function getActiveProfile(settings: AppSettings): ModelProfile | null {
-  if (!settings.activeProfileId) {
-    return settings.profiles[0] ?? null;
-  }
-  return (
-    settings.profiles.find((profile) => profile.id === settings.activeProfileId) ||
-    settings.profiles[0] ||
-    null
-  );
-}
-
-export function getActiveVendor(settings: AppSettings): VendorConfig | null {
-  return getProfileSelection(settings, getActiveProfile(settings))?.vendor ?? null;
-}
-
-export function getActiveManagedModel(settings: AppSettings): ManagedModel | null {
-  return getProfileSelection(settings, getActiveProfile(settings))?.managedModel ?? null;
-}
-
-function withSynchronizedProfiles(settings: AppSettings): AppSettings {
-  const profiles =
-    settings.profiles.length > 0 ? settings.profiles : [...DEFAULT_SETTINGS.profiles];
-  const synchronized = profiles.map((profile) => {
-    const selection = findSelectionForProfile(settings, profile);
-    if (!selection) {
-      return profile;
+  selection?: { vendorId?: string | null; modelId?: string | null } | null,
+): ResolvedSelection | null {
+  const directModel = getManagedModelById(settings, selection?.modelId);
+  if (directModel) {
+    const directVendor = getVendorById(settings, directModel.vendorId);
+    if (directVendor) {
+      return { vendor: directVendor, managedModel: directModel };
     }
-    return buildProfileSnapshot(profile, selection.vendor, selection.managedModel);
-  });
-  return { ...settings, profiles: synchronized };
-}
-
-function withRuntimeSelection(settings: AppSettings, apiKey = settings.apiKey): AppSettings {
-  const profiles = settings.profiles.length > 0 ? settings.profiles : [...DEFAULT_SETTINGS.profiles];
-  const activeProfileId =
-    settings.activeProfileId && profiles.some((profile) => profile.id === settings.activeProfileId)
-      ? settings.activeProfileId
-      : (profiles[0]?.id ?? null);
-  const activeProfile =
-    profiles.find((profile) => profile.id === activeProfileId) || profiles[0] || null;
-  const selection = findSelectionForProfile(
-    { vendors: settings.vendors, managedModels: settings.managedModels },
-    activeProfile
-  );
-
-  if (!selection) {
-    return {
-      ...DEFAULT_SETTINGS,
-      ...settings,
-      apiKey,
-      profiles,
-      activeProfileId,
-      vendors: settings.vendors.length ? settings.vendors : DEFAULT_SETTINGS.vendors,
-      managedModels: settings.managedModels.length
-        ? settings.managedModels
-        : DEFAULT_SETTINGS.managedModels,
-    };
   }
 
-  const nextProfiles = profiles.map((profile) =>
-    profile.id === activeProfile?.id
-      ? buildProfileSnapshot(profile, selection.vendor, selection.managedModel)
-      : profile
+  const directVendor = getVendorById(settings, selection?.vendorId);
+  if (directVendor) {
+    const firstModel = settings.managedModels.find((model) => model.vendorId === directVendor.id);
+    if (firstModel) {
+      return { vendor: directVendor, managedModel: firstModel };
+    }
+  }
+
+  return findFirstAvailableSelection(settings);
+}
+
+function ensureMinimumResources(settings: AppSettings): AppSettings {
+  let vendors = settings.vendors.filter((vendor) => Boolean(vendor.id));
+  let managedModels = settings.managedModels.filter((model) => Boolean(model.id));
+
+  if (!vendors.length) {
+    vendors = [DEFAULT_SETTINGS.vendors[0]];
+  }
+
+  if (!managedModels.length) {
+    const fallbackVendor = vendors[0] ?? DEFAULT_SETTINGS.vendors[0];
+    managedModels = [
+      {
+        ...DEFAULT_SETTINGS.managedModels[0],
+        vendorId: fallbackVendor.id,
+      },
+    ];
+  }
+
+  return { ...settings, vendors, managedModels };
+}
+
+function normalizeModelSelection(
+  settings: Pick<AppSettings, "vendors" | "managedModels">,
+  selection?: ModelSelection,
+): ModelSelection | undefined {
+  if (!selection) return undefined;
+  const resolved = resolveManagedModelSelection(settings, selection);
+  const directModel = getManagedModelById(settings, selection.modelId);
+  if (!resolved || !directModel) {
+    return undefined;
+  }
+  return {
+    vendorId: resolved.vendor.id,
+    modelId: directModel.id,
+  };
+}
+
+function withNormalizedAgentSelections(settings: AppSettings): AppSettings {
+  const customAgents = settings.customAgents.map((agent) => ({
+    ...agent,
+    modelSelection: normalizeModelSelection(settings, agent.modelSelection),
+  }));
+
+  const builtinAgentOverrides = Object.fromEntries(
+    Object.entries(settings.builtinAgentOverrides).flatMap(([agentId, override]) => {
+      const nextOverride: ChatAgentOverride = { ...override };
+      const normalizedSelection = normalizeModelSelection(settings, override.modelSelection);
+      if (normalizedSelection) {
+        nextOverride.modelSelection = normalizedSelection;
+      } else {
+        delete nextOverride.modelSelection;
+      }
+      return Object.keys(nextOverride).length > 0 ? [[agentId, nextOverride]] : [];
+    }),
   );
 
   return {
     ...settings,
-    apiKey,
-    activeProfileId,
-    profiles: nextProfiles,
-    provider: selection.vendor.name,
-    model: selection.managedModel.name,
-    liteLLMBaseUrl: selection.vendor.baseUrl,
+    customAgents,
+    builtinAgentOverrides,
   };
 }
 
-export function syncRuntimeSettings(settings: AppSettings, apiKey = settings.apiKey): AppSettings {
-  return withRuntimeSelection(withSynchronizedProfiles(settings), apiKey);
+function withRuntimeSelection(settings: AppSettings, apiKey = settings.apiKey): AppSettings {
+  const ensured = ensureMinimumResources(settings);
+  const resolved = resolveManagedModelSelection(ensured, {
+    vendorId: ensured.activeVendorId,
+    modelId: ensured.activeModelId,
+  });
+
+  if (!resolved) {
+    return {
+      ...DEFAULT_SETTINGS,
+      ...ensured,
+      apiKey,
+    };
+  }
+
+  return withNormalizedAgentSelections({
+    ...ensured,
+    apiKey,
+    activeVendorId: resolved.vendor.id,
+    activeModelId: resolved.managedModel.id,
+    provider: resolved.vendor.name,
+    model: resolved.managedModel.name,
+    liteLLMBaseUrl: resolved.vendor.baseUrl,
+  });
 }
 
-function migrateLegacyProfilesToManagedSettings(
-  settings: AppSettings
-): AppSettings {
-  const sourceProfiles =
-    settings.profiles.length > 0
-      ? settings.profiles
-      : [
-          createDefaultProfile(
-            DEFAULT_PROFILE_ID,
-            "默认配置",
-            settings.liteLLMBaseUrl || DEFAULT_BASE_URL,
-            settings.provider,
-            settings.model
-          ),
-        ];
+export function syncRuntimeSettings(settings: AppSettings, apiKey = settings.apiKey): AppSettings {
+  return withRuntimeSelection(settings, apiKey);
+}
+
+function resolveLegacyProfileSelection(
+  profile: LegacyModelProfile,
+  settings: Pick<AppSettings, "vendors" | "managedModels">,
+): LegacyProfileSelection | null {
+  const directModel = getManagedModelById(settings, typeof profile.modelId === "string" ? profile.modelId : null);
+  const directVendor = getVendorById(
+    settings,
+    directModel?.vendorId ?? (typeof profile.vendorId === "string" ? profile.vendorId : null),
+  );
+  if (directModel && directVendor) {
+    return {
+      vendorId: directVendor.id,
+      modelId: directModel.id,
+      vendorName: directVendor.name,
+      modelName: directModel.name,
+    };
+  }
+
+  const profileModelName = typeof profile.model === "string" ? profile.model.trim() : "";
+  const scopedVendorId = typeof profile.vendorId === "string" ? profile.vendorId : null;
+  const scopedModels = scopedVendorId
+    ? settings.managedModels.filter((entry) => entry.vendorId === scopedVendorId)
+    : [];
+  const matchedModel =
+    (profileModelName ? scopedModels.find((entry) => entry.name === profileModelName) : undefined) ||
+    (profileModelName ? settings.managedModels.find((entry) => entry.name === profileModelName) : undefined);
+  const matchedVendor =
+    getVendorById(settings, matchedModel?.vendorId) ||
+    getVendorById(settings, scopedVendorId);
+  if (matchedModel && matchedVendor) {
+    return {
+      vendorId: matchedVendor.id,
+      modelId: matchedModel.id,
+      vendorName: matchedVendor.name,
+      modelName: matchedModel.name,
+    };
+  }
+
+  const fallback = findFirstAvailableSelection(settings);
+  if (!fallback) return null;
+  return {
+    vendorId: fallback.vendor.id,
+    modelId: fallback.managedModel.id,
+    vendorName: fallback.vendor.name,
+    modelName: fallback.managedModel.name,
+  };
+}
+
+function migrateLegacyProfilesToManagedResources(parsed: Partial<PersistedSettings>): {
+  vendors: VendorConfig[];
+  managedModels: ManagedModel[];
+  activeVendorId: string | null;
+  activeModelId: string | null;
+  legacyProfileSelections: Record<string, LegacyProfileSelection>;
+} {
+  const rawProfiles = Array.isArray((parsed as Record<string, unknown>).profiles)
+    ? ((parsed as Record<string, unknown>).profiles as LegacyModelProfile[])
+    : [];
+
+  const sourceProfiles = rawProfiles.length > 0
+    ? rawProfiles
+    : [
+        {
+          id: "profile-default",
+          name: "默认配置",
+          provider: parsed.provider,
+          model: parsed.model,
+          liteLLMBaseUrl: parsed.liteLLMBaseUrl,
+        },
+      ];
 
   const vendors: VendorConfig[] = [];
   const managedModels: ManagedModel[] = [];
-  const profiles: ModelProfile[] = [];
+  const legacyProfileSelections: Record<string, LegacyProfileSelection> = {};
 
   for (const sourceProfile of sourceProfiles) {
+    const profileId = sourceProfile.id?.trim() || `profile-${vendors.length}`;
     const timestamp = sourceProfile.updatedAt || sourceProfile.createdAt || nowIso();
-    const vendorId = sourceProfile.vendorId || `vendor-${sourceProfile.id}`;
-    const modelId = sourceProfile.modelId || `model-${sourceProfile.id}`;
+    const vendorId = sourceProfile.vendorId || `vendor-${profileId}`;
+    const modelId = sourceProfile.modelId || `model-${profileId}`;
     const vendor: VendorConfig = {
       id: vendorId,
       name:
-        sourceProfile.name.trim() === "默认配置"
+        sourceProfile.name?.trim() === "默认配置"
           ? "默认供应商"
-          : `${sourceProfile.name.trim()} 供应商`,
+          : `${sourceProfile.name?.trim() || profileId} 供应商`,
       protocol: "openai-chat-completions",
       baseUrl:
-        normalizeBaseUrl(sourceProfile.liteLLMBaseUrl || settings.liteLLMBaseUrl) ||
+        normalizeBaseUrl(sourceProfile.liteLLMBaseUrl || parsed.liteLLMBaseUrl || DEFAULT_BASE_URL) ||
         DEFAULT_BASE_URL,
       createdAt: sourceProfile.createdAt || timestamp,
       updatedAt: timestamp,
@@ -482,32 +540,30 @@ function migrateLegacyProfilesToManagedSettings(
 
     vendors.push(vendor);
     managedModels.push(managedModel);
-    profiles.push(
-      buildProfileSnapshot(
-        {
-          ...sourceProfile,
-          vendorId,
-          modelId,
-          provider: undefined,
-          updatedAt: timestamp,
-        },
-        vendor,
-        managedModel
-      )
-    );
+    legacyProfileSelections[profileId] = {
+      vendorId,
+      modelId,
+      vendorName: vendor.name,
+      modelName: managedModel.name,
+    };
   }
 
-  return syncRuntimeSettings({
-    ...settings,
-    apiKey: "",
-    activeProfileId:
-      settings.activeProfileId && profiles.some((profile) => profile.id === settings.activeProfileId)
-        ? settings.activeProfileId
-        : profiles[0]?.id ?? null,
-    profiles,
+  const legacyActiveProfileId =
+    typeof (parsed as Record<string, unknown>).activeProfileId === "string"
+      ? ((parsed as Record<string, unknown>).activeProfileId as string)
+      : null;
+  const activeSelection =
+    (legacyActiveProfileId ? legacyProfileSelections[legacyActiveProfileId] : undefined) ||
+    Object.values(legacyProfileSelections)[0] ||
+    null;
+
+  return {
     vendors,
     managedModels,
-  });
+    activeVendorId: activeSelection?.vendorId ?? null,
+    activeModelId: activeSelection?.modelId ?? null,
+    legacyProfileSelections,
+  };
 }
 
 function isValidSubAgentRole(v: unknown): v is SubAgentRole {
@@ -515,18 +571,53 @@ function isValidSubAgentRole(v: unknown): v is SubAgentRole {
 }
 
 function normalizeToolPolicy(raw: unknown): ChatAgentToolPolicy {
-  if (!raw || typeof raw !== "object") return {};
-  const obj = raw as Record<string, unknown>;
+  if (!isRecord(raw)) return {};
   const result: ChatAgentToolPolicy = {};
-  if (Array.isArray(obj.enabledTools)) {
-    result.enabledTools = obj.enabledTools.filter(
-      (t): t is string => typeof t === "string",
-    );
+  if (Array.isArray(raw.enabledTools)) {
+    result.enabledTools = raw.enabledTools.filter((value): value is string => typeof value === "string");
+  }
+  if (isRecord(raw.toolPermissionOverrides)) {
+    result.toolPermissionOverrides = Object.fromEntries(
+      Object.entries(raw.toolPermissionOverrides)
+        .filter(([, value]) => value === "auto" || value === "ask"),
+    ) as ChatAgentToolPolicy["toolPermissionOverrides"];
   }
   return result;
 }
 
-function normalizeCustomAgents(raw: unknown): ChatAgentDefinition[] {
+function normalizeAgentModelSelection(
+  raw: Record<string, unknown>,
+  legacyProfileSelections: Record<string, LegacyProfileSelection>,
+): ModelSelection | undefined {
+  if (isRecord(raw.modelSelection)) {
+    const vendorId = typeof raw.modelSelection.vendorId === "string"
+      ? raw.modelSelection.vendorId
+      : undefined;
+    const modelId = typeof raw.modelSelection.modelId === "string"
+      ? raw.modelSelection.modelId
+      : undefined;
+    if (vendorId && modelId) {
+      return { vendorId, modelId };
+    }
+  }
+
+  if (typeof raw.defaultProfileId === "string") {
+    const migrated = legacyProfileSelections[raw.defaultProfileId];
+    if (migrated) {
+      return {
+        vendorId: migrated.vendorId,
+        modelId: migrated.modelId,
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeCustomAgents(
+  raw: unknown,
+  legacyProfileSelections: Record<string, LegacyProfileSelection>,
+): ChatAgentDefinition[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((item): item is Record<string, unknown> => isRecord(item) && typeof item.id === "string")
@@ -538,8 +629,7 @@ function normalizeCustomAgents(raw: unknown): ChatAgentDefinition[] {
       systemPromptTemplate:
         typeof item.systemPromptTemplate === "string" ? item.systemPromptTemplate : "",
       toolPolicy: normalizeToolPolicy(item.toolPolicy),
-      defaultProfileId:
-        typeof item.defaultProfileId === "string" ? item.defaultProfileId : undefined,
+      modelSelection: normalizeAgentModelSelection(item, legacyProfileSelections),
       allowedSubAgents: Array.isArray(item.allowedSubAgents)
         ? (item.allowedSubAgents as unknown[]).filter(isValidSubAgentRole)
         : ["planner", "coder", "tester"],
@@ -550,43 +640,68 @@ function normalizeCustomAgents(raw: unknown): ChatAgentDefinition[] {
 
 function normalizeBuiltinAgentOverrides(
   raw: unknown,
+  legacyProfileSelections: Record<string, LegacyProfileSelection>,
 ): Record<string, ChatAgentOverride> {
-  if (!raw || typeof raw !== "object") return {};
+  if (!isRecord(raw)) return {};
   const result: Record<string, ChatAgentOverride> = {};
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!value || typeof value !== "object") continue;
-    const v = value as Record<string, unknown>;
+  for (const [key, value] of Object.entries(raw)) {
+    if (!isRecord(value)) continue;
     const entry: ChatAgentOverride = {};
-    if (typeof v.name === "string") entry.name = v.name;
-    if (typeof v.description === "string") entry.description = v.description;
-    if (typeof v.systemPromptTemplate === "string")
-      entry.systemPromptTemplate = v.systemPromptTemplate;
-    if (typeof v.defaultProfileId === "string")
-      entry.defaultProfileId = v.defaultProfileId;
-    if (v.toolPolicy) entry.toolPolicy = normalizeToolPolicy(v.toolPolicy);
-    if (Array.isArray(v.allowedSubAgents))
-      entry.allowedSubAgents = (v.allowedSubAgents as unknown[]).filter(isValidSubAgentRole);
+    if (typeof value.name === "string") entry.name = value.name;
+    if (typeof value.description === "string") entry.description = value.description;
+    if (typeof value.systemPromptTemplate === "string") {
+      entry.systemPromptTemplate = value.systemPromptTemplate;
+    }
+    const modelSelection = normalizeAgentModelSelection(value, legacyProfileSelections);
+    if (modelSelection) {
+      entry.modelSelection = modelSelection;
+    }
+    if (value.toolPolicy) entry.toolPolicy = normalizeToolPolicy(value.toolPolicy);
+    if (Array.isArray(value.allowedSubAgents)) {
+      entry.allowedSubAgents = (value.allowedSubAgents as unknown[]).filter(isValidSubAgentRole);
+    }
     if (Object.keys(entry).length > 0) result[key] = entry;
   }
   return result;
 }
 
-function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): AppSettings {
-  const base: AppSettings = {
+function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
+  settings: AppSettings;
+  legacyProfileSelections: Record<string, LegacyProfileSelection>;
+} {
+  const normalizedVendors = Array.isArray(parsed.vendors)
+    ? parsed.vendors.map(normalizeVendor).filter((value): value is VendorConfig => Boolean(value))
+    : [];
+  const normalizedManagedModels = Array.isArray(parsed.managedModels)
+    ? parsed.managedModels
+        .map(normalizeManagedModel)
+        .filter((value): value is ManagedModel => Boolean(value))
+    : [];
+
+  const legacyMigration = (!normalizedVendors.length || !normalizedManagedModels.length)
+    ? migrateLegacyProfilesToManagedResources(parsed)
+    : null;
+
+  const baseWithoutAgents: AppSettings = {
     ...DEFAULT_SETTINGS,
     ...parsed,
     apiKey: "",
-    activeProfileId:
-      typeof parsed.activeProfileId === "string" ? parsed.activeProfileId : DEFAULT_SETTINGS.activeProfileId,
+    activeVendorId:
+      typeof parsed.activeVendorId === "string"
+        ? parsed.activeVendorId
+        : legacyMigration?.activeVendorId ?? DEFAULT_SETTINGS.activeVendorId,
+    activeModelId:
+      typeof parsed.activeModelId === "string"
+        ? parsed.activeModelId
+        : legacyMigration?.activeModelId ?? DEFAULT_SETTINGS.activeModelId,
     activeAgentId:
-      typeof (parsed as Record<string, unknown>).activeAgentId === "string" ? (parsed as Record<string, unknown>).activeAgentId as string : null,
-    profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
-    vendors: Array.isArray(parsed.vendors) ? parsed.vendors : [],
-    managedModels: Array.isArray(parsed.managedModels) ? parsed.managedModels : [],
-    customAgents: normalizeCustomAgents((parsed as Record<string, unknown>).customAgents),
-    builtinAgentOverrides: normalizeBuiltinAgentOverrides(
-      (parsed as Record<string, unknown>).builtinAgentOverrides,
-    ),
+      typeof (parsed as Record<string, unknown>).activeAgentId === "string"
+        ? ((parsed as Record<string, unknown>).activeAgentId as string)
+        : null,
+    vendors: legacyMigration?.vendors ?? normalizedVendors,
+    managedModels: legacyMigration?.managedModels ?? normalizedManagedModels,
+    customAgents: [],
+    builtinAgentOverrides: {},
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...(isRecord(parsed.proxy) ? parsed.proxy : {}),
@@ -597,35 +712,36 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): AppSetting
     } as ToolPermissions,
   };
 
-  if (!base.vendors.length || !base.managedModels.length) {
-    return migrateLegacyProfilesToManagedSettings(base);
-  }
+  const legacyProfileSelections = legacyMigration?.legacyProfileSelections ?? (() => {
+    const rawProfiles = Array.isArray((parsed as Record<string, unknown>).profiles)
+      ? ((parsed as Record<string, unknown>).profiles as LegacyModelProfile[])
+      : [];
+    return Object.fromEntries(
+      rawProfiles.flatMap((profile) => {
+        const profileId = profile.id?.trim();
+        if (!profileId) return [];
+        const selection = resolveLegacyProfileSelection(profile, baseWithoutAgents);
+        return selection ? [[profileId, selection]] : [];
+      }),
+    );
+  })();
 
-  const settingsWithFallbackProfiles =
-    base.profiles.length > 0
-      ? base
-      : {
-          ...base,
-          profiles: [
-            buildProfileSnapshot(
-              {
-                ...DEFAULT_SETTINGS.profiles[0],
-                id: DEFAULT_PROFILE_ID,
-                name: "默认配置",
-              },
-              base.vendors[0],
-              base.managedModels.find((model) => model.vendorId === base.vendors[0]?.id) ??
-                base.managedModels[0]
-            ),
-          ],
-          activeProfileId: DEFAULT_PROFILE_ID,
-        };
+  const withAgents: AppSettings = {
+    ...baseWithoutAgents,
+    customAgents: normalizeCustomAgents(
+      (parsed as Record<string, unknown>).customAgents,
+      legacyProfileSelections,
+    ),
+    builtinAgentOverrides: normalizeBuiltinAgentOverrides(
+      (parsed as Record<string, unknown>).builtinAgentOverrides,
+      legacyProfileSelections,
+    ),
+  };
 
-  return syncRuntimeSettings(settingsWithFallbackProfiles);
-}
-
-function migrateSettingsV1ToV2(v1Settings: Partial<PersistedSettings>): AppSettings {
-  return normalizeLoadedSettings(v1Settings);
+  return {
+    settings: syncRuntimeSettings(withAgents),
+    legacyProfileSelections,
+  };
 }
 
 export function loadSettings(): AppSettings {
@@ -633,37 +749,46 @@ export function loadSettings(): AppSettings {
     return DEFAULT_SETTINGS;
   }
 
-  const rawV2 = window.localStorage.getItem(SETTINGS_STORAGE_KEY_V2);
-  if (rawV2) {
+  const readAndNormalize = (raw: string | null): AppSettings | null => {
+    if (!raw) return null;
     try {
-      const parsed = JSON.parse(rawV2) as Partial<PersistedSettings>;
-      return normalizeLoadedSettings(parsed);
-    } catch (_error) {
-      // ignore and continue to V1 migration
+      const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
+      const { settings, legacyProfileSelections } = normalizeLoadedSettings(parsed);
+      if (Object.keys(legacyProfileSelections).length > 0) {
+        migrateLegacyConversationBindings(legacyProfileSelections);
+      }
+      return settings;
+    } catch {
+      return null;
     }
+  };
+
+  const v3 = readAndNormalize(window.localStorage.getItem(SETTINGS_STORAGE_KEY_V3));
+  if (v3) {
+    return v3;
   }
 
-  const rawV1 = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
-  if (!rawV1) {
-    return DEFAULT_SETTINGS;
-  }
-
-  try {
-    const parsed = JSON.parse(rawV1) as Partial<PersistedSettings>;
-    const migrated = migrateSettingsV1ToV2(parsed);
+  const v2 = readAndNormalize(window.localStorage.getItem(SETTINGS_STORAGE_KEY_V2));
+  if (v2) {
     window.localStorage.setItem(
-      SETTINGS_STORAGE_KEY_V2,
-      JSON.stringify({
-        ...migrated,
-        apiKey: "",
-        lastSavedAt: nowIso(),
-      })
+      SETTINGS_STORAGE_KEY_V3,
+      JSON.stringify({ ...v2, apiKey: "", lastSavedAt: nowIso() }),
+    );
+    window.localStorage.removeItem(SETTINGS_STORAGE_KEY_V2);
+    return v2;
+  }
+
+  const v1 = readAndNormalize(window.localStorage.getItem(SETTINGS_STORAGE_KEY));
+  if (v1) {
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY_V3,
+      JSON.stringify({ ...v1, apiKey: "", lastSavedAt: nowIso() }),
     );
     window.localStorage.removeItem(SETTINGS_STORAGE_KEY);
-    return migrated;
-  } catch (_error) {
-    return DEFAULT_SETTINGS;
+    return v1;
   }
+
+  return DEFAULT_SETTINGS;
 }
 
 export function saveSettings(settings: AppSettings): void {
@@ -677,29 +802,27 @@ export function saveSettings(settings: AppSettings): void {
     lastSavedAt: nowIso(),
   };
 
-  window.localStorage.setItem(SETTINGS_STORAGE_KEY_V2, JSON.stringify(withTimestamp));
+  window.localStorage.setItem(SETTINGS_STORAGE_KEY_V3, JSON.stringify(withTimestamp));
 }
 
-export async function loadSecureApiKey(profileId?: string | null): Promise<string> {
+export async function loadSecureApiKey(secretSlot?: string | null): Promise<string> {
   try {
-    const value = await invoke<string>("load_secure_api_key", {
-      profileId: profileId || null,
-    });
+    const value = await invoke<string>("load_secure_api_key", { profileId: secretSlot || null });
     return typeof value === "string" ? value : "";
-  } catch (_error) {
+  } catch {
     return "";
   }
 }
 
-export async function saveSecureApiKey(apiKey: string, profileId?: string | null): Promise<void> {
+export async function saveSecureApiKey(apiKey: string, secretSlot?: string | null): Promise<void> {
   await invoke("save_secure_api_key", {
-    profileId: profileId || null,
+    profileId: secretSlot || null,
     apiKey,
   });
 }
 
-export async function deleteSecureApiKey(profileId: string): Promise<void> {
-  await invoke("delete_secure_api_key", { profileId });
+export async function deleteSecureApiKey(secretSlot: string): Promise<void> {
+  await invoke("delete_secure_api_key", { profileId: secretSlot });
 }
 
 function vendorSecretSlot(vendorId: string): string {
@@ -742,7 +865,7 @@ export async function loadVendorApiKey(vendorId?: string | null): Promise<string
   try {
     await saveSecureApiKey(legacyKey, currentSlot);
   } catch {
-    // Ignore migration persistence failure and still return the recovered key.
+    // ignore secure-storage migration failures and still return the recovered key
   }
 
   return legacyKey;
@@ -756,94 +879,48 @@ export async function deleteVendorApiKey(vendorId: string): Promise<void> {
   await deleteSecureApiKey(vendorSecretSlot(vendorId));
 }
 
-export function createProfile(
-  settings: AppSettings,
-  name: string
-): { settings: AppSettings; profile: ModelProfile } {
-  const id = generateProfileId();
-  const activeProfile = getActiveProfile(settings) || DEFAULT_SETTINGS.profiles[0];
-  const timestamp = nowIso();
-  const profile: ModelProfile = {
-    ...activeProfile,
-    id,
-    name: name.trim() || "新配置",
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-
-  return {
-    profile,
-    settings: syncRuntimeSettings({
-      ...settings,
-      profiles: [...settings.profiles, profile],
-      activeProfileId: id,
-    }),
-  };
+export function getActiveVendor(settings: AppSettings): VendorConfig | null {
+  return resolveManagedModelSelection(settings, {
+    vendorId: settings.activeVendorId,
+    modelId: settings.activeModelId,
+  })?.vendor ?? null;
 }
 
-export function updateProfile(
-  settings: AppSettings,
-  profileId: string,
-  updates: Partial<Omit<ModelProfile, "id" | "createdAt">>
-): AppSettings {
-  const profiles = settings.profiles.map((profile) => {
-    if (profile.id !== profileId) {
-      return profile;
-    }
-    const updated = {
-      ...profile,
-      ...updates,
-      updatedAt: nowIso(),
-    };
-    const selection = findSelectionForProfile(settings, updated);
-    return buildProfileSnapshot(updated, selection?.vendor, selection?.managedModel);
+export function getActiveManagedModel(settings: AppSettings): ManagedModel | null {
+  return resolveManagedModelSelection(settings, {
+    vendorId: settings.activeVendorId,
+    modelId: settings.activeModelId,
+  })?.managedModel ?? null;
+}
+
+export function setActiveVendorSelection(settings: AppSettings, vendorId: string): AppSettings {
+  const vendor = getVendorById(settings, vendorId);
+  if (!vendor) {
+    return settings;
+  }
+  const firstModel = listManagedModelsForVendor(settings, vendor.id)[0] ?? null;
+  return syncRuntimeSettings({
+    ...settings,
+    activeVendorId: vendor.id,
+    activeModelId: firstModel?.id ?? settings.activeModelId,
   });
-
-  return syncRuntimeSettings({ ...settings, profiles });
 }
 
-export function setProfileModelSelection(
-  settings: AppSettings,
-  profileId: string,
-  modelId: string
-): AppSettings {
+export function setActiveManagedModelSelection(settings: AppSettings, modelId: string): AppSettings {
   const managedModel = getManagedModelById(settings, modelId);
-  const vendor = getVendorById(settings, managedModel?.vendorId);
-  if (!managedModel || !vendor) {
+  if (!managedModel) {
     return settings;
   }
-
-  return updateProfile(settings, profileId, {
-    vendorId: vendor.id,
-    modelId: managedModel.id,
-    model: managedModel.name,
-    liteLLMBaseUrl: vendor.baseUrl,
+  return syncRuntimeSettings({
+    ...settings,
+    activeVendorId: managedModel.vendorId,
+    activeModelId: managedModel.id,
   });
-}
-
-export function deleteProfile(settings: AppSettings, profileId: string): AppSettings {
-  if (settings.profiles.length <= 1) {
-    return settings;
-  }
-
-  const profiles = settings.profiles.filter((profile) => profile.id !== profileId);
-  const activeProfileId =
-    settings.activeProfileId === profileId ? profiles[0]?.id ?? null : settings.activeProfileId;
-  return syncRuntimeSettings({ ...settings, profiles, activeProfileId });
-}
-
-export function switchProfile(settings: AppSettings, profileId: string): AppSettings {
-  if (!settings.profiles.some((profile) => profile.id === profileId)) {
-    return settings;
-  }
-  return syncRuntimeSettings({ ...settings, activeProfileId: profileId });
 }
 
 export function switchAgent(settings: AppSettings, agentId: string): AppSettings {
   return { ...settings, activeAgentId: agentId };
 }
-
-// ── Agent CRUD ────────────────────────────────────────────
 
 export function generateAgentId(): string {
   return `agent-custom-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
@@ -857,7 +934,7 @@ export function createCustomAgent(
     systemPromptTemplate?: string;
     enabledTools?: string[];
     allowedSubAgents?: SubAgentRole[];
-    defaultProfileId?: string;
+    modelSelection?: ModelSelection;
   },
 ): { settings: AppSettings; agent: ChatAgentDefinition } {
   const agent: ChatAgentDefinition = {
@@ -865,11 +942,9 @@ export function createCustomAgent(
     name: params.name.trim() || "新 Agent",
     description: params.description?.trim() || "",
     systemPromptTemplate: params.systemPromptTemplate?.trim() || "",
-    toolPolicy: params.enabledTools
-      ? { enabledTools: params.enabledTools }
-      : {},
+    toolPolicy: params.enabledTools ? { enabledTools: params.enabledTools } : {},
+    modelSelection: normalizeModelSelection(settings, params.modelSelection),
     allowedSubAgents: params.allowedSubAgents ?? ["planner", "coder", "tester"],
-    defaultProfileId: params.defaultProfileId,
     builtin: false,
   };
   return {
@@ -887,18 +962,27 @@ export function updateCustomAgent(
   agentId: string,
   updates: Partial<Omit<ChatAgentDefinition, "id" | "builtin">>,
 ): AppSettings {
-  return {
+  return syncRuntimeSettings({
     ...settings,
-    customAgents: settings.customAgents.map((a) =>
-      a.id === agentId ? { ...a, ...updates } : a,
+    customAgents: settings.customAgents.map((agent) =>
+      agent.id === agentId
+        ? {
+            ...agent,
+            ...updates,
+            modelSelection: normalizeModelSelection(
+              settings,
+              updates.modelSelection ?? agent.modelSelection,
+            ),
+          }
+        : agent,
     ),
-  };
+  });
 }
 
 export function deleteCustomAgent(settings: AppSettings, agentId: string): AppSettings {
   const next = {
     ...settings,
-    customAgents: settings.customAgents.filter((a) => a.id !== agentId),
+    customAgents: settings.customAgents.filter((agent) => agent.id !== agentId),
   };
   if (next.activeAgentId === agentId) {
     next.activeAgentId = null;
@@ -916,6 +1000,7 @@ export function cloneAgentAsCustom(
     id: generateAgentId(),
     name: name.trim() || `${source.name} (副本)`,
     builtin: false,
+    modelSelection: normalizeModelSelection(settings, source.modelSelection),
   };
   return {
     agent,
@@ -930,21 +1015,25 @@ export function cloneAgentAsCustom(
 export function updateBuiltinAgentOverride(
   settings: AppSettings,
   agentId: string,
-  override: ChatAgentOverride,
+  override: Partial<Omit<ChatAgentDefinition, "id" | "builtin">>,
 ): AppSettings {
-  return {
+  const normalizedOverride: ChatAgentOverride = {
+    ...override,
+    modelSelection: normalizeModelSelection(settings, override.modelSelection),
+  };
+  if (!normalizedOverride.modelSelection) {
+    delete normalizedOverride.modelSelection;
+  }
+  return syncRuntimeSettings({
     ...settings,
     builtinAgentOverrides: {
       ...settings.builtinAgentOverrides,
-      [agentId]: { ...settings.builtinAgentOverrides[agentId], ...override },
+      [agentId]: { ...settings.builtinAgentOverrides[agentId], ...normalizedOverride },
     },
-  };
+  });
 }
 
-export function resetBuiltinAgentOverride(
-  settings: AppSettings,
-  agentId: string,
-): AppSettings {
+export function resetBuiltinAgentOverride(settings: AppSettings, agentId: string): AppSettings {
   const next = { ...settings.builtinAgentOverrides };
   delete next[agentId];
   return { ...settings, builtinAgentOverrides: next };
@@ -952,11 +1041,7 @@ export function resetBuiltinAgentOverride(
 
 export function createVendor(
   settings: AppSettings,
-  params: {
-    name: string;
-    protocol: VendorProtocol;
-    baseUrl: string;
-  }
+  params: { name: string; protocol: VendorProtocol; baseUrl: string },
 ): { settings: AppSettings; vendor: VendorConfig } {
   const vendor = createVendorConfig(params.name, params.protocol, params.baseUrl);
   return {
@@ -971,7 +1056,7 @@ export function createVendor(
 export function updateVendor(
   settings: AppSettings,
   vendorId: string,
-  updates: Partial<Omit<VendorConfig, "id" | "createdAt">>
+  updates: Partial<Omit<VendorConfig, "id" | "createdAt">>,
 ): AppSettings {
   const vendors = settings.vendors.map((vendor) =>
     vendor.id === vendorId
@@ -987,11 +1072,56 @@ export function updateVendor(
           baseUrl: normalizeBaseUrl(updates.baseUrl ?? vendor.baseUrl),
           updatedAt: nowIso(),
         }
-      : vendor
+      : vendor,
   );
 
-  const updatedSettings = { ...settings, vendors };
-  return syncRuntimeSettings(withSynchronizedProfiles(updatedSettings));
+  return syncRuntimeSettings({ ...settings, vendors });
+}
+
+function clearRemovedSelections(
+  settings: AppSettings,
+  removedVendorId: string,
+  removedModelIds: Set<string>,
+): AppSettings {
+  const activeVendorId =
+    settings.activeVendorId === removedVendorId ? null : settings.activeVendorId;
+  const activeModelId =
+    settings.activeModelId && removedModelIds.has(settings.activeModelId)
+      ? null
+      : settings.activeModelId;
+
+  const customAgents = settings.customAgents.map((agent) => ({
+    ...agent,
+    modelSelection:
+      agent.modelSelection &&
+      (agent.modelSelection.vendorId === removedVendorId ||
+        removedModelIds.has(agent.modelSelection.modelId))
+        ? undefined
+        : agent.modelSelection,
+  }));
+
+  const builtinAgentOverrides = Object.fromEntries(
+    Object.entries(settings.builtinAgentOverrides).flatMap(([agentId, override]) => {
+      const shouldClear =
+        override.modelSelection &&
+        (override.modelSelection.vendorId === removedVendorId ||
+          removedModelIds.has(override.modelSelection.modelId));
+      const nextOverride = shouldClear
+        ? Object.fromEntries(
+            Object.entries(override).filter(([key]) => key !== "modelSelection"),
+          )
+        : override;
+      return Object.keys(nextOverride).length > 0 ? [[agentId, nextOverride]] : [];
+    }),
+  );
+
+  return {
+    ...settings,
+    activeVendorId,
+    activeModelId,
+    customAgents,
+    builtinAgentOverrides,
+  };
 }
 
 export function deleteVendor(settings: AppSettings, vendorId: string): AppSettings {
@@ -999,56 +1129,37 @@ export function deleteVendor(settings: AppSettings, vendorId: string): AppSettin
     return settings;
   }
 
-  const vendorExists = settings.vendors.some((vendor) => vendor.id === vendorId);
-  if (!vendorExists) {
+  if (!settings.vendors.some((vendor) => vendor.id === vendorId)) {
     return settings;
   }
-
-  const fallbackVendor =
-    settings.vendors.find((vendor) => vendor.id !== vendorId) || DEFAULT_SETTINGS.vendors[0];
-  const fallbackModel =
-    settings.managedModels.find((model) => model.vendorId === fallbackVendor.id) ||
-    DEFAULT_SETTINGS.managedModels.find((model) => model.vendorId === fallbackVendor.id) ||
-    DEFAULT_SETTINGS.managedModels[0];
 
   const removedModelIds = new Set(
     settings.managedModels
       .filter((model) => model.vendorId === vendorId)
-      .map((model) => model.id)
+      .map((model) => model.id),
   );
 
-  const profiles = settings.profiles.map((profile) => {
-    const shouldReassign =
-      profile.vendorId === vendorId ||
-      (profile.modelId ? removedModelIds.has(profile.modelId) : false);
+  const next = clearRemovedSelections(
+    {
+      ...settings,
+      vendors: settings.vendors.filter((vendor) => vendor.id !== vendorId),
+      managedModels: settings.managedModels.filter((model) => model.vendorId !== vendorId),
+    },
+    vendorId,
+    removedModelIds,
+  );
 
-    if (!shouldReassign) {
-      return profile;
-    }
-
-    return buildProfileSnapshot(profile, fallbackVendor, fallbackModel);
-  });
-
-  return syncRuntimeSettings({
-    ...settings,
-    profiles,
-    vendors: settings.vendors.filter((vendor) => vendor.id !== vendorId),
-    managedModels: settings.managedModels.filter((model) => model.vendorId !== vendorId),
-  });
+  return syncRuntimeSettings(next);
 }
 
 export function addModelsToVendor(
   settings: AppSettings,
   vendorId: string,
   modelNames: string[],
-  source: ManagedModelSource
+  source: ManagedModelSource,
 ): { settings: AppSettings; added: ManagedModel[] } {
   const normalizedNames = Array.from(
-    new Set(
-      modelNames
-        .map((name) => name.trim())
-        .filter(Boolean)
-    )
+    new Set(modelNames.map((name) => name.trim()).filter(Boolean)),
   );
   if (!normalizedNames.length) {
     return { settings, added: [] };
@@ -1057,7 +1168,7 @@ export function addModelsToVendor(
   const existingNames = new Set(
     settings.managedModels
       .filter((model) => model.vendorId === vendorId)
-      .map((model) => model.name)
+      .map((model) => model.name),
   );
   const added = normalizedNames
     .filter((name) => !existingNames.has(name))
@@ -1079,7 +1190,7 @@ export function addModelsToVendor(
 export function updateManagedModel(
   settings: AppSettings,
   modelId: string,
-  updates: Partial<Omit<ManagedModel, "id" | "vendorId" | "createdAt">>
+  updates: Partial<Omit<ManagedModel, "id" | "vendorId" | "createdAt">>,
 ): AppSettings {
   const managedModels = settings.managedModels.map((model) =>
     model.id === modelId
@@ -1094,7 +1205,7 @@ export function updateManagedModel(
               : model.name,
           updatedAt: nowIso(),
         }
-      : model
+      : model,
   );
   return syncRuntimeSettings({ ...settings, managedModels });
 }
@@ -1110,26 +1221,16 @@ export function deleteManagedModel(settings: AppSettings, modelId: string): AppS
     return settings;
   }
 
-  const fallbackModel =
-    vendorModels.find((model) => model.id !== modelId) ||
-    settings.managedModels.find((model) => model.id !== modelId) ||
-    DEFAULT_SETTINGS.managedModels[0];
-  const fallbackVendor = getVendorById(settings, fallbackModel.vendorId);
-  if (!fallbackVendor) {
-    return settings;
-  }
-
-  const profiles = settings.profiles.map((profile) =>
-    profile.modelId === modelId
-      ? buildProfileSnapshot(profile, fallbackVendor, fallbackModel)
-      : profile
+  const next = clearRemovedSelections(
+    {
+      ...settings,
+      managedModels: settings.managedModels.filter((model) => model.id !== modelId),
+    },
+    managedModel.vendorId,
+    new Set([modelId]),
   );
 
-  return syncRuntimeSettings({
-    ...settings,
-    profiles,
-    managedModels: settings.managedModels.filter((model) => model.id !== modelId),
-  });
+  return syncRuntimeSettings(next);
 }
 
 export function isLocalVendor(vendor: VendorConfig | null | undefined): boolean {
@@ -1141,30 +1242,23 @@ export function isLocalVendor(vendor: VendorConfig | null | undefined): boolean 
     const url = new URL(vendor.baseUrl);
     const host = url.hostname.toLowerCase();
     return host === "localhost" || host === "127.0.0.1" || host === "::1";
-  } catch (_error) {
+  } catch {
     return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(vendor.baseUrl);
   }
 }
 
 export function isManagedModelLocal(settings: AppSettings, modelId?: string | null): boolean {
   const selection = modelId
-    ? settings.profiles
-        .map((profile) => getProfileSelection(settings, profile))
-        .find((candidate) => candidate?.managedModel.id === modelId) ??
-      (() => {
-        const managedModel = getManagedModelById(settings, modelId);
-        const vendor = getVendorById(settings, managedModel?.vendorId);
-        return managedModel && vendor ? { vendor, managedModel } : null;
-      })()
-    : getProfileSelection(settings, getActiveProfile(settings));
-
+    ? resolveManagedModelSelection(settings, { modelId })
+    : resolveManagedModelSelection(settings, {
+        vendorId: settings.activeVendorId,
+        modelId: settings.activeModelId,
+      });
   return isLocalVendor(selection?.vendor);
 }
 
 export function isActiveModelLocal(settings: AppSettings): boolean {
-  return isLocalVendor(
-    getProfileSelection(settings, getActiveProfile(settings))?.vendor
-  );
+  return isLocalVendor(getActiveVendor(settings));
 }
 
 export function maskApiKey(key: string): string {
@@ -1176,7 +1270,5 @@ export function maskApiKey(key: string): string {
     return "*".repeat(key.length);
   }
 
-  const head = key.slice(0, 4);
-  const tail = key.slice(-4);
-  return `${head}${"*".repeat(Math.max(4, key.length - 8))}${tail}`;
+  return `${key.slice(0, 4)}${"*".repeat(Math.max(4, key.length - 8))}${key.slice(-4)}`;
 }

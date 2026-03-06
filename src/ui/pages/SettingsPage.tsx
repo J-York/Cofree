@@ -9,33 +9,29 @@ import {
 import {
   type AppSettings,
   type ManagedModel,
-  type ModelProfile,
   type ToolPermissionLevel,
   type VendorProtocol,
   addModelsToVendor,
   cloneAgentAsCustom,
   createCustomAgent,
-  createProfile,
   createVendor,
   deleteCustomAgent,
   deleteManagedModel,
-  deleteProfile,
   deleteVendor,
   deleteVendorApiKey,
-  getActiveProfile,
+  getActiveManagedModel,
   getActiveVendor,
   getVendorById,
   listManagedModelsForVendor,
   loadVendorApiKey,
   maskApiKey,
   resetBuiltinAgentOverride,
-  setProfileModelSelection,
-  switchProfile,
+  setActiveManagedModelSelection,
+  setActiveVendorSelection,
   syncRuntimeSettings,
   updateBuiltinAgentOverride,
   updateCustomAgent,
   updateManagedModel,
-  updateProfile,
   updateVendor,
 } from "../../lib/settingsStore";
 import {
@@ -64,10 +60,9 @@ interface SettingsPageProps {
   onClose?: () => void;
 }
 
-type SettingsTab = "profiles" | "agents" | "model" | "tools" | "advanced";
+type SettingsTab = "agents" | "model" | "tools" | "advanced";
 
 const TABS: { id: SettingsTab; label: string }[] = [
-  { id: "profiles", label: "配置档案" },
   { id: "agents", label: "Agent 管理" },
   { id: "model", label: "模型配置" },
   { id: "tools", label: "工具权限" },
@@ -79,19 +74,13 @@ export function SettingsPage({
   onSave,
   onClose,
 }: SettingsPageProps): ReactElement {
-  const [activeTab, setActiveTab] = useState<SettingsTab>("profiles");
+  const [activeTab, setActiveTab] = useState<SettingsTab>("agents");
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [saveMessage, setSaveMessage] = useState<string>("");
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string>("");
   const [confirmClear, setConfirmClear] = useState<boolean>(false);
 
-  // Profile management states
-  const [showNewProfile, setShowNewProfile] = useState(false);
-  const [newProfileName, setNewProfileName] = useState("");
-  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
-  const [editingProfileName, setEditingProfileName] = useState("");
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [selectedVendorId, setSelectedVendorId] = useState<string | null>(
     getActiveVendor(settings)?.id ?? settings.vendors[0]?.id ?? null
   );
@@ -156,10 +145,10 @@ export function SettingsPage({
     setVendorApiKeys({});
   }, [settings]);
 
-  const activeProfile = getActiveProfile(draft);
+  const activeManagedModel = getActiveManagedModel(draft);
   const activeVendor = getActiveVendor(draft);
   const selectedVendor = getVendorById(draft, selectedVendorId);
-  const activeVendorModels = listManagedModelsForVendor(draft, activeProfile?.vendorId);
+  const activeVendorModels = listManagedModelsForVendor(draft, activeVendor?.id);
   const selectedVendorModels = listManagedModelsForVendor(draft, selectedVendorId);
 
   useEffect(() => {
@@ -246,68 +235,6 @@ export function SettingsPage({
     }
   };
 
-  const handleCreateProfile = () => {
-    const name = newProfileName.trim() || "新配置";
-    const { settings: newSettings } = createProfile(draft, name);
-    const switchedVendorId = getActiveVendor(newSettings)?.id ?? null;
-    setDraft({
-      ...newSettings,
-      apiKey: switchedVendorId ? vendorApiKeys[switchedVendorId] ?? "" : "",
-    });
-    setSelectedVendorId(switchedVendorId);
-    setShowNewProfile(false);
-    setNewProfileName("");
-  };
-
-  const handleSwitchProfile = async (profileId: string) => {
-    if (profileId === draft.activeProfileId) return;
-    const switched = switchProfile(draft, profileId);
-    const vendorId = getActiveVendor(switched)?.id ?? null;
-    try {
-      const apiKey = await loadVendorApiKey(vendorId);
-      if (vendorId) {
-        setVendorApiKeys((current) => ({ ...current, [vendorId]: apiKey }));
-      }
-      setDraft({ ...switched, apiKey });
-      setSelectedVendorId(vendorId);
-    } catch {
-      setDraft({ ...switched, apiKey: "" });
-      setSelectedVendorId(vendorId);
-    }
-  };
-
-  const handleDeleteProfile = async (profileId: string) => {
-    if (draft.profiles.length <= 1) return;
-    const newSettings = deleteProfile(draft, profileId);
-    if (
-      newSettings.activeProfileId !== draft.activeProfileId &&
-      newSettings.activeProfileId
-    ) {
-      try {
-        const apiKey = await loadVendorApiKey(getActiveVendor(newSettings)?.id);
-        setDraft({ ...newSettings, apiKey });
-        setSelectedVendorId(getActiveVendor(newSettings)?.id ?? null);
-      } catch {
-        setDraft({ ...newSettings, apiKey: "" });
-        setSelectedVendorId(getActiveVendor(newSettings)?.id ?? null);
-      }
-    } else {
-      setDraft(newSettings);
-    }
-    setConfirmDeleteId(null);
-  };
-
-  const handleRenameProfile = (profileId: string) => {
-    const name = editingProfileName.trim();
-    if (!name) {
-      setEditingProfileId(null);
-      return;
-    }
-    setDraft((prev) => updateProfile(prev, profileId, { name }));
-    setEditingProfileId(null);
-    setEditingProfileName("");
-  };
-
   const handleCreateVendor = () => {
     const { settings: nextSettings, vendor } = createVendor(draft, {
       name: newVendorName.trim() || "新供应商",
@@ -346,7 +273,7 @@ export function SettingsPage({
     setConfirmDeleteModelId(null);
     setEditingModelId(null);
     setEditingModelName("");
-    setVendorMessage("供应商已删除，相关档案已自动迁移到可用模型");
+    setVendorMessage("供应商已删除，相关 Agent/全局模型已自动回退到可用模型");
     setTimeout(() => setVendorMessage(""), 4000);
   };
 
@@ -374,21 +301,16 @@ export function SettingsPage({
     setConfirmDeleteModelId(null);
     setEditingModelId(null);
     setEditingModelName("");
-    setVendorMessage("模型已删除，受影响档案已自动迁移");
+    setVendorMessage("模型已删除，受影响 Agent/全局模型已自动回退");
     setTimeout(() => setVendorMessage(""), 4000);
   };
 
   const handleAssignFirstModelForVendor = (vendorId: string) => {
-    if (!activeProfile) {
-      return;
-    }
     const [firstModel] = listManagedModelsForVendor(draft, vendorId);
     if (!firstModel) {
       return;
     }
-    setDraft((current) =>
-      setProfileModelSelection(current, activeProfile.id, firstModel.id)
-    );
+    setDraft((current) => setActiveVendorSelection(current, vendorId));
   };
 
   const handleFetchVendorModels = async () => {
@@ -432,17 +354,8 @@ export function SettingsPage({
       "fetched"
     );
     nextSettings = updatedSettings;
-    if (
-      activeProfile &&
-      activeProfile.vendorId === selectedVendor.id &&
-      !activeProfile.modelId &&
-      added[0]
-    ) {
-      nextSettings = setProfileModelSelection(
-        updatedSettings,
-        activeProfile.id,
-        added[0].id
-      );
+    if (selectedVendor.id === draft.activeVendorId && added[0]) {
+      nextSettings = setActiveManagedModelSelection(updatedSettings, added[0].id);
     }
     setDraft(nextSettings);
     setShowModelPicker(false);
@@ -484,11 +397,8 @@ export function SettingsPage({
     setTimeout(() => setVendorMessage(""), 3000);
   };
 
-  const handleSetProfileModel = (modelId: string) => {
-    if (!activeProfile) {
-      return;
-    }
-    setDraft((current) => setProfileModelSelection(current, activeProfile.id, modelId));
+  const handleSetActiveModel = (modelId: string) => {
+    setDraft((current) => setActiveManagedModelSelection(current, modelId));
   };
 
   const runtimeConfig = createLiteLLMClientConfig(draft);
@@ -518,9 +428,7 @@ export function SettingsPage({
               type="button"
             >
               <span className="settings-tab-icon">
-                {tab.id === "profiles"
-                  ? "📋"
-                  : tab.id === "agents"
+                {tab.id === "agents"
                     ? "🧑‍💻"
                     : tab.id === "model"
                       ? "🤖"
@@ -538,81 +446,6 @@ export function SettingsPage({
       {/* Right content */}
       <section className="settings-panel">
         <div className="settings-pane">
-          {activeTab === "profiles" && (
-            <>
-              <header className="settings-pane-header">
-                <h2 className="settings-pane-title">配置档案</h2>
-                <p className="settings-pane-desc">
-                  配置档案是唯一的运行时入口。当前聊天始终使用当前档案绑定的供应商与模型。
-                </p>
-              </header>
-
-              <div className="profile-list">
-                {draft.profiles.map((profile) => (
-                  <ProfileCard
-                    key={profile.id}
-                    profile={profile}
-                    isActive={profile.id === draft.activeProfileId}
-                    isEditing={editingProfileId === profile.id}
-                    canDelete={draft.profiles.length > 1}
-                    confirmDelete={confirmDeleteId === profile.id}
-                    editingName={editingProfileId === profile.id ? editingProfileName : ""}
-                    onClick={() => void handleSwitchProfile(profile.id)}
-                    onStartEdit={() => {
-                      setEditingProfileId(profile.id);
-                      setEditingProfileName(profile.name);
-                    }}
-                    onEditChange={setEditingProfileName}
-                    onSaveEdit={() => handleRenameProfile(profile.id)}
-                    onCancelEdit={() => {
-                      setEditingProfileId(null);
-                      setEditingProfileName("");
-                    }}
-                    onConfirmDelete={() => setConfirmDeleteId(profile.id)}
-                    onDelete={() => void handleDeleteProfile(profile.id)}
-                    onCancelDelete={() => setConfirmDeleteId(null)}
-                  />
-                ))}
-              </div>
-
-              {showNewProfile ? (
-                <div className="profile-new-form">
-                  <input
-                    className="input"
-                    placeholder="配置档案名称，如 本地开发 / OpenAI / Claude"
-                    value={newProfileName}
-                    onChange={(e) => setNewProfileName(e.target.value)}
-                    type="text"
-                  />
-                  <div className="btn-row">
-                    <button
-                      className="btn btn-primary btn-sm"
-                      onClick={handleCreateProfile}
-                      type="button"
-                    >
-                      创建配置档案
-                    </button>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => setShowNewProfile(false)}
-                      type="button"
-                    >
-                      取消
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  className="btn btn-ghost btn-sm profile-add-btn"
-                  onClick={() => setShowNewProfile(true)}
-                  type="button"
-                >
-                  + 新建配置档案
-                </button>
-              )}
-            </>
-          )}
-
           {activeTab === "agents" && (
             <>
               <header className="settings-pane-header">
@@ -646,7 +479,7 @@ export function SettingsPage({
               </div>
 
               {showNewAgent ? (
-                <div className="profile-new-form">
+                <div className="settings-inline-form">
                   <input
                     className="input"
                     placeholder="新 Agent 名称"
@@ -693,7 +526,7 @@ export function SettingsPage({
                 </div>
               ) : (
                 <button
-                  className="btn btn-ghost btn-sm profile-add-btn"
+                  className="btn btn-ghost btn-sm settings-inline-action"
                   onClick={() => setShowNewAgent(true)}
                   type="button"
                 >
@@ -707,7 +540,8 @@ export function SettingsPage({
                   isBuiltin={isSelectedBuiltin}
                   isOverridden={isSelectedOverridden}
                   originalBuiltin={originalBuiltin}
-                  profiles={draft.profiles}
+                  vendors={draft.vendors}
+                  managedModels={draft.managedModels}
                   confirmDeleteId={confirmDeleteAgentId}
                   onUpdate={(updates) => {
                     if (isSelectedBuiltin) {
@@ -748,14 +582,9 @@ export function SettingsPage({
           {activeTab === "model" && (
             <>
               <header className="settings-pane-header">
-                <h2 className="settings-pane-title">
-                  模型配置
-                  {activeProfile && (
-                    <span className="settings-section-tag">{activeProfile.name}</span>
-                  )}
-                </h2>
+                <h2 className="settings-pane-title">模型配置</h2>
                 <p className="settings-pane-desc">
-                  先维护供应商和模型资源池，再为当前档案指定实际要使用的供应商与模型。
+                  先维护供应商和模型资源池，再为当前全局运行时指定实际要使用的供应商与模型。
                 </p>
               </header>
 
@@ -768,9 +597,9 @@ export function SettingsPage({
                 <div className="settings-card">
                   <div className="settings-card-header">
                     <div>
-                      <h3 className="settings-card-title">当前档案使用的模型</h3>
+                      <h3 className="settings-card-title">当前全局模型</h3>
                       <p className="settings-card-desc">
-                        这里是唯一的运行时选择入口。当前聊天将使用此档案绑定的供应商与模型。
+                        未固定模型的 Agent 会跟随这里的供应商与模型；固定模型的 Agent 会覆盖这里的默认值。
                       </p>
                     </div>
                     {activeVendor && (
@@ -784,7 +613,7 @@ export function SettingsPage({
                       <label className="field-label">当前供应商</label>
                       <select
                         className="select"
-                        value={activeProfile?.vendorId ?? ""}
+                        value={activeVendor?.id ?? ""}
                         onChange={(e) => handleAssignFirstModelForVendor(e.target.value)}
                       >
                         {draft.vendors.map((vendor) => (
@@ -798,8 +627,8 @@ export function SettingsPage({
                       <label className="field-label">当前模型</label>
                       <select
                         className="select"
-                        value={activeProfile?.modelId ?? ""}
-                        onChange={(e) => handleSetProfileModel(e.target.value)}
+                        value={activeManagedModel?.id ?? ""}
+                        onChange={(e) => handleSetActiveModel(e.target.value)}
                       >
                         {activeVendorModels.length > 0 ? (
                           activeVendorModels.map((model) => (
@@ -820,7 +649,7 @@ export function SettingsPage({
                     <div>
                       <h3 className="settings-card-title">供应商管理</h3>
                       <p className="settings-card-desc">
-                        这里只维护供应商配置与模型列表，不会直接切换当前档案正在使用的模型。
+                        这里只维护供应商配置与模型列表；全局默认模型和 Agent 固定模型都从这里的资源池中选择。
                       </p>
                     </div>
                   </div>
@@ -934,7 +763,7 @@ export function SettingsPage({
                     </div>
                   ) : (
                     <button
-                      className="btn btn-ghost btn-sm profile-add-btn"
+                      className="btn btn-ghost btn-sm settings-inline-action"
                       onClick={() => setShowNewVendor(true)}
                       type="button"
                     >
@@ -1478,128 +1307,6 @@ function ToolPermissionRow({
   );
 }
 
-interface ProfileCardProps {
-  profile: ModelProfile;
-  isActive: boolean;
-  isEditing: boolean;
-  canDelete: boolean;
-  confirmDelete: boolean;
-  editingName: string;
-  onClick: () => void;
-  onStartEdit: () => void;
-  onEditChange: (value: string) => void;
-  onSaveEdit: () => void;
-  onCancelEdit: () => void;
-  onConfirmDelete: () => void;
-  onDelete: () => void;
-  onCancelDelete: () => void;
-}
-
-function ProfileCard({
-  profile,
-  isActive,
-  isEditing,
-  canDelete,
-  confirmDelete,
-  editingName,
-  onClick,
-  onStartEdit,
-  onEditChange,
-  onSaveEdit,
-  onCancelEdit,
-  onConfirmDelete,
-  onDelete,
-  onCancelDelete,
-}: ProfileCardProps): ReactElement {
-  const isInteractive = !isActive && !isEditing && !confirmDelete;
-
-  return (
-    <div
-      className={`profile-card${isActive ? " active" : ""}`}
-      onClick={isInteractive ? onClick : undefined}
-      role={isInteractive ? "button" : undefined}
-      tabIndex={isInteractive ? 0 : undefined}
-      aria-disabled={isInteractive ? undefined : true}
-      onKeyDown={
-        isInteractive
-          ? (e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onClick();
-              }
-            }
-          : undefined
-      }
-    >
-      <div className="profile-card-indicator">
-        <span className={`profile-dot${isActive ? " active" : ""}`} />
-      </div>
-
-      {isEditing ? (
-        <div className="profile-edit-row" onClick={(e) => e.stopPropagation()}>
-          <input
-            className="input profile-edit-input"
-            value={editingName}
-            onChange={(e) => onEditChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                onSaveEdit();
-              }
-              if (e.key === "Escape") {
-                onCancelEdit();
-              }
-            }}
-            autoFocus
-          />
-          <button className="btn btn-primary btn-sm" onClick={onSaveEdit} type="button">
-            保存
-          </button>
-          <button className="btn btn-ghost btn-sm" onClick={onCancelEdit} type="button">
-            取消
-          </button>
-        </div>
-      ) : confirmDelete ? (
-        <div className="profile-edit-row" onClick={(e) => e.stopPropagation()}>
-          <span className="profile-delete-confirm-text">确认删除该配置档案？</span>
-          <button className="btn btn-danger btn-sm" onClick={onDelete} type="button">
-            删除
-          </button>
-          <button className="btn btn-ghost btn-sm" onClick={onCancelDelete} type="button">
-            取消
-          </button>
-        </div>
-      ) : (
-        <>
-          <div className="profile-card-body">
-            <span className="profile-card-name">{profile.name}</span>
-            <span className="profile-card-model">{profile.model}</span>
-          </div>
-          <div className="profile-card-actions" onClick={(e) => e.stopPropagation()}>
-            <button
-              className="profile-action-btn"
-              title="重命名"
-              onClick={onStartEdit}
-              type="button"
-            >
-              ✏️
-            </button>
-            {canDelete && (
-              <button
-                className="profile-action-btn danger"
-                title="删除"
-                onClick={onConfirmDelete}
-                type="button"
-              >
-                🗑
-              </button>
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 interface VendorModelRowProps {
   model: ManagedModel;
   isEditing: boolean;
@@ -1656,7 +1363,7 @@ function VendorModelRow({
         </div>
       ) : confirmDelete ? (
         <div className="vendor-model-inline-editor">
-          <span className="profile-delete-confirm-text">确认删除该模型？</span>
+          <span className="settings-delete-confirm-text">确认删除该模型？</span>
           <button className="btn btn-danger btn-sm" onClick={onDelete} type="button">
             删除
           </button>
@@ -1699,7 +1406,8 @@ interface AgentEditorProps {
   isBuiltin: boolean;
   isOverridden: boolean;
   originalBuiltin: ChatAgentDefinition | null;
-  profiles: ModelProfile[];
+  vendors: AppSettings["vendors"];
+  managedModels: ManagedModel[];
   confirmDeleteId: string | null;
   onUpdate: (updates: Partial<Omit<ChatAgentDefinition, "id" | "builtin">>) => void;
   onReset: () => void;
@@ -1720,7 +1428,8 @@ function AgentEditor({
   isBuiltin,
   isOverridden,
   originalBuiltin,
-  profiles,
+  vendors,
+  managedModels,
   confirmDeleteId,
   onUpdate,
   onReset,
@@ -1729,6 +1438,19 @@ function AgentEditor({
   onDelete,
   onCancelDelete,
 }: AgentEditorProps): ReactElement {
+  const modelOptions = vendors.flatMap((vendor) =>
+    managedModels
+      .filter((managedModel) => managedModel.vendorId === vendor.id)
+      .map((managedModel) => ({
+        key: `${vendor.id}::${managedModel.id}`,
+        label: managedModel.name,
+        detail: vendor.name,
+        selection: {
+          vendorId: vendor.id,
+          modelId: managedModel.id,
+        },
+      })),
+  );
   const enabledTools = new Set(
     agent.toolPolicy.enabledTools && agent.toolPolicy.enabledTools.length > 0
       ? agent.toolPolicy.enabledTools
@@ -1793,23 +1515,34 @@ function AgentEditor({
             />
           </div>
           <div className="field">
-            <label className="field-label">默认模型配置</label>
+            <label className="field-label">默认模型</label>
             <select
               className="select"
-              value={agent.defaultProfileId ?? ""}
-              onChange={(e) =>
-                onUpdate({
-                  defaultProfileId: e.target.value || undefined,
-                })
+              value={
+                agent.modelSelection
+                  ? `${agent.modelSelection.vendorId}::${agent.modelSelection.modelId}`
+                  : ""
               }
+              onChange={(e) => {
+                const value = e.target.value;
+                if (!value) {
+                  onUpdate({ modelSelection: undefined });
+                  return;
+                }
+                const option = modelOptions.find((entry) => entry.key === value);
+                onUpdate({ modelSelection: option?.selection });
+              }}
             >
-              <option value="">跟随全局配置</option>
-              {profiles.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} · {p.model}
+              <option value="">跟随全局模型</option>
+              {modelOptions.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label} · {option.detail}
                 </option>
               ))}
             </select>
+            <div className="agent-field-hint">
+              这里直接绑定到供应商下的具体模型；留空时表示跟随当前全局模型。
+            </div>
           </div>
         </div>
 
@@ -1901,7 +1634,7 @@ function AgentEditor({
           <>
             {confirmDeleteId === agent.id ? (
               <>
-                <span className="profile-delete-confirm-text">确认删除？</span>
+                <span className="settings-delete-confirm-text">确认删除？</span>
                 <button
                   className="btn btn-danger btn-sm"
                   onClick={onDelete}

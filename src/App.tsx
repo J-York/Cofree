@@ -6,8 +6,8 @@ import {
   loadVendorApiKey,
   saveSettings,
   saveVendorApiKey,
+  setActiveManagedModelSelection,
   switchAgent,
-  switchProfile,
   syncRuntimeSettings,
 } from "./lib/settingsStore";
 import { getAllChatAgents, getChatAgentFromSettings } from "./agents/builtinChatAgents";
@@ -99,11 +99,11 @@ export default function App(): ReactElement {
     setSettings({ ...normalized, apiKey: activeApiKey });
   };
 
-  const handleSwitchProfile = useCallback(async (profileId: string) => {
+  const handleSwitchModel = useCallback(async (modelId: string) => {
     let apiKey = "";
     const current = settingsRef.current;
-    if (profileId === current.activeProfileId) return;
-    const switched = switchProfile(current, profileId);
+    if (modelId === current.activeModelId) return;
+    const switched = setActiveManagedModelSelection(current, modelId);
     try { apiKey = await loadVendorApiKey(getActiveVendor(switched)?.id); } catch { /* ignore */ }
     const next = { ...switched, apiKey };
     saveSettings(next);
@@ -171,13 +171,18 @@ export default function App(): ReactElement {
           workspacePath={settings.workspacePath}
           gitBranch={gitBranch}
           currentModel={settings.model}
-          profiles={settings.profiles}
-          activeProfileId={settings.activeProfileId}
+          modelOptions={settings.managedModels.map((managedModel) => ({
+            vendorId: managedModel.vendorId,
+            modelId: managedModel.id,
+            vendorName: settings.vendors.find((vendor) => vendor.id === managedModel.vendorId)?.name ?? "未知供应商",
+            modelName: managedModel.name,
+          }))}
+          activeModelId={settings.activeModelId}
           agents={getAllChatAgents(settings)}
           activeAgentId={settings.activeAgentId}
           onToggleKitchen={() => setKitchenOpen((v) => !v)}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
-          onSwitchProfile={(id) => void handleSwitchProfile(id)}
+          onSwitchModel={(id) => void handleSwitchModel(id)}
           onSwitchAgent={handleSwitchAgent}
           onSelectWorkspace={() => void handleSelectWorkspace()}
           kitchenOpen={kitchenOpen}

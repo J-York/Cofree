@@ -253,20 +253,20 @@ export function postLitellmChatCompletionsStream(params: {
 // ── Secure API Key ───────────────────────────────────────────────────────────
 
 export function loadSecureApiKey(
-  profileId?: string,
+  secretSlot?: string,
 ): Promise<string> {
-  return invoke<string>("load_secure_api_key", { profileId });
+  return invoke<string>("load_secure_api_key", { profileId: secretSlot });
 }
 
 export function saveSecureApiKey(
   apiKey: string,
-  profileId?: string,
+  secretSlot?: string,
 ): Promise<void> {
-  return invoke<void>("save_secure_api_key", { profileId, apiKey });
+  return invoke<void>("save_secure_api_key", { profileId: secretSlot, apiKey });
 }
 
-export function deleteSecureApiKey(profileId: string): Promise<void> {
-  return invoke<void>("delete_secure_api_key", { profileId });
+export function deleteSecureApiKey(secretSlot: string): Promise<void> {
+  return invoke<void>("delete_secure_api_key", { profileId: secretSlot });
 }
 
 // ── File Dialog ──────────────────────────────────────────────────────────────

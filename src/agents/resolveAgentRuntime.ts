@@ -7,10 +7,9 @@
 
 import type { AppSettings, ToolPermissions, ToolPermissionLevel } from "../lib/settingsStore";
 import {
-  getActiveProfile,
   getActiveVendor,
   getActiveManagedModel,
-  getProfileSelection,
+  resolveManagedModelSelection,
   DEFAULT_TOOL_PERMISSIONS,
 } from "../lib/settingsStore";
 import type {
@@ -19,6 +18,7 @@ import type {
   ConversationAgentBinding,
 } from "./types";
 import { getChatAgentFromSettings } from "./builtinChatAgents";
+import type { ModelSelection } from "../lib/modelSelection";
 
 const ALL_TOOL_NAMES = [
   "list_files", "read_file", "grep", "glob",
@@ -33,7 +33,7 @@ function resolveEnabledTools(agent: ChatAgentDefinition): string[] {
     if (agent.allowedSubAgents.length > 0) {
       base.add("task");
     }
-    return ALL_TOOL_NAMES.filter((t) => base.has(t));
+    return ALL_TOOL_NAMES.filter((toolName) => base.has(toolName));
   }
   return [...ALL_TOOL_NAMES];
 }
@@ -42,7 +42,10 @@ function resolveToolPermissions(
   agent: ChatAgentDefinition,
   globalPermissions: ToolPermissions,
 ): Record<string, ToolPermissionLevel> {
-  const merged: Record<string, ToolPermissionLevel> = { ...DEFAULT_TOOL_PERMISSIONS, ...globalPermissions };
+  const merged: Record<string, ToolPermissionLevel> = {
+    ...DEFAULT_TOOL_PERMISSIONS,
+    ...globalPermissions,
+  };
   if (agent.toolPolicy.toolPermissionOverrides) {
     for (const [tool, level] of Object.entries(agent.toolPolicy.toolPermissionOverrides)) {
       if (level) {
@@ -51,6 +54,19 @@ function resolveToolPermissions(
     }
   }
   return merged;
+}
+
+function resolveSelectionForAgent(
+  agent: ChatAgentDefinition,
+  binding: ConversationAgentBinding | null,
+): ModelSelection | undefined {
+  if (binding) {
+    return {
+      vendorId: binding.vendorId,
+      modelId: binding.modelId,
+    };
+  }
+  return agent.modelSelection;
 }
 
 export function resolveAgentRuntime(
@@ -62,15 +78,10 @@ export function resolveAgentRuntime(
 
   const agentId = binding?.agentId ?? (typeof agentIdOrBinding === "string" ? agentIdOrBinding : null);
   const agent = getChatAgentFromSettings(agentId, settings);
-
-  // When a binding carries a profileId, honour it instead of the global active profile.
-  // This keeps existing conversations pinned to the model they were created with.
-  const boundProfile = binding?.profileId
-    ? settings.profiles.find((p) => p.id === binding.profileId) ?? null
-    : null;
-
-  const profile = boundProfile ?? getActiveProfile(settings);
-  const selection = getProfileSelection(settings, profile);
+  const selection = resolveManagedModelSelection(
+    settings,
+    resolveSelectionForAgent(agent, binding),
+  );
   const vendor = selection?.vendor ?? getActiveVendor(settings);
   const model = selection?.managedModel ?? getActiveManagedModel(settings);
 
@@ -80,8 +91,9 @@ export function resolveAgentRuntime(
     systemPrompt: agent.systemPromptTemplate,
     enabledTools: resolveEnabledTools(agent),
     toolPermissions: resolveToolPermissions(agent, settings.toolPermissions),
+    vendorId: vendor?.id || settings.activeVendorId || "",
+    modelId: model?.id || settings.activeModelId || "",
     modelRef: model?.name || settings.model,
-    profileId: profile?.id || "",
     vendorProtocol: vendor?.protocol || "openai-chat-completions",
     baseUrl: vendor?.baseUrl || settings.liteLLMBaseUrl,
     apiKey: settings.apiKey,
@@ -92,15 +104,22 @@ export function resolveAgentRuntime(
 
 export function createAgentBinding(
   agentId: string,
-  profileId: string,
+  selection: ModelSelection,
   source: "default" | "user-override",
   agentName: string,
+  snapshots?: {
+    vendorName?: string;
+    modelName?: string;
+  },
 ): ConversationAgentBinding {
   return {
     agentId,
-    profileId,
+    vendorId: selection.vendorId,
+    modelId: selection.modelId,
     bindingSource: source,
     agentNameSnapshot: agentName,
+    vendorNameSnapshot: snapshots?.vendorName,
+    modelNameSnapshot: snapshots?.modelName,
     boundAt: new Date().toISOString(),
   };
 }

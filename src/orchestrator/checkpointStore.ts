@@ -138,7 +138,6 @@ export interface WorkflowCheckpointPayload {
   toolTrace?: ToolExecutionTrace[];
   continuationMemory?: HitlContinuationMemory;
   agentId?: string;
-  profileId?: string;
 }
 
 function isToolErrorCategory(value: unknown): value is ToolErrorCategory {

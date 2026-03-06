@@ -298,7 +298,7 @@
   color: var(--text-1);
 }
 
-/* ── Profile list in model popover ─────────────────────── */
+/* ── Option list in model popover ──────────────────────── */
 .titlebar-popover-list {
   display: flex;
   flex-direction: column;
@@ -307,7 +307,7 @@
   overflow-y: auto;
 }
 
-.titlebar-popover-profile {
+.titlebar-popover-option {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -322,15 +322,15 @@
   font-family: var(--font-sans);
 }
 
-.titlebar-popover-profile:hover {
+.titlebar-popover-option:hover {
   background: var(--surface-3);
 }
 
-.titlebar-popover-profile.active {
+.titlebar-popover-option.active {
   background: var(--accent-muted);
 }
 
-.titlebar-popover-profile-dot {
+.titlebar-popover-option-dot {
   width: 7px;
   height: 7px;
   border-radius: var(--r-full);
@@ -339,12 +339,12 @@
   transition: all var(--t-fast);
 }
 
-.titlebar-popover-profile-dot.active {
+.titlebar-popover-option-dot.active {
   background: var(--color-success);
   box-shadow: 0 0 6px rgba(74, 222, 128, 0.4);
 }
 
-.titlebar-popover-profile-info {
+.titlebar-popover-option-info {
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -352,13 +352,13 @@
   flex: 1;
 }
 
-.titlebar-popover-profile-name {
+.titlebar-popover-option-name {
   font-size: 13px;
   font-weight: 500;
   color: var(--text-1);
 }
 
-.titlebar-popover-profile-model {
+.titlebar-popover-option-model {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-3);

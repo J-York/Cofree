@@ -9,6 +9,7 @@
  */
 
 import type { ToolPermissionLevel } from "../lib/settingsStore";
+import type { ModelSelection } from "../lib/modelSelection";
 
 // ---------------------------------------------------------------------------
 // Sub-agent layer (internal orchestrator roles, NOT user-selectable)
@@ -44,7 +45,7 @@ export interface ChatAgentDefinition {
   icon?: string;
   systemPromptTemplate: string;
   toolPolicy: ChatAgentToolPolicy;
-  defaultProfileId?: string;
+  modelSelection?: ModelSelection;
   /** Sub-agent roles this agent is allowed to delegate to via `task`. */
   allowedSubAgents: SubAgentRole[];
   /** Reserved for future Agent Teams orchestration. */
@@ -64,8 +65,9 @@ export interface ResolvedAgentRuntime {
   systemPrompt: string;
   enabledTools: string[];
   toolPermissions: Record<string, ToolPermissionLevel>;
+  vendorId: string;
+  modelId: string;
   modelRef: string;
-  profileId: string;
   vendorProtocol: string;
   baseUrl: string;
   apiKey: string;
@@ -115,9 +117,12 @@ export type AgentBindingSource = "default" | "user-override";
 
 export interface ConversationAgentBinding {
   agentId: ChatAgentId;
-  profileId: string;
+  vendorId: string;
+  modelId: string;
   bindingSource: AgentBindingSource;
   /** Snapshot of agent name at binding time for display even if agent is removed later. */
   agentNameSnapshot: string;
+  vendorNameSnapshot?: string;
+  modelNameSnapshot?: string;
   boundAt: string;
 }

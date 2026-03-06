@@ -1,20 +1,26 @@
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { WindowControls } from "./WindowControls";
 import { IconSettings, IconPanelBottom, IconBranch, IconFolder } from "./Icons";
-import type { ModelProfile } from "../../lib/settingsStore";
 import type { ChatAgentDefinition } from "../../agents/types";
+
+interface TitleBarModelOption {
+  vendorId: string;
+  modelId: string;
+  vendorName: string;
+  modelName: string;
+}
 
 interface TitleBarProps {
   workspacePath: string;
   gitBranch?: string;
   currentModel?: string;
-  profiles: ModelProfile[];
-  activeProfileId: string | null;
+  modelOptions: TitleBarModelOption[];
+  activeModelId: string | null;
   agents: ChatAgentDefinition[];
   activeAgentId: string | null;
   onToggleKitchen: () => void;
   onToggleSettings: () => void;
-  onSwitchProfile: (profileId: string) => void;
+  onSwitchModel: (modelId: string) => void;
   onSwitchAgent: (agentId: string) => void;
   onSelectWorkspace: () => void;
   kitchenOpen: boolean;
@@ -24,13 +30,13 @@ export function TitleBar({
   workspacePath,
   gitBranch,
   currentModel,
-  profiles,
-  activeProfileId,
+  modelOptions,
+  activeModelId,
   agents,
   activeAgentId,
   onToggleKitchen,
   onToggleSettings,
-  onSwitchProfile,
+  onSwitchModel,
   onSwitchAgent,
   onSelectWorkspace,
   kitchenOpen,
@@ -57,7 +63,7 @@ export function TitleBar({
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  const activeAgent = agents.find((a) => a.id === activeAgentId) ?? agents[0];
+  const activeAgent = agents.find((agent) => agent.id === activeAgentId) ?? agents[0];
   const displayModel = currentModel ? currentModel.split(/[:/]/).pop() : "未配置模型";
 
   return (
@@ -67,10 +73,10 @@ export function TitleBar({
         <div className="titlebar-workspace-wrap" ref={wsRef}>
           <div
             className={`titlebar-workspace${wsPopover ? " active" : ""}`}
-            onClick={() => { setWsPopover((v) => !v); setAgentPopover(false); }}
+            onClick={() => { setWsPopover((value) => !value); setAgentPopover(false); }}
             role="button"
             tabIndex={0}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setWsPopover((v) => !v); }}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setWsPopover((value) => !value); }}
           >
             <IconFolder size={12} />
             <span className="titlebar-workspace-name">
@@ -117,15 +123,14 @@ export function TitleBar({
         </div>
       </div>
 
-      {/* Center: Agent Selector */}
       <div className="titlebar-center" data-tauri-drag-region>
         <div className="titlebar-model-wrap" ref={agentRef}>
           <div
             className={`titlebar-model-badge${agentPopover ? " active" : ""}`}
-            onClick={() => { setAgentPopover((v) => !v); setWsPopover(false); }}
+            onClick={() => { setAgentPopover((value) => !value); setWsPopover(false); }}
             role="button"
             tabIndex={0}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setAgentPopover((v) => !v); }}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setAgentPopover((value) => !value); }}
           >
             <span className="titlebar-model-dot" />
             <span className="titlebar-model-text">{activeAgent?.name ?? "Agent"}</span>
@@ -144,17 +149,17 @@ export function TitleBar({
                     return (
                       <button
                         key={agent.id}
-                        className={`titlebar-popover-profile${isActive ? " active" : ""}`}
+                        className={`titlebar-popover-option${isActive ? " active" : ""}`}
                         onClick={() => {
                           if (!isActive) onSwitchAgent(agent.id);
                           setAgentPopover(false);
                         }}
                         type="button"
                       >
-                        <div className={`titlebar-popover-profile-dot${isActive ? " active" : ""}`} />
-                        <div className="titlebar-popover-profile-info">
-                          <span className="titlebar-popover-profile-name">{agent.name}</span>
-                          <span className="titlebar-popover-profile-model">{agent.description}</span>
+                        <div className={`titlebar-popover-option-dot${isActive ? " active" : ""}`} />
+                        <div className="titlebar-popover-option-info">
+                          <span className="titlebar-popover-option-name">{agent.name}</span>
+                          <span className="titlebar-popover-option-model">{agent.description}</span>
                         </div>
                         {isActive && (
                           <svg className="titlebar-popover-check" width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -167,26 +172,27 @@ export function TitleBar({
                 </div>
               )}
               <div className="titlebar-popover-divider" />
-              <div className="titlebar-popover-header" style={{ fontSize: "10px", opacity: 0.6, paddingTop: 4 }}>模型配置</div>
-              {profiles.length > 0 && (
+              <div className="titlebar-popover-header" style={{ fontSize: "10px", opacity: 0.6, paddingTop: 4 }}>
+                全局模型
+              </div>
+              {modelOptions.length > 0 && (
                 <div className="titlebar-popover-list">
-                  {profiles.map((p) => {
-                    const isActive = p.id === activeProfileId;
-                    const modelDisplay = p.model ? p.model.split(/[:/]/).pop() : p.model;
+                  {modelOptions.map((option) => {
+                    const isActive = option.modelId === activeModelId;
                     return (
                       <button
-                        key={p.id}
-                        className={`titlebar-popover-profile${isActive ? " active" : ""}`}
+                        key={option.modelId}
+                        className={`titlebar-popover-option${isActive ? " active" : ""}`}
                         onClick={() => {
-                          if (!isActive) onSwitchProfile(p.id);
+                          if (!isActive) onSwitchModel(option.modelId);
                           setAgentPopover(false);
                         }}
                         type="button"
                       >
-                        <div className={`titlebar-popover-profile-dot${isActive ? " active" : ""}`} />
-                        <div className="titlebar-popover-profile-info">
-                          <span className="titlebar-popover-profile-name">{p.name}</span>
-                          <span className="titlebar-popover-profile-model">{modelDisplay}</span>
+                        <div className={`titlebar-popover-option-dot${isActive ? " active" : ""}`} />
+                        <div className="titlebar-popover-option-info">
+                          <span className="titlebar-popover-option-name">{option.modelName}</span>
+                          <span className="titlebar-popover-option-model">{option.vendorName}</span>
                         </div>
                         {isActive && (
                           <svg className="titlebar-popover-check" width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -220,14 +226,6 @@ export function TitleBar({
           title="控制台 (⌘J)"
         >
           <IconPanelBottom size={14} />
-        </button>
-        <button
-          className="titlebar-btn"
-          onClick={onToggleSettings}
-          type="button"
-          title="设置 (⌘,)"
-        >
-          <IconSettings size={15} />
         </button>
         <WindowControls />
       </div>

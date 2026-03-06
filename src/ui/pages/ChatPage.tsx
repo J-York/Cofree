@@ -22,10 +22,15 @@ import {
 import { ConversationSidebar } from "../components/ConversationSidebar";
 import { IconTrash } from "../components/Icons";
 import {
+  getActiveVendor,
   getActiveManagedModel,
   isActiveModelLocal,
+  loadVendorApiKey,
+  resolveManagedModelSelection,
+  syncRuntimeSettings,
 } from "../../lib/settingsStore";
 import type { AppSettings } from "../../lib/settingsStore";
+import type { ModelSelection } from "../../lib/modelSelection";
 import {
   classifyError,
   type CategorizedError,
@@ -100,6 +105,81 @@ interface BackgroundStreamState {
   sessionNote: string;
   liveToolCalls: LiveToolCall[];
   error: CategorizedError | null;
+}
+
+function resolveConversationModelSelection(
+  settings: AppSettings,
+  activeAgent: ChatAgentDefinition,
+  currentConversation: Conversation | null,
+): ModelSelection | null {
+  const binding = currentConversation?.agentBinding;
+  if (binding) {
+    return {
+      vendorId: binding.vendorId,
+      modelId: binding.modelId,
+    };
+  }
+
+  if (activeAgent.modelSelection) {
+    return activeAgent.modelSelection;
+  }
+
+  const activeSelection = resolveManagedModelSelection(settings, {
+    vendorId: settings.activeVendorId,
+    modelId: settings.activeModelId,
+  });
+  if (!activeSelection) {
+    return null;
+  }
+
+  return {
+    vendorId: activeSelection.vendor.id,
+    modelId: activeSelection.managedModel.id,
+  };
+}
+
+async function buildExecutionSettings(
+  settings: AppSettings,
+  activeAgent: ChatAgentDefinition,
+  currentConversation: Conversation | null,
+): Promise<{
+  settings: AppSettings;
+  selection: ModelSelection | null;
+  snapshots?: { vendorName?: string; modelName?: string };
+}> {
+  const selection = resolveConversationModelSelection(settings, activeAgent, currentConversation);
+  const modelScopedSettings = selection
+    ? syncRuntimeSettings({
+        ...settings,
+        activeVendorId: selection.vendorId,
+        activeModelId: selection.modelId,
+      })
+    : settings;
+  const resolvedSelection = resolveManagedModelSelection(modelScopedSettings, selection);
+
+  let apiKey = modelScopedSettings.apiKey;
+  try {
+    const vendorApiKey = await loadVendorApiKey(getActiveVendor(modelScopedSettings)?.id);
+    if (vendorApiKey) {
+      apiKey = vendorApiKey;
+    }
+  } catch {
+    // ignore secure storage failures and fall back to the in-memory key
+  }
+
+  return {
+    selection,
+    snapshots: resolvedSelection
+      ? {
+          vendorName: resolvedSelection.vendor.name,
+          modelName: resolvedSelection.managedModel.name,
+        }
+      : undefined,
+    settings:
+      apiKey === modelScopedSettings.apiKey
+        ? modelScopedSettings
+        : { ...modelScopedSettings, apiKey },
+  };
 }
 
 function createMessageId(role: "user" | "assistant" | "tool"): string {
@@ -1418,7 +1498,29 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     options: RunChatCycleOptions & { isContinuation?: boolean } = {}
   ): Promise<void> => {
     if (!promptText || isStreaming) return;
-    const streamConvId = currentConversation?.id ?? null;
+    const { settings: executionSettings, selection: executionSelection, snapshots } =
+      await buildExecutionSettings(settings, activeAgent, currentConversation);
+
+    let conversationForRun = currentConversation;
+    let convBinding = conversationForRun?.agentBinding ?? null;
+    if (!convBinding && conversationForRun && executionSelection) {
+      convBinding = createAgentBinding(
+        activeAgent.id,
+        executionSelection,
+        "default",
+        activeAgent.name,
+        snapshots,
+      );
+      conversationForRun = {
+        ...conversationForRun,
+        agentBinding: convBinding,
+      };
+      skipNextTimestampRef.current = true;
+      saveConversation(wsPath, conversationForRun);
+      setCurrentConversation(conversationForRun);
+      setConversations(loadConversationList(wsPath));
+    }
+    const streamConvId = conversationForRun?.id ?? null;
     if (!streamConvId) return;
 
     const visibleUserMessage = options.visibleUserMessage !== false;
@@ -1432,7 +1534,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     const conversationHistory = toConversationHistory(messagesRef.current);
     const assistantMessageId = createMessageId("assistant");
     const now = new Date().toISOString();
-    const convBinding = currentConversation?.agentBinding;
     const assistantMsg: ChatMessageRecord = {
       id: assistantMessageId,
       role: "assistant",
@@ -1532,7 +1633,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     try {
       const result = await runPlanningSession({
         prompt: promptText,
-        settings,
+        settings: executionSettings,
         phase: options.phase,
         conversationHistory,
         isContinuation: options.isContinuation,
@@ -1935,8 +2036,16 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
     snapshotToBackground();
 
-    const profile = settings.activeProfileId || "";
-    const binding = createAgentBinding(activeAgent.id, profile, "default", activeAgent.name);
+    const selection = resolveConversationModelSelection(settings, activeAgent, null);
+    const resolvedSelection = selection
+      ? resolveManagedModelSelection(settings, selection)
+      : null;
+    const binding = selection
+      ? createAgentBinding(activeAgent.id, selection, "default", activeAgent.name, {
+          vendorName: resolvedSelection?.vendor.name,
+          modelName: resolvedSelection?.managedModel.name,
+        })
+      : undefined;
     const newConv = createConversation(wsPath, [], binding);
     skipNextTimestampRef.current = true;
     activeConversationIdRef.current = newConv.id;
