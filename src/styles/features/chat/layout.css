@@ -52,6 +52,7 @@
   align-items: center;
   gap: 12px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .chat-top-bar-right {
@@ -83,6 +84,38 @@
   color: var(--text-1);
   transform: translateY(-1px);
   box-shadow: var(--shadow-md);
+}
+
+.chat-runtime-chip-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.chat-runtime-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--border-1);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12px;
+  box-shadow: var(--shadow-sm);
+  max-width: 280px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-runtime-chip strong {
+  color: var(--text-1);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chat-session-note {

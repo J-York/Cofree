@@ -748,6 +748,10 @@ export function setProfileModelSelection(
 }
 
 export function deleteProfile(settings: AppSettings, profileId: string): AppSettings {
+  if (settings.profiles.length <= 1) {
+    return settings;
+  }
+
   const profiles = settings.profiles.filter((profile) => profile.id !== profileId);
   const activeProfileId =
     settings.activeProfileId === profileId ? profiles[0]?.id ?? null : settings.activeProfileId;
@@ -798,6 +802,49 @@ export function updateVendor(
 
   const updatedSettings = { ...settings, vendors };
   return syncRuntimeSettings(withSynchronizedProfiles(updatedSettings));
+}
+
+export function deleteVendor(settings: AppSettings, vendorId: string): AppSettings {
+  if (vendorId === DEFAULT_VENDOR_ID || settings.vendors.length <= 1) {
+    return settings;
+  }
+
+  const vendorExists = settings.vendors.some((vendor) => vendor.id === vendorId);
+  if (!vendorExists) {
+    return settings;
+  }
+
+  const fallbackVendor =
+    settings.vendors.find((vendor) => vendor.id !== vendorId) || DEFAULT_SETTINGS.vendors[0];
+  const fallbackModel =
+    settings.managedModels.find((model) => model.vendorId === fallbackVendor.id) ||
+    DEFAULT_SETTINGS.managedModels.find((model) => model.vendorId === fallbackVendor.id) ||
+    DEFAULT_SETTINGS.managedModels[0];
+
+  const removedModelIds = new Set(
+    settings.managedModels
+      .filter((model) => model.vendorId === vendorId)
+      .map((model) => model.id)
+  );
+
+  const profiles = settings.profiles.map((profile) => {
+    const shouldReassign =
+      profile.vendorId === vendorId ||
+      (profile.modelId ? removedModelIds.has(profile.modelId) : false);
+
+    if (!shouldReassign) {
+      return profile;
+    }
+
+    return buildProfileSnapshot(profile, fallbackVendor, fallbackModel);
+  });
+
+  return syncRuntimeSettings({
+    ...settings,
+    profiles,
+    vendors: settings.vendors.filter((vendor) => vendor.id !== vendorId),
+    managedModels: settings.managedModels.filter((model) => model.vendorId !== vendorId),
+  });
 }
 
 export function addModelsToVendor(
@@ -855,6 +902,39 @@ export function updateManagedModel(
       : model
   );
   return syncRuntimeSettings({ ...settings, managedModels });
+}
+
+export function deleteManagedModel(settings: AppSettings, modelId: string): AppSettings {
+  const managedModel = getManagedModelById(settings, modelId);
+  if (!managedModel) {
+    return settings;
+  }
+
+  const vendorModels = settings.managedModels.filter((model) => model.vendorId === managedModel.vendorId);
+  if (vendorModels.length <= 1) {
+    return settings;
+  }
+
+  const fallbackModel =
+    vendorModels.find((model) => model.id !== modelId) ||
+    settings.managedModels.find((model) => model.id !== modelId) ||
+    DEFAULT_SETTINGS.managedModels[0];
+  const fallbackVendor = getVendorById(settings, fallbackModel.vendorId);
+  if (!fallbackVendor) {
+    return settings;
+  }
+
+  const profiles = settings.profiles.map((profile) =>
+    profile.modelId === modelId
+      ? buildProfileSnapshot(profile, fallbackVendor, fallbackModel)
+      : profile
+  );
+
+  return syncRuntimeSettings({
+    ...settings,
+    profiles,
+    managedModels: settings.managedModels.filter((model) => model.id !== modelId),
+  });
 }
 
 export function isLocalVendor(vendor: VendorConfig | null | undefined): boolean {

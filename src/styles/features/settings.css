@@ -247,6 +247,27 @@
   box-shadow: 0 0 0 1px var(--accent-muted);
 }
 
+.vendor-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.vendor-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .vendor-card-header {
   display: flex;
   align-items: center;
@@ -299,6 +320,25 @@
   border: 1px solid var(--border-1);
   border-radius: var(--r-md);
   background: var(--surface-0);
+}
+
+.vendor-model-inline-editor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.vendor-model-inline-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.vendor-model-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .vendor-model-row.active {
