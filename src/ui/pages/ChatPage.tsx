@@ -76,9 +76,12 @@ import type {
   OrchestrationPlan,
 } from "../../orchestrator/types";
 import { useSession } from "../../lib/sessionContext";
+import type { ChatAgentDefinition } from "../../agents/types";
+import { createAgentBinding } from "../../agents/resolveAgentRuntime";
 
 interface ChatPageProps {
   settings: AppSettings;
+  activeAgent: ChatAgentDefinition;
   isVisible?: boolean;
   sidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
@@ -1037,7 +1040,7 @@ function TokenUsageRing({
 }
 
 /* ── Main ChatPage ────────────────────────────────────────── */
-export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSidebar }: ChatPageProps): ReactElement {
+export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, onToggleSidebar }: ChatPageProps): ReactElement {
   const { actions: session } = useSession();
 
   const wsPath = settings.workspacePath;
@@ -1429,12 +1432,14 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
     const conversationHistory = toConversationHistory(messagesRef.current);
     const assistantMessageId = createMessageId("assistant");
     const now = new Date().toISOString();
+    const convBinding = currentConversation?.agentBinding;
     const assistantMsg: ChatMessageRecord = {
       id: assistantMessageId,
       role: "assistant",
       content: "",
       createdAt: now,
       plan: null,
+      agentId: convBinding?.agentId ?? activeAgent.id,
     };
 
     let localStreamBuffer = "";
@@ -1930,7 +1935,9 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
 
     snapshotToBackground();
 
-    const newConv = createConversation(wsPath, []);
+    const profile = settings.activeProfileId || "";
+    const binding = createAgentBinding(activeAgent.id, profile, "default", activeAgent.name);
+    const newConv = createConversation(wsPath, [], binding);
     skipNextTimestampRef.current = true;
     activeConversationIdRef.current = newConv.id;
     setCurrentConversation(newConv);
@@ -2082,8 +2089,8 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
           <div className="chat-thread" ref={threadRef}>
             {messages.length === 0 ? (
               <div className="chat-empty">
-                <p className="chat-empty-text">你好，有什么可以帮到你？</p>
-                <p className="chat-empty-subtext">描述你的编码任务，我来帮你完成</p>
+                <p className="chat-empty-text">你好，我是{activeAgent.name}</p>
+                <p className="chat-empty-subtext">{activeAgent.description}</p>
                 <div className="chat-suggestions">
                   <button className="chat-suggestion-chip" onClick={() => handleSuggestionClick("帮我分析一下这个项目的代码结构")} type="button">
                     分析代码结构
@@ -2105,11 +2112,11 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
                 .map((message) => (
                 <div key={message.id} className={`chat-row ${message.role}`}>
                   <div className={`chat-avatar ${message.role}`}>
-                    {message.role === "user" ? "U" : "A"}
+                    {message.role === "user" ? "U" : (currentConversation?.agentBinding?.agentNameSnapshot ?? activeAgent.name).charAt(0)}
                   </div>
                   <div className="chat-bubble-wrap">
                     <p className="chat-meta">
-                      {message.role === "user" ? "你" : "助手"}
+                      {message.role === "user" ? "你" : (currentConversation?.agentBinding?.agentNameSnapshot ?? activeAgent.name)}
                       {formatTime(message.createdAt)
                         ? ` · ${formatTime(message.createdAt)}`
                         : ""}

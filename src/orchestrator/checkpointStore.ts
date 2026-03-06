@@ -35,6 +35,21 @@ export function resetChatSessionId(): string {
   return sessionId;
 }
 
+/**
+ * Build a deterministic session key scoped to conversation + agent.
+ * Falls back to the random session key when conversation id is not available.
+ */
+export function buildScopedSessionKey(
+  conversationId?: string,
+  agentId?: string,
+): string {
+  if (conversationId) {
+    const suffix = agentId ? `:${agentId}` : "";
+    return `csess:${conversationId}${suffix}`;
+  }
+  return getChatSessionId();
+}
+
 interface CheckpointRecord {
   checkpoint_id: string;
   session_id: string;
@@ -122,6 +137,8 @@ export interface WorkflowCheckpointPayload {
   plan: OrchestrationPlan;
   toolTrace?: ToolExecutionTrace[];
   continuationMemory?: HitlContinuationMemory;
+  agentId?: string;
+  profileId?: string;
 }
 
 function isToolErrorCategory(value: unknown): value is ToolErrorCategory {

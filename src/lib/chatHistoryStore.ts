@@ -29,7 +29,8 @@ export interface ChatMessageRecord {
   }>;
   tool_call_id?: string;
   name?: string;
-  }
+  agentId?: string;
+}
 
 function normalizeRole(value: unknown): ChatMessageRecord["role"] | null {
   if (value === "user" || value === "assistant" || value === "tool") {
@@ -163,7 +164,8 @@ export function loadChatHistory(): ChatMessageRecord[] {
         toolTrace: normalizeToolTrace(record.toolTrace),
         tool_calls,
         tool_call_id,
-        name
+        name,
+        agentId: typeof record.agentId === "string" ? record.agentId : undefined,
       });
     }
 

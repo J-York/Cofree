@@ -19,6 +19,7 @@ export interface LLMAuditRecord {
   requestId: string;
   provider: string;
   model: string;
+  agentId?: string;
   timestamp: string;
   inputLength: number;
   outputLength: number;

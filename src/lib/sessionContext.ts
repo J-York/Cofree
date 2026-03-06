@@ -20,6 +20,7 @@ export type WorkflowPhase =
 export interface LLMRequestSummary {
   requestId: string;
   model: string;
+  agentId?: string;
   timestamp: string;
   inputTokens: number;
   outputTokens: number;

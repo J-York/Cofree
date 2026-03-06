@@ -6,9 +6,11 @@ import {
   loadVendorApiKey,
   saveSettings,
   saveVendorApiKey,
+  switchAgent,
   switchProfile,
   syncRuntimeSettings,
 } from "./lib/settingsStore";
+import { BUILTIN_CHAT_AGENTS, getChatAgentOrDefault } from "./agents/builtinChatAgents";
 import { ChatPage } from "./ui/pages/ChatPage";
 import { KitchenPage } from "./ui/pages/KitchenPage";
 import { SettingsPage } from "./ui/pages/SettingsPage";
@@ -119,6 +121,14 @@ export default function App(): ReactElement {
     } catch { /* ignore */ }
   }, []);
 
+  const handleSwitchAgent = useCallback((agentId: string) => {
+    const current = settingsRef.current;
+    if (agentId === current.activeAgentId) return;
+    const next = switchAgent(current, agentId);
+    saveSettings(next);
+    setSettings(next);
+  }, []);
+
   // ── Global keyboard shortcuts ──
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -163,9 +173,12 @@ export default function App(): ReactElement {
           currentModel={settings.model}
           profiles={settings.profiles}
           activeProfileId={settings.activeProfileId}
+          agents={BUILTIN_CHAT_AGENTS}
+          activeAgentId={settings.activeAgentId}
           onToggleKitchen={() => setKitchenOpen((v) => !v)}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
           onSwitchProfile={(id) => void handleSwitchProfile(id)}
+          onSwitchAgent={handleSwitchAgent}
           onSelectWorkspace={() => void handleSelectWorkspace()}
           kitchenOpen={kitchenOpen}
         />
@@ -173,6 +186,7 @@ export default function App(): ReactElement {
         <div className="app-body">
           <ChatPage
             settings={settings}
+            activeAgent={getChatAgentOrDefault(settings.activeAgentId)}
             isVisible={true}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={() => setSidebarCollapsed((v) => !v)}

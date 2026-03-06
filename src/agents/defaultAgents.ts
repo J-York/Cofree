@@ -1,27 +1,20 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/agents/defaultAgents.ts
- * Milestone: 1
- * Task: 1.2
- * Status: Completed
- * Owner: Codex-GPT-5
- * Last Modified: 2026-03-01
- * Description: Default expert roster used by Milestone 1 mock orchestration.
+ * Description: Internal sub-agent roster used by the orchestrator's `task` tool.
+ *
+ * These are NOT user-selectable agents. For user-facing ChatAgents see
+ * builtinChatAgents.ts. The types are re-exported from agents/types.ts
+ * for backward compatibility.
  */
 
-export type AgentRole = "planner" | "coder" | "tester";
+import type { SubAgentRole, SubAgentDefinition } from "./types";
 
-export interface AgentDefinition {
-  role: AgentRole;
-  displayName: string;
-  promptIntent: string;
-  tools: string[];
-  sensitiveActionAllowed: boolean;
-  /** When true, this agent can be invoked as a sub-agent via the `task` tool. */
-  allowAsSubAgent?: boolean;
-  /** Maximum tool-calling loop turns when running as a sub-agent. */
-  subAgentMaxTurns?: number;
-}
+/** @deprecated Use SubAgentRole from agents/types.ts */
+export type AgentRole = SubAgentRole;
+
+/** @deprecated Use SubAgentDefinition from agents/types.ts */
+export type AgentDefinition = SubAgentDefinition;
 
 export const DEFAULT_AGENTS: AgentDefinition[] = [
   {

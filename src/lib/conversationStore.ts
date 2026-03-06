@@ -6,6 +6,7 @@
  */
 
 import type { ChatMessageRecord } from "./chatHistoryStore";
+import type { ConversationAgentBinding } from "../agents/types";
 
 export const CONVERSATIONS_STORAGE_KEY = "cofree.conversations.v1";
 export const ACTIVE_CONVERSATION_KEY = "cofree.activeConversation.v1";
@@ -17,6 +18,7 @@ export interface Conversation {
   updatedAt: string;
   messages: ChatMessageRecord[];
   lastTokenCount?: number | null;
+  agentBinding?: ConversationAgentBinding;
 }
 
 export interface ConversationMetadata {
@@ -25,6 +27,8 @@ export interface ConversationMetadata {
   createdAt: string;
   updatedAt: string;
   messageCount: number;
+  agentId?: string;
+  agentName?: string;
 }
 
 /**
@@ -54,6 +58,19 @@ function getStorageKeyPrefix(workspacePath: string): string {
 function getActiveKey(workspacePath: string): string {
   const h = workspaceHash(workspacePath);
   return `${ACTIVE_CONVERSATION_KEY}.ws.${h}`;
+}
+
+function normalizeAgentBinding(value: unknown): ConversationAgentBinding | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.agentId !== "string" || !obj.agentId) return undefined;
+  return {
+    agentId: obj.agentId,
+    profileId: typeof obj.profileId === "string" ? obj.profileId : "",
+    bindingSource: obj.bindingSource === "user-override" ? "user-override" : "default",
+    agentNameSnapshot: typeof obj.agentNameSnapshot === "string" ? obj.agentNameSnapshot : obj.agentId,
+    boundAt: typeof obj.boundAt === "string" ? obj.boundAt : "",
+  };
 }
 
 function generateConversationId(): string {
@@ -108,6 +125,8 @@ export function loadConversationList(
         updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
         messageCount:
           typeof item.messageCount === "number" ? item.messageCount : 0,
+        agentId: typeof item.agentId === "string" ? item.agentId : undefined,
+        agentName: typeof item.agentName === "string" ? item.agentName : undefined,
       }))
       .filter((item) => item.id && item.createdAt);
   } catch {
@@ -145,6 +164,7 @@ export function loadConversation(
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
       lastTokenCount: typeof parsed.lastTokenCount === "number" ? parsed.lastTokenCount : null,
+      agentBinding: normalizeAgentBinding(parsed.agentBinding),
     };
   } catch {
     return null;
@@ -177,6 +197,8 @@ export function saveConversation(
       createdAt: conversation.createdAt,
       updatedAt: conversation.updatedAt,
       messageCount: conversation.messages.length,
+      agentId: conversation.agentBinding?.agentId,
+      agentName: conversation.agentBinding?.agentNameSnapshot,
     };
 
     if (existingIndex >= 0) {
@@ -205,7 +227,8 @@ export function saveConversation(
  */
 export function createConversation(
   workspacePath: string,
-  initialMessages: ChatMessageRecord[] = []
+  initialMessages: ChatMessageRecord[] = [],
+  agentBinding?: ConversationAgentBinding,
 ): Conversation {
   const now = new Date().toISOString();
   const conversation: Conversation = {
@@ -214,6 +237,7 @@ export function createConversation(
     createdAt: now,
     updatedAt: now,
     messages: initialMessages,
+    agentBinding,
   };
 
   saveConversation(workspacePath, conversation);
