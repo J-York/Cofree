@@ -597,6 +597,98 @@
   background: var(--surface-1);
 }
 
+/* ── Agent Management ──────────────────────────────────── */
+.agent-card-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  text-align: left;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-lg);
+  background: var(--surface-0);
+  color: var(--text-1);
+  cursor: pointer;
+  transition: all var(--t-fast);
+  font-family: var(--font-sans);
+}
+.agent-card:hover { border-color: var(--border-2); background: var(--surface-2); }
+.agent-card.active { border-color: var(--accent-solid); background: var(--surface-2); box-shadow: 0 0 0 1px var(--accent-muted); }
+
+.agent-card-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-card-name { font-size: 13px; font-weight: 600; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-card-badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+  border: 1px solid var(--border-1);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 600;
+}
+.agent-card-badge.custom { color: var(--accent-solid); background: var(--accent-muted); border-color: rgba(99,102,241,0.18); }
+.agent-card-desc { font-size: 11px; color: var(--text-3); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+.agent-editor { margin-top: 4px; }
+
+.agent-prompt-textarea {
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+  line-height: 1.6 !important;
+  min-height: 120px;
+  resize: vertical;
+  padding: 10px 12px !important;
+}
+
+.agent-prompt-diff-hint {
+  font-size: 11px;
+  color: var(--color-warning);
+  margin-top: 4px;
+}
+
+.agent-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 4px;
+}
+
+.agent-tool-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: background var(--t-fast);
+  user-select: none;
+}
+.agent-tool-item:hover { background: var(--surface-2); }
+.agent-tool-item input[type="checkbox"] { flex-shrink: 0; accent-color: var(--accent-solid); }
+.agent-tool-name { font-family: var(--font-mono); font-size: 11px; color: var(--text-1); white-space: nowrap; }
+.agent-tool-label { font-size: 11px; color: var(--text-3); }
+.agent-tool-hint { font-size: 11px; font-weight: 400; color: var(--text-3); margin-left: 8px; }
+
+.agent-subagent-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.agent-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-1);
+}
+
 /* ── Danger Zone ────────────────────────────────────────── */
 .settings-danger-zone { border: 1px solid rgba(248,113,113,0.15); border-radius: var(--r-lg); overflow: hidden; background: var(--color-error-bg); }
 .settings-danger-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; }

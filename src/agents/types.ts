@@ -74,6 +74,40 @@ export interface ResolvedAgentRuntime {
 }
 
 // ---------------------------------------------------------------------------
+// Agent override / customization (persisted in settings)
+// ---------------------------------------------------------------------------
+
+export type ChatAgentOverride = Partial<
+  Omit<ChatAgentDefinition, "id" | "builtin">
+>;
+
+export const ALL_AGENT_TOOL_NAMES = [
+  "list_files", "read_file", "grep", "glob",
+  "git_status", "git_diff",
+  "propose_file_edit", "propose_apply_patch", "propose_shell",
+  "diagnostics", "fetch", "task",
+] as const;
+
+export const AGENT_TOOL_CATALOG: ReadonlyArray<{
+  name: string;
+  label: string;
+  category: "read" | "write";
+}> = [
+  { name: "list_files", label: "列出文件", category: "read" },
+  { name: "read_file", label: "读取文件", category: "read" },
+  { name: "grep", label: "全文搜索", category: "read" },
+  { name: "glob", label: "匹配文件", category: "read" },
+  { name: "git_status", label: "Git 状态", category: "read" },
+  { name: "git_diff", label: "Git 差异", category: "read" },
+  { name: "diagnostics", label: "诊断", category: "read" },
+  { name: "propose_file_edit", label: "编辑文件", category: "write" },
+  { name: "propose_apply_patch", label: "应用补丁", category: "write" },
+  { name: "propose_shell", label: "执行命令", category: "write" },
+  { name: "fetch", label: "网络请求", category: "write" },
+  { name: "task", label: "委派子任务", category: "write" },
+];
+
+// ---------------------------------------------------------------------------
 // Conversation-level agent binding (persisted with each conversation)
 // ---------------------------------------------------------------------------
 

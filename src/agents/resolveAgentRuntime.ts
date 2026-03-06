@@ -18,7 +18,7 @@ import type {
   ResolvedAgentRuntime,
   ConversationAgentBinding,
 } from "./types";
-import { getChatAgentOrDefault } from "./builtinChatAgents";
+import { getChatAgentFromSettings } from "./builtinChatAgents";
 
 const ALL_TOOL_NAMES = [
   "list_files", "read_file", "grep", "glob",
@@ -61,7 +61,7 @@ export function resolveAgentRuntime(
     agentIdOrBinding && typeof agentIdOrBinding === "object" ? agentIdOrBinding : null;
 
   const agentId = binding?.agentId ?? (typeof agentIdOrBinding === "string" ? agentIdOrBinding : null);
-  const agent = getChatAgentOrDefault(agentId);
+  const agent = getChatAgentFromSettings(agentId, settings);
 
   // When a binding carries a profileId, honour it instead of the global active profile.
   // This keeps existing conversations pinned to the model they were created with.

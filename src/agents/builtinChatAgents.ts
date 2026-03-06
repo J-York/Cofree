@@ -8,7 +8,8 @@
  * The internal planner/coder/tester sub-agents are NOT listed here.
  */
 
-import type { ChatAgentDefinition } from "./types";
+import type { ChatAgentDefinition, ChatAgentOverride } from "./types";
+import type { AppSettings } from "../lib/settingsStore";
 
 export const BUILTIN_CHAT_AGENTS: ChatAgentDefinition[] = [
   {
@@ -98,10 +99,70 @@ export function getBuiltinChatAgent(agentId: string): ChatAgentDefinition | null
   return BUILTIN_CHAT_AGENTS.find((a) => a.id === agentId) ?? null;
 }
 
+function applyOverride(
+  agent: ChatAgentDefinition,
+  override: ChatAgentOverride | undefined,
+): ChatAgentDefinition {
+  if (!override) return agent;
+  return {
+    ...agent,
+    ...override,
+    id: agent.id,
+    builtin: agent.builtin,
+    toolPolicy: override.toolPolicy
+      ? { ...agent.toolPolicy, ...override.toolPolicy }
+      : agent.toolPolicy,
+  };
+}
+
+type AgentSettings = Pick<AppSettings, "customAgents" | "builtinAgentOverrides">;
+
+/**
+ * Returns the merged list: builtin (with overrides applied) + custom agents.
+ */
+export function getAllChatAgents(settings: AgentSettings): ChatAgentDefinition[] {
+  const overrides = settings.builtinAgentOverrides ?? {};
+  const builtinWithOverrides = BUILTIN_CHAT_AGENTS.map((a) =>
+    applyOverride(a, overrides[a.id]),
+  );
+  return [...builtinWithOverrides, ...(settings.customAgents ?? [])];
+}
+
+/**
+ * Look up a single agent from the merged (builtin + custom) set.
+ */
+export function getChatAgentFromSettings(
+  agentId: string | null | undefined,
+  settings: AgentSettings,
+): ChatAgentDefinition {
+  if (agentId) {
+    const custom = settings.customAgents?.find((a) => a.id === agentId);
+    if (custom) return custom;
+
+    const builtin = getBuiltinChatAgent(agentId);
+    if (builtin) {
+      return applyOverride(builtin, settings.builtinAgentOverrides?.[agentId]);
+    }
+  }
+  return BUILTIN_CHAT_AGENTS.find((a) => a.id === DEFAULT_CHAT_AGENT_ID)!;
+}
+
+/** @deprecated Use getChatAgentFromSettings when settings are available. */
 export function getChatAgentOrDefault(agentId: string | null | undefined): ChatAgentDefinition {
   if (agentId) {
     const found = getBuiltinChatAgent(agentId);
     if (found) return found;
   }
   return BUILTIN_CHAT_AGENTS.find((a) => a.id === DEFAULT_CHAT_AGENT_ID)!;
+}
+
+/**
+ * Check whether a builtin agent has any user overrides.
+ */
+export function hasBuiltinOverride(
+  agentId: string,
+  settings: AgentSettings,
+): boolean {
+  const o = settings.builtinAgentOverrides?.[agentId];
+  return !!o && Object.keys(o).length > 0;
 }

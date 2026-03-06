@@ -10,7 +10,7 @@ import {
   switchProfile,
   syncRuntimeSettings,
 } from "./lib/settingsStore";
-import { BUILTIN_CHAT_AGENTS, getChatAgentOrDefault } from "./agents/builtinChatAgents";
+import { getAllChatAgents, getChatAgentFromSettings } from "./agents/builtinChatAgents";
 import { ChatPage } from "./ui/pages/ChatPage";
 import { KitchenPage } from "./ui/pages/KitchenPage";
 import { SettingsPage } from "./ui/pages/SettingsPage";
@@ -173,7 +173,7 @@ export default function App(): ReactElement {
           currentModel={settings.model}
           profiles={settings.profiles}
           activeProfileId={settings.activeProfileId}
-          agents={BUILTIN_CHAT_AGENTS}
+          agents={getAllChatAgents(settings)}
           activeAgentId={settings.activeAgentId}
           onToggleKitchen={() => setKitchenOpen((v) => !v)}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
@@ -186,7 +186,7 @@ export default function App(): ReactElement {
         <div className="app-body">
           <ChatPage
             settings={settings}
-            activeAgent={getChatAgentOrDefault(settings.activeAgentId)}
+            activeAgent={getChatAgentFromSettings(settings.activeAgentId, settings)}
             isVisible={true}
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={() => setSidebarCollapsed((v) => !v)}

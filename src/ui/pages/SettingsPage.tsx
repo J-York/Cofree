@@ -13,8 +13,11 @@ import {
   type ToolPermissionLevel,
   type VendorProtocol,
   addModelsToVendor,
+  cloneAgentAsCustom,
+  createCustomAgent,
   createProfile,
   createVendor,
+  deleteCustomAgent,
   deleteManagedModel,
   deleteProfile,
   deleteVendor,
@@ -25,13 +28,26 @@ import {
   listManagedModelsForVendor,
   loadVendorApiKey,
   maskApiKey,
+  resetBuiltinAgentOverride,
   setProfileModelSelection,
   switchProfile,
   syncRuntimeSettings,
+  updateBuiltinAgentOverride,
+  updateCustomAgent,
   updateManagedModel,
   updateProfile,
   updateVendor,
 } from "../../lib/settingsStore";
+import {
+  getAllChatAgents,
+  getBuiltinChatAgent,
+  hasBuiltinOverride,
+} from "../../agents/builtinChatAgents";
+import {
+  AGENT_TOOL_CATALOG,
+  type ChatAgentDefinition,
+  type SubAgentRole,
+} from "../../agents/types";
 import { clearAllConversations } from "../../lib/conversationStore";
 
 interface WorkspaceInfo {
@@ -48,10 +64,11 @@ interface SettingsPageProps {
   onClose?: () => void;
 }
 
-type SettingsTab = "profiles" | "model" | "tools" | "advanced";
+type SettingsTab = "profiles" | "agents" | "model" | "tools" | "advanced";
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "profiles", label: "配置档案" },
+  { id: "agents", label: "Agent 管理" },
   { id: "model", label: "模型配置" },
   { id: "tools", label: "工具权限" },
   { id: "advanced", label: "高级" },
@@ -95,6 +112,23 @@ export function SettingsPage({
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [modelPickerSearch, setModelPickerSearch] = useState("");
   const [modelPickerSelected, setModelPickerSelected] = useState<Set<string>>(new Set());
+
+  // Agent management states
+  const allAgents = getAllChatAgents(draft);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
+    allAgents[0]?.id ?? null,
+  );
+  const selectedAgent = allAgents.find((a) => a.id === selectedAgentId) ?? null;
+  const isSelectedBuiltin = selectedAgent?.builtin === true;
+  const isSelectedOverridden = isSelectedBuiltin && selectedAgentId
+    ? hasBuiltinOverride(selectedAgentId, draft)
+    : false;
+  const originalBuiltin = selectedAgentId
+    ? getBuiltinChatAgent(selectedAgentId)
+    : null;
+  const [showNewAgent, setShowNewAgent] = useState(false);
+  const [newAgentName, setNewAgentName] = useState("");
+  const [confirmDeleteAgentId, setConfirmDeleteAgentId] = useState<string | null>(null);
 
   const loadWorkspaceInfo = async (path: string) => {
     if (!path) {
@@ -486,11 +520,13 @@ export function SettingsPage({
               <span className="settings-tab-icon">
                 {tab.id === "profiles"
                   ? "📋"
-                  : tab.id === "model"
-                    ? "🤖"
-                    : tab.id === "tools"
-                      ? "🛠"
-                      : "⚙️"}
+                  : tab.id === "agents"
+                    ? "🧑‍💻"
+                    : tab.id === "model"
+                      ? "🤖"
+                      : tab.id === "tools"
+                        ? "🛠"
+                        : "⚙️"}
               </span>
               <span className="settings-tab-label">{tab.label}</span>
             </button>
@@ -573,6 +609,138 @@ export function SettingsPage({
                 >
                   + 新建配置档案
                 </button>
+              )}
+            </>
+          )}
+
+          {activeTab === "agents" && (
+            <>
+              <header className="settings-pane-header">
+                <h2 className="settings-pane-title">Agent 管理</h2>
+                <p className="settings-pane-desc">
+                  每个 Agent 有独立的系统提示词、工具策略和子 Agent 权限。可编辑内置 Agent 或创建自定义 Agent。
+                </p>
+              </header>
+
+              <div className="agent-card-list">
+                {allAgents.map((agent) => {
+                  const isActive = agent.id === selectedAgentId;
+                  const overridden = agent.builtin && hasBuiltinOverride(agent.id, draft);
+                  return (
+                    <button
+                      key={agent.id}
+                      className={`agent-card${isActive ? " active" : ""}`}
+                      onClick={() => { setSelectedAgentId(agent.id); setConfirmDeleteAgentId(null); }}
+                      type="button"
+                    >
+                      <div className="agent-card-header">
+                        <span className="agent-card-name">{agent.name}</span>
+                        <span className={`agent-card-badge${agent.builtin ? "" : " custom"}`}>
+                          {agent.builtin ? (overridden ? "内置 · 已修改" : "内置") : "自定义"}
+                        </span>
+                      </div>
+                      <span className="agent-card-desc">{agent.description || "暂无描述"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {showNewAgent ? (
+                <div className="profile-new-form">
+                  <input
+                    className="input"
+                    placeholder="新 Agent 名称"
+                    value={newAgentName}
+                    onChange={(e) => setNewAgentName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        const { settings: next, agent } = createCustomAgent(draft, {
+                          name: newAgentName,
+                        });
+                        setDraft(next);
+                        setSelectedAgentId(agent.id);
+                        setShowNewAgent(false);
+                        setNewAgentName("");
+                      }
+                    }}
+                    type="text"
+                    autoFocus
+                  />
+                  <div className="btn-row">
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => {
+                        const { settings: next, agent } = createCustomAgent(draft, {
+                          name: newAgentName,
+                        });
+                        setDraft(next);
+                        setSelectedAgentId(agent.id);
+                        setShowNewAgent(false);
+                        setNewAgentName("");
+                      }}
+                      type="button"
+                    >
+                      创建
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => { setShowNewAgent(false); setNewAgentName(""); }}
+                      type="button"
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  className="btn btn-ghost btn-sm profile-add-btn"
+                  onClick={() => setShowNewAgent(true)}
+                  type="button"
+                >
+                  + 新建 Agent
+                </button>
+              )}
+
+              {selectedAgent && (
+                <AgentEditor
+                  agent={selectedAgent}
+                  isBuiltin={isSelectedBuiltin}
+                  isOverridden={isSelectedOverridden}
+                  originalBuiltin={originalBuiltin}
+                  profiles={draft.profiles}
+                  confirmDeleteId={confirmDeleteAgentId}
+                  onUpdate={(updates) => {
+                    if (isSelectedBuiltin) {
+                      setDraft((prev) =>
+                        updateBuiltinAgentOverride(prev, selectedAgent.id, updates),
+                      );
+                    } else {
+                      setDraft((prev) =>
+                        updateCustomAgent(prev, selectedAgent.id, updates),
+                      );
+                    }
+                  }}
+                  onReset={() => {
+                    setDraft((prev) => resetBuiltinAgentOverride(prev, selectedAgent.id));
+                  }}
+                  onClone={() => {
+                    const { settings: next, agent } = cloneAgentAsCustom(
+                      draft,
+                      selectedAgent,
+                      `${selectedAgent.name} (副本)`,
+                    );
+                    setDraft(next);
+                    setSelectedAgentId(agent.id);
+                  }}
+                  onConfirmDelete={() => setConfirmDeleteAgentId(selectedAgent.id)}
+                  onDelete={() => {
+                    const next = deleteCustomAgent(draft, selectedAgent.id);
+                    setDraft(next);
+                    setSelectedAgentId(allAgents[0]?.id ?? null);
+                    setConfirmDeleteAgentId(null);
+                  }}
+                  onCancelDelete={() => setConfirmDeleteAgentId(null)}
+                />
               )}
             </>
           )}
@@ -1520,6 +1688,247 @@ function VendorModelRow({
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ── Agent Editor ──────────────────────────────────────────
+
+interface AgentEditorProps {
+  agent: ChatAgentDefinition;
+  isBuiltin: boolean;
+  isOverridden: boolean;
+  originalBuiltin: ChatAgentDefinition | null;
+  profiles: ModelProfile[];
+  confirmDeleteId: string | null;
+  onUpdate: (updates: Partial<Omit<ChatAgentDefinition, "id" | "builtin">>) => void;
+  onReset: () => void;
+  onClone: () => void;
+  onConfirmDelete: () => void;
+  onDelete: () => void;
+  onCancelDelete: () => void;
+}
+
+const SUB_AGENT_ROLES: { role: SubAgentRole; label: string }[] = [
+  { role: "planner", label: "Planner（规划）" },
+  { role: "coder", label: "Coder（编码）" },
+  { role: "tester", label: "Tester（测试）" },
+];
+
+function AgentEditor({
+  agent,
+  isBuiltin,
+  isOverridden,
+  originalBuiltin,
+  profiles,
+  confirmDeleteId,
+  onUpdate,
+  onReset,
+  onClone,
+  onConfirmDelete,
+  onDelete,
+  onCancelDelete,
+}: AgentEditorProps): ReactElement {
+  const enabledTools = new Set(
+    agent.toolPolicy.enabledTools && agent.toolPolicy.enabledTools.length > 0
+      ? agent.toolPolicy.enabledTools
+      : AGENT_TOOL_CATALOG.map((t) => t.name),
+  );
+  const allToolsEnabled =
+    !agent.toolPolicy.enabledTools || agent.toolPolicy.enabledTools.length === 0;
+
+  const handleToolToggle = (toolName: string, checked: boolean) => {
+    let next: string[];
+    if (allToolsEnabled) {
+      next = AGENT_TOOL_CATALOG.map((t) => t.name).filter(
+        (t) => (t === toolName ? checked : true),
+      );
+    } else {
+      next = checked
+        ? [...(agent.toolPolicy.enabledTools ?? []).filter((t) => t !== toolName), toolName]
+        : (agent.toolPolicy.enabledTools ?? []).filter((t) => t !== toolName);
+    }
+    const allSelected = next.length === AGENT_TOOL_CATALOG.length;
+    onUpdate({
+      toolPolicy: {
+        ...agent.toolPolicy,
+        enabledTools: allSelected ? undefined : next,
+      },
+    });
+  };
+
+  const handleSubAgentToggle = (role: SubAgentRole, checked: boolean) => {
+    const current = agent.allowedSubAgents ?? [];
+    const next = checked
+      ? [...current.filter((r) => r !== role), role]
+      : current.filter((r) => r !== role);
+    onUpdate({ allowedSubAgents: next });
+  };
+
+  return (
+    <div className="settings-card agent-editor">
+      <div className="settings-card-header">
+        <div>
+          <h3 className="settings-card-title">
+            编辑 Agent
+            {isBuiltin && (
+              <span className="settings-section-tag">
+                {isOverridden ? "内置 · 已修改" : "内置"}
+              </span>
+            )}
+          </h3>
+        </div>
+      </div>
+
+      <div className="settings-fields">
+        <div className="grid-2">
+          <div className="field">
+            <label className="field-label">名称</label>
+            <input
+              className="input"
+              value={agent.name}
+              onChange={(e) => onUpdate({ name: e.target.value })}
+              type="text"
+              placeholder="Agent 名称"
+            />
+          </div>
+          <div className="field">
+            <label className="field-label">默认模型配置</label>
+            <select
+              className="select"
+              value={agent.defaultProfileId ?? ""}
+              onChange={(e) =>
+                onUpdate({
+                  defaultProfileId: e.target.value || undefined,
+                })
+              }
+            >
+              <option value="">跟随全局配置</option>
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} · {p.model}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="field">
+          <label className="field-label">描述</label>
+          <input
+            className="input"
+            value={agent.description}
+            onChange={(e) => onUpdate({ description: e.target.value })}
+            type="text"
+            placeholder="简短描述该 Agent 的用途"
+          />
+        </div>
+
+        <div className="field">
+          <label className="field-label">系统提示词</label>
+          <textarea
+            className="input agent-prompt-textarea"
+            value={agent.systemPromptTemplate}
+            onChange={(e) => onUpdate({ systemPromptTemplate: e.target.value })}
+            placeholder="定义该 Agent 的角色、行为和约束..."
+            rows={6}
+          />
+          {isBuiltin && isOverridden && originalBuiltin && (
+            <div className="agent-prompt-diff-hint">
+              已修改。原始提示词共 {originalBuiltin.systemPromptTemplate.length} 字。
+            </div>
+          )}
+        </div>
+
+        <div className="field">
+          <label className="field-label">
+            可用工具
+            {allToolsEnabled && (
+              <span className="agent-tool-hint">全部启用</span>
+            )}
+          </label>
+          <div className="agent-tool-grid">
+            {AGENT_TOOL_CATALOG.map((tool) => (
+              <label key={tool.name} className="agent-tool-item">
+                <input
+                  type="checkbox"
+                  checked={enabledTools.has(tool.name)}
+                  onChange={(e) => handleToolToggle(tool.name, e.target.checked)}
+                />
+                <span className="agent-tool-name">{tool.name}</span>
+                <span className="agent-tool-label">{tool.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="field">
+          <label className="field-label">可委派的子 Agent</label>
+          <div className="agent-subagent-row">
+            {SUB_AGENT_ROLES.map(({ role, label }) => (
+              <label key={role} className="agent-tool-item">
+                <input
+                  type="checkbox"
+                  checked={agent.allowedSubAgents.includes(role)}
+                  onChange={(e) => handleSubAgentToggle(role, e.target.checked)}
+                />
+                <span className="agent-tool-name">{label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="agent-editor-actions">
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={onClone}
+          type="button"
+          title="克隆为自定义 Agent"
+        >
+          克隆为自定义
+        </button>
+        {isBuiltin && isOverridden && (
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={onReset}
+            type="button"
+          >
+            重置为默认
+          </button>
+        )}
+        {!isBuiltin && (
+          <>
+            {confirmDeleteId === agent.id ? (
+              <>
+                <span className="profile-delete-confirm-text">确认删除？</span>
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={onDelete}
+                  type="button"
+                >
+                  删除
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={onCancelDelete}
+                  type="button"
+                >
+                  取消
+                </button>
+              </>
+            ) : (
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={onConfirmDelete}
+                type="button"
+              >
+                删除 Agent
+              </button>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

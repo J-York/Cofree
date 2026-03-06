@@ -5,6 +5,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import type { ChatAgentDefinition, ChatAgentOverride, SubAgentRole, ChatAgentToolPolicy } from "../agents/types";
 
 export const SETTINGS_STORAGE_KEY = "cofree.settings.v1";
 export const SETTINGS_STORAGE_KEY_V2 = "cofree.settings.v2";
@@ -109,6 +110,8 @@ export interface AppSettings {
   profiles: ModelProfile[];
   vendors: VendorConfig[];
   managedModels: ManagedModel[];
+  customAgents: ChatAgentDefinition[];
+  builtinAgentOverrides: Record<string, ChatAgentOverride>;
 }
 
 type PersistedSettings = Omit<AppSettings, "apiKey"> & { apiKey?: string };
@@ -207,6 +210,8 @@ function createInitialSettings(): AppSettings {
     profiles: [defaults.profile],
     vendors: [defaults.vendor],
     managedModels: [defaults.model],
+    customAgents: [],
+    builtinAgentOverrides: {},
   };
 }
 
@@ -505,6 +510,67 @@ function migrateLegacyProfilesToManagedSettings(
   });
 }
 
+function isValidSubAgentRole(v: unknown): v is SubAgentRole {
+  return v === "planner" || v === "coder" || v === "tester";
+}
+
+function normalizeToolPolicy(raw: unknown): ChatAgentToolPolicy {
+  if (!raw || typeof raw !== "object") return {};
+  const obj = raw as Record<string, unknown>;
+  const result: ChatAgentToolPolicy = {};
+  if (Array.isArray(obj.enabledTools)) {
+    result.enabledTools = obj.enabledTools.filter(
+      (t): t is string => typeof t === "string",
+    );
+  }
+  return result;
+}
+
+function normalizeCustomAgents(raw: unknown): ChatAgentDefinition[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Record<string, unknown> => isRecord(item) && typeof item.id === "string")
+    .map((item) => ({
+      id: item.id as string,
+      name: typeof item.name === "string" ? item.name : "Agent",
+      description: typeof item.description === "string" ? item.description : "",
+      icon: typeof item.icon === "string" ? item.icon : undefined,
+      systemPromptTemplate:
+        typeof item.systemPromptTemplate === "string" ? item.systemPromptTemplate : "",
+      toolPolicy: normalizeToolPolicy(item.toolPolicy),
+      defaultProfileId:
+        typeof item.defaultProfileId === "string" ? item.defaultProfileId : undefined,
+      allowedSubAgents: Array.isArray(item.allowedSubAgents)
+        ? (item.allowedSubAgents as unknown[]).filter(isValidSubAgentRole)
+        : ["planner", "coder", "tester"],
+      handoffPolicy: undefined,
+      builtin: false as const,
+    }));
+}
+
+function normalizeBuiltinAgentOverrides(
+  raw: unknown,
+): Record<string, ChatAgentOverride> {
+  if (!raw || typeof raw !== "object") return {};
+  const result: Record<string, ChatAgentOverride> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object") continue;
+    const v = value as Record<string, unknown>;
+    const entry: ChatAgentOverride = {};
+    if (typeof v.name === "string") entry.name = v.name;
+    if (typeof v.description === "string") entry.description = v.description;
+    if (typeof v.systemPromptTemplate === "string")
+      entry.systemPromptTemplate = v.systemPromptTemplate;
+    if (typeof v.defaultProfileId === "string")
+      entry.defaultProfileId = v.defaultProfileId;
+    if (v.toolPolicy) entry.toolPolicy = normalizeToolPolicy(v.toolPolicy);
+    if (Array.isArray(v.allowedSubAgents))
+      entry.allowedSubAgents = (v.allowedSubAgents as unknown[]).filter(isValidSubAgentRole);
+    if (Object.keys(entry).length > 0) result[key] = entry;
+  }
+  return result;
+}
+
 function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): AppSettings {
   const base: AppSettings = {
     ...DEFAULT_SETTINGS,
@@ -517,6 +583,10 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): AppSetting
     profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
     vendors: Array.isArray(parsed.vendors) ? parsed.vendors : [],
     managedModels: Array.isArray(parsed.managedModels) ? parsed.managedModels : [],
+    customAgents: normalizeCustomAgents((parsed as Record<string, unknown>).customAgents),
+    builtinAgentOverrides: normalizeBuiltinAgentOverrides(
+      (parsed as Record<string, unknown>).builtinAgentOverrides,
+    ),
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...(isRecord(parsed.proxy) ? parsed.proxy : {}),
@@ -771,6 +841,113 @@ export function switchProfile(settings: AppSettings, profileId: string): AppSett
 
 export function switchAgent(settings: AppSettings, agentId: string): AppSettings {
   return { ...settings, activeAgentId: agentId };
+}
+
+// ── Agent CRUD ────────────────────────────────────────────
+
+export function generateAgentId(): string {
+  return `agent-custom-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+}
+
+export function createCustomAgent(
+  settings: AppSettings,
+  params: {
+    name: string;
+    description?: string;
+    systemPromptTemplate?: string;
+    enabledTools?: string[];
+    allowedSubAgents?: SubAgentRole[];
+    defaultProfileId?: string;
+  },
+): { settings: AppSettings; agent: ChatAgentDefinition } {
+  const agent: ChatAgentDefinition = {
+    id: generateAgentId(),
+    name: params.name.trim() || "新 Agent",
+    description: params.description?.trim() || "",
+    systemPromptTemplate: params.systemPromptTemplate?.trim() || "",
+    toolPolicy: params.enabledTools
+      ? { enabledTools: params.enabledTools }
+      : {},
+    allowedSubAgents: params.allowedSubAgents ?? ["planner", "coder", "tester"],
+    defaultProfileId: params.defaultProfileId,
+    builtin: false,
+  };
+  return {
+    agent,
+    settings: {
+      ...settings,
+      customAgents: [...settings.customAgents, agent],
+      activeAgentId: agent.id,
+    },
+  };
+}
+
+export function updateCustomAgent(
+  settings: AppSettings,
+  agentId: string,
+  updates: Partial<Omit<ChatAgentDefinition, "id" | "builtin">>,
+): AppSettings {
+  return {
+    ...settings,
+    customAgents: settings.customAgents.map((a) =>
+      a.id === agentId ? { ...a, ...updates } : a,
+    ),
+  };
+}
+
+export function deleteCustomAgent(settings: AppSettings, agentId: string): AppSettings {
+  const next = {
+    ...settings,
+    customAgents: settings.customAgents.filter((a) => a.id !== agentId),
+  };
+  if (next.activeAgentId === agentId) {
+    next.activeAgentId = null;
+  }
+  return next;
+}
+
+export function cloneAgentAsCustom(
+  settings: AppSettings,
+  source: ChatAgentDefinition,
+  name: string,
+): { settings: AppSettings; agent: ChatAgentDefinition } {
+  const agent: ChatAgentDefinition = {
+    ...source,
+    id: generateAgentId(),
+    name: name.trim() || `${source.name} (副本)`,
+    builtin: false,
+  };
+  return {
+    agent,
+    settings: {
+      ...settings,
+      customAgents: [...settings.customAgents, agent],
+      activeAgentId: agent.id,
+    },
+  };
+}
+
+export function updateBuiltinAgentOverride(
+  settings: AppSettings,
+  agentId: string,
+  override: ChatAgentOverride,
+): AppSettings {
+  return {
+    ...settings,
+    builtinAgentOverrides: {
+      ...settings.builtinAgentOverrides,
+      [agentId]: { ...settings.builtinAgentOverrides[agentId], ...override },
+    },
+  };
+}
+
+export function resetBuiltinAgentOverride(
+  settings: AppSettings,
+  agentId: string,
+): AppSettings {
+  const next = { ...settings.builtinAgentOverrides };
+  delete next[agentId];
+  return { ...settings, builtinAgentOverrides: next };
 }
 
 export function createVendor(
