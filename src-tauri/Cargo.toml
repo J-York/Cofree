@@ -1,10 +1,10 @@
 [package]
 name = "cofree"
-version = "0.0.6"
+version = "0.0.7"
 description = "Cofree desktop shell"
 authors = ["Cofree Team"]
 license = "MIT"
-repository = "https://github.com/cofree/cofree"
+repository = "https://github.com/J-York/Cofree"
 edition = "2021"
 rust-version = "1.77"
 
