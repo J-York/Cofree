@@ -25,6 +25,7 @@
 }
 
 .chat-layout {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -37,32 +38,12 @@
   gap: 0;
 }
 
-/* ── Chat Top Bar ───────────────────────────────────────── */
-.chat-top-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-shrink: 0;
-  padding: 6px 0 10px;
-}
-
-.chat-top-bar-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
-.chat-top-bar-right {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.chat-sidebar-toggle {
+/* ── Floating Sidebar Toggle ───────────────────────────── */
+.chat-sidebar-fab {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -74,63 +55,16 @@
   color: var(--text-2);
   cursor: pointer;
   transition: all var(--t-med);
-  flex-shrink: 0;
   box-shadow: var(--shadow-sm);
+  opacity: 0.7;
 }
 
-.chat-sidebar-toggle:hover {
+.chat-sidebar-fab:hover {
   background: var(--surface-2);
   border-color: var(--border-2);
   color: var(--text-1);
-  transform: translateY(-1px);
+  opacity: 1;
   box-shadow: var(--shadow-md);
-}
-
-.chat-runtime-chip-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
-.chat-runtime-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 10px;
-  border-radius: var(--r-full);
-  border: 1px solid var(--border-1);
-  background: var(--surface-2);
-  color: var(--text-2);
-  font-size: 12px;
-  box-shadow: var(--shadow-sm);
-  max-width: 280px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.chat-runtime-chip strong {
-  color: var(--text-1);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.chat-session-note {
-  font-size: 13px;
-  color: var(--text-2);
-  padding: 6px 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-1);
-  border-radius: var(--r-full);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 280px;
-  box-shadow: var(--shadow-sm);
-  font-weight: 500;
 }
 
 /* ── Chat Thread ────────────────────────────────────────── */

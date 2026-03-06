@@ -48,6 +48,12 @@
   padding: 6px 14px 10px;
 }
 
+.chat-input-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .chat-input-actions {
   display: flex;
   gap: 8px;

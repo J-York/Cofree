@@ -354,7 +354,17 @@ export function fetchVendorModelIds(params: {
 }
 
 function toOpenAIChatMessages(messages: LiteLLMMessage[]): LiteLLMMessage[] {
-  return messages;
+  let seenNonSystem = false;
+  return messages.map((msg) => {
+    if (msg.role !== "system") {
+      seenNonSystem = true;
+      return msg;
+    }
+    if (!seenNonSystem) {
+      return msg;
+    }
+    return { ...msg, role: "user" as const, content: `[System]\n${msg.content}` };
+  });
 }
 
 function toOpenAIResponsesInput(messages: LiteLLMMessage[]): unknown[] {

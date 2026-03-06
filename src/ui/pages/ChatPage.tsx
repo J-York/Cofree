@@ -22,8 +22,6 @@ import {
 import { ConversationSidebar } from "../components/ConversationSidebar";
 import {
   getActiveManagedModel,
-  getActiveProfile,
-  getActiveVendor,
   isActiveModelLocal,
 } from "../../lib/settingsStore";
 import type { AppSettings } from "../../lib/settingsStore";
@@ -1118,12 +1116,8 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
   const abortControllersRef = useRef(new Map<string, AbortController>());
   const skipNextTimestampRef = useRef(true);
 
-  const activeProfile = getActiveProfile(settings);
-  const activeVendor = getActiveVendor(settings);
   const activeManagedModel = getActiveManagedModel(settings);
   const activeModelLabel = activeManagedModel?.name || settings.model;
-  const activeVendorLabel = activeVendor?.name || settings.provider || "未配置供应商";
-  const activeProfileLabel = activeProfile?.name || "默认配置";
   const localOnlyBlocked =
     !settings.allowCloudModels && !isActiveModelLocal(settings);
   const noWorkspaceSelected = !settings.workspacePath;
@@ -2057,58 +2051,19 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
       />
       <div className="chat-main-area">
         <div className="page-content chat-layout">
-          {/* ── Top bar ── */}
-          <div className="chat-top-bar">
-              <div className="chat-top-bar-left">
-                <button
-                  className="chat-sidebar-toggle"
-                  onClick={onToggleSidebar}
-                  type="button"
-                  aria-label="对话列表 (⌘B)"
-                  title="对话列表 (⌘B)"
-                >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <rect x="2" y="2" width="12" height="12" rx="1" stroke="currentColor" strokeWidth="1.4" />
-                    <path d="M6 2v12" stroke="currentColor" strokeWidth="1.4" />
-                  </svg>
-                </button>
-                <div className="chat-runtime-chip-group" aria-label="当前模型配置">
-                  <span className="chat-runtime-chip">
-                    档案：<strong>{activeProfileLabel}</strong>
-                  </span>
-                  <span className="chat-runtime-chip">
-                    供应商：<strong>{activeVendorLabel}</strong>
-                  </span>
-                  <span className="chat-runtime-chip">
-                    模型：<strong>{activeModelLabel}</strong>
-                  </span>
-                </div>
-                {sessionNote && (
-                  <span className="chat-session-note">{sessionNote}</span>
-                )}
-              </div>
-            <div className="chat-top-bar-right">
-              {liveContextTokens !== null && (
-                <TokenUsageRing
-                  used={liveContextTokens}
-                  max={settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000}
-                  isStreaming={isStreaming}
-                />
-              )}
-              <button
-                className="btn btn-ghost btn-sm"
-                disabled={
-                  isStreaming ||
-                  Boolean(executingActionId) ||
-                  messages.length === 0
-                }
-                onClick={handleClearHistory}
-                type="button"
-              >
-                清空
-              </button>
-            </div>
-          </div>
+          {/* ── Floating sidebar toggle ── */}
+          <button
+            className="chat-sidebar-fab"
+            onClick={onToggleSidebar}
+            type="button"
+            aria-label="对话列表 (⌘B)"
+            title="对话列表 (⌘B)"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="2" y="2" width="12" height="12" rx="1" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M6 2v12" stroke="currentColor" strokeWidth="1.4" />
+            </svg>
+          </button>
 
           {/* ── Alerts ── */}
           {localOnlyBlocked && (
@@ -2244,7 +2199,27 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
                   rows={1}
                 />
                 <div className="chat-input-footer">
-                  <span />
+                  <div className="chat-input-meta">
+                    {liveContextTokens !== null && (
+                      <TokenUsageRing
+                        used={liveContextTokens}
+                        max={settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000}
+                        isStreaming={isStreaming}
+                      />
+                    )}
+                    <button
+                      className="btn btn-ghost btn-xs"
+                      disabled={
+                        isStreaming ||
+                        Boolean(executingActionId) ||
+                        messages.length === 0
+                      }
+                      onClick={handleClearHistory}
+                      type="button"
+                    >
+                      清空
+                    </button>
+                  </div>
                   <div className="chat-input-actions">
                     {isStreaming && (
                       <button
