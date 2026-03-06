@@ -14,14 +14,17 @@ import { DEFAULT_AGENTS } from "../agents/defaultAgents";
 import { recordLLMAudit } from "../lib/auditLog";
 import {
   createLiteLLMRequestBody,
-  isLocalProvider,
   postLiteLLMChatCompletions,
   postLiteLLMChatCompletionsStream,
   type LiteLLMMessage,
   type LiteLLMToolDefinition,
 } from "../lib/litellm";
-import type { AppSettings, ToolPermissions } from "../lib/settingsStore";
-import { DEFAULT_TOOL_PERMISSIONS } from "../lib/settingsStore";
+import {
+  DEFAULT_TOOL_PERMISSIONS,
+  isActiveModelLocal,
+  type AppSettings,
+  type ToolPermissions,
+} from "../lib/settingsStore";
 import type { ActionProposal, OrchestrationPlan, PlanStep } from "./types";
 import {
   summarizeWorkspaceFiles,
@@ -4041,7 +4044,7 @@ function assertLocalOnlyPolicy(settings: AppSettings): void {
     return;
   }
 
-  if (isLocalProvider(settings.provider ?? "")) {
+  if (isActiveModelLocal(settings)) {
     return;
   }
 
@@ -4180,7 +4183,7 @@ export async function runPlanningSession(
     for (const record of loopResult.requestRecords) {
       recordLLMAudit({
         requestId: record.requestId,
-        provider: input.settings.provider ?? "",
+        provider: input.settings.provider ?? input.settings.liteLLMBaseUrl,
         model: input.settings.model,
         timestamp: new Date().toISOString(),
         inputLength: record.inputLength,

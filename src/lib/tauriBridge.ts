@@ -205,11 +205,13 @@ export function loadLatestWorkflowCheckpoint(
 export function fetchLitellmModels(params: {
   baseUrl: string;
   apiKey: string;
+  protocol: "openai-chat-completions" | "openai-responses" | "anthropic-messages";
   proxy?: ProxySettings;
 }): Promise<string[]> {
   return invoke<string[]>("fetch_litellm_models", {
     baseUrl: params.baseUrl,
     apiKey: params.apiKey,
+    protocol: params.protocol,
     proxy: params.proxy,
   });
 }
@@ -217,12 +219,14 @@ export function fetchLitellmModels(params: {
 export function postLitellmChatCompletions(params: {
   baseUrl: string;
   apiKey: string;
+  protocol: "openai-chat-completions" | "openai-responses" | "anthropic-messages";
   body: unknown;
   proxy?: ProxySettings;
 }): Promise<LiteLLMHttpResponse> {
   return invoke<LiteLLMHttpResponse>("post_litellm_chat_completions", {
     baseUrl: params.baseUrl,
     apiKey: params.apiKey,
+    protocol: params.protocol,
     body: params.body,
     proxy: params.proxy,
   });
@@ -231,6 +235,7 @@ export function postLitellmChatCompletions(params: {
 export function postLitellmChatCompletionsStream(params: {
   baseUrl: string;
   apiKey: string;
+  protocol?: string;
   body: unknown;
   requestId: string;
   proxy?: ProxySettings;
@@ -238,6 +243,7 @@ export function postLitellmChatCompletionsStream(params: {
   return invoke<LiteLLMHttpResponse>("post_litellm_chat_completions_stream", {
     baseUrl: params.baseUrl,
     apiKey: params.apiKey,
+    protocol: params.protocol,
     body: params.body,
     requestId: params.requestId,
     proxy: params.proxy,

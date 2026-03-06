@@ -2,7 +2,6 @@ import { type ReactElement, useEffect, useRef, useState } from "react";
 import { WindowControls } from "./WindowControls";
 import { IconSettings, IconPanelBottom, IconBranch, IconFolder } from "./Icons";
 import type { ModelProfile } from "../../lib/settingsStore";
-import { formatModelRef } from "../../lib/litellm";
 
 interface TitleBarProps {
   workspacePath: string;
@@ -131,7 +130,7 @@ export function TitleBar({
                 <div className="titlebar-popover-list">
                   {profiles.map((p) => {
                     const isActive = p.id === activeProfileId;
-                    const modelDisplay = formatModelRef(p.provider || "", p.model);
+                    const modelDisplay = p.model;
                     return (
                       <button
                         key={p.id}

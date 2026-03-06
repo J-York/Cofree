@@ -20,7 +20,7 @@ import {
   type Conversation,
 } from "../../lib/conversationStore";
 import { ConversationSidebar } from "../components/ConversationSidebar";
-import { isLocalProvider } from "../../lib/litellm";
+import { isActiveModelLocal } from "../../lib/settingsStore";
 import type { AppSettings } from "../../lib/settingsStore";
 import {
   classifyError,
@@ -1114,7 +1114,7 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
   const skipNextTimestampRef = useRef(true);
 
   const localOnlyBlocked =
-    !settings.allowCloudModels && !isLocalProvider(settings.provider ?? "");
+    !settings.allowCloudModels && !isActiveModelLocal(settings);
   const noWorkspaceSelected = !settings.workspacePath;
   const chatBlocked = localOnlyBlocked || noWorkspaceSelected;
 
