@@ -20,6 +20,7 @@ import {
   type Conversation,
 } from "../../lib/conversationStore";
 import { ConversationSidebar } from "../components/ConversationSidebar";
+import { IconTrash } from "../components/Icons";
 import {
   getActiveManagedModel,
   isActiveModelLocal,
@@ -2208,7 +2209,15 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
                       />
                     )}
                     <button
-                      className="btn btn-ghost btn-xs"
+                      className="btn btn-ghost"
+                      style={{
+                        padding: "4px",
+                        height: "22px",
+                        width: "22px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center"
+                      }}
                       disabled={
                         isStreaming ||
                         Boolean(executingActionId) ||
@@ -2216,8 +2225,9 @@ export function ChatPage({ settings, isVisible, sidebarCollapsed, onToggleSideba
                       }
                       onClick={handleClearHistory}
                       type="button"
+                      title="清空当前对话"
                     >
-                      清空
+                      <IconTrash size={14} />
                     </button>
                   </div>
                   <div className="chat-input-actions">

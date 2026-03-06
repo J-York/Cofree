@@ -79,7 +79,7 @@ export function IconEdit(props: IconProps) {
 export function IconTrash(props: IconProps) {
   return (
     <svg {...defaults(props)}>
-      <path d="M3 4h10M6 4V3h4v1M5 6v7h6V6" />
+      <path d="M3 4h10M6 4V2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2M5 4v9a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2V4" />
     </svg>
   );
 }

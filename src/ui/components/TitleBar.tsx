@@ -50,6 +50,8 @@ export function TitleBar({
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
+  const displayModel = currentModel ? currentModel.split(/[:/]/).pop() : "未配置模型";
+
   return (
     <header className="titlebar" data-tauri-drag-region>
       <div className="titlebar-left" data-tauri-drag-region>
@@ -118,7 +120,7 @@ export function TitleBar({
             onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setModelPopover((v) => !v); }}
           >
             <span className="titlebar-model-dot" />
-            <span className="titlebar-model-text">{currentModel || "未配置模型"}</span>
+            <span className="titlebar-model-text">{displayModel}</span>
             <svg className="titlebar-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none">
               <path d="M2.5 3.75L5 6.25L7.5 3.75" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
@@ -130,7 +132,7 @@ export function TitleBar({
                 <div className="titlebar-popover-list">
                   {profiles.map((p) => {
                     const isActive = p.id === activeProfileId;
-                    const modelDisplay = p.model;
+                    const modelDisplay = p.model ? p.model.split(/[:/]/).pop() : p.model;
                     return (
                       <button
                         key={p.id}
