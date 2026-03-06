@@ -56,11 +56,36 @@ const RECENT_TOKENS_MIN_RATIO = 0.4;
 const TOOL_MESSAGE_MAX_CHARS = 3000;
 
 // P2-2: Dynamic cooldown state — tracks token growth to adjust cooldown.
+// Capped at MAX_TRACKED_WORKSPACES to prevent unbounded memory growth.
+const MAX_TRACKED_WORKSPACES = 20;
+const TRACKER_STALE_MS = 30 * 60 * 1000; // evict entries idle for >30 min
+
 const tokenGrowthTracker = new Map<string, { timestamps: number[]; tokenCounts: number[] }>();
+
+function evictStaleTrackers(now: number): void {
+  if (tokenGrowthTracker.size <= MAX_TRACKED_WORKSPACES) return;
+
+  for (const [key, tracker] of tokenGrowthTracker) {
+    const lastTs = tracker.timestamps[tracker.timestamps.length - 1] ?? 0;
+    if (now - lastTs > TRACKER_STALE_MS) {
+      tokenGrowthTracker.delete(key);
+    }
+  }
+
+  // Hard cap: if still over limit, remove oldest entries.
+  while (tokenGrowthTracker.size > MAX_TRACKED_WORKSPACES) {
+    const oldestKey = tokenGrowthTracker.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    tokenGrowthTracker.delete(oldestKey);
+  }
+}
 
 function computeDynamicCooldownMs(workspacePath: string | undefined, currentTokens: number): number {
   const ws = workspacePath?.trim() || "";
   if (!ws) return BASE_SUMMARY_COOLDOWN_MS;
+
+  const now = Date.now();
+  evictStaleTrackers(now);
 
   let tracker = tokenGrowthTracker.get(ws);
   if (!tracker) {
@@ -68,7 +93,6 @@ function computeDynamicCooldownMs(workspacePath: string | undefined, currentToke
     tokenGrowthTracker.set(ws, tracker);
   }
 
-  const now = Date.now();
   tracker.timestamps.push(now);
   tracker.tokenCounts.push(currentTokens);
 
@@ -85,11 +109,8 @@ function computeDynamicCooldownMs(workspacePath: string | undefined, currentToke
 
   if (timeDelta <= 0) return BASE_SUMMARY_COOLDOWN_MS;
 
-  // tokens per second growth rate
   const growthRate = tokenDelta / (timeDelta / 1000);
 
-  // High growth (>500 tok/s) → shorten cooldown to 15s
-  // Normal growth → use base cooldown
   if (growthRate > 500) return 15_000;
   if (growthRate > 200) return 30_000;
   return BASE_SUMMARY_COOLDOWN_MS;
@@ -1040,7 +1061,10 @@ function formatMessagesForSummary(msgs: LiteLLMMessage[]): string {
           : msg.role === "assistant"
           ? "助手"
           : msg.role;
-      return `[${roleLabel}] ${msg.content}`;
+      // Safely extract text from multimodal content (content may be an array
+      // of {type:"text", text:"..."} objects in some providers).
+      const text = normalizeMessageContent(msg.content);
+      return `[${roleLabel}] ${text}`;
     })
     .join("\n---\n");
 }
@@ -1088,7 +1112,11 @@ async function summarizeSingleChunk(
       choices?: Array<{ message?: { content?: string } }>;
     };
     return payload.choices?.[0]?.message?.content?.trim() ?? null;
-  } catch {
+  } catch (error) {
+    console.warn(
+      `[Context] summarizeSingleChunk 失败 | content.length=${content.length}`,
+      error,
+    );
     return null;
   }
 }
@@ -1152,12 +1180,14 @@ async function requestSummary(
       }
     }
 
-    // Reduce phase: combine chunk summaries into final summary
+    // Reduce phase: combine chunk summaries into final summary.
+    // When truncation is needed, keep the *latest* chunks (tail) because
+    // recent context is more relevant for the model's next action.
     const combinedChunkSummaries = chunkSummaries.join("\n\n");
     const reducedContent =
       combinedChunkSummaries.length <= SUMMARY_CHUNK_MAX_CHARS
         ? combinedChunkSummaries
-        : combinedChunkSummaries.slice(0, SUMMARY_CHUNK_MAX_CHARS) + "\n...(部分片段已省略)";
+        : "(早期片段已省略)...\n" + combinedChunkSummaries.slice(-SUMMARY_CHUNK_MAX_CHARS);
 
     const finalSummary = await summarizeSingleChunk(
       `以下是对话历史分段摘要，请合并为一份完整、结构化的最终摘要：\n\n${reducedContent}`,
@@ -1849,10 +1879,10 @@ async function executeSubAgentTask(
     );
     messages.push(completion.assistantMessage);
 
-    // P1-3: Calibrate token estimates from sub-agent API responses.
+    // P1-3: Calibrate token estimates from sub-agent API responses (per-model).
     if (completion.requestRecord.inputTokens) {
       const estBeforeCall = estimateTokensForMessages(messages) + subToolDefTokens;
-      updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens);
+      updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens, settings.model);
     }
 
     if (!completion.toolCalls.length) {
@@ -3483,10 +3513,10 @@ async function runNativeToolCallingLoop(
     requestRecords.push(completion.requestRecord);
     messages.push(completion.assistantMessage);
 
-    // P1-3: Update token calibration with actual API-reported values.
+    // P1-3: Update token calibration with actual API-reported values (per-model).
     if (completion.requestRecord.inputTokens) {
       const estBeforeCall = estimateTokensForMessages(messages) + toolDefTokens;
-      updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens);
+      updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens, settings.model);
     }
 
     if (!completion.toolCalls.length) {

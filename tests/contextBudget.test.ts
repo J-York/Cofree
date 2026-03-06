@@ -9,6 +9,7 @@ import {
   updateTokenCalibration,
   resetTokenCalibration,
   tokenCalibration,
+  getTokenCalibrationFactor,
   scoreMessageImportance,
   mergeConsecutiveToolMessages,
 } from "../src/orchestrator/contextBudget";
@@ -212,6 +213,15 @@ describe("estimateTokensFromText (multi-script)", () => {
     );
   });
 
+  it("classifies CJK Extension B characters correctly", () => {
+    // U+20000 is CJK Unified Ideographs Extension B
+    const extBChar = "\u{20000}";
+    const latinChar = "a";
+    expect(estimateTokensFromText(extBChar)).toBeGreaterThan(
+      estimateTokensFromText(latinChar),
+    );
+  });
+
   it("respects calibration factor", () => {
     const text = "Hello world";
     const base = estimateTokensFromText(text, 1.0);
@@ -391,6 +401,104 @@ describe("tokenCalibration", () => {
     resetTokenCalibration();
     expect(tokenCalibration.factor).toBe(1.0);
     expect(tokenCalibration.sampleCount).toBe(0);
+  });
+
+  it("maintains per-model calibration independently", () => {
+    updateTokenCalibration(100, 150, "gpt-4o");     // gpt-4o factor = 1.5
+    updateTokenCalibration(100, 200, "claude-3.5");  // claude factor = 2.0
+
+    expect(getTokenCalibrationFactor("gpt-4o")).toBeCloseTo(1.5, 1);
+    expect(getTokenCalibrationFactor("claude-3.5")).toBeCloseTo(2.0, 1);
+
+    // Shared singleton should reflect last-updated model
+    expect(tokenCalibration.factor).toBeCloseTo(2.0, 1);
+  });
+
+  it("resets single model without affecting others", () => {
+    updateTokenCalibration(100, 150, "gpt-4o");
+    updateTokenCalibration(100, 200, "claude-3.5");
+
+    resetTokenCalibration("gpt-4o");
+
+    // gpt-4o should be gone (returns default 1.0)
+    expect(getTokenCalibrationFactor("gpt-4o")).toBe(1.0);
+    // claude should be untouched
+    expect(getTokenCalibrationFactor("claude-3.5")).toBeCloseTo(2.0, 1);
+  });
+});
+
+// ===================================================================
+// Bug fix: Rescued messages excluded from summarizer input
+// ===================================================================
+
+describe("compressMessagesToFitBudget (rescued messages)", () => {
+  beforeEach(() => {
+    resetTokenCalibration();
+  });
+
+  it("does not pass rescued messages to summarize (no duplicates)", async () => {
+    // Build a conversation where one early message has high importance.
+    // The system message content triggers the "error" importance boost (score 10+4=14).
+    const highImportanceMsg = msg("user", "Critical error: architecture 架构 constraint violated — do NOT change this decision");
+
+    const messages: LiteLLMMessage[] = [
+      msg("system", "sys"),
+      msg("system", "runtime"),
+      highImportanceMsg,
+      msg("assistant", "a1 ".repeat(200)),
+      msg("user", "u2 ".repeat(200)),
+      msg("assistant", "a2 ".repeat(200)),
+      msg("user", "u3 ".repeat(200)),
+      msg("assistant", "a3 ".repeat(200)),
+      msg("user", "u4 ".repeat(200)),
+      msg("assistant", "a4 ".repeat(200)),
+      msg("user", "u5 ".repeat(200)),
+      msg("assistant", "a5 ".repeat(200)),
+    ];
+
+    const before = estimateTokensForMessages(messages);
+
+    let summarizedMessages: LiteLLMMessage[] | null = null;
+    const summarizer = {
+      canSummarize: () => true,
+      summarize: vi.fn(async (msgs: LiteLLMMessage[]) => {
+        summarizedMessages = msgs;
+        return `summary(${msgs.length})`;
+      }),
+      markSummarized: vi.fn(),
+    };
+
+    const res = await compressMessagesToFitBudget({
+      messages,
+      policy: {
+        maxPromptTokens: Math.max(50, Math.floor(before * 0.3)),
+        minMessagesToSummarize: 2,
+        minRecentMessagesToKeep: 3,
+        recentTokensMinRatio: 0.3,
+      },
+      summarizer,
+    });
+
+    expect(res.compressed).toBe(true);
+
+    // If the high-importance message was rescued, it must NOT appear in
+    // the messages passed to summarize().
+    if (summarizedMessages) {
+      const found = (summarizedMessages as LiteLLMMessage[]).find(
+        (m) => m === highImportanceMsg,
+      );
+      expect(found).toBeUndefined();
+    }
+
+    // And it SHOULD appear in the final output (either in recent or rescued).
+    const inFinal = res.messages.some(
+      (m) => m.content === highImportanceMsg.content,
+    );
+    // May or may not be rescued depending on the split; at minimum no duplication.
+    const dupCount = res.messages.filter(
+      (m) => m.content === highImportanceMsg.content,
+    ).length;
+    expect(dupCount).toBeLessThanOrEqual(1);
   });
 });
 

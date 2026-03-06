@@ -16,7 +16,9 @@ import type { LiteLLMMessage, LiteLLMToolDefinition } from "../lib/litellm";
 
 export const DEFAULT_CHARS_PER_TOKEN = 2.5; // kept for back-compat
 
-const CJK_RANGES = /[\u2E80-\u2FFF\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u3100-\u312F\u3200-\u32FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/;
+// BMP CJK ranges + Supplementary Ideographic Plane (Extension B–F, Compat Supplement).
+// Using the `u` flag so \u{xxxxx} escapes work for code points above U+FFFF.
+const CJK_RANGES = /[\u2E80-\u2FFF\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u3100-\u312F\u3200-\u32FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6\u{20000}-\u{2A6DF}\u{2A700}-\u{2B73F}\u{2B740}-\u{2B81F}\u{2B820}-\u{2CEAF}\u{2CEB0}-\u{2EBEF}\u{2F800}-\u{2FA1F}\u{30000}-\u{3134F}]/u;
 const CODE_PUNCT = /[{}()\[\];:=<>+\-*/%&|^~!@#$`\\]/;
 
 /**
@@ -39,8 +41,10 @@ export function estimateTokensFromText(
   let digit = 0;
   let whitespace = 0;
 
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
+  // Use for-of to iterate by Unicode code points so that supplementary
+  // plane characters (e.g. CJK Extension B–F) are handled as single units
+  // instead of being split into surrogate-pair halves.
+  for (const ch of s) {
     if (ch === " " || ch === "\n" || ch === "\r" || ch === "\t") {
       whitespace++;
     } else if (CJK_RANGES.test(ch)) {
@@ -119,6 +123,9 @@ export function estimateTokensForToolDefinitions(
 // After each LLM call we know: (estimated tokens, actual tokens).
 // We maintain an exponential moving average of the ratio actual/estimated
 // and use it to correct future estimates.
+//
+// Calibration is per-model because different tokenizers have different
+// chars-per-token characteristics (e.g. cl100k_base vs o200k_base).
 // ---------------------------------------------------------------------------
 
 export interface TokenCalibrationState {
@@ -126,37 +133,78 @@ export interface TokenCalibrationState {
   sampleCount: number;
 }
 
-const CALIBRATION_EMA_ALPHA = 0.3;  // weight of newest observation
+const CALIBRATION_EMA_ALPHA = 0.3;
 const CALIBRATION_MIN = 0.5;
 const CALIBRATION_MAX = 3.0;
 
+const calibrationByModel = new Map<string, TokenCalibrationState>();
+
+// Default / active calibration — resolves to the active model's state.
+// Kept as a module-level reference for backward compatibility with
+// estimateTokensFromText()'s default parameter.
 export const tokenCalibration: TokenCalibrationState = {
   factor: 1.0,
   sampleCount: 0,
 };
 
+function getCalibrationForModel(modelId: string): TokenCalibrationState {
+  let state = calibrationByModel.get(modelId);
+  if (!state) {
+    state = { factor: 1.0, sampleCount: 0 };
+    calibrationByModel.set(modelId, state);
+  }
+  return state;
+}
+
+/**
+ * Update calibration for a specific model.  When `modelId` is provided the
+ * per-model state is updated *and* the shared `tokenCalibration` singleton
+ * is synced to that model's state (so that subsequent `estimateTokensFromText`
+ * calls without an explicit factor automatically use the latest value).
+ */
 export function updateTokenCalibration(
   estimatedTokens: number,
   actualTokens: number,
+  modelId?: string,
 ): void {
   if (estimatedTokens <= 0 || actualTokens <= 0) return;
 
   const ratio = actualTokens / estimatedTokens;
   if (ratio < CALIBRATION_MIN || ratio > CALIBRATION_MAX) return;
 
-  if (tokenCalibration.sampleCount === 0) {
-    tokenCalibration.factor = ratio;
+  const target = modelId ? getCalibrationForModel(modelId) : tokenCalibration;
+
+  if (target.sampleCount === 0) {
+    target.factor = ratio;
   } else {
-    tokenCalibration.factor =
+    target.factor =
       CALIBRATION_EMA_ALPHA * ratio +
-      (1 - CALIBRATION_EMA_ALPHA) * tokenCalibration.factor;
+      (1 - CALIBRATION_EMA_ALPHA) * target.factor;
   }
-  tokenCalibration.sampleCount += 1;
+  target.sampleCount += 1;
+
+  // Keep the shared singleton in sync with the model that was just updated.
+  if (modelId) {
+    tokenCalibration.factor = target.factor;
+    tokenCalibration.sampleCount = target.sampleCount;
+  }
 }
 
-export function resetTokenCalibration(): void {
+export function resetTokenCalibration(modelId?: string): void {
+  if (modelId) {
+    calibrationByModel.delete(modelId);
+  } else {
+    calibrationByModel.clear();
+  }
   tokenCalibration.factor = 1.0;
   tokenCalibration.sampleCount = 0;
+}
+
+export function getTokenCalibrationFactor(modelId?: string): number {
+  if (modelId) {
+    return getCalibrationForModel(modelId).factor;
+  }
+  return tokenCalibration.factor;
 }
 
 export function initialSystemPrefixLength(messages: LiteLLMMessage[]): number {
@@ -514,8 +562,8 @@ export async function compressMessagesToFitBudget(params: {
     const retryReductionFactor = attempt > 0 ? 1 - attempt * 0.1 : 1;
     const adjustedAvailable = Math.floor(availableTokens * retryReductionFactor);
 
-    // P2-1: Sort compressible by importance before splitting — keep high-value
-    // messages at the boundary so they survive the recent-messages cut.
+    // P2-1: Score each compressible message for importance so we can rescue
+    // high-value messages that would otherwise fall into the old/discarded set.
     const compressibleWithScores = compressible.map((m, idx) => ({
       msg: m,
       originalIdx: idx,
@@ -534,19 +582,25 @@ export async function compressMessagesToFitBudget(params: {
     // P2-1: Among the old messages to be discarded/summarized, rescue any
     // high-importance messages and prepend them to the recent portion.
     const IMPORTANCE_RESCUE_THRESHOLD = 7;
-    const oldMessages = compressible.slice(0, effectiveSplitIndex);
+    const oldMessagesRaw = compressible.slice(0, effectiveSplitIndex);
     let recentMessages = compressible.slice(effectiveSplitIndex);
 
-    const rescuedMessages = compressibleWithScores
-      .filter(
-        (s) =>
-          s.originalIdx < effectiveSplitIndex &&
-          s.importance >= IMPORTANCE_RESCUE_THRESHOLD,
-      )
-      .map((s) => s.msg);
+    const rescuedSet = new Set(
+      compressibleWithScores
+        .filter(
+          (s) =>
+            s.originalIdx < effectiveSplitIndex &&
+            s.importance >= IMPORTANCE_RESCUE_THRESHOLD,
+        )
+        .map((s) => s.msg),
+    );
 
-    if (rescuedMessages.length > 0) {
-      recentMessages = [...rescuedMessages, ...recentMessages];
+    // Exclude rescued messages from oldMessages to avoid duplicate content
+    // (they appear in recentMessages, so the summarizer must not see them too).
+    const oldMessages = oldMessagesRaw.filter((m) => !rescuedSet.has(m));
+
+    if (rescuedSet.size > 0) {
+      recentMessages = [...rescuedSet, ...recentMessages];
     }
 
     const lastUserContent =
