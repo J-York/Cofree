@@ -481,7 +481,7 @@ function normalizeToolChoice(
     return protocol === "anthropic-messages" ? { type: "auto" } : "auto";
   }
   if (toolChoice === "none") {
-    return protocol === "anthropic-messages" ? { type: "auto" } : "none";
+    return protocol === "anthropic-messages" ? undefined : "none";
   }
   if (protocol === "anthropic-messages") {
     return { type: "tool", name: toolChoice.function.name };
@@ -566,10 +566,13 @@ function createAnthropicRequestBody(
       description: tool.function.description,
       input_schema: tool.function.parameters,
     }));
-    body.tool_choice = normalizeToolChoice(
+    const toolChoice = normalizeToolChoice(
       options.toolChoice,
       "anthropic-messages"
     );
+    if (toolChoice !== undefined) {
+      body.tool_choice = toolChoice;
+    }
   }
 
   void options?.responseFormat;
@@ -879,7 +882,7 @@ export async function postLiteLLMChatCompletionsStream(
     return response;
   }
 
-  const baseUrl = settings.liteLLMBaseUrl;
+  const baseUrl = getActiveVendor(settings)?.baseUrl || settings.liteLLMBaseUrl;
   const apiKey = settings.apiKey;
 
   const requestId = `stream-${Date.now()}-${Math.random()
