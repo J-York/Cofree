@@ -17,11 +17,17 @@ export function WindowControls(): ReactElement {
 
   const win = getCurrentWindow();
 
+  const runWindowAction = (label: string, action: () => Promise<void>) => {
+    void action().catch((error) => {
+      console.error(`[window-controls] Failed to ${label} window:`, error);
+    });
+  };
+
   return (
     <div className="window-controls">
       <button
         className="window-control-btn"
-        onClick={() => void win.minimize()}
+        onClick={() => runWindowAction("minimize", () => win.minimize())}
         aria-label="最小化"
         type="button"
       >
@@ -31,7 +37,7 @@ export function WindowControls(): ReactElement {
       </button>
       <button
         className="window-control-btn"
-        onClick={() => void win.toggleMaximize()}
+        onClick={() => runWindowAction("toggle maximize", () => win.toggleMaximize())}
         aria-label="最大化"
         type="button"
       >
@@ -41,7 +47,7 @@ export function WindowControls(): ReactElement {
       </button>
       <button
         className="window-control-btn window-control-close"
-        onClick={() => void win.close()}
+        onClick={() => runWindowAction("close", () => win.close())}
         aria-label="关闭"
         type="button"
       >

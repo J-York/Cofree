@@ -23,4 +23,5 @@ export interface BackgroundStreamState {
   sessionNote: string;
   liveToolCalls: LiveToolCall[];
   error: CategorizedError | null;
+  subAgentStatus: SubAgentStatusItem[];
 }

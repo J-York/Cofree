@@ -12,6 +12,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const toPosixPath = (id: string): string => id.replaceAll("\\", "/");
+
+
 export default defineConfig(() => ({
   plugins: [react()],
   clearScreen: false,
@@ -23,6 +26,30 @@ export default defineConfig(() => ({
   build: {
     target: ["es2020", "chrome105", "safari13"],
     minify: process.env.TAURI_DEBUG ? false : "esbuild",
-    sourcemap: !!process.env.TAURI_DEBUG
+    sourcemap: !!process.env.TAURI_DEBUG,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalizedId = toPosixPath(id);
+
+          if (normalizedId.includes("/src/orchestrator/")) {
+            return "orchestrator";
+          }
+
+          if (
+            normalizedId.includes("/node_modules/react-markdown/") ||
+            normalizedId.includes("/node_modules/remark-gfm/")
+          ) {
+            return "markdown";
+          }
+
+          if (normalizedId.includes("/node_modules/")) {
+            return "vendor";
+          }
+
+          return undefined;
+        },
+      },
+    },
   }
 }));

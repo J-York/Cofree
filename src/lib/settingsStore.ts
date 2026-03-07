@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { migrateLegacyConversationBindings } from "./conversationStore";
+import { migrateLegacyConversationBindings } from "./conversationMaintenance";
 import type { ModelSelection } from "./modelSelection";
 import type {
   ChatAgentDefinition,

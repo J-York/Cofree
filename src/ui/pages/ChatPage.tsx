@@ -14,11 +14,11 @@ import {
   getActiveConversationId,
   setActiveConversationId,
   migrateOldChatHistory,
-  migrateGlobalToWorkspace,
   generateConversationTitle,
   type ConversationMetadata,
   type Conversation,
 } from "../../lib/conversationStore";
+import { migrateGlobalToWorkspace } from "../../lib/conversationMaintenance";
 import { ConversationSidebar } from "../components/ConversationSidebar";
 import { IconTrash } from "../components/Icons";
 import { getActiveManagedModel, isActiveModelLocal } from "../../lib/settingsStore";
@@ -68,7 +68,15 @@ import {
   buildToolCallsFromPlan,
   toConversationHistory,
 } from "./chat/helpers";
-import { resetChatSessionState } from "./chat/sessionState";
+import {
+  createBackgroundStreamState,
+  createClearedConversation,
+  createConversationViewState,
+  createEmptyChatViewState,
+  resetChatSessionState,
+  resolvePreferredConversationId,
+  type ChatViewState,
+} from "./chat/sessionState";
 import {
   MessageContent,
   LiveToolStatus,
@@ -188,6 +196,52 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     activeConversationIdRef.current = activeConversationId;
   }, [activeConversationId]);
 
+  const applyChatViewState = (viewState: ChatViewState): void => {
+    setMessages(viewState.messages);
+    messagesRef.current = viewState.messages;
+    setLiveContextTokens(viewState.liveContextTokens);
+    setIsStreaming(viewState.isStreaming);
+    setSessionNote(viewState.sessionNote);
+    setLiveToolCalls(viewState.liveToolCalls);
+    setCategorizedError(viewState.categorizedError);
+    setSubAgentStatus(viewState.subAgentStatus);
+  };
+
+  const activateConversation = (
+    conversation: Conversation | null,
+    options: {
+      persistActiveId?: boolean;
+      backgroundStream?: BackgroundStreamState;
+      idleSessionNote?: string;
+    } = {},
+  ): void => {
+    activeConversationIdRef.current = conversation?.id ?? null;
+    setCurrentConversation(conversation);
+    setActiveConversationIdState(conversation?.id ?? null);
+    if (conversation && options.persistActiveId) {
+      setActiveConversationId(wsPath, conversation.id);
+    }
+    applyChatViewState(
+      conversation
+        ? createConversationViewState({
+            conversation,
+            backgroundStream: options.backgroundStream,
+            idleSessionNote: options.idleSessionNote,
+          })
+        : createEmptyChatViewState(options.idleSessionNote),
+    );
+  };
+
+  const takeBackgroundStream = (
+    conversationId: string,
+  ): BackgroundStreamState | undefined => {
+    const backgroundStream = backgroundStreamsRef.current.get(conversationId);
+    if (backgroundStream) {
+      backgroundStreamsRef.current.delete(conversationId);
+    }
+    return backgroundStream;
+  };
+
   // Recover from invalid/missing active conversation on startup.
   // Without this, the first submit may clear input but not send.
   useEffect(() => {
@@ -195,29 +249,23 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       return;
     }
 
-    const preferredId =
-      activeConversationId &&
-      conversations.some((conversation) => conversation.id === activeConversationId)
-        ? activeConversationId
-        : conversations[0].id;
+    const preferredId = resolvePreferredConversationId(
+      conversations,
+      activeConversationId,
+    );
+    if (!preferredId) {
+      return;
+    }
     const recoveredConversation = loadConversation(wsPath, preferredId);
     if (!recoveredConversation) {
       return;
     }
 
     skipNextTimestampRef.current = true;
-    activeConversationIdRef.current = recoveredConversation.id;
-    setCurrentConversation(recoveredConversation);
-    setActiveConversationIdState(recoveredConversation.id);
-    setActiveConversationId(wsPath, recoveredConversation.id);
-    setMessages(recoveredConversation.messages);
-    messagesRef.current = recoveredConversation.messages;
-    setLiveContextTokens(recoveredConversation.lastTokenCount ?? null);
-    setSessionNote(recoveredConversation.messages.length ? "已恢复历史会话" : "");
-    setCategorizedError(null);
-    setLiveToolCalls([]);
-    setSubAgentStatus([]);
-    setIsStreaming(false);
+    activateConversation(recoveredConversation, {
+      persistActiveId: true,
+      idleSessionNote: recoveredConversation.messages.length ? "已恢复历史会话" : "",
+    });
   }, [wsPath, conversations, activeConversationId, currentConversation]);
 
   const handleCancel = (): void => {
@@ -278,47 +326,29 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
     skipNextTimestampRef.current = true;
     const activeId = getActiveConversationId(wsPath);
-    const conv = activeId ? loadConversation(wsPath, activeId) : null;
+    const activeConversation = activeId ? loadConversation(wsPath, activeId) : null;
 
-    if (conv) {
-      setCurrentConversation(conv);
-      setActiveConversationIdState(conv.id);
-      setMessages(conv.messages);
-      messagesRef.current = conv.messages;
-      setLiveContextTokens(conv.lastTokenCount ?? null);
-      setSessionNote(conv.messages.length ? "已切换工作区" : "");
-    } else if (list.length > 0) {
-      const first = loadConversation(wsPath, list[0].id);
-      if (first) {
-        setCurrentConversation(first);
-        setActiveConversationIdState(first.id);
-        setActiveConversationId(wsPath, first.id);
-        setMessages(first.messages);
-        messagesRef.current = first.messages;
-        setLiveContextTokens(first.lastTokenCount ?? null);
-        setSessionNote("已切换工作区");
-      }
-    } else if (wsPath) {
-      const newConversation = createConversation(wsPath, []);
-      setConversations(loadConversationList(wsPath));
-      setCurrentConversation(newConversation);
-      setActiveConversationIdState(newConversation.id);
-      setActiveConversationId(wsPath, newConversation.id);
-      setMessages([]);
-      messagesRef.current = [];
-      setLiveContextTokens(null);
-      setSessionNote("");
+    if (activeConversation) {
+      activateConversation(activeConversation, {
+        idleSessionNote: activeConversation.messages.length ? "已切换工作区" : "",
+      });
     } else {
-      setCurrentConversation(null);
-      setActiveConversationIdState(null);
-      setMessages([]);
-      messagesRef.current = [];
-      setLiveContextTokens(null);
-      setSessionNote("");
-    }
+      const firstConversation =
+        list.length > 0 ? loadConversation(wsPath, list[0].id) : null;
 
-    setCategorizedError(null);
-    setIsStreaming(false);
+      if (firstConversation) {
+        activateConversation(firstConversation, {
+          persistActiveId: true,
+          idleSessionNote: "已切换工作区",
+        });
+      } else if (wsPath) {
+        const newConversation = createConversation(wsPath, []);
+        setConversations(loadConversationList(wsPath));
+        activateConversation(newConversation);
+      } else {
+        activateConversation(null);
+      }
+    }
 
     // Reset session state
     resetChatSessionState();
@@ -558,6 +588,16 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         if (bg) bg.isStreaming = streaming;
       }
     };
+    const guardedSetSubAgentStatus = (
+      updater: (prev: SubAgentStatusItem[]) => SubAgentStatusItem[],
+    ) => {
+      if (isActive()) {
+        setSubAgentStatus(updater);
+      } else {
+        const bg = backgroundStreamsRef.current.get(streamConvId);
+        if (bg) bg.subAgentStatus = updater(bg.subAgentStatus);
+      }
+    };
 
     if (visibleUserMessage) {
       const userMsg: ChatMessageRecord = {
@@ -585,6 +625,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     setSessionNote("正在回复…");
     setLiveToolCalls([]);
     setLiveContextTokens(null);
+    guardedSetSubAgentStatus(() => []);
     session.setWorkflowPhase("planning");
 
     try {
@@ -648,17 +689,17 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           guardedSetTokens(estimatedTokens);
         },
         onSubAgentProgress: (role: string, event: SubAgentProgressEvent) => {
-          if (isActive()) {
-            setSubAgentStatus((prev) => {
-              const existing = prev.find((s) => s.role === role);
-              if (existing) {
-                return prev.map((s) =>
-                  s.role === role ? { ...s, lastEvent: event, updatedAt: Date.now() } : s
-                );
-              }
-              return [...prev, { role, lastEvent: event, updatedAt: Date.now() }];
-            });
-          }
+          guardedSetSubAgentStatus((prev) => {
+            const existing = prev.find((status) => status.role === role);
+            if (existing) {
+              return prev.map((status) =>
+                status.role === role
+                  ? { ...status, lastEvent: event, updatedAt: Date.now() }
+                  : status
+              );
+            }
+            return [...prev, { role, lastEvent: event, updatedAt: Date.now() }];
+          });
         },
       });
 
@@ -928,54 +969,29 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
     resetChatSessionState();
 
-    // Clear current conversation messages
-    const clearedConversation: Conversation = {
-      ...currentConversation,
-      messages: [],
-      lastTokenCount: null,
-      updatedAt: new Date().toISOString(),
-    };
+    const clearedConversation = createClearedConversation(currentConversation);
     saveConversation(wsPath, clearedConversation);
     setCurrentConversation(clearedConversation);
-    setMessages([]);
-    setLiveContextTokens(null);
-    setCategorizedError(null);
-    setSessionNote("");
+    applyChatViewState(createEmptyChatViewState());
     setConversations(loadConversationList(wsPath));
   };
 
   const snapshotToBackground = () => {
-    if (isStreaming && activeConversationId) {
-      backgroundStreamsRef.current.set(activeConversationId, {
-        messages: [...messagesRef.current],
-        isStreaming: true,
-        tokenCount: liveContextTokens,
-        sessionNote,
-        liveToolCalls: [...liveToolCalls],
-        error: categorizedError,
-      });
+    if (!activeConversationId) {
+      return;
     }
-  };
 
-  const restoreConversationView = (conv: Conversation) => {
-    const bg = backgroundStreamsRef.current.get(conv.id);
-    if (bg) {
-      setMessages(bg.messages);
-      messagesRef.current = bg.messages;
-      setLiveContextTokens(bg.tokenCount);
-      setIsStreaming(bg.isStreaming);
-      setSessionNote(bg.sessionNote);
-      setLiveToolCalls(bg.liveToolCalls);
-      setCategorizedError(bg.error);
-      backgroundStreamsRef.current.delete(conv.id);
-    } else {
-      setMessages(conv.messages);
-      messagesRef.current = conv.messages;
-      setLiveContextTokens(conv.lastTokenCount ?? null);
-      setIsStreaming(false);
-      setCategorizedError(null);
-      setSessionNote(conv.messages.length ? "已切换对话" : "");
-      setLiveToolCalls([]);
+    const backgroundStream = createBackgroundStreamState({
+      isStreaming,
+      messages: messagesRef.current,
+      liveContextTokens,
+      sessionNote,
+      liveToolCalls,
+      categorizedError,
+      subAgentStatus,
+    });
+    if (backgroundStream) {
+      backgroundStreamsRef.current.set(activeConversationId, backgroundStream);
     }
   };
 
@@ -991,16 +1007,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       createConversationAgentBinding(settings, activeAgent),
     );
     skipNextTimestampRef.current = true;
-    activeConversationIdRef.current = newConv.id;
-    setCurrentConversation(newConv);
-    setActiveConversationIdState(newConv.id);
-    setMessages([]);
-    messagesRef.current = [];
-    setLiveContextTokens(null);
-    setIsStreaming(false);
-    setCategorizedError(null);
-    setSessionNote("");
-    setLiveToolCalls([]);
+    activateConversation(newConv);
     setConversations(loadConversationList(wsPath));
 
     resetChatSessionState();
@@ -1016,12 +1023,11 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     if (!conv) return;
 
     skipNextTimestampRef.current = true;
-    activeConversationIdRef.current = conversationId;
-    setCurrentConversation(conv);
-    setActiveConversationIdState(conv.id);
-    setActiveConversationId(wsPath, conv.id);
-
-    restoreConversationView(conv);
+    activateConversation(conv, {
+      persistActiveId: true,
+      backgroundStream: takeBackgroundStream(conv.id),
+      idleSessionNote: conv.messages.length ? "已切换对话" : "",
+    });
 
     resetChatSessionState();
   };
@@ -1046,12 +1052,11 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       if (updatedList.length > 0) {
         const nextConversation = loadConversation(wsPath, updatedList[0].id);
         if (nextConversation) {
-          activeConversationIdRef.current = nextConversation.id;
-          setCurrentConversation(nextConversation);
-          setActiveConversationIdState(nextConversation.id);
-          setActiveConversationId(wsPath, nextConversation.id);
-
-          restoreConversationView(nextConversation);
+          activateConversation(nextConversation, {
+            persistActiveId: true,
+            backgroundStream: takeBackgroundStream(nextConversation.id),
+            idleSessionNote: nextConversation.messages.length ? "已切换对话" : "",
+          });
 
           resetChatSessionState();
         }

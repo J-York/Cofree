@@ -1,5 +1,11 @@
 import type { ReactElement } from "react";
-import type { AppSettings, ManagedModel, ToolPermissionLevel, VendorProtocol } from "../../lib/settingsStore";
+import type {
+  AppSettings,
+  ManagedModel,
+  ToolPermissionLevel,
+  VendorConfig,
+  VendorProtocol,
+} from "../../lib/settingsStore";
 import type { ChatAgentDefinition, SubAgentRole } from "../../agents/types";
 
 export interface WorkspaceInfo {
@@ -115,49 +121,46 @@ export interface AgentsTabProps {
 
 export interface ModelTabProps {
   draft: AppSettings;
-  selectedVendorId: string | null;
-  setSelectedVendorId: (value: string | null) => void;
-  vendorApiKeys: Record<string, string>;
-  setVendorApiKeys: (updater: Record<string, string> | ((current: Record<string, string>) => Record<string, string>)) => void;
-  showNewVendor: boolean;
-  setShowNewVendor: (value: boolean) => void;
-  newVendorName: string;
-  setNewVendorName: (value: string) => void;
-  newVendorProtocol: VendorProtocol;
-  setNewVendorProtocol: (value: VendorProtocol) => void;
-  newVendorBaseUrl: string;
-  setNewVendorBaseUrl: (value: string) => void;
-  manualModelName: string;
-  setManualModelName: (value: string) => void;
-  editingModelId: string | null;
-  setEditingModelId: (value: string | null) => void;
-  editingModelName: string;
-  setEditingModelName: (value: string) => void;
-  confirmDeleteVendorId: string | null;
-  setConfirmDeleteVendorId: (value: string | null) => void;
-  confirmDeleteModelId: string | null;
-  setConfirmDeleteModelId: (value: string | null) => void;
-  vendorMessage: string;
-  setVendorMessage: (value: string) => void;
-  fetchingVendorId: string | null;
-  fetchedModelIds: string[];
-  showModelPicker: boolean;
-  modelPickerSearch: string;
-  setModelPickerSearch: (value: string) => void;
-  modelPickerSelected: Set<string>;
-  setModelPickerSelected: (value: Set<string> | ((current: Set<string>) => Set<string>)) => void;
   runtimeEndpoint: string;
+  activeVendor: VendorConfig | null;
+  activeModelId: string | null;
+  activeVendorModels: ManagedModel[];
+  selectedVendorId: string | null;
+  selectedVendor: VendorConfig | null;
+  selectedVendorApiKey: string;
+  selectedVendorModels: ManagedModel[];
+  showNewVendor: boolean;
+  newVendorName: string;
+  newVendorProtocol: VendorProtocol;
+  newVendorBaseUrl: string;
+  manualModelName: string;
+  editingModelId: string | null;
+  editingModelName: string;
+  confirmDeleteVendorId: string | null;
+  confirmDeleteModelId: string | null;
+  vendorMessage: string;
+  fetchingVendorId: string | null;
+  onSelectVendor: (vendorId: string) => void;
+  onSelectedVendorApiKeyChange: (value: string) => void;
+  onShowNewVendorChange: (value: boolean) => void;
+  onNewVendorNameChange: (value: string) => void;
+  onNewVendorProtocolChange: (value: VendorProtocol) => void;
+  onNewVendorBaseUrlChange: (value: string) => void;
+  onManualModelNameChange: (value: string) => void;
+  onEditingModelIdChange: (value: string | null) => void;
+  onEditingModelNameChange: (value: string) => void;
+  onConfirmDeleteVendorChange: (value: string | null) => void;
+  onConfirmDeleteModelChange: (value: string | null) => void;
+  onUpdateSelectedVendor: (updates: Partial<Omit<VendorConfig, "id" | "createdAt">>) => void;
+  onUpdateProxy: (updates: Partial<AppSettings["proxy"]>) => void;
   onCreateVendor: () => void;
   onDeleteVendor: (vendorId: string) => Promise<void>;
   onRenameModel: (modelId: string) => void;
   onDeleteModel: (modelId: string) => void;
   onAssignFirstModelForVendor: (vendorId: string) => void;
   onFetchVendorModels: () => Promise<void>;
-  onConfirmModelPick: () => void;
-  onCloseModelPicker: () => void;
   onAddManualModel: () => void;
   onSetActiveModel: (modelId: string) => void;
-  setDraft: (updater: AppSettings | ((current: AppSettings) => AppSettings)) => void;
 }
 
 export interface ToolsTabProps {

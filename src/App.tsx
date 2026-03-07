@@ -1,4 +1,4 @@
-import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, type ReactElement, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type AppSettings,
   getActiveVendor,
@@ -12,8 +12,6 @@ import {
 } from "./lib/settingsStore";
 import { getAllChatAgents, getChatAgentFromSettings } from "./agents/builtinChatAgents";
 import { ChatPage } from "./ui/pages/ChatPage";
-import { KitchenPage } from "./ui/pages/KitchenPage";
-import { SettingsPage } from "./ui/pages/SettingsPage";
 import { TitleBar } from "./ui/components/TitleBar";
 import { UpdateBanner } from "./ui/components/UpdateBanner";
 import { useUpdater } from "./hooks/useUpdater";
@@ -27,6 +25,22 @@ import { invoke } from "@tauri-apps/api/core";
 
 interface WorkspaceInfo {
   git_branch?: string;
+}
+
+const KitchenPage = lazy(() =>
+  import("./ui/pages/KitchenPage").then((module) => ({ default: module.KitchenPage }))
+);
+
+const SettingsPage = lazy(() =>
+  import("./ui/pages/SettingsPage").then((module) => ({ default: module.SettingsPage }))
+);
+
+function DeferredPaneFallback({ label }: { label: string }): ReactElement {
+  return (
+    <div className="page-content" style={{ padding: "20px 0" }}>
+      <p className="status-note">{label}加载中…</p>
+    </div>
+  );
 }
 
 export default function App(): ReactElement {
@@ -210,18 +224,22 @@ export default function App(): ReactElement {
                 &times;
               </button>
             </div>
-            <KitchenPage />
+            <Suspense fallback={<DeferredPaneFallback label="控制台" />}>
+              <KitchenPage />
+            </Suspense>
           </div>
         )}
 
         {settingsOpen && (
           <div className="settings-modal-backdrop" onClick={() => setSettingsOpen(false)}>
             <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
-              <SettingsPage
-                settings={settings}
-                onSave={handleSaveSettings}
-                onClose={() => setSettingsOpen(false)}
-              />
+              <Suspense fallback={<DeferredPaneFallback label="设置" />}>
+                <SettingsPage
+                  settings={settings}
+                  onSave={handleSaveSettings}
+                  onClose={() => setSettingsOpen(false)}
+                />
+              </Suspense>
             </div>
           </div>
         )}

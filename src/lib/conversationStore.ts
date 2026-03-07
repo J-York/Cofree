@@ -7,11 +7,9 @@
 
 import type { ChatMessageRecord } from "./chatHistoryStore";
 import type { ConversationAgentBinding } from "../agents/types";
-import type { ModelSelection } from "./modelSelection";
 
 export const CONVERSATIONS_STORAGE_KEY = "cofree.conversations.v1";
 export const ACTIVE_CONVERSATION_KEY = "cofree.activeConversation.v1";
-export const CONVERSATION_STORE_EVENT = "cofree:conversation-store-changed";
 
 export interface Conversation {
   id: string;
@@ -33,10 +31,6 @@ export interface ConversationMetadata {
   agentName?: string;
 }
 
-export interface ConversationStoreEventDetail {
-  type: "workspace-cleared" | "all-cleared";
-  workspacePath?: string;
-}
 
 interface WorkspaceStorageKeys {
   workspacePrefix: string;
@@ -244,65 +238,6 @@ function removeStoredActiveConversationId(workspacePath: string): void {
   window.localStorage.removeItem(getWorkspaceStorageKeys(workspacePath).activeKey);
 }
 
-function collectWorkspaceConversationKeys(workspacePath: string): string[] {
-  if (!isBrowserStorageAvailable()) {
-    return [];
-  }
-
-  const { workspacePrefix, activeKey } = getWorkspaceStorageKeys(workspacePath);
-  const keysToRemove: string[] = [];
-
-  for (let index = 0; index < window.localStorage.length; index += 1) {
-    const key = window.localStorage.key(index);
-    if (!key) {
-      continue;
-    }
-
-    if (key === workspacePrefix || key === activeKey || key.startsWith(`${workspacePrefix}.`)) {
-      keysToRemove.push(key);
-    }
-  }
-
-  return keysToRemove;
-}
-
-function collectAllConversationKeys(): string[] {
-  if (!isBrowserStorageAvailable()) {
-    return [];
-  }
-
-  const keysToRemove: string[] = [];
-
-  for (let index = 0; index < window.localStorage.length; index += 1) {
-    const key = window.localStorage.key(index);
-    if (
-      key &&
-      (key.startsWith(CONVERSATIONS_STORAGE_KEY) || key.startsWith(ACTIVE_CONVERSATION_KEY))
-    ) {
-      keysToRemove.push(key);
-    }
-  }
-
-  return keysToRemove;
-}
-
-function removeStorageKeys(keys: string[]): void {
-  if (!isBrowserStorageAvailable()) {
-    return;
-  }
-
-  keys.forEach((key) => {
-    window.localStorage.removeItem(key);
-  });
-}
-
-function emitConversationStoreEvent(detail: ConversationStoreEventDetail): void {
-  if (!isBrowserStorageAvailable()) {
-    return;
-  }
-
-  window.dispatchEvent(new CustomEvent<ConversationStoreEventDetail>(CONVERSATION_STORE_EVENT, { detail }));
-}
 
 function generateConversationId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -490,121 +425,11 @@ export function setActiveConversationId(
   }
 }
 
-/**
- * Clear all conversations for the current workspace only.
- */
-export function clearWorkspaceConversations(workspacePath: string): void {
-  if (!isBrowserStorageAvailable()) {
-    return;
-  }
-
-  try {
-    const keysToRemove = collectWorkspaceConversationKeys(workspacePath);
-    removeStorageKeys(keysToRemove);
-    emitConversationStoreEvent({ type: "workspace-cleared", workspacePath });
-
-    console.log(
-      `[clearWorkspaceConversations] Cleared ${keysToRemove.length} conversation keys for workspace:`,
-      workspacePath,
-      keysToRemove,
-    );
-  } catch (error) {
-    console.error("Failed to clear workspace conversations:", error);
-  }
-}
-
-/**
- * Clear all conversations for all workspaces.
- */
-export function clearAllConversations(): void {
-  if (!isBrowserStorageAvailable()) {
-    return;
-  }
-
-  try {
-    const keysToRemove = collectAllConversationKeys();
-    removeStorageKeys(keysToRemove);
-    emitConversationStoreEvent({ type: "all-cleared" });
-
-    console.log(
-      `[clearAllConversations] Cleared ${keysToRemove.length} conversation keys:`,
-      keysToRemove,
-    );
-  } catch (error) {
-    console.error("Failed to clear conversations:", error);
-  }
-}
 
 /* -------------------------------------------------------------------------- */
 /* Migration helpers                                                           */
 /* -------------------------------------------------------------------------- */
 
-export function migrateLegacyConversationBindings(
-  legacyProfileSelections: Record<
-    string,
-    ModelSelection & { vendorName?: string; modelName?: string }
-  >,
-): void {
-  if (!isBrowserStorageAvailable() || Object.keys(legacyProfileSelections).length === 0) {
-    return;
-  }
-
-  for (let index = 0; index < window.localStorage.length; index += 1) {
-    const key = window.localStorage.key(index);
-    if (!key || !key.startsWith(`${CONVERSATIONS_STORAGE_KEY}.ws.`)) {
-      continue;
-    }
-
-    const parsed = parseJson<unknown>(window.localStorage.getItem(key));
-    if (!isRecord(parsed)) {
-      continue;
-    }
-
-    const binding = parsed.agentBinding;
-    if (!isRecord(binding)) {
-      continue;
-    }
-
-    if (typeof binding.vendorId === "string" && typeof binding.modelId === "string") {
-      continue;
-    }
-
-    const legacyProfileId = typeof binding.profileId === "string" ? binding.profileId : null;
-    if (!legacyProfileId) {
-      continue;
-    }
-
-    const mapped = legacyProfileSelections[legacyProfileId];
-    if (!mapped) {
-      continue;
-    }
-
-    const migrated = {
-      ...parsed,
-      agentBinding: {
-        ...binding,
-        vendorId: mapped.vendorId,
-        modelId: mapped.modelId,
-        vendorNameSnapshot:
-          typeof binding.vendorNameSnapshot === "string"
-            ? binding.vendorNameSnapshot
-            : mapped.vendorName,
-        modelNameSnapshot:
-          typeof binding.modelNameSnapshot === "string"
-            ? binding.modelNameSnapshot
-            : mapped.modelName,
-      },
-    };
-
-    delete (migrated.agentBinding as Record<string, unknown>).profileId;
-
-    try {
-      window.localStorage.setItem(key, JSON.stringify(migrated));
-    } catch {
-      // ignore malformed historical payloads or storage failures during migration
-    }
-  }
-}
 
 /**
  * Migrate old single-conversation data to new multi-conversation format.
@@ -626,69 +451,3 @@ export function migrateOldChatHistory(
   console.log("Migrated old chat history to conversation:", conversation.id);
 }
 
-/**
- * Migrate global (un-namespaced) conversations to workspace-scoped keys.
- * Runs only when the global key has data AND the workspace key is empty.
- * After a successful copy, the global keys are removed.
- */
-export function migrateGlobalToWorkspace(workspacePath: string): void {
-  if (!isBrowserStorageAvailable()) {
-    return;
-  }
-
-  try {
-    const globalListRaw = window.localStorage.getItem(CONVERSATIONS_STORAGE_KEY);
-    if (!globalListRaw) {
-      return;
-    }
-
-    const workspaceKeys = getWorkspaceStorageKeys(workspacePath);
-    if (window.localStorage.getItem(workspaceKeys.listKey)) {
-      return;
-    }
-
-    const globalList = parseJson<ConversationMetadata[]>(globalListRaw);
-    if (!Array.isArray(globalList) || globalList.length === 0) {
-      return;
-    }
-
-    window.localStorage.setItem(workspaceKeys.listKey, globalListRaw);
-
-    for (const meta of globalList) {
-      if (!meta?.id) {
-        continue;
-      }
-
-      const globalConversationData = window.localStorage.getItem(
-        `${CONVERSATIONS_STORAGE_KEY}.${meta.id}`,
-      );
-      if (globalConversationData) {
-        window.localStorage.setItem(
-          getConversationStorageKey(workspacePath, meta.id),
-          globalConversationData,
-        );
-      }
-    }
-
-    const globalActiveConversationId = window.localStorage.getItem(ACTIVE_CONVERSATION_KEY);
-    if (globalActiveConversationId) {
-      window.localStorage.setItem(workspaceKeys.activeKey, globalActiveConversationId);
-    }
-
-    for (const meta of globalList) {
-      if (!meta?.id) {
-        continue;
-      }
-      window.localStorage.removeItem(`${CONVERSATIONS_STORAGE_KEY}.${meta.id}`);
-    }
-
-    window.localStorage.removeItem(CONVERSATIONS_STORAGE_KEY);
-    window.localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
-
-    console.log(
-      `Migrated ${globalList.length} conversations to workspace: ${workspacePath}`,
-    );
-  } catch (error) {
-    console.error("Failed to migrate global conversations to workspace:", error);
-  }
-}
