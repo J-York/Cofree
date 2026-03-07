@@ -33,10 +33,16 @@ pub fn snapshots_root_dir() -> Result<PathBuf, AppError> {
 pub fn canonicalize_workspace_root(workspace_path: &str) -> Result<PathBuf, AppError> {
     let workspace = PathBuf::from(workspace_path);
     if !workspace.exists() {
-        return Err(AppError::workspace(format!("Workspace path does not exist: {}", workspace_path)));
+        return Err(AppError::workspace(format!(
+            "Workspace path does not exist: {}",
+            workspace_path
+        )));
     }
     if !workspace.is_dir() {
-        return Err(AppError::workspace(format!("Workspace path is not a directory: {}", workspace_path)));
+        return Err(AppError::workspace(format!(
+            "Workspace path is not a directory: {}",
+            workspace_path
+        )));
     }
     workspace
         .canonicalize()
@@ -52,7 +58,10 @@ pub fn now_timestamp() -> String {
 }
 
 /// 校验相对路径在工作区内，返回规范化的绝对路径。
-pub fn validate_workspace_path(workspace_path: &str, relative_path: &str) -> Result<PathBuf, AppError> {
+pub fn validate_workspace_path(
+    workspace_path: &str,
+    relative_path: &str,
+) -> Result<PathBuf, AppError> {
     if Path::new(relative_path).is_absolute() {
         return Err(AppError::validation("Absolute paths not allowed"));
     }

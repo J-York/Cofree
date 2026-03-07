@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
 
 export type UpdateStatus =
   | "idle"
@@ -18,6 +16,39 @@ export interface UpdateState {
   error: string;
 }
 
+interface UpdateDownloadStartedEvent {
+  event: "Started";
+  data: { contentLength?: number };
+}
+
+interface UpdateDownloadProgressEvent {
+  event: "Progress";
+  data: { chunkLength: number };
+}
+
+interface UpdateDownloadFinishedEvent {
+  event: "Finished";
+}
+
+type UpdateDownloadEvent =
+  | UpdateDownloadStartedEvent
+  | UpdateDownloadProgressEvent
+  | UpdateDownloadFinishedEvent;
+
+interface UpdateHandle {
+  version: string;
+  body?: string | null;
+  downloadAndInstall: (onEvent: (event: UpdateDownloadEvent) => void) => Promise<void>;
+}
+
+interface UpdaterModule {
+  check: () => Promise<UpdateHandle | null>;
+}
+
+interface ProcessModule {
+  relaunch: () => Promise<void>;
+}
+
 const INITIAL: UpdateState = {
   status: "idle",
   version: "",
@@ -28,6 +59,8 @@ const INITIAL: UpdateState = {
 
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const IS_DEV = import.meta.env.DEV;
+const UPDATER_PLUGIN_SPECIFIER = "@tauri-apps/plugin-updater";
+const PROCESS_PLUGIN_SPECIFIER = "@tauri-apps/plugin-process";
 
 function normalizeUpdateError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -47,16 +80,36 @@ function normalizeUpdateError(error: unknown): string {
   return message;
 }
 
+async function importOptionalModule<T>(specifier: string): Promise<T | null> {
+  try {
+    return (await import(/* @vite-ignore */ specifier)) as T;
+  } catch {
+    return null;
+  }
+}
+
+function loadUpdaterModule(): Promise<UpdaterModule | null> {
+  return importOptionalModule<UpdaterModule>(UPDATER_PLUGIN_SPECIFIER);
+}
+
+function loadProcessModule(): Promise<ProcessModule | null> {
+  return importOptionalModule<ProcessModule>(PROCESS_PLUGIN_SPECIFIER);
+}
+
 export function useUpdater() {
   const [state, setState] = useState<UpdateState>(INITIAL);
-  const updateRef = useRef<Update | null>(null);
+  const updateRef = useRef<UpdateHandle | null>(null);
   const dismissedVersion = useRef<string | null>(null);
   const checkingRef = useRef(false);
 
   const checkForUpdate = useCallback(async () => {
     if (IS_DEV) return;
     if (checkingRef.current) return;
-    if (dismissedVersion.current && state.status === "error" && state.version === dismissedVersion.current) {
+    if (
+      dismissedVersion.current &&
+      state.status === "error" &&
+      state.version === dismissedVersion.current
+    ) {
       return;
     }
 
@@ -64,7 +117,14 @@ export function useUpdater() {
     setState((s) => ({ ...s, status: "checking", error: "" }));
 
     try {
-      const update = await check();
+      const updaterModule = await loadUpdaterModule();
+      if (!updaterModule) {
+        updateRef.current = null;
+        setState(INITIAL);
+        return;
+      }
+
+      const update = await updaterModule.check();
       if (update) {
         if (update.version === dismissedVersion.current) {
           setState(INITIAL);
@@ -105,7 +165,7 @@ export function useUpdater() {
       let totalLength = 0;
       let downloaded = 0;
 
-      await update.downloadAndInstall((event) => {
+      await update.downloadAndInstall((event: UpdateDownloadEvent) => {
         switch (event.event) {
           case "Started":
             totalLength = event.data.contentLength ?? 0;
@@ -126,7 +186,10 @@ export function useUpdater() {
         }
       });
 
-      await relaunch();
+      const processModule = await loadProcessModule();
+      if (processModule) {
+        await processModule.relaunch();
+      }
     } catch (e) {
       dismissedVersion.current = update.version;
       setState((s) => ({

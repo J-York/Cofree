@@ -436,6 +436,53 @@ export function syncRuntimeSettings(settings: AppSettings, apiKey = settings.api
   return withRuntimeSelection(settings, apiKey);
 }
 
+export function updateWorkspacePath(settings: AppSettings, workspacePath: string): AppSettings {
+  return syncRuntimeSettings({ ...settings, workspacePath });
+}
+
+export function updateToolPermission(
+  settings: AppSettings,
+  toolKey: keyof AppSettings["toolPermissions"],
+  value: ToolPermissionLevel,
+): AppSettings {
+  return syncRuntimeSettings({
+    ...settings,
+    toolPermissions: {
+      ...settings.toolPermissions,
+      [toolKey]: value,
+    },
+  });
+}
+
+export function updateProxySettings(
+  settings: AppSettings,
+  updates: Partial<ProxySettings>,
+): AppSettings {
+  return syncRuntimeSettings({
+    ...settings,
+    proxy: {
+      ...settings.proxy,
+      ...updates,
+    },
+  });
+}
+
+export function updateContextSettings(
+  settings: AppSettings,
+  updates: Partial<
+    Pick<AppSettings, "maxSnippetLines" | "maxContextTokens" | "sendRelativePathOnly">
+  >,
+): AppSettings {
+  return syncRuntimeSettings({ ...settings, ...updates });
+}
+
+export function updateAllowCloudModels(
+  settings: AppSettings,
+  allowCloudModels: boolean,
+): AppSettings {
+  return syncRuntimeSettings({ ...settings, allowCloudModels });
+}
+
 function resolveLegacyProfileSelection(
   profile: LegacyModelProfile,
   settings: Pick<AppSettings, "vendors" | "managedModels">,

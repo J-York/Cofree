@@ -9,12 +9,7 @@ pub fn save_workflow_checkpoint(
     workflow_state: String,
     payload_json: String,
 ) -> AppResult<CheckpointRecord> {
-    infrastructure::save_checkpoint(
-        &session_id,
-        &message_id,
-        &workflow_state,
-        &payload_json,
-    )
+    infrastructure::save_checkpoint(&session_id, &message_id, &workflow_state, &payload_json)
 }
 
 pub fn load_latest_workflow_checkpoint(session_id: String) -> AppResult<RecoveryResult> {

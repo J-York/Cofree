@@ -153,8 +153,7 @@ fn load_store() -> Result<KeyStore, String> {
     if !path.exists() {
         return Ok(KeyStore::default());
     }
-    let content =
-        fs::read_to_string(&path).map_err(|e| format!("读取密钥库失败: {}", e))?;
+    let content = fs::read_to_string(&path).map_err(|e| format!("读取密钥库失败: {}", e))?;
     serde_json::from_str(&content).map_err(|e| format!("解析密钥库失败: {}", e))
 }
 

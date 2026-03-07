@@ -8,8 +8,6 @@ import {
 } from "../../lib/litellm";
 import {
   type AppSettings,
-  type ManagedModel,
-  type ToolPermissionLevel,
   type VendorProtocol,
   addModelsToVendor,
   cloneAgentAsCustom,
@@ -29,46 +27,39 @@ import {
   setActiveManagedModelSelection,
   setActiveVendorSelection,
   syncRuntimeSettings,
+  updateAllowCloudModels,
   updateBuiltinAgentOverride,
+  updateContextSettings,
   updateCustomAgent,
   updateManagedModel,
+  updateProxySettings,
+  updateToolPermission,
   updateVendor,
+  updateWorkspacePath,
 } from "../../lib/settingsStore";
 import {
   getAllChatAgents,
   getBuiltinChatAgent,
   hasBuiltinOverride,
 } from "../../agents/builtinChatAgents";
-import {
-  AGENT_TOOL_CATALOG,
-  type ChatAgentDefinition,
-  type SubAgentRole,
-} from "../../agents/types";
+import { AGENT_TOOL_CATALOG, type SubAgentRole } from "../../agents/types";
 import { BUILTIN_TEAMS } from "../../agents/agentTeam";
-import { clearAllConversations } from "../../lib/conversationStore";
-
-interface WorkspaceInfo {
-  git_branch?: string;
-  repo_name?: string;
-}
-
-interface SettingsPageProps {
-  settings: AppSettings;
-  onSave: (
-    settings: AppSettings,
-    vendorApiKeys?: Record<string, string>
-  ) => Promise<void>;
-  onClose?: () => void;
-}
-
-type SettingsTab = "agents" | "model" | "tools" | "advanced";
-
-const TABS: { id: SettingsTab; label: string }[] = [
-  { id: "agents", label: "Agent 管理" },
-  { id: "model", label: "模型配置" },
-  { id: "tools", label: "工具权限" },
-  { id: "advanced", label: "高级" },
-];
+import {
+  clearAllConversations,
+  clearWorkspaceConversations,
+} from "../../lib/conversationStore";
+import { SettingsNav as SettingsNavRail } from "./SettingsNav";
+import { SettingsFooter as SettingsPageFooter } from "./SettingsFooter";
+import { ToolPermissionRow as SettingsToolPermissionRow } from "./ToolPermissionRow";
+import { VendorModelRow as SettingsVendorModelRow } from "./VendorModelRow";
+import {
+  SUB_AGENT_ROLES,
+  type AgentEditorProps,
+  type ModelPickerOverlayProps,
+  type SettingsPageProps,
+  type SettingsTab,
+  type WorkspaceInfo,
+} from "./settingsTypes";
 
 export function SettingsPage({
   settings,
@@ -80,7 +71,8 @@ export function SettingsPage({
   const [saveMessage, setSaveMessage] = useState<string>("");
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string>("");
-  const [confirmClear, setConfirmClear] = useState<boolean>(false);
+  const [clearScope, setClearScope] = useState<"workspace" | "all">("workspace");
+  const [confirmClearScope, setConfirmClearScope] = useState<"workspace" | "all" | null>(null);
 
   const [selectedVendorId, setSelectedVendorId] = useState<string | null>(
     getActiveVendor(settings)?.id ?? settings.vendors[0]?.id ?? null
@@ -224,7 +216,7 @@ export function SettingsPage({
     try {
       const path = await invoke<string | null>("select_workspace_folder");
       if (path) {
-        const updated = { ...draft, workspacePath: path };
+        const updated = updateWorkspacePath(draft, path);
         setDraft(updated);
         await onSave(updated);
       }
@@ -402,6 +394,20 @@ export function SettingsPage({
     setDraft((current) => setActiveManagedModelSelection(current, modelId));
   };
 
+  const handleClearWorkspaceHistory = () => {
+    clearWorkspaceConversations(draft.workspacePath);
+    setConfirmClearScope(null);
+    setSaveMessage("已清空当前工作区的所有对话记录");
+    setTimeout(() => setSaveMessage(""), 3000);
+  };
+
+  const handleClearAllHistory = () => {
+    clearAllConversations();
+    setConfirmClearScope(null);
+    setSaveMessage("已清空所有工作区的对话记录");
+    setTimeout(() => setSaveMessage(""), 3000);
+  };
+
   const runtimeConfig = createLiteLLMClientConfig(draft);
   const selectedVendorApiKey =
     (selectedVendorId && vendorApiKeys[selectedVendorId]) ?? "";
@@ -409,40 +415,11 @@ export function SettingsPage({
 
   return (
     <div className="settings-layout">
-      {/* Left tab rail */}
-      <nav className="settings-nav">
-        <div className="settings-nav-header">
-          <span className="settings-nav-title">偏好设置</span>
-          {onClose && (
-            <button className="settings-close-btn" onClick={onClose} type="button">
-              ×
-            </button>
-          )}
-        </div>
-
-        <div className="settings-nav-tabs">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              className={`settings-tab-btn${activeTab === tab.id ? " active" : ""}`}
-              onClick={() => setActiveTab(tab.id)}
-              type="button"
-            >
-              <span className="settings-tab-icon">
-                {tab.id === "agents"
-                    ? "🧑‍💻"
-                    : tab.id === "model"
-                      ? "🤖"
-                      : tab.id === "tools"
-                        ? "🛠"
-                        : "⚙️"}
-              </span>
-              <span className="settings-tab-label">{tab.label}</span>
-            </button>
-          ))}
-        </div>
-
-      </nav>
+      <SettingsNavRail
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        onClose={onClose}
+      />
 
       {/* Right content */}
       <section className="settings-panel">
@@ -947,7 +924,7 @@ export function SettingsPage({
                         {selectedVendorModels.length > 0 ? (
                           <div className="vendor-model-list">
                             {selectedVendorModels.map((model) => (
-                              <VendorModelRow
+                              <SettingsVendorModelRow
                                 key={model.id}
                                 model={model}
                                 isEditing={editingModelId === model.id}
@@ -991,13 +968,11 @@ export function SettingsPage({
                       className="select"
                       value={draft.proxy.mode}
                       onChange={(e) =>
-                        setDraft((p) => ({
-                          ...p,
-                          proxy: {
-                            ...p.proxy,
-                            mode: e.target.value as typeof p.proxy.mode,
-                          },
-                        }))
+                        setDraft((current) =>
+                          updateProxySettings(current, {
+                            mode: e.target.value as typeof current.proxy.mode,
+                          }),
+                        )
                       }
                     >
                       <option value="off">关闭</option>
@@ -1009,10 +984,9 @@ export function SettingsPage({
                       className="input"
                       value={draft.proxy.url}
                       onChange={(e) =>
-                        setDraft((p) => ({
-                          ...p,
-                          proxy: { ...p.proxy, url: e.target.value },
-                        }))
+                        setDraft((current) =>
+                          updateProxySettings(current, { url: e.target.value }),
+                        )
                       }
                       placeholder="http://127.0.0.1:7890"
                       type="text"
@@ -1070,16 +1044,13 @@ export function SettingsPage({
                       </span>
                     </div>
                     {group.items.map(([key, description]) => (
-                      <ToolPermissionRow
+                      <SettingsToolPermissionRow
                         key={key}
                         toolKey={key}
                         description={description}
                         value={draft.toolPermissions[key]}
                         onChange={(value) =>
-                          setDraft((current) => ({
-                            ...current,
-                            toolPermissions: { ...current.toolPermissions, [key]: value },
-                          }))
+                          setDraft((current) => updateToolPermission(current, key, value))
                         }
                       />
                     ))}
@@ -1154,10 +1125,11 @@ export function SettingsPage({
                         className="select"
                         value={draft.maxSnippetLines}
                         onChange={(e) =>
-                          setDraft((p) => ({
-                            ...p,
-                            maxSnippetLines: Number(e.target.value) as AppSettings["maxSnippetLines"],
-                          }))
+                          setDraft((current) =>
+                            updateContextSettings(current, {
+                              maxSnippetLines: Number(e.target.value) as AppSettings["maxSnippetLines"],
+                            }),
+                          )
                         }
                       >
                         <option value={200}>200 行</option>
@@ -1171,10 +1143,11 @@ export function SettingsPage({
                         className="input"
                         value={draft.maxContextTokens}
                         onChange={(e) =>
-                          setDraft((p) => ({
-                            ...p,
-                            maxContextTokens: Math.max(0, Number(e.target.value) || 0),
-                          }))
+                          setDraft((current) =>
+                            updateContextSettings(current, {
+                              maxContextTokens: Math.max(0, Number(e.target.value) || 0),
+                            }),
+                          )
                         }
                         type="number"
                         min={0}
@@ -1185,10 +1158,11 @@ export function SettingsPage({
                     <input
                       checked={draft.sendRelativePathOnly}
                       onChange={(e) =>
-                        setDraft((p) => ({
-                          ...p,
-                          sendRelativePathOnly: e.target.checked,
-                        }))
+                        setDraft((current) =>
+                          updateContextSettings(current, {
+                            sendRelativePathOnly: e.target.checked,
+                          }),
+                        )
                       }
                       type="checkbox"
                     />
@@ -1209,10 +1183,7 @@ export function SettingsPage({
                     <input
                       checked={draft.allowCloudModels}
                       onChange={(e) =>
-                        setDraft((p) => ({
-                          ...p,
-                          allowCloudModels: e.target.checked,
-                        }))
+                        setDraft((current) => updateAllowCloudModels(current, e.target.checked))
                       }
                       type="checkbox"
                     />
@@ -1225,19 +1196,33 @@ export function SettingsPage({
                     <div>
                       <h3 className="settings-card-title">清空历史</h3>
                       <p className="settings-card-desc">
-                        删除当前工作区下的所有会话记录。此操作不可撤销。
+                        可按范围删除对话记录。当前工作区清理只影响本工作区；全局清理会删除所有工作区记录。
                       </p>
                     </div>
                   </div>
-                  {confirmClear ? (
+                  <div className="field">
+                    <label className="field-label">清理范围</label>
+                    <select
+                      className="select"
+                      value={clearScope}
+                      onChange={(e) =>
+                        setClearScope(e.target.value as "workspace" | "all")
+                      }
+                    >
+                      <option value="workspace">当前工作区</option>
+                      <option value="all">所有工作区</option>
+                    </select>
+                  </div>
+                  {confirmClearScope === clearScope ? (
                     <div className="btn-row">
                       <button
                         className="btn btn-danger btn-sm"
-                        onClick={async () => {
-                          clearAllConversations();
-                          setConfirmClear(false);
-                          setSaveMessage("已清空当前工作区的所有对话记录");
-                          setTimeout(() => setSaveMessage(""), 3000);
+                        onClick={() => {
+                          if (clearScope === "workspace") {
+                            handleClearWorkspaceHistory();
+                          } else {
+                            handleClearAllHistory();
+                          }
                         }}
                         type="button"
                       >
@@ -1245,7 +1230,7 @@ export function SettingsPage({
                       </button>
                       <button
                         className="btn btn-ghost btn-sm"
-                        onClick={() => setConfirmClear(false)}
+                        onClick={() => setConfirmClearScope(null)}
                         type="button"
                       >
                         取消
@@ -1254,10 +1239,12 @@ export function SettingsPage({
                   ) : (
                     <button
                       className="btn btn-danger btn-sm"
-                      onClick={() => setConfirmClear(true)}
+                      onClick={() => setConfirmClearScope(clearScope)}
                       type="button"
                     >
-                      清空当前工作区对话记录
+                      {clearScope === "workspace"
+                        ? "清空当前工作区对话记录"
+                        : "清空所有工作区对话记录"}
                     </button>
                   )}
                 </div>
@@ -1266,12 +1253,7 @@ export function SettingsPage({
           )}
         </div>
 
-        <footer className="settings-footer">
-          <button className="btn btn-primary" onClick={() => void handleSave()} type="button">
-            保存设置
-          </button>
-          {saveMessage && <span className="save-feedback">{saveMessage}</span>}
-        </footer>
+        <SettingsPageFooter saveMessage={saveMessage} onSave={handleSave} />
       </section>
 
       {showModelPicker && selectedVendor && (
@@ -1306,159 +1288,6 @@ export function SettingsPage({
     </div>
   );
 }
-
-interface ToolPermissionRowProps {
-  toolKey: keyof AppSettings["toolPermissions"];
-  description: string;
-  value: ToolPermissionLevel;
-  onChange: (value: ToolPermissionLevel) => void;
-}
-
-function ToolPermissionRow({
-  toolKey,
-  description,
-  value,
-  onChange,
-}: ToolPermissionRowProps): ReactElement {
-  return (
-    <div className="tool-permission-row">
-      <div className="tool-permission-info">
-        <span className="tool-permission-name">{toolKey}</span>
-        <span className="tool-permission-desc">{description}</span>
-      </div>
-      <div className="tool-permission-toggle">
-        {(["auto", "ask"] as ToolPermissionLevel[]).map((option) => (
-          <button
-            key={option}
-            className={`tool-toggle-btn${value === option ? " active" : ""}`}
-            onClick={() => onChange(option)}
-            type="button"
-          >
-            {option === "auto" ? "Auto" : "Ask"}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-interface VendorModelRowProps {
-  model: ManagedModel;
-  isEditing: boolean;
-  editingName: string;
-  confirmDelete: boolean;
-  canDelete: boolean;
-  onStartEdit: () => void;
-  onEditChange: (value: string) => void;
-  onSaveEdit: () => void;
-  onCancelEdit: () => void;
-  onConfirmDelete: () => void;
-  onDelete: () => void;
-  onCancelDelete: () => void;
-}
-
-function VendorModelRow({
-  model,
-  isEditing,
-  editingName,
-  confirmDelete,
-  canDelete,
-  onStartEdit,
-  onEditChange,
-  onSaveEdit,
-  onCancelEdit,
-  onConfirmDelete,
-  onDelete,
-  onCancelDelete,
-}: VendorModelRowProps): ReactElement {
-  return (
-    <div className="vendor-model-row">
-      {isEditing ? (
-        <div className="vendor-model-inline-editor">
-          <input
-            className="input vendor-model-inline-input"
-            value={editingName}
-            onChange={(e) => onEditChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                onSaveEdit();
-              }
-              if (e.key === "Escape") {
-                onCancelEdit();
-              }
-            }}
-            autoFocus
-          />
-          <button className="btn btn-primary btn-sm" onClick={onSaveEdit} type="button">
-            保存
-          </button>
-          <button className="btn btn-ghost btn-sm" onClick={onCancelEdit} type="button">
-            取消
-          </button>
-        </div>
-      ) : confirmDelete ? (
-        <div className="vendor-model-inline-editor">
-          <span className="settings-delete-confirm-text">确认删除该模型？</span>
-          <button className="btn btn-danger btn-sm" onClick={onDelete} type="button">
-            删除
-          </button>
-          <button className="btn btn-ghost btn-sm" onClick={onCancelDelete} type="button">
-            取消
-          </button>
-        </div>
-      ) : (
-        <>
-          <div className="vendor-model-row-info">
-            <span className="vendor-model-row-name">{model.name}</span>
-            <span className="vendor-model-row-source">
-              {model.source === "fetched" ? "Fetch" : "Manual"}
-            </span>
-          </div>
-          <div className="vendor-model-row-actions">
-            <button className="btn btn-ghost btn-sm" onClick={onStartEdit} type="button">
-              重命名
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={!canDelete}
-              onClick={onConfirmDelete}
-              type="button"
-              title={canDelete ? "删除模型" : "每个供应商至少需要保留一个模型"}
-            >
-              删除
-            </button>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ── Agent Editor ──────────────────────────────────────────
-
-interface AgentEditorProps {
-  agent: ChatAgentDefinition;
-  isBuiltin: boolean;
-  isOverridden: boolean;
-  originalBuiltin: ChatAgentDefinition | null;
-  vendors: AppSettings["vendors"];
-  managedModels: ManagedModel[];
-  confirmDeleteId: string | null;
-  onUpdate: (updates: Partial<Omit<ChatAgentDefinition, "id" | "builtin">>) => void;
-  onReset: () => void;
-  onClone: () => void;
-  onConfirmDelete: () => void;
-  onDelete: () => void;
-  onCancelDelete: () => void;
-}
-
-const SUB_AGENT_ROLES: { role: SubAgentRole; label: string }[] = [
-  { role: "planner", label: "Planner（规划）" },
-  { role: "coder", label: "Coder（编码）" },
-  { role: "tester", label: "Tester（测试）" },
-  { role: "debugger", label: "Debugger（调试）" },
-  { role: "reviewer", label: "Reviewer（代码审查）" },
-];
 
 function AgentEditor({
   agent,
@@ -1701,19 +1530,6 @@ function AgentEditor({
       </div>
     </div>
   );
-}
-
-interface ModelPickerOverlayProps {
-  fetchedModelIds: string[];
-  existingModelNames: Set<string>;
-  search: string;
-  onSearchChange: (value: string) => void;
-  selected: Set<string>;
-  onToggle: (modelId: string) => void;
-  onSelectAllNew: () => void;
-  onDeselectAll: () => void;
-  onConfirm: () => void;
-  onCancel: () => void;
 }
 
 function ModelPickerOverlay({

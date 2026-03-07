@@ -2,7 +2,11 @@ import { executeSubAgentTask, type SubAgentResult } from "./planningService";
 import type { AppSettings, ToolPermissions } from "../lib/settingsStore";
 import type { WorkingMemory } from "./workingMemory";
 import type { SubAgentProgressEvent } from "./types";
-import type { AgentTeamDefinition, AgentTeamStage } from "../agents/agentTeam";
+import type {
+  AgentTeamDefinition,
+  AgentTeamStage,
+  AgentTeamStageCondition,
+} from "../agents/agentTeam";
 
 export interface TeamExecutionResult {
   status: "completed" | "failed" | "partial";
@@ -10,54 +14,130 @@ export interface TeamExecutionResult {
   finalReply: string;
 }
 
-function shouldExecuteStage(
-  stage: AgentTeamStage,
-  stageResults: Map<string, SubAgentResult>
+type TeamStageFailureStatus = Extract<SubAgentResult["status"], "failed" | "blocked">;
+type TeamStageNonSuccessStatus = Exclude<SubAgentResult["status"], "completed">;
+
+interface TeamAggregationSummary {
+  hasFailure: boolean;
+  hasPartial: boolean;
+  hasCompletedStage: boolean;
+}
+
+/**
+ * Team stage condition semantics are centralized here:
+ * - if_previous_succeeded: all previously executed stages must have status === "completed"
+ * - if_issues_found: a previously executed reviewer/tester stage must report issues/failures
+ */
+function evaluateStageCondition(
+  condition: AgentTeamStageCondition | undefined,
+  stageResults: Map<string, SubAgentResult>,
 ): boolean {
-  if (!stage.condition) return true;
-
-  if (stage.condition.type === "always") return true;
-
-  if (stage.condition.type === "if_previous_succeeded") {
-    // If there is any stage that failed or blocked, we shouldn't execute
-    for (const [_, res] of stageResults.entries()) {
-      if (res.status === "failed" || res.status === "blocked") {
-        return false;
-      }
-    }
+  if (!condition || condition.type === "always") {
     return true;
   }
 
-  if (stage.condition.type === "if_issues_found") {
-    // Example: Only run if debugger found rootCause or reviewer found issues
-    let issuesFound = false;
-    for (const [_, res] of stageResults.entries()) {
-      if (res.structuredOutput?.role === "reviewer" && res.structuredOutput.data.issues.length > 0) {
-        issuesFound = true;
-      }
-      if (res.structuredOutput?.role === "tester" && res.structuredOutput.data.testPlan.some(t => t.passed === false)) {
-        issuesFound = true;
-      }
+  switch (condition.type) {
+    case "if_previous_succeeded":
+      return getPriorExecutionStatuses(stageResults).every((status) => status === "completed");
+    case "if_issues_found":
+      return hasIssuesInStageResults(stageResults);
+    default:
+      return true;
+  }
+}
+
+function getPriorExecutionStatuses(
+  stageResults: Map<string, SubAgentResult>,
+): SubAgentResult["status"][] {
+  return Array.from(stageResults.values(), (result) => result.status);
+}
+
+function hasIssuesInStageResults(stageResults: Map<string, SubAgentResult>): boolean {
+  for (const result of stageResults.values()) {
+    const output = result.structuredOutput;
+    if (!output) continue;
+
+    if (output.role === "reviewer" && output.data.issues.length > 0) {
+      return true;
     }
-    return issuesFound;
+
+    if (
+      output.role === "tester" &&
+      output.data.testPlan.some((testCase) => testCase.passed === false)
+    ) {
+      return true;
+    }
   }
 
-  return true;
+  return false;
+}
+
+function groupStagesByExecutionOrder(pipeline: AgentTeamStage[]): AgentTeamStage[][] {
+  const groups: AgentTeamStage[][] = [];
+  let currentGroup: AgentTeamStage[] = [];
+
+  for (const stage of pipeline) {
+    if (!stage.parallelGroup) {
+      flushCurrentGroup(groups, currentGroup);
+      currentGroup = [];
+      groups.push([stage]);
+      continue;
+    }
+
+    if (
+      currentGroup.length === 0 ||
+      currentGroup[0]?.parallelGroup === stage.parallelGroup
+    ) {
+      currentGroup.push(stage);
+      continue;
+    }
+
+    flushCurrentGroup(groups, currentGroup);
+    currentGroup = [stage];
+  }
+
+  flushCurrentGroup(groups, currentGroup);
+  return groups;
+}
+
+function flushCurrentGroup(groups: AgentTeamStage[][], currentGroup: AgentTeamStage[]): void {
+  if (currentGroup.length > 0) {
+    groups.push([...currentGroup]);
+  }
+}
+
+function shouldContinueAfterStageFailure(
+  team: AgentTeamDefinition,
+  status: SubAgentResult["status"],
+): boolean {
+  return !isFailureStatus(status) || team.config.failurePolicy !== "stop";
+}
+
+function shouldContinueAfterGroup(team: AgentTeamDefinition, groupResults: SubAgentResult[]): boolean {
+  return !groupResults.some((result) => isFailureStatus(result.status)) || team.config.failurePolicy !== "stop";
+}
+
+function isFailureStatus(status: SubAgentResult["status"]): status is TeamStageFailureStatus {
+  return status === "failed" || status === "blocked";
+}
+
+function isPartialStatus(status: SubAgentResult["status"]): status is TeamStageNonSuccessStatus {
+  return status === "partial" || status === "need_clarification";
 }
 
 function buildStageDescription(
   initialTaskDescription: string,
   stage: AgentTeamStage,
-  stageResults: Map<string, SubAgentResult>
+  stageResults: Map<string, SubAgentResult>,
 ): string {
   let description = `[Team Stage: ${stage.stageLabel}]\n${initialTaskDescription}`;
 
   if (stage.inputMapping && stageResults.has(stage.inputMapping.fromStage)) {
     const prevResult = stageResults.get(stage.inputMapping.fromStage)!;
     description += `\n\n## Input from previous stage (${stage.inputMapping.fromStage}):\n`;
-    
+
     if (prevResult.structuredOutput) {
-      const data = prevResult.structuredOutput.data as Record<string, any>;
+      const data = prevResult.structuredOutput.data as unknown as Record<string, unknown>;
       for (const field of stage.inputMapping.fields) {
         if (data[field] !== undefined) {
           description += `- **${field}**: ${JSON.stringify(data[field])}\n`;
@@ -71,28 +151,89 @@ function buildStageDescription(
   return description;
 }
 
+function summarizeTeamExecution(stageResults: Map<string, SubAgentResult>): TeamAggregationSummary {
+  let hasFailure = false;
+  let hasPartial = false;
+  let hasCompletedStage = false;
+
+  for (const result of stageResults.values()) {
+    if (isFailureStatus(result.status)) {
+      hasFailure = true;
+      continue;
+    }
+    if (result.status === "completed") {
+      hasCompletedStage = true;
+      continue;
+    }
+    if (isPartialStatus(result.status)) {
+      hasPartial = true;
+    }
+  }
+
+  return { hasFailure, hasPartial, hasCompletedStage };
+}
+
+function resolveTeamStatus(summary: TeamAggregationSummary): TeamExecutionResult["status"] {
+  if (summary.hasFailure) {
+    return summary.hasCompletedStage || summary.hasPartial ? "partial" : "failed";
+  }
+  if (summary.hasPartial) {
+    return "partial";
+  }
+  return "completed";
+}
+
 function aggregateTeamResults(
   team: AgentTeamDefinition,
-  stageResults: Map<string, SubAgentResult>
+  stageResults: Map<string, SubAgentResult>,
 ): TeamExecutionResult {
   const resultsObj = Object.fromEntries(stageResults);
   const stagesRun = Array.from(stageResults.keys());
-  
-  let hasFailure = false;
-  let finalReply = `Team [${team.name}] execution finished. Stages run: ${stagesRun.join(" -> ")}.\n\n`;
+  const summary = summarizeTeamExecution(stageResults);
+  const resolvedStatus = resolveTeamStatus(summary);
+
+  let finalReply = `Team [${team.name}] execution finished with status: ${resolvedStatus}. Stages run: ${stagesRun.join(" -> ")}.\n\n`;
 
   for (const [label, res] of stageResults.entries()) {
-    if (res.status === "failed" || res.status === "blocked") {
-      hasFailure = true;
-    }
     finalReply += `### Stage: ${label} (${res.status})\n${res.reply}\n\n`;
   }
 
   return {
-    status: hasFailure ? "failed" : "completed",
+    status: resolvedStatus,
     stageResults: resultsObj,
-    finalReply: finalReply.trim()
+    finalReply: finalReply.trim(),
   };
+}
+
+async function executeStage(
+  params: {
+    stage: AgentTeamStage;
+    taskDescription: string;
+    workspacePath: string;
+    settings: AppSettings;
+    toolPermissions: ToolPermissions;
+    workingMemory?: WorkingMemory;
+    onStageProgress?: (stage: string, event: SubAgentProgressEvent) => void;
+    signal?: AbortSignal;
+  },
+  stageResults: Map<string, SubAgentResult>,
+): Promise<SubAgentResult> {
+  const stageDescription = buildStageDescription(
+    params.taskDescription,
+    params.stage,
+    stageResults,
+  );
+
+  return executeSubAgentTask(
+    params.stage.agentRole,
+    stageDescription,
+    params.workspacePath,
+    params.settings,
+    params.toolPermissions,
+    params.workingMemory,
+    (event) => params.onStageProgress?.(params.stage.stageLabel, event),
+    params.signal,
+  );
 }
 
 export async function executeAgentTeam(params: {
@@ -107,89 +248,83 @@ export async function executeAgentTeam(params: {
 }): Promise<TeamExecutionResult> {
   const { team, taskDescription, workspacePath, settings, toolPermissions, workingMemory } = params;
   const stageResults: Map<string, SubAgentResult> = new Map();
-
-  // Group by parallelGroup
-  const groups: AgentTeamStage[][] = [];
-  let currentGroup: AgentTeamStage[] = [];
-
-  for (const stage of team.pipeline) {
-    if (!stage.parallelGroup) {
-      if (currentGroup.length > 0) {
-        groups.push(currentGroup);
-        currentGroup = [];
-      }
-      groups.push([stage]);
-    } else {
-      if (currentGroup.length === 0 || currentGroup[0].parallelGroup === stage.parallelGroup) {
-        currentGroup.push(stage);
-      } else {
-        groups.push(currentGroup);
-        currentGroup = [stage];
-      }
-    }
-  }
-  if (currentGroup.length > 0) {
-    groups.push(currentGroup);
-  }
+  const groups = groupStagesByExecutionOrder(team.pipeline);
 
   for (const group of groups) {
-    if (params.signal?.aborted) break;
+    if (params.signal?.aborted) {
+      break;
+    }
 
-    const stagesToRun = group.filter(s => shouldExecuteStage(s, stageResults));
-    if (stagesToRun.length === 0) continue;
+    const stagesToRun = group.filter((stage) => evaluateStageCondition(stage.condition, stageResults));
+    if (stagesToRun.length === 0) {
+      continue;
+    }
 
     if (stagesToRun.length === 1) {
       const stage = stagesToRun[0];
-      const stageDescription = buildStageDescription(taskDescription, stage, stageResults);
-
-      const result = await executeSubAgentTask(
-        stage.agentRole,
-        stageDescription,
-        workspacePath,
-        settings,
-        toolPermissions,
-        workingMemory,
-        (event) => params.onStageProgress?.(stage.stageLabel, event),
-        params.signal
-      );
-
-      stageResults.set(stage.stageLabel, result);
-
-      if (result.status === "failed" && team.config.failurePolicy === "stop") {
-        break;
-      }
-    } else {
-      // Parallel execution
-      const stagePromises = stagesToRun.map(async (stage) => {
-        const stageDescription = buildStageDescription(taskDescription, stage, stageResults);
-        const result = await executeSubAgentTask(
-          stage.agentRole,
-          stageDescription,
+      const result = await executeStage(
+        {
+          stage,
+          taskDescription,
           workspacePath,
           settings,
           toolPermissions,
           workingMemory,
-          (event) => params.onStageProgress?.(stage.stageLabel, event),
-          params.signal
-        );
-        return { stageLabel: stage.stageLabel, result };
-      });
+          onStageProgress: params.onStageProgress,
+          signal: params.signal,
+        },
+        stageResults,
+      );
 
-      const parallelResults = await Promise.allSettled(stagePromises);
-      let groupFailed = false;
+      stageResults.set(stage.stageLabel, result);
 
-      for (const res of parallelResults) {
-        if (res.status === "fulfilled") {
-          stageResults.set(res.value.stageLabel, res.value.result);
-          if (res.value.result.status === "failed") groupFailed = true;
-        } else {
-          groupFailed = true;
-        }
-      }
-
-      if (groupFailed && team.config.failurePolicy === "stop") {
+      if (!shouldContinueAfterStageFailure(team, result.status)) {
         break;
       }
+
+      continue;
+    }
+
+    const parallelResults = await Promise.allSettled(
+      stagesToRun.map(async (stage) => ({
+        stageLabel: stage.stageLabel,
+        result: await executeStage(
+          {
+            stage,
+            taskDescription,
+            workspacePath,
+            settings,
+            toolPermissions,
+            workingMemory,
+            onStageProgress: params.onStageProgress,
+            signal: params.signal,
+          },
+          stageResults,
+        ),
+      })),
+    );
+
+    const settledGroupResults: SubAgentResult[] = [];
+
+    for (const result of parallelResults) {
+      if (result.status === "fulfilled") {
+        stageResults.set(result.value.stageLabel, result.value.result);
+        settledGroupResults.push(result.value.result);
+        continue;
+      }
+
+      const syntheticFailure: SubAgentResult = {
+        reply: `Stage execution failed before completion: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+        status: "failed",
+        proposedActions: [],
+        toolTrace: [],
+        turnCount: 0,
+      };
+      settledGroupResults.push(syntheticFailure);
+    }
+
+    if (!shouldContinueAfterGroup(team, settledGroupResults)) {
+      break;
     }
   }
 

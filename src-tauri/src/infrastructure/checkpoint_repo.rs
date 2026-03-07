@@ -39,9 +39,11 @@ pub fn save_checkpoint(
 
     let db_path = paths::sqlite_db_path()?;
     if let Some(parent) = db_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| AppError::checkpoint(format!("创建 checkpoint 目录失败: {}", e)))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| AppError::checkpoint(format!("创建 checkpoint 目录失败: {}", e)))?;
     }
-    let conn = Connection::open(&db_path).map_err(|e| AppError::checkpoint(format!("打开 checkpoint DB 失败: {}", e)))?;
+    let conn = Connection::open(&db_path)
+        .map_err(|e| AppError::checkpoint(format!("打开 checkpoint DB 失败: {}", e)))?;
     ensure_checkpoint_table(&conn)?;
 
     let checkpoint_id = paths::generate_id("cp");
@@ -85,7 +87,8 @@ pub fn load_latest_checkpoint(session_id: &str) -> AppResult<RecoveryResult> {
         });
     }
 
-    let conn = Connection::open(&db_path).map_err(|e| AppError::checkpoint(format!("打开 checkpoint DB 失败: {}", e)))?;
+    let conn = Connection::open(&db_path)
+        .map_err(|e| AppError::checkpoint(format!("打开 checkpoint DB 失败: {}", e)))?;
     ensure_checkpoint_table(&conn)?;
 
     let mut stmt = conn
@@ -102,15 +105,32 @@ pub fn load_latest_checkpoint(session_id: &str) -> AppResult<RecoveryResult> {
         .query(params![session_id.trim()])
         .map_err(|e| AppError::checkpoint(format!("查询 checkpoint 失败: {}", e)))?;
 
-    if let Some(row) = rows.next().map_err(|e| AppError::checkpoint(format!("读取 checkpoint 失败: {}", e)))? {
+    if let Some(row) = rows
+        .next()
+        .map_err(|e| AppError::checkpoint(format!("读取 checkpoint 失败: {}", e)))?
+    {
         let checkpoint = CheckpointRecord {
-            checkpoint_id: row.get(0).map_err(|e| AppError::checkpoint(format!("读取 checkpoint_id 失败: {}", e)))?,
-            session_id: row.get(1).map_err(|e| AppError::checkpoint(format!("读取 session_id 失败: {}", e)))?,
-            message_id: row.get(2).map_err(|e| AppError::checkpoint(format!("读取 message_id 失败: {}", e)))?,
-            workflow_state: row.get(3).map_err(|e| AppError::checkpoint(format!("读取 workflow_state 失败: {}", e)))?,
-            payload_json: row.get(4).map_err(|e| AppError::checkpoint(format!("读取 payload_json 失败: {}", e)))?,
-            created_at: row.get(5).map_err(|e| AppError::checkpoint(format!("读取 created_at 失败: {}", e)))?,
-            updated_at: row.get(6).map_err(|e| AppError::checkpoint(format!("读取 updated_at 失败: {}", e)))?,
+            checkpoint_id: row
+                .get(0)
+                .map_err(|e| AppError::checkpoint(format!("读取 checkpoint_id 失败: {}", e)))?,
+            session_id: row
+                .get(1)
+                .map_err(|e| AppError::checkpoint(format!("读取 session_id 失败: {}", e)))?,
+            message_id: row
+                .get(2)
+                .map_err(|e| AppError::checkpoint(format!("读取 message_id 失败: {}", e)))?,
+            workflow_state: row
+                .get(3)
+                .map_err(|e| AppError::checkpoint(format!("读取 workflow_state 失败: {}", e)))?,
+            payload_json: row
+                .get(4)
+                .map_err(|e| AppError::checkpoint(format!("读取 payload_json 失败: {}", e)))?,
+            created_at: row
+                .get(5)
+                .map_err(|e| AppError::checkpoint(format!("读取 created_at 失败: {}", e)))?,
+            updated_at: row
+                .get(6)
+                .map_err(|e| AppError::checkpoint(format!("读取 updated_at 失败: {}", e)))?,
         };
         return Ok(RecoveryResult {
             found: true,

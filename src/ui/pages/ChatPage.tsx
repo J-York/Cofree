@@ -21,29 +21,17 @@ import {
 } from "../../lib/conversationStore";
 import { ConversationSidebar } from "../components/ConversationSidebar";
 import { IconTrash } from "../components/Icons";
-import {
-  getActiveVendor,
-  getActiveManagedModel,
-  isActiveModelLocal,
-  loadVendorApiKey,
-  resolveManagedModelSelection,
-  syncRuntimeSettings,
-} from "../../lib/settingsStore";
+import { getActiveManagedModel, isActiveModelLocal } from "../../lib/settingsStore";
 import type { AppSettings } from "../../lib/settingsStore";
-import type { ModelSelection } from "../../lib/modelSelection";
+import type { ChatAgentDefinition } from "../../agents/types";
 import {
   classifyError,
   type CategorizedError,
 } from "../../lib/errorClassifier";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { InputDialog } from "../components/InputDialog";
-import { ShellResultDisplay } from "../components/ShellResultDisplay";
-import { DiffViewer } from "../components/DiffViewer";
 import {
   formatTime,
-  actionStatusBadgeClass,
-  canApproveAction,
-  canReviewAction,
 } from "../utils/chatUtils";
 import {
   approveAction,
@@ -52,14 +40,10 @@ import {
   markActionRunning,
   rejectAction,
   rejectAllPendingActions,
-  updateActionPayload,
 } from "../../orchestrator/hitlService";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   getChatSessionId,
   loadLatestWorkflowCheckpoint,
-  resetChatSessionId,
   saveWorkflowCheckpoint,
 } from "../../orchestrator/checkpointStore";
 import { type ToolReplayMessage } from "../../orchestrator/hitlContinuationMachine";
@@ -71,19 +55,37 @@ import {
 } from "../../orchestrator/hitlContinuationController";
 import {
   runPlanningSession,
-  actionFingerprint,
-  type PlanningSessionPhase,
   type ToolExecutionTrace,
   type ToolCallEvent,
 } from "../../orchestrator/planningService";
 import type {
-  ActionProposal,
   OrchestrationPlan,
   SubAgentProgressEvent,
 } from "../../orchestrator/types";
 import { useSession } from "../../lib/sessionContext";
-import type { ChatAgentDefinition } from "../../agents/types";
-import { createAgentBinding } from "../../agents/resolveAgentRuntime";
+import {
+  createMessageId,
+  buildToolCallsFromPlan,
+  toConversationHistory,
+} from "./chat/helpers";
+import { resetChatSessionState } from "./chat/sessionState";
+import {
+  MessageContent,
+  LiveToolStatus,
+  SubAgentStatusPanel,
+  ToolTracePanel,
+  InlinePlan,
+  TokenUsageRing,
+} from "./chat/ChatPresentational";
+import {
+  buildExecutionSettings,
+  createConversationAgentBinding,
+  ensureConversationAgentBinding,
+  collectBlockedActionFingerprints,
+  markActionExecutionError,
+  type RunChatCycleOptions,
+} from "./chat/execution";
+import type { BackgroundStreamState, LiveToolCall, SubAgentStatusItem } from "./chat/types";
 
 interface ChatPageProps {
   settings: AppSettings;
@@ -91,1072 +93,6 @@ interface ChatPageProps {
   isVisible?: boolean;
   sidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
-}
-
-interface RunChatCycleOptions {
-  visibleUserMessage?: boolean;
-  internalSystemNote?: string;
-  phase?: PlanningSessionPhase;
-}
-
-interface BackgroundStreamState {
-  messages: ChatMessageRecord[];
-  isStreaming: boolean;
-  tokenCount: number | null;
-  sessionNote: string;
-  liveToolCalls: LiveToolCall[];
-  error: CategorizedError | null;
-}
-
-function resolveConversationModelSelection(
-  settings: AppSettings,
-  activeAgent: ChatAgentDefinition,
-  currentConversation: Conversation | null,
-): ModelSelection | null {
-  const binding = currentConversation?.agentBinding;
-  if (binding) {
-    return {
-      vendorId: binding.vendorId,
-      modelId: binding.modelId,
-    };
-  }
-
-  if (activeAgent.modelSelection) {
-    return activeAgent.modelSelection;
-  }
-
-  const activeSelection = resolveManagedModelSelection(settings, {
-    vendorId: settings.activeVendorId,
-    modelId: settings.activeModelId,
-  });
-  if (!activeSelection) {
-    return null;
-  }
-
-  return {
-    vendorId: activeSelection.vendor.id,
-    modelId: activeSelection.managedModel.id,
-  };
-}
-
-async function buildExecutionSettings(
-  settings: AppSettings,
-  activeAgent: ChatAgentDefinition,
-  currentConversation: Conversation | null,
-): Promise<{
-  settings: AppSettings;
-  selection: ModelSelection | null;
-  snapshots?: { vendorName?: string; modelName?: string };
-}> {
-  const selection = resolveConversationModelSelection(settings, activeAgent, currentConversation);
-  const modelScopedSettings = selection
-    ? syncRuntimeSettings({
-        ...settings,
-        activeVendorId: selection.vendorId,
-        activeModelId: selection.modelId,
-      })
-    : settings;
-  const resolvedSelection = resolveManagedModelSelection(modelScopedSettings, selection);
-
-  let apiKey = modelScopedSettings.apiKey;
-  try {
-    const vendorApiKey = await loadVendorApiKey(getActiveVendor(modelScopedSettings)?.id);
-    if (vendorApiKey) {
-      apiKey = vendorApiKey;
-    }
-  } catch {
-    // ignore secure storage failures and fall back to the in-memory key
-  }
-
-  return {
-    selection,
-    snapshots: resolvedSelection
-      ? {
-          vendorName: resolvedSelection.vendor.name,
-          modelName: resolvedSelection.managedModel.name,
-        }
-      : undefined,
-    settings:
-      apiKey === modelScopedSettings.apiKey
-        ? modelScopedSettings
-        : { ...modelScopedSettings, apiKey },
-  };
-}
-
-function createMessageId(role: "user" | "assistant" | "tool"): string {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return `${role}-${crypto.randomUUID()}`;
-  }
-  return `${role}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-}
-
-function buildToolCallsFromPlan(
-  plan: OrchestrationPlan | null
-): any[] | undefined {
-  if (
-    !plan ||
-    !Array.isArray(plan.proposedActions) ||
-    plan.proposedActions.length === 0
-  ) {
-    return undefined;
-  }
-
-  return plan.proposedActions.map((action: any) => ({
-    id: action.toolCallId || action.id,
-    type: "function",
-    function: {
-      name:
-        action.toolName ||
-        (action.type === "shell" ? "propose_shell" : "propose_file_edit"),
-      arguments: JSON.stringify(action.payload),
-    },
-  }));
-}
-
-function toConversationHistory(records: ChatMessageRecord[]): Array<{
-  role: "user" | "assistant" | "tool";
-  content: string;
-  tool_calls?: any[];
-  tool_call_id?: string;
-  name?: string;
-}> {
-  return records
-    .filter(
-      (record) =>
-        record.content.trim() ||
-        record.role === "tool" ||
-        (record.role === "assistant" &&
-          record.tool_calls &&
-          record.tool_calls.length > 0)
-    )
-    .map((record) => ({
-      role: record.role,
-      content: record.content.trim(),
-      ...(record.tool_calls ? { tool_calls: record.tool_calls } : {}),
-      ...(record.tool_call_id ? { tool_call_id: record.tool_call_id } : {}),
-      ...(record.name ? { name: record.name } : {}),
-    }));
-}
-
-function markActionExecutionError(
-  plan: OrchestrationPlan,
-  actionId: string,
-  reason: string
-): OrchestrationPlan {
-  const timestamp = new Date().toISOString();
-  const nextActions = plan.proposedActions.map((action) =>
-    action.id === actionId
-      ? {
-          ...action,
-          status: "failed" as const,
-          executed: false,
-          executionResult: { success: false, message: reason, timestamp },
-        }
-      : action
-  );
-  return { ...plan, state: "human_review", proposedActions: nextActions };
-}
-
-/* ── Think-block + Markdown renderer ─────────────────────── */
-function MessageContent({
-  content,
-  isStreaming,
-  role,
-}: {
-  content: string;
-  isStreaming: boolean;
-  role: string;
-}) {
-  if (!content && isStreaming && role === "assistant") {
-    return (
-      <div className="chat-waiting">
-        <div className="chat-waiting-dots">
-          <span />
-          <span />
-          <span />
-        </div>
-        <span>正在思考…</span>
-      </div>
-    );
-  }
-
-  // 兜底：非流式状态下内容为空时显示占位提示，避免空对话框
-  if (!content && !isStreaming && role === "assistant") {
-    return (
-      <div className="chat-markdown chat-empty-reply">
-        <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
-          （无回复内容）
-        </span>
-      </div>
-    );
-  }
-
-  const parts: {
-    type: "text" | "think";
-    content: string;
-    streaming: boolean;
-  }[] = [];
-  let remaining = content;
-
-  // During streaming, strip trailing partial tags like "<", "<t", "<thi", etc.
-  if (isStreaming && role === "assistant") {
-    const partialTagMatch = remaining.match(/<\/?t(?:h(?:i(?:n(?:k)?)?)?)?$/);
-    if (partialTagMatch) {
-      remaining = remaining.slice(
-        0,
-        remaining.length - partialTagMatch[0].length
-      );
-    }
-  }
-
-  while (remaining.length > 0) {
-    const start = remaining.indexOf("<think>");
-    if (start === -1) {
-      parts.push({ type: "text", content: remaining, streaming: false });
-      break;
-    }
-    if (start > 0) {
-      parts.push({
-        type: "text",
-        content: remaining.slice(0, start),
-        streaming: false,
-      });
-    }
-    const end = remaining.indexOf("</think>", start + 7);
-    if (end === -1) {
-      parts.push({
-        type: "think",
-        content: remaining.slice(start + 7),
-        streaming: true,
-      });
-      break;
-    }
-    parts.push({
-      type: "think",
-      content: remaining.slice(start + 7, end),
-      streaming: false,
-    });
-    remaining = remaining.slice(end + 8);
-  }
-
-  return (
-    <>
-      {parts.map((part, i) =>
-        part.type === "think" ? (
-          <details key={i} className="think-block" open={part.streaming}>
-            <summary className="think-summary">思考过程</summary>
-            <div className="think-content">
-              <Markdown remarkPlugins={[remarkGfm]}>{part.content}</Markdown>
-            </div>
-          </details>
-        ) : (
-          <div key={i} className="chat-markdown">
-            <Markdown remarkPlugins={[remarkGfm]}>{part.content}</Markdown>
-          </div>
-        )
-      )}
-    </>
-  );
-}
-
-/* ── Tool name friendly labels ───────────────────────────────── */
-const TOOL_NAME_LABELS: Record<string, string> = {
-  list_files: "浏览目录",
-  read_file: "读取文件",
-  git_status: "Git 状态",
-  git_diff: "Git 差异",
-  grep: "搜索代码",
-  glob: "查找文件",
-  propose_file_edit: "编辑文件",
-  propose_apply_patch: "应用补丁",
-  propose_shell: "执行命令",
-  task: "子任务",
-  diagnostics: "诊断检查",
-  fetch: "获取网页",
-};
-
-function formatToolName(name: string): string {
-  return TOOL_NAME_LABELS[name] || name;
-}
-
-/* ── Live Tool Status (real-time feedback) ─────────────────────── */
-interface LiveToolCall {
-  callId: string;
-  toolName: string;
-  argsPreview?: string;
-  status: "running" | "success" | "failed";
-  resultPreview?: string;
-}
-
-function LiveToolStatus({ calls }: { calls: LiveToolCall[] }) {
-  if (calls.length === 0) return null;
-
-  return (
-    <div className="live-tool-status">
-      {calls.map((call) => (
-        <div
-          key={call.callId}
-          className={`live-tool-item ${call.status}`}
-        >
-          <span className="live-tool-icon">
-            {call.status === "running" ? "◐" : call.status === "success" ? "✓" : "✕"}
-          </span>
-          <span className="live-tool-name">{formatToolName(call.toolName)}</span>
-          {call.argsPreview && (
-            <span className="live-tool-args">{call.argsPreview}</span>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/* ── Sub-Agent Progress Status ──────────────────────────────── */
-interface SubAgentStatusItem {
-  role: string;
-  lastEvent: SubAgentProgressEvent;
-  updatedAt: number;
-}
-
-function SubAgentStatusPanel({ items }: { items: SubAgentStatusItem[] }) {
-  if (items.length === 0) return null;
-
-  return (
-    <div className="live-tool-status" style={{ marginBottom: 4 }}>
-      {items.map((item) => {
-        const event = item.lastEvent;
-        let label = "";
-        let icon = "◐";
-        if (event.kind === "tool_start") {
-          label = `${item.role}: ${event.toolName}...`;
-        } else if (event.kind === "tool_complete") {
-          label = `${item.role}: ${event.toolName} ${event.success ? "✓" : "✕"} (${event.durationMs}ms)`;
-          icon = event.success ? "✓" : "✕";
-        } else if (event.kind === "summary") {
-          label = `${item.role}: ${event.message}`;
-          icon = "ℹ";
-        } else if (event.kind === "action_proposed") {
-          label = `${item.role}: 提出 ${event.actionType}`;
-          icon = "⚑";
-        }
-        return (
-          <div key={item.role} className="live-tool-item running">
-            <span className="live-tool-icon">{icon}</span>
-            <span className="live-tool-name">{label}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/* ── Tool Trace ───────────────────────────────────────────── */
-function ToolTracePanel({ traces }: { traces: ToolExecutionTrace[] }) {
-  const [expanded, setExpanded] = useState(false);
-  if (!traces.length) return null;
-  return (
-    <div className="tool-trace">
-      <div
-        className="tool-trace-header"
-        onClick={() => setExpanded(!expanded)}
-        style={{
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          paddingBottom: expanded ? "8px" : "0",
-        }}
-      >
-        <span
-          style={{
-            fontSize: "11px",
-            transition: "transform 0.2s",
-            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-          }}
-        >
-          ▶
-        </span>
-        <p className="tool-trace-label" style={{ margin: 0 }}>
-          工具调用 · {traces.length} 次
-        </p>
-      </div>
-      {expanded && (
-        <ul className="tool-trace-list">
-          {traces.map((trace) => (
-            <li
-              key={`${trace.callId}-${trace.startedAt}`}
-              className={`tool-trace-item ${trace.status}`}
-            >
-              <div className="tool-trace-head">
-                <span className="tool-trace-name">{trace.name}</span>
-                <span className={actionStatusBadgeClass(trace.status)}>
-                  {trace.status.toUpperCase()}
-                  {trace.retried ? " · retried" : ""}
-                </span>
-              </div>
-              {(trace.errorCategory || trace.errorMessage) && (
-                <p className="status-error">
-                  {trace.errorCategory ? `[${trace.errorCategory}] ` : ""}
-                  {trace.errorMessage ?? "工具调用失败"}
-                </p>
-              )}
-              {trace.resultPreview && (
-                <pre className="tool-trace-preview">{trace.resultPreview}</pre>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-/* ── Action payload fields ────────────────────────────────── */
-function ActionPayloadFields({
-  action,
-  messageId,
-  onPlanUpdate,
-}: {
-  action: ActionProposal;
-  messageId: string;
-  onPlanUpdate: (
-    messageId: string,
-    updater: (p: OrchestrationPlan) => OrchestrationPlan
-  ) => void;
-}) {
-  const disabled = action.status === "running";
-
-  if (action.type === "apply_patch") {
-    return (
-      <div className="action-grid">
-        <div className="action-field action-wide">
-          <span>差异预览</span>
-          <DiffViewer patch={action.payload.patch} />
-        </div>
-
-        <div className="action-field action-wide">
-          <details className="patch-raw-details">
-            <summary>Raw Patch（高级）</summary>
-            <textarea
-              className="input action-textarea"
-              disabled={disabled}
-              value={action.payload.patch}
-              onChange={(e) =>
-                onPlanUpdate(messageId, (p) =>
-                  updateActionPayload(p, action.id, { patch: e.target.value })
-                )
-              }
-            />
-          </details>
-        </div>
-      </div>
-    );
-  }
-
-  if (action.type === "shell") {
-    const meta = action.executionResult?.metadata as
-      | Record<string, unknown>
-      | undefined;
-    const hasShellOutput = action.executionResult && meta?.stdout !== undefined;
-    return (
-      <div className="action-grid">
-        <div className="action-field action-wide">
-          <span>命令</span>
-          <code className="action-command-preview">
-            {action.payload.shell || "(empty command)"}
-          </code>
-        </div>
-        {hasShellOutput && (
-          <div className="action-field action-wide">
-            <ShellResultDisplay
-              command={String(meta?.command || action.payload.shell)}
-              exitCode={Number(meta?.status ?? -1)}
-              stdout={String(meta?.stdout ?? "")}
-              stderr={String(meta?.stderr ?? "")}
-              timedOut={Boolean(meta?.timed_out)}
-            />
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  return null;
-}
-
-/* ── Inline Plan + HITL Actions ───────────────────────────── */
-function InlinePlan({
-  plan,
-  messageId,
-  executingActionId,
-  onPlanUpdate,
-  onApprove,
-  onReject,
-  onComment,
-  onApproveAll,
-  onRejectAll,
-}: {
-  plan: OrchestrationPlan;
-  messageId: string;
-  executingActionId: string;
-  onPlanUpdate: (
-    messageId: string,
-    updater: (p: OrchestrationPlan) => OrchestrationPlan
-  ) => void;
-  onApprove: (
-    messageId: string,
-    actionId: string,
-    plan: OrchestrationPlan
-  ) => Promise<void>;
-  onReject: (messageId: string, actionId: string) => void;
-  onComment: (messageId: string, actionId: string) => void;
-  onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
-  onRejectAll: (messageId: string) => void;
-}) {
-  const safePlan: OrchestrationPlan = {
-    ...plan,
-    steps: Array.isArray(plan.steps) ? plan.steps : [],
-    proposedActions: Array.isArray(plan.proposedActions)
-      ? plan.proposedActions
-      : [],
-  };
-
-  const allResolved =
-    safePlan.proposedActions.length > 0 &&
-    safePlan.proposedActions.every(
-      (a) => a.status !== "pending" && a.status !== "running"
-    );
-
-  const [expanded, setExpanded] = useState(!allResolved);
-
-  const prevAllResolved = useRef(allResolved);
-  useEffect(() => {
-    if (allResolved && !prevAllResolved.current) {
-      setExpanded(false);
-    }
-    prevAllResolved.current = allResolved;
-  }, [allResolved]);
-
-  const approvedCount = safePlan.proposedActions.filter(
-    (a) => a.status === "completed"
-  ).length;
-  const rejectedCount = safePlan.proposedActions.filter(
-    (a) => a.status === "rejected"
-  ).length;
-  const failedCount = safePlan.proposedActions.filter(
-    (a) => a.status === "failed"
-  ).length;
-  const pendingCount = safePlan.proposedActions.filter(
-    (a) => a.status === "pending"
-  ).length;
-
-  const stateLabel = allResolved ? "已完成" : safePlan.state;
-
-  return (
-    <div
-      className={`inline-plan${allResolved && !expanded ? " inline-plan-collapsed" : ""}`}
-    >
-      <div
-        onClick={() => setExpanded(!expanded)}
-        style={{
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          paddingBottom: expanded ? "8px" : "0",
-        }}
-      >
-        <span
-          style={{
-            fontSize: "11px",
-            transition: "transform 0.2s",
-            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-            color: "var(--text-3)",
-          }}
-        >
-          ▶
-        </span>
-        <p className="inline-plan-title" style={{ margin: 0 }}>
-          执行计划 · {stateLabel}
-        </p>
-        {!expanded && safePlan.proposedActions.length > 0 && (
-          <span className="plan-summary-badges">
-            {approvedCount > 0 && (
-              <span className="plan-badge plan-badge-approved">
-                ✓ {approvedCount}
-              </span>
-            )}
-            {rejectedCount > 0 && (
-              <span className="plan-badge plan-badge-rejected">
-                ✕ {rejectedCount}
-              </span>
-            )}
-            {failedCount > 0 && (
-              <span className="plan-badge plan-badge-failed">
-                ! {failedCount}
-              </span>
-            )}
-            {pendingCount > 0 && (
-              <span className="plan-badge plan-badge-pending">
-                {pendingCount} 待审批
-              </span>
-            )}
-          </span>
-        )}
-      </div>
-
-      {expanded && safePlan.steps.length > 0 && (
-        <ol
-          style={{
-            margin: 0,
-            paddingLeft: "1.4em",
-            display: "flex",
-            flexDirection: "column",
-            gap: "4px",
-          }}
-        >
-          {safePlan.steps.map((step) => (
-            <li key={step.id} className="plan-item">
-              <span style={{ color: "var(--text-2)", fontSize: "14px" }}>
-                {step.summary}
-              </span>
-            </li>
-          ))}
-        </ol>
-      )}
-
-      {expanded &&
-        safePlan.proposedActions.length > 0 &&
-        (() => {
-          const pendingPatchActions = safePlan.proposedActions.filter(
-            (
-              a
-            ): a is import("../../orchestrator/types").ApplyPatchActionProposal =>
-              a.status === "pending" && a.type === "apply_patch"
-          );
-
-          const groupIdToPatchActions = new Map<
-            string,
-            import("../../orchestrator/types").ApplyPatchActionProposal[]
-          >();
-          for (const action of pendingPatchActions) {
-            const groupId = action.group?.groupId;
-            if (!groupId) continue;
-            const list = groupIdToPatchActions.get(groupId) ?? [];
-            list.push(action);
-            groupIdToPatchActions.set(groupId, list);
-          }
-
-          const groupedPatchActions = Array.from(
-            groupIdToPatchActions.entries()
-          )
-            .map(([groupId, actions]) => ({ groupId, actions }))
-            .filter((g) => g.actions.length > 1);
-
-          const ungroupedActions = safePlan.proposedActions.filter((a) => {
-            if (a.type !== "apply_patch") return true;
-            return (
-              !a.group?.groupId ||
-              !(groupIdToPatchActions.get(a.group.groupId)?.length ?? 0) ||
-              (groupIdToPatchActions.get(a.group.groupId)?.length ?? 0) < 2
-            );
-          });
-
-          const getAffectedFiles = (
-            actions: import("../../orchestrator/types").ApplyPatchActionProposal[]
-          ): string[] =>
-            Array.from(
-              new Set(
-                actions.flatMap((a) => {
-                  const matches = a.payload.patch.match(
-                    /^diff --git a\/(.+?) b\//gm
-                  );
-                  if (matches) {
-                    return matches.map((m: string) =>
-                      m
-                        .replace(/^diff --git a\//, "")
-                        .replace(/ b\/$/, "")
-                        .trim()
-                    );
-                  }
-                  const descMatch = a.description.match(
-                    /(?:编辑|创建|修改|删除)\s+(.+?)(?:\s|$)/
-                  );
-                  return descMatch ? [descMatch[1]] : [];
-                })
-              )
-            );
-
-          const renderAtomicStatus = (
-            actions: import("../../orchestrator/types").ApplyPatchActionProposal[]
-          ) => {
-            const meta = actions[0]?.batchExec;
-            if (!meta) {
-              return (
-                <span style={{ marginLeft: "6px", opacity: 0.7 }}>
-                  (原子状态：未知)
-                </span>
-              );
-            }
-            if (meta.atomicEnabled) {
-              return (
-                <span style={{ marginLeft: "6px", opacity: 0.7 }}>
-                  (原子保护：已启用
-                  {meta.snapshotId ? ` · snapshot=${meta.snapshotId}` : ""})
-                </span>
-              );
-            }
-            return (
-              <span
-                style={{ marginLeft: "6px", color: "var(--color-warning)" }}
-              >
-                (原子保护已降级
-                {meta.degradedReason ? `：${meta.degradedReason}` : ""})
-              </span>
-            );
-          };
-
-          return (
-            <>
-              {/* Grouped patch actions: show as a single batch card */}
-              {groupedPatchActions.map((group) => {
-                const title = group.actions[0].group?.title ?? "批量变更";
-                const affectedFiles = getAffectedFiles(group.actions);
-                const rollbackMeta = group.actions[0].batchExec;
-                const rollbackBadge = rollbackMeta?.atomicRollbackAttempted
-                  ? rollbackMeta.atomicRollbackSuccess
-                    ? " · 回滚成功"
-                    : " · 回滚失败"
-                  : "";
-
-                return (
-                  <div key={group.groupId} style={{ marginBottom: "8px" }}>
-                    <div
-                      style={{
-                        fontSize: "13px",
-                        color: "var(--text-3)",
-                        marginBottom: "6px",
-                        padding: "8px 12px",
-                        background: "var(--surface-2)",
-                        borderRadius: "8px",
-                        lineHeight: "1.6",
-                        border: "1px solid var(--border-1)",
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          gap: "8px",
-                        }}
-                      >
-                        <div style={{ minWidth: 0 }}>
-                          <strong>{title}</strong>
-                          <span style={{ marginLeft: "6px", opacity: 0.7 }}>
-                            ({group.actions.length} 个 patch)
-                          </span>
-                          {renderAtomicStatus(group.actions)}
-                          {rollbackBadge && (
-                            <span style={{ marginLeft: "6px", opacity: 0.8 }}>
-                              {rollbackBadge}
-                            </span>
-                          )}
-                        </div>
-                        <div
-                          style={{ display: "flex", gap: "8px", flexShrink: 0 }}
-                        >
-                          <button
-                            className="btn btn-primary btn-sm"
-                            disabled={Boolean(executingActionId)}
-                            onClick={() => void onApproveAll(messageId, plan)}
-                            type="button"
-                          >
-                            ✓ 批量批准
-                          </button>
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            disabled={Boolean(executingActionId)}
-                            onClick={() => onRejectAll(messageId)}
-                            type="button"
-                          >
-                            ✕ 批量拒绝
-                          </button>
-                        </div>
-                      </div>
-
-                      {affectedFiles.length > 0 && (
-                        <div style={{ marginTop: "6px" }}>
-                          <div style={{ marginBottom: "4px" }}>
-                            涉及 {affectedFiles.length} 个文件
-                          </div>
-                          <div>
-                            {affectedFiles.map((f) => (
-                              <span
-                                key={f}
-                                style={{
-                                  display: "inline-block",
-                                  marginRight: "8px",
-                                  fontFamily: "monospace",
-                                  fontSize: "12px",
-                                }}
-                              >
-                                📄 {f}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      <details style={{ marginTop: "8px" }}>
-                        <summary style={{ cursor: "pointer" }}>
-                          展开查看每个 patch
-                        </summary>
-                        <ul
-                          className="action-list"
-                          style={{ marginTop: "8px" }}
-                        >
-                          {group.actions.map((action) => (
-                            <li key={action.id} className="action-item">
-                              <div className="action-header">
-                                <h4 className="action-title">{action.type}</h4>
-                                <span
-                                  className={actionStatusBadgeClass(
-                                    action.status
-                                  )}
-                                >
-                                  {action.status.toUpperCase()}
-                                </span>
-                              </div>
-                              <ActionPayloadFields
-                                action={action}
-                                messageId={messageId}
-                                onPlanUpdate={onPlanUpdate}
-                              />
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    </div>
-                  </div>
-                );
-              })}
-
-              {pendingCount > 1 && groupedPatchActions.length === 0 && (
-                <div style={{ marginBottom: "8px" }}>
-                  {(() => {
-                    const batchAffectedFiles =
-                      getAffectedFiles(pendingPatchActions);
-                    return (
-                      batchAffectedFiles.length > 0 && (
-                        <div
-                          style={{
-                            fontSize: "13px",
-                            color: "var(--text-3)",
-                            marginBottom: "6px",
-                            padding: "6px 10px",
-                            background: "var(--surface-2)",
-                            borderRadius: "6px",
-                            lineHeight: "1.6",
-                          }}
-                        >
-                          <strong>
-                            批量变更涉及 {batchAffectedFiles.length} 个文件
-                          </strong>
-                          {pendingPatchActions.length > 1 && (
-                            <span style={{ marginLeft: "4px", opacity: 0.7 }}>
-                              (原子执行：全部成功或全部回滚)
-                            </span>
-                          )}
-                          <div style={{ marginTop: "2px" }}>
-                            {batchAffectedFiles.map((f) => (
-                              <span
-                                key={f}
-                                style={{
-                                  display: "inline-block",
-                                  marginRight: "8px",
-                                  fontFamily: "monospace",
-                                  fontSize: "12px",
-                                }}
-                              >
-                                📄 {f}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    );
-                  })()}
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    <button
-                      className="btn btn-primary btn-sm"
-                      disabled={Boolean(executingActionId)}
-                      onClick={() => void onApproveAll(messageId, plan)}
-                      type="button"
-                    >
-                      ✓ 全部批准 ({pendingCount})
-                    </button>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      disabled={Boolean(executingActionId)}
-                      onClick={() => onRejectAll(messageId)}
-                      type="button"
-                    >
-                      ✕ 全部拒绝
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <ul className="action-list">
-                {ungroupedActions.map((action) => (
-                  <li key={action.id} className="action-item">
-                    <div className="action-header">
-                      <h4 className="action-title">{action.type}</h4>
-                      <span className={actionStatusBadgeClass(action.status)}>
-                        {action.status.toUpperCase()}
-                        {action.executed ? " · Executed" : ""}
-                      </span>
-                    </div>
-
-                    <ActionPayloadFields
-                      action={action}
-                      messageId={messageId}
-                      onPlanUpdate={onPlanUpdate}
-                    />
-
-                    {action.executionResult && (
-                      <p
-                        className={
-                          action.executionResult.success
-                            ? "status-success"
-                            : "status-error"
-                        }
-                      >
-                        {action.executionResult.message}
-                      </p>
-                    )}
-
-                    <div className="action-footer">
-                      <button
-                        className="btn btn-primary btn-sm"
-                        disabled={
-                          !canApproveAction(action) ||
-                          Boolean(executingActionId)
-                        }
-                        onClick={() =>
-                          void onApprove(messageId, action.id, plan)
-                        }
-                        type="button"
-                      >
-                        {executingActionId === action.id ? "执行中…" : "✓ 批准"}
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        disabled={
-                          !canReviewAction(action) || Boolean(executingActionId)
-                        }
-                        onClick={() => onReject(messageId, action.id)}
-                        type="button"
-                      >
-                        ✕ 拒绝
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        disabled={
-                          !canReviewAction(action) || Boolean(executingActionId)
-                        }
-                        onClick={() => onComment(messageId, action.id)}
-                        type="button"
-                      >
-                        💬 备注
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </>
-          );
-        })()}
-    </div>
-  );
-}
-
-/* ── Token Usage Ring ─────────────────────────────────────── */
-function TokenUsageRing({
-  used,
-  max,
-  isStreaming,
-}: {
-  used: number;
-  max: number;
-  isStreaming: boolean;
-}) {
-  const percentage = Math.min(100, Math.max(0, (used / max) * 100));
-  const size = 16;
-  const strokeWidth = 2;
-  const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference * (1 - percentage / 100);
-
-  // Color based on usage level
-  const getColor = () => {
-    if (percentage >= 90) return "var(--color-error)";
-    if (percentage >= 70) return "var(--color-warning)";
-    return "var(--color-success, #10b981)";
-  };
-
-  const formatTokens = (tokens: number) => {
-    if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
-    return String(tokens);
-  };
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "6px",
-        fontSize: "13px",
-        color: "var(--text-3)",
-      }}
-      title={`${isStreaming ? "预估" : "已用"} ${used.toLocaleString()} / ${max.toLocaleString()} tokens (${percentage.toFixed(1)}%)`}
-    >
-      <svg
-        width={size}
-        height={size}
-        style={{ transform: "rotate(-90deg)" }}
-      >
-        {/* Background circle */}
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke="var(--border-2, #333)"
-          strokeWidth={strokeWidth}
-        />
-        {/* Progress circle */}
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke={getColor()}
-          strokeWidth={strokeWidth}
-          strokeDasharray={circumference}
-          strokeDashoffset={strokeDashoffset}
-          strokeLinecap="round"
-          style={{
-            transition: isStreaming ? "none" : "stroke-dashoffset 0.3s ease",
-          }}
-        />
-      </svg>
-      <span>{formatTokens(used)}</span>
-    </div>
-  );
 }
 
 /* ── Main ChatPage ────────────────────────────────────────── */
@@ -1385,10 +321,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     setIsStreaming(false);
 
     // Reset session state
-    const previousSessionId = getChatSessionId();
-    resetChatSessionId();
-    resetHitlContinuationMemory(previousSessionId);
-    resetHitlContinuationMemory(getChatSessionId());
+    resetChatSessionState();
   }, [wsPath]);
 
   useEffect(
@@ -1468,18 +401,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     };
   }, []);
 
-  const collectBlockedActionFingerprints = (
-    plan: OrchestrationPlan
-  ): string[] =>
-    plan.proposedActions
-      .filter(
-        (action) =>
-          action.status === "completed" ||
-          action.status === "rejected" ||
-          action.status === "failed"
-      )
-      .map((action) => action.fingerprint ?? actionFingerprint(action));
-
   const continueAfterHitlIfNeeded = (
     messageId: string,
     plan: OrchestrationPlan
@@ -1543,20 +464,14 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     const { settings: executionSettings, selection: executionSelection, snapshots } =
       await buildExecutionSettings(settings, activeAgent, currentConversation);
 
-    let conversationForRun = currentConversation;
-    let convBinding = conversationForRun?.agentBinding ?? null;
-    if (!convBinding && conversationForRun && executionSelection) {
-      convBinding = createAgentBinding(
-        activeAgent.id,
-        executionSelection,
-        "default",
-        activeAgent.name,
-        snapshots,
-      );
-      conversationForRun = {
-        ...conversationForRun,
-        agentBinding: convBinding,
-      };
+    let conversationForRun = ensureConversationAgentBinding({
+      conversation: currentConversation,
+      selection: executionSelection,
+      snapshots,
+      activeAgent,
+    });
+    const convBinding = conversationForRun?.agentBinding;
+    if (conversationForRun && conversationForRun !== currentConversation) {
       skipNextTimestampRef.current = true;
       saveConversation(wsPath, conversationForRun);
       setCurrentConversation(conversationForRun);
@@ -1676,7 +591,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       const result = await runPlanningSession({
         prompt: promptText,
         settings: executionSettings,
-        agentId: currentConversation?.agentBinding ?? activeAgent.id,
+        agentId: convBinding ?? activeAgent.id,
         phase: options.phase,
         conversationHistory,
         isContinuation: options.isContinuation,
@@ -1756,31 +671,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       guardedSetMessages((prev) =>
         prev.map((m) => {
           if (m.id === assistantMessageId) {
-            let tool_calls: any[] | undefined = undefined;
-            if (
-              result.plan &&
-              result.plan.proposedActions &&
-              result.plan.proposedActions.length > 0
-            ) {
-              tool_calls = result.plan.proposedActions.map((action: any) => ({
-                id: action.toolCallId || action.id,
-                type: "function",
-                function: {
-                  name:
-                    action.toolName ||
-                    (action.type === "shell"
-                      ? "propose_shell"
-                      : "propose_file_edit"),
-                  arguments: JSON.stringify(action.payload),
-                },
-              }));
-            }
             return {
               ...m,
               content: result.assistantReply,
               plan: result.plan,
               toolTrace: result.toolTrace,
-              tool_calls,
+              tool_calls: buildToolCallsFromPlan(result.plan),
             };
           }
           return m;
@@ -2030,10 +926,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     if (isStreaming || Boolean(executingActionId)) return;
     if (!currentConversation) return;
 
-    const previousSessionId = getChatSessionId();
-    resetChatSessionId();
-    resetHitlContinuationMemory(previousSessionId);
-    resetHitlContinuationMemory(getChatSessionId());
+    resetChatSessionState();
 
     // Clear current conversation messages
     const clearedConversation: Conversation = {
@@ -2092,17 +985,11 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
     snapshotToBackground();
 
-    const selection = resolveConversationModelSelection(settings, activeAgent, null);
-    const resolvedSelection = selection
-      ? resolveManagedModelSelection(settings, selection)
-      : null;
-    const binding = selection
-      ? createAgentBinding(activeAgent.id, selection, "default", activeAgent.name, {
-          vendorName: resolvedSelection?.vendor.name,
-          modelName: resolvedSelection?.managedModel.name,
-        })
-      : undefined;
-    const newConv = createConversation(wsPath, [], binding);
+    const newConv = createConversation(
+      wsPath,
+      [],
+      createConversationAgentBinding(settings, activeAgent),
+    );
     skipNextTimestampRef.current = true;
     activeConversationIdRef.current = newConv.id;
     setCurrentConversation(newConv);
@@ -2116,10 +1003,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     setLiveToolCalls([]);
     setConversations(loadConversationList(wsPath));
 
-    const previousSessionId = getChatSessionId();
-    resetChatSessionId();
-    resetHitlContinuationMemory(previousSessionId);
-    resetHitlContinuationMemory(getChatSessionId());
+    resetChatSessionState();
   };
 
   const handleSelectConversation = (conversationId: string): void => {
@@ -2139,10 +1023,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
     restoreConversationView(conv);
 
-    const previousSessionId = getChatSessionId();
-    resetChatSessionId();
-    resetHitlContinuationMemory(previousSessionId);
-    resetHitlContinuationMemory(getChatSessionId());
+    resetChatSessionState();
   };
 
   const handleDeleteConversation = (conversationId: string): void => {
@@ -2172,10 +1053,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
           restoreConversationView(nextConversation);
 
-          const previousSessionId = getChatSessionId();
-          resetChatSessionId();
-          resetHitlContinuationMemory(previousSessionId);
-          resetHitlContinuationMemory(getChatSessionId());
+          resetChatSessionState();
         }
       } else {
         handleNewConversation();
