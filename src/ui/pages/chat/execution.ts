@@ -63,12 +63,21 @@ export async function buildExecutionSettings(
     activeAgent,
     currentConversation,
   );
+  if (
+    selection &&
+    !resolveManagedModelSelection(settings, {
+      vendorId: selection.vendorId,
+      modelId: selection.modelId,
+    })
+  ) {
+    throw new Error("Model selection is invalid. Please reselect a configured vendor/model.");
+  }
   const modelScopedSettings = selection
     ? syncRuntimeSettings({
-        ...settings,
-        activeVendorId: selection.vendorId,
-        activeModelId: selection.modelId,
-      })
+      ...settings,
+      activeVendorId: selection.vendorId,
+      activeModelId: selection.modelId,
+    })
     : settings;
   const resolvedSelection = resolveManagedModelSelection(modelScopedSettings, selection);
 
@@ -86,9 +95,9 @@ export async function buildExecutionSettings(
     selection,
     snapshots: resolvedSelection
       ? {
-          vendorName: resolvedSelection.vendor.name,
-          modelName: resolvedSelection.managedModel.name,
-        }
+        vendorName: resolvedSelection.vendor.name,
+        modelName: resolvedSelection.managedModel.name,
+      }
       : undefined,
     settings:
       apiKey === modelScopedSettings.apiKey
@@ -131,9 +140,9 @@ export function createConversationAgentBinding(
 
   return selection
     ? createAgentBinding(activeAgent.id, selection, "default", activeAgent.name, {
-        vendorName: resolvedSelection?.vendor.name,
-        modelName: resolvedSelection?.managedModel.name,
-      })
+      vendorName: resolvedSelection?.vendor.name,
+      modelName: resolvedSelection?.managedModel.name,
+    })
     : undefined;
 }
 
@@ -159,11 +168,11 @@ export function markActionExecutionError(
   const nextActions = plan.proposedActions.map((action) =>
     action.id === actionId
       ? {
-          ...action,
-          status: "failed" as const,
-          executed: false,
-          executionResult: { success: false, message: reason, timestamp },
-        }
+        ...action,
+        status: "failed" as const,
+        executed: false,
+        executionResult: { success: false, message: reason, timestamp },
+      }
       : action,
   );
   return { ...plan, state: "human_review", proposedActions: nextActions };

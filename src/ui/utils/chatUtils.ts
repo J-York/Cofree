@@ -17,12 +17,16 @@ export function formatTime(isoTime: string): string {
 export function actionStatusBadgeClass(status: string): string {
   if (status === "completed" || status === "success") return "badge badge-success";
   if (status === "failed" || status === "rejected") return "badge badge-error";
-  if (status === "running") return "badge badge-warning";
+  if (status === "running" || status === "pending_approval") return "badge badge-warning";
   return "badge badge-default";
 }
 
 export function canApproveAction(action: ActionProposal): boolean {
-  return action.status === "pending" || action.status === "failed";
+  return action.status === "pending";
+}
+
+export function canRetryAction(action: ActionProposal): boolean {
+  return action.type === "shell" && action.status === "failed";
 }
 
 export function canReviewAction(action: ActionProposal): boolean {
