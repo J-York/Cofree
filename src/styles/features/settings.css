@@ -313,7 +313,7 @@
 
 .vendor-model-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
@@ -339,6 +339,7 @@
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  align-self: flex-start;
 }
 
 .vendor-model-row.active {
@@ -350,7 +351,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
 }
 
 .vendor-model-row-name {
@@ -362,9 +363,59 @@
   white-space: nowrap;
 }
 
-.vendor-model-row-source {
+.vendor-model-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.vendor-model-row-source,
+.vendor-model-row-thinking-pill {
   font-size: 11px;
   color: var(--text-3);
+}
+
+.vendor-model-row-thinking-pill {
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--border-2);
+  background: var(--surface-1);
+}
+
+.vendor-model-row-thinking-pill.enabled {
+  color: var(--accent-solid);
+  border-color: rgba(99,102,241,0.22);
+  background: rgba(99,102,241,0.1);
+}
+
+.vendor-model-thinking-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.vendor-model-thinking-toggle {
+  flex-shrink: 0;
+}
+
+.vendor-model-thinking-level {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vendor-model-thinking-label {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.vendor-model-thinking-select {
+  min-width: 112px;
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 
 .settings-inline-feedback {
