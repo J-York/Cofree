@@ -51,6 +51,8 @@ export interface ApplyPatchPayload {
 export interface ShellPayload {
   shell: string;
   timeoutMs: number;
+  retryFromActionId?: string;
+  retryAttempt?: number;
 }
 
 interface ActionProposalBase {

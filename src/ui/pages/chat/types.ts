@@ -1,12 +1,13 @@
 import type { ChatMessageRecord } from "../../../lib/chatHistoryStore";
 import type { CategorizedError } from "../../../lib/errorClassifier";
+import type { ToolExecutionStatus } from "../../../orchestrator/planningService";
 import type { SubAgentProgressEvent } from "../../../orchestrator/types";
 
 export interface LiveToolCall {
   callId: string;
   toolName: string;
   argsPreview?: string;
-  status: "running" | "success" | "failed";
+  status: "running" | ToolExecutionStatus;
   resultPreview?: string;
 }
 
