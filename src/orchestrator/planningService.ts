@@ -14,6 +14,7 @@ import { DEFAULT_AGENTS } from "../agents/defaultAgents";
 import { recordLLMAudit } from "../lib/auditLog";
 import {
   createLiteLLMRequestBody,
+  isHighRiskToolCallingModelCombo,
   postLiteLLMChatCompletions,
   postLiteLLMChatCompletionsStream,
   type LiteLLMMessage,
@@ -158,6 +159,7 @@ const MAX_FETCH_PREVIEW_CHARS = 10000;
 const MAX_TOOL_RETRY = 2;
 const MAX_PATCH_REPAIR_ROUNDS = 1;
 const MAX_CREATE_HINT_REPAIR_ROUNDS = 1;
+const MAX_SHELL_DIALECT_REPAIR_ROUNDS = 1;
 const MAX_MULTI_ARTIFACT_REMINDER_ROUNDS = 2;
 const MAX_PROPOSED_ACTIONS_PER_BATCH = 5;
 
@@ -223,12 +225,15 @@ interface ToolCallRecord {
   };
 }
 
+export type ToolExecutionStatus = "success" | "failed" | "pending_approval";
+
 interface ToolExecutionResult {
   content: string;
   proposedAction?: ActionProposal;
   errorCategory?: ToolErrorCategory;
   errorMessage?: string;
   success?: boolean;
+  traceStatus?: ToolExecutionStatus;
 }
 
 interface ChatCompletionChoiceMessage {
@@ -521,7 +526,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "propose_shell",
       description:
-        "Propose a shell command execution action for HITL approval (does not execute). Supports full shell syntax including pipes, redirects, and chaining.\n\nExamples:\n- propose_shell(shell='npm install && npm test')\n- propose_shell(shell='rm -r old_dir')\n- propose_shell(shell='git add . && git commit -m \"Update\"')\n- propose_shell(shell='cargo build --release')\n\nThe command will be shown to the user for approval before execution.",
+        "Propose a shell command execution action for HITL approval (does not execute). Match the command to the real executor: on Windows this runs via PowerShell (`powershell -NoProfile -Command`), while on Unix it runs via `sh -c`. Supports pipes, redirects, and chaining within that shell dialect.\n\nExamples:\n- propose_shell(shell='npm install; npm test')\n- propose_shell(shell='New-Item -ItemType Directory -Force logs')\n- propose_shell(shell='Remove-Item -Recurse -Force old_dir')\n- propose_shell(shell='git add .; git commit -m \"Update\"')\n- propose_shell(shell='cargo build --release')\n\nIf propose_shell is auto-executed, the command runs immediately in the real shell. Read stderr carefully and retry with corrected syntax instead of repeating the same failing command.\n\nThe command will be shown to the user for approval before execution when approval is required.",
       parameters: {
         type: "object",
         required: ["shell"],
@@ -531,7 +536,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
             type: "string",
             minLength: 1,
             description:
-              "Full shell command string. Can use pipes (|), redirects (>, <), chaining (&&, ;), variables ($VAR), etc.",
+              "Full shell command string. On Windows prefer PowerShell syntax such as ';', New-Item, Remove-Item, and $env:NAME. On Unix use POSIX shell syntax.",
           },
           timeout_ms: {
             type: "number",
@@ -915,7 +920,7 @@ export interface ToolCallEvent {
   callId: string;
   toolName: string;
   argsPreview?: string;
-  result?: "success" | "failed";
+  result?: ToolExecutionStatus;
   resultPreview?: string;
 }
 
@@ -948,6 +953,7 @@ export interface PlanningSessionResult {
   assistantReply: string;
   plan: OrchestrationPlan;
   toolTrace: ToolExecutionTrace[];
+  assistantToolCalls?: LiteLLMMessage["tool_calls"];
   tokenUsage: {
     inputTokens: number;
     outputTokens: number;
@@ -980,7 +986,7 @@ export interface ToolExecutionTrace {
   startedAt: string;
   finishedAt: string;
   attempts: number;
-  status: "success" | "failed";
+  status: ToolExecutionStatus;
   retried: boolean;
   errorCategory?: ToolErrorCategory;
   errorMessage?: string;
@@ -1061,8 +1067,8 @@ function formatMessagesForSummary(msgs: LiteLLMMessage[]): string {
         msg.role === "user"
           ? "用户"
           : msg.role === "assistant"
-          ? "助手"
-          : msg.role;
+            ? "助手"
+            : msg.role;
       // Safely extract text from multimodal content (content may be an array
       // of {type:"text", text:"..."} objects in some providers).
       const text = normalizeMessageContent(msg.content);
@@ -1212,9 +1218,8 @@ async function requestSummary(
   const fallbackLines = userMessages
     .map((m) => m.content.slice(0, 100))
     .slice(0, 5);
-  const fallback = `[自动摘要] 之前的对话包含 ${
-    messagesToSummarize.length
-  } 条消息。用户主要请求：${fallbackLines.join("；")}`;
+  const fallback = `[自动摘要] 之前的对话包含 ${messagesToSummarize.length
+    } 条消息。用户主要请求：${fallbackLines.join("；")}`;
   summaryCache.set(cacheKey, fallback);
   return fallback;
 }
@@ -1618,6 +1623,70 @@ function resultPreview(content: string): string {
   return content.slice(0, MAX_TOOL_RESULT_PREVIEW);
 }
 
+function parseJsonObject(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function buildShellDialectRepairInstruction(
+  toolCall: ToolCallRecord,
+  toolResult: ToolExecutionResult,
+): string | null {
+  if (toolCall.function.name !== "propose_shell" || toolResult.success !== false) {
+    return null;
+  }
+
+  const args = parseJsonObject(toolCall.function.arguments);
+  const shell = typeof args?.shell === "string" ? args.shell.trim() : "";
+  if (!shell) {
+    return null;
+  }
+
+  const payload = parseJsonObject(toolResult.content);
+  if (payload?.auto_executed !== true) {
+    return null;
+  }
+
+  const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
+  const stdout = typeof payload.stdout === "string" ? payload.stdout : "";
+  const rawError = [toolResult.errorMessage, stderr, stdout]
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+  const normalizedError = rawError.toLowerCase();
+  const normalizedShell = shell.toLowerCase();
+  const usesDialectSpecificSyntax =
+    normalizedShell.includes("&&") || normalizedShell.includes("mkdir -p");
+  const looksLikePowerShellFailure = [
+    "parsererror",
+    "at line:",
+    "categoryinfo",
+    "fullyqualifiederrorid",
+    "not a valid statement separator",
+    "parameterbindingexception",
+    "positional parameter cannot be found that accepts argument '-p'",
+  ].some((marker) => normalizedError.includes(marker));
+
+  if (!usesDialectSpecificSyntax || !looksLikePowerShellFailure) {
+    return null;
+  }
+
+  return [
+    "系统提示：上一轮自动执行的 propose_shell 失败，错误看起来像 shell 方言不匹配。",
+    `失败命令：${shell}`,
+    `错误信息：${rawError.trim().slice(0, 1200) || "命令执行失败"}`,
+    "当前 Windows 执行器实际使用 PowerShell（powershell -NoProfile -Command）。不要重复使用 bash/cmd 风格写法如 mkdir -p 或 &&。",
+    "请保持任务目标不变，依据 stderr 改写为 PowerShell 语法后重新调用 propose_shell：创建目录用 New-Item -ItemType Directory -Force <目录>，命令串联用 ;，删除目录用 Remove-Item -Recurse -Force <路径>。",
+    "仅允许一次自动修复重试。",
+  ].join("\n");
+}
+
 /**
  * Generate a short human-readable preview of tool call arguments.
  */
@@ -1824,10 +1893,10 @@ export async function executeSubAgentTask(
   // Inject shared Working Memory context (at most 15% of token budget)
   const memoryContext = workingMemory
     ? serializeWorkingMemory(
-        workingMemory,
-        Math.floor(promptBudgetTarget * 0.15),
-        role as SubAgentRole,
-      )
+      workingMemory,
+      Math.floor(promptBudgetTarget * 0.15),
+      role as SubAgentRole,
+    )
     : "";
 
   const subAgentSystemPrompt = [
@@ -1988,7 +2057,7 @@ export async function executeSubAgentTask(
       });
       console.log(
         `[SubAgent][Tool] ${toolCall.function.name} → ${trace.status} | ${subToolMs}ms` +
-          (trace.status === "failed" ? ` | ${trace.errorMessage}` : "")
+        (trace.status === "failed" ? ` | ${trace.errorMessage}` : "")
       );
       toolTrace.push(trace);
 
@@ -2166,13 +2235,11 @@ async function fetchPostPatchDiagnostics(
     const relevantDiagnostics = result.diagnostics.slice(0, 10);
     const lines = relevantDiagnostics.map(
       (d) =>
-        `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${
-          d.message
+        `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${d.message
         }`
     );
-    const summary = `[诊断反馈 via ${result.tool_used}] 发现 ${
-      result.diagnostics.length
-    } 个问题:\n${lines.join("\n")}`;
+    const summary = `[诊断反馈 via ${result.tool_used}] 发现 ${result.diagnostics.length
+      } 个问题:\n${lines.join("\n")}`;
     return { hasDiagnostics: true, summary };
   } catch {
     return { hasDiagnostics: false, summary: "" };
@@ -2272,7 +2339,7 @@ async function executeToolCall(
         endLine,
         ignorePatterns:
           projectConfig?.ignorePatterns &&
-          projectConfig.ignorePatterns.length > 0
+            projectConfig.ignorePatterns.length > 0
             ? projectConfig.ignorePatterns
             : null,
       });
@@ -2299,8 +2366,8 @@ async function executeToolCall(
           truncated: wasTruncated,
           ...(wasTruncated
             ? {
-                hint: `文件共 ${result.total_lines} 行，当前内容被截断。请用 start_line/end_line 分段读取剩余部分。`,
-              }
+              hint: `文件共 ${result.total_lines} 行，当前内容被截断。请用 start_line/end_line 分段读取剩余部分。`,
+            }
             : {}),
         }),
         success: true,
@@ -2365,7 +2432,7 @@ async function executeToolCall(
         maxResults,
         ignorePatterns:
           projectConfig?.ignorePatterns &&
-          projectConfig.ignorePatterns.length > 0
+            projectConfig.ignorePatterns.length > 0
             ? projectConfig.ignorePatterns
             : null,
       });
@@ -2407,7 +2474,7 @@ async function executeToolCall(
         maxResults,
         ignorePatterns:
           projectConfig?.ignorePatterns &&
-          projectConfig.ignorePatterns.length > 0
+            projectConfig.ignorePatterns.length > 0
             ? projectConfig.ignorePatterns
             : null,
       });
@@ -2640,10 +2707,10 @@ async function executeToolCall(
           existingContent === null
             ? buildCreateFilePatch(relativePath, createContent)
             : buildReplacementPatch(
-                relativePath,
-                existingContent,
-                createContent
-              );
+              relativePath,
+              existingContent,
+              createContent
+            );
         responseMeta.created = existingContent === null;
         responseMeta.overwrite = overwrite;
       } else {
@@ -3030,12 +3097,19 @@ async function executeToolCall(
       action.fingerprint = actionFingerprint(action);
       return {
         content: JSON.stringify({
-          ok: true,
           action_type: "shell",
           action_id: action.id,
           shell,
+          timeout_ms: timeout,
+          approval_required: true,
+          proposal_created: true,
+          execution_state: "pending_approval",
+          command_executed: false,
+          action_status: action.status,
+          message: "Shell 命令已创建待审批动作，尚未执行。",
         }),
         success: true,
+        traceStatus: "pending_approval",
         proposedAction: action,
       };
     }
@@ -3222,8 +3296,8 @@ async function executeToolCall(
     if (call.function.name === "diagnostics") {
       const changedFiles = Array.isArray(args.changed_files)
         ? (args.changed_files as string[])
-            .map((f) => String(f).trim())
-            .filter(Boolean)
+          .map((f) => String(f).trim())
+          .filter(Boolean)
         : undefined;
       const result = await invoke<{
         success: boolean;
@@ -3252,8 +3326,7 @@ async function executeToolCall(
         .slice(0, 50)
         .map(
           (d) =>
-            `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${
-              d.message
+            `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${d.message
             }`
         )
         .join("\n");
@@ -3386,6 +3459,9 @@ async function executeToolCallWithRetry(
       signal,
     );
     const success = current.success !== false;
+    const traceStatus: ToolExecutionStatus = success
+      ? current.traceStatus ?? "success"
+      : "failed";
     const errorCategory =
       current.errorCategory ?? (success ? undefined : "unknown");
     const errorMessage =
@@ -3395,6 +3471,7 @@ async function executeToolCallWithRetry(
       success,
       errorCategory,
       errorMessage,
+      traceStatus,
     };
 
     if (success) {
@@ -3407,7 +3484,7 @@ async function executeToolCallWithRetry(
           startedAt,
           finishedAt: nowIso(),
           attempts,
-          status: "success",
+          status: traceStatus,
           retried: attempts > 1,
           resultPreview: resultPreview(current.content),
         },
@@ -3492,9 +3569,9 @@ export async function requestToolCompletion(
   const outTok = payload.usage?.completion_tokens;
   console.log(
     `[LLM] 收到响应 | ${elapsed}s | toolCalls=${toolCalls.length}` +
-      (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
-      (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
-      ` | id=${requestId}`
+    (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
+    (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
+    ` | id=${requestId}`
   );
 
   const assistantMessage: LiteLLMMessage = {
@@ -3579,9 +3656,9 @@ async function requestToolCompletionWithStream(
   const outTok = payload.usage?.completion_tokens;
   console.log(
     `[LLM] 收到响应 | ${elapsed}s | toolCalls=${toolCalls.length}` +
-      (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
-      (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
-      ` | id=${requestId}`
+    (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
+    (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
+    ` | id=${requestId}`
   );
 
   const assistantMessage: LiteLLMMessage = {
@@ -3604,6 +3681,100 @@ async function requestToolCompletionWithStream(
   };
 }
 
+function hasPreviousAssistantToolCalls(messages: LiteLLMMessage[]): boolean {
+  return messages.some(
+    (message) => message.role === "assistant" && (message.tool_calls?.length ?? 0) > 0,
+  );
+}
+
+function shouldFallbackToNonStreamingForToolTurn(error: unknown): boolean {
+  const raw = error instanceof Error ? error.message : String(error);
+  const normalized = raw.toLowerCase();
+  return /(?:^|\D)(502|503|504)(?:\D|$)/.test(normalized) ||
+    normalized.includes("bad gateway") ||
+    normalized.includes("gateway") ||
+    normalized.includes("server error") ||
+    normalized.includes("upstream");
+}
+
+async function executeToolCompletionForTurn(
+  messages: LiteLLMMessage[],
+  settings: AppSettings,
+  activeTools: LiteLLMToolDefinition[],
+  turn: number,
+  signal?: AbortSignal,
+  onChunk?: (content: string) => void,
+): Promise<{
+  completion: {
+    assistantMessage: LiteLLMMessage;
+    toolCalls: ToolCallRecord[];
+    droppedToolCalls: number;
+    requestRecord: RequestRecord;
+  };
+  requestMode: "stream" | "nonstream";
+  highRisk: boolean;
+  highRiskReasons: string[];
+  fallbackTriggered: boolean;
+}> {
+  const highRiskReasons: string[] = [];
+  if (hasPreviousAssistantToolCalls(messages)) {
+    highRiskReasons.push("previous_assistant_tool_calls");
+  }
+  if (isHighRiskToolCallingModelCombo(settings)) {
+    highRiskReasons.push("anthropic_openai_chat_compat");
+  }
+  const highRisk = highRiskReasons.length > 0;
+  const requestMode: "stream" | "nonstream" = highRisk ? "nonstream" : "stream";
+
+  console.log(
+    `[Loop][Mode] turn=${turn + 1} | mode=${requestMode} | highRisk=${highRisk}` +
+    ` | reasons=${highRiskReasons.length ? highRiskReasons.join(",") : "none"}`,
+  );
+
+  if (requestMode === "nonstream") {
+    const completion = await requestToolCompletion(messages, settings, activeTools, signal);
+    return {
+      completion,
+      requestMode,
+      highRisk,
+      highRiskReasons,
+      fallbackTriggered: false,
+    };
+  }
+
+  try {
+    const completion = await requestToolCompletionWithStream(
+      messages,
+      settings,
+      activeTools,
+      signal,
+      onChunk,
+    );
+    return {
+      completion,
+      requestMode,
+      highRisk,
+      highRiskReasons,
+      fallbackTriggered: false,
+    };
+  } catch (error) {
+    if (!shouldFallbackToNonStreamingForToolTurn(error)) {
+      throw error;
+    }
+    console.warn(
+      `[Loop][Fallback] turn=${turn + 1} | from=stream | to=nonstream | reason=${error instanceof Error ? error.message : String(error)}`,
+    );
+    const completion = await requestToolCompletion(messages, settings, activeTools, signal);
+    return {
+      completion,
+      requestMode: "nonstream",
+      highRisk,
+      highRiskReasons,
+      fallbackTriggered: true,
+    };
+  }
+}
+
 async function runNativeToolCallingLoop(
   prompt: string,
   settings: AppSettings,
@@ -3624,6 +3795,7 @@ async function runNativeToolCallingLoop(
   requestRecords: RequestRecord[];
   proposedActions: ActionProposal[];
   toolTrace: ToolExecutionTrace[];
+  assistantToolCalls?: LiteLLMMessage["tool_calls"];
 }> {
   const agentToolCtx = selectAgentTools(runtime, buildAgentToolDefs(runtime));
   const activeTools = agentToolCtx.visibleToolDefs;
@@ -3632,14 +3804,14 @@ async function runNativeToolCallingLoop(
   const basePermissions = runtime.toolPermissions as unknown as ToolPermissions;
   const toolPermissions: ToolPermissions = projectConfig?.toolPermissions
     ? ({
-        ...basePermissions,
-        ...projectConfig.toolPermissions,
-      } as ToolPermissions)
+      ...basePermissions,
+      ...projectConfig.toolPermissions,
+    } as ToolPermissions)
     : basePermissions;
   const patchRepairInstruction =
     "请读取必要文件片段后，重新调用 propose_file_edit。";
   const createPathRepairInstruction =
-    "若目标是新建文件，请调用 propose_file_edit 并设置 operation='create'；若目录不存在，可先调用 propose_shell 执行 mkdir -p <目录>。";
+    "若目标是新建文件，请调用 propose_file_edit 并设置 operation='create'；若目录不存在，可先调用 propose_shell 创建目录。Windows/PowerShell 下使用 New-Item -ItemType Directory -Force <目录>；Unix 下可用 mkdir -p <目录>。";
   const agentSystemPrompt = assembleSystemPrompt(runtime);
   const runtimeContext = assembleRuntimeContext(runtime, settings.workspacePath);
   const requestedArtifactCount =
@@ -3654,15 +3826,15 @@ async function runNativeToolCallingLoop(
     { role: "system", content: runtimeContext },
     ...(blockedFingerprints.length > 0
       ? [
-          {
-            role: "system" as const,
-            content: [
-              "系统提示：以下动作指纹已在之前轮次执行或处理完成，禁止再次提出相同动作。",
-              ...blockedFingerprints.map((fingerprint) => `- ${fingerprint}`),
-              "如果没有新的必要动作，请直接给出最终总结。",
-            ].join("\n"),
-          },
-        ]
+        {
+          role: "system" as const,
+          content: [
+            "系统提示：以下动作指纹已在之前轮次执行或处理完成，禁止再次提出相同动作。",
+            ...blockedFingerprints.map((fingerprint) => `- ${fingerprint}`),
+            "如果没有新的必要动作，请直接给出最终总结。",
+          ].join("\n"),
+        },
+      ]
       : []),
     ...(internalSystemNote?.trim()
       ? [{ role: "system" as const, content: internalSystemNote.trim() }]
@@ -3672,20 +3844,22 @@ async function runNativeToolCallingLoop(
     // Some providers degrade tool-calling behavior or stop early when the last turn is system-only.
     ...(isContinuation
       ? [
-          {
-            role: "system" as const,
-            content: `[任务上下文] 用户的原始请求是："${prompt}"。本轮是自动续跑（continuation），请基于已完成的工作继续完成剩余交付物。如果所有交付物均已完成，直接简短汇报。`,
-          },
-          { role: "user" as const, content: prompt },
-        ]
+        {
+          role: "system" as const,
+          content: `[任务上下文] 用户的原始请求是："${prompt}"。本轮是自动续跑（continuation），请基于已完成的工作继续完成剩余交付物。如果所有交付物均已完成，直接简短汇报。`,
+        },
+        { role: "user" as const, content: prompt },
+      ]
       : [{ role: "user" as const, content: prompt }]),
   ];
 
   const requestRecords: RequestRecord[] = [];
   const proposedActions: ActionProposal[] = [];
   const toolTrace: ToolExecutionTrace[] = [];
+  let lastAssistantToolCalls: LiteLLMMessage["tool_calls"] | undefined;
   let patchRepairRounds = 0;
   let createHintRepairRounds = 0;
+  let shellDialectRepairRounds = 0;
   let multiArtifactReminderRounds = 0;
   let toolNotFoundStrikes = 0;
   let consecutiveFailureTurns = 0;
@@ -3742,13 +3916,12 @@ async function runNativeToolCallingLoop(
         requestRecords,
         proposedActions,
         toolTrace,
+        assistantToolCalls: lastAssistantToolCalls,
       };
     }
 
     const estTokens = estimateTokensForMessages(messages);
-    console.log(
-      `[Loop] ── Turn ${turn + 1} ── messages=${messages.length} | ~${estTokens} tokens`
-    );
+    console.log(`[Loop] ── Turn ${turn + 1} ── messages=${messages.length} | ~${estTokens} tokens`);
 
     if (turn === TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD) {
       messages.push({
@@ -3770,22 +3943,41 @@ async function runNativeToolCallingLoop(
     if (compression.compressed && compression.messages !== messages) {
       const beforeLen = messages.length;
       messages.splice(0, messages.length, ...compression.messages);
+      const afterTokens = estimateTokensForMessages(messages);
       console.log(
-        `[Loop] 上下文压缩: ${beforeLen} → ${messages.length} messages | ~${estimateTokensForMessages(messages)} tokens`
+        `[Loop] 上下文压缩: ${beforeLen} → ${messages.length} messages | ~${afterTokens} tokens`
       );
     }
     onContextUpdate?.(estimateTokensForMessages(messages));
 
 
-    const completion = await requestToolCompletionWithStream(
-      messages,
-      settings,
-      activeTools,
-      signal,
-      onAssistantChunk
-    );
+    let completion;
+    try {
+      const turnRequest = await executeToolCompletionForTurn(
+        messages,
+        settings,
+        activeTools,
+        turn,
+        signal,
+        onAssistantChunk,
+      );
+      completion = turnRequest.completion;
+      console.log(
+        `[Loop][ModeResult] turn=${turn + 1} | mode=${turnRequest.requestMode} | highRisk=${turnRequest.highRisk} | fallback=${turnRequest.fallbackTriggered}` +
+        ` | reasons=${turnRequest.highRiskReasons.length ? turnRequest.highRiskReasons.join(",") : "none"}`,
+      );
+    } catch (error) {
+      const currentTokens = estimateTokensForMessages(messages);
+      console.error(
+        `[Loop][Failure] tool completion failed | turn=${turn + 1} | ~tokens=${currentTokens} | messages=${messages.length} | model=${settings.model} | error=${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
     requestRecords.push(completion.requestRecord);
     messages.push(completion.assistantMessage);
+    if (completion.assistantMessage.tool_calls?.length) {
+      lastAssistantToolCalls = completion.assistantMessage.tool_calls;
+    }
 
     // P1-3: Update token calibration with actual API-reported values (per-model).
     if (completion.requestRecord.inputTokens) {
@@ -3813,6 +4005,8 @@ async function runNativeToolCallingLoop(
         requestRecords,
         proposedActions,
         toolTrace,
+        assistantToolCalls:
+          completion.assistantMessage.tool_calls ?? lastAssistantToolCalls,
       };
     }
 
@@ -3823,6 +4017,7 @@ async function runNativeToolCallingLoop(
 
     let patchPreflightFailure: string | null = null;
     let createPathUsageFailure: string | null = null;
+    let shellDialectRepairInstruction: string | null = null;
     let turnHasToolNotFound = false;
     let turnSuccessCount = 0;
     let turnFailureCount = 0;
@@ -3873,8 +4068,8 @@ async function runNativeToolCallingLoop(
 
       console.log(
         `[Tool] ${toolCall.function.name} → ${trace.status} | ${toolMs}ms` +
-          (trace.retried ? ` (retried ×${trace.attempts})` : "") +
-          (trace.status === "failed" ? ` | ${trace.errorCategory}: ${trace.errorMessage}` : "")
+        (trace.retried ? ` (retried ×${trace.attempts})` : "") +
+        (trace.status === "failed" ? ` | ${trace.errorCategory}: ${trace.errorMessage}` : "")
       );
 
       return { toolCall, toolResult, trace };
@@ -3933,6 +4128,13 @@ async function runNativeToolCallingLoop(
       ) {
         createPathUsageFailure = toolResult.errorMessage ?? "目标路径不存在";
       }
+      const shellRepairHint = buildShellDialectRepairInstruction(
+        toolCall,
+        toolResult,
+      );
+      if (shellRepairHint) {
+        shellDialectRepairInstruction = shellRepairHint;
+      }
       if (toolResult.proposedAction) {
         proposedActions.push(toolResult.proposedAction);
       }
@@ -3978,7 +4180,8 @@ async function runNativeToolCallingLoop(
     }
 
     // Notify caller of updated context size after all tool results are added
-    onContextUpdate?.(estimateTokensForMessages(messages));
+    const postToolTokens = estimateTokensForMessages(messages);
+    onContextUpdate?.(postToolTokens);
 
     // --- Circuit breaker: tool_not_found ---
     if (turnHasToolNotFound) {
@@ -4055,6 +4258,19 @@ async function runNativeToolCallingLoop(
           `错误信息：${createPathUsageFailure}`,
           createPathRepairInstruction,
         ].join("\n"),
+      });
+      continue;
+    }
+
+    if (
+      !proposedActions.length &&
+      shellDialectRepairInstruction &&
+      shellDialectRepairRounds < MAX_SHELL_DIALECT_REPAIR_ROUNDS
+    ) {
+      shellDialectRepairRounds += 1;
+      messages.push({
+        role: "system",
+        content: shellDialectRepairInstruction,
       });
       continue;
     }
@@ -4155,17 +4371,32 @@ function buildProposedActions(
   for (const action of fromTools) {
     const validationError = validateProposedAction(action);
     if (validationError) {
+      console.warn(
+        `[Planning][ProposedActions] Dropping invalid proposed action | type=${action.type} | action=${action.id} | reason=${validationError}`
+      );
       continue;
     }
 
     const fingerprint = actionFingerprint(action);
+
     if (blocked.has(fingerprint)) {
+      console.warn(
+        `[Planning][ProposedActions] Dropping blocked proposed action | type=${action.type} | action=${action.id} | fingerprint=${fingerprint}`
+      );
       continue;
     }
+
     if (seen.has(fingerprint)) {
+      console.warn(
+        `[Planning][ProposedActions] Dropping duplicate proposed action | type=${action.type} | action=${action.id} | fingerprint=${fingerprint}`
+      );
       continue;
     }
+
     seen.add(fingerprint);
+    if (!action.fingerprint) {
+      action.fingerprint = fingerprint;
+    }
     uniqueActions.push(action);
   }
 
@@ -4292,17 +4523,45 @@ function stripApprovalCardClaims(text: string): string {
   return kept.join("").trim();
 }
 
+const MISSING_APPROVAL_CARD_MESSAGE =
+  "工具已创建待审批动作，但审批卡片未能保留。请检查工具调用详情与日志。";
+
+function hasPendingApprovalTrace(toolTrace: ToolExecutionTrace[]): boolean {
+  return toolTrace.some((trace) => trace.status === "pending_approval");
+}
+
 function reconcileAssistantReply(params: {
   assistantReply: string;
   proposedActions: ActionProposal[];
   toolTrace: ToolExecutionTrace[];
+  assistantToolCalls?: LiteLLMMessage["tool_calls"];
 }): string {
-  const { assistantReply, proposedActions, toolTrace } = params;
+  const { assistantReply, proposedActions, toolTrace, assistantToolCalls } = params;
   const normalized = assistantReply.trim();
+  const hasAssistantToolCalls = (assistantToolCalls?.length ?? 0) > 0;
+  const hasPendingApprovalToolCall = hasPendingApprovalTrace(toolTrace);
 
   if (!normalized) {
+    if (hasAssistantToolCalls) {
+      if (proposedActions.length > 0) {
+        return "模型已请求工具调用，并已生成待审批动作，请查看下方工具调用与审批卡片。";
+      }
+      if (hasPendingApprovalToolCall) {
+        return MISSING_APPROVAL_CARD_MESSAGE;
+      }
+      if (toolTrace.length > 0) {
+        const hasSuccess = toolTrace.some((t) => t.status === "success");
+        return hasSuccess
+          ? "已完成工具调用，请查看下方工具调用详情。"
+          : "模型已请求工具调用，请查看下方工具调用详情。";
+      }
+      return "模型已请求工具调用，请查看下方工具调用详情。";
+    }
     if (proposedActions.length > 0) {
       return "已生成待审批动作，请查看下方审批卡片。";
+    }
+    if (hasPendingApprovalToolCall) {
+      return MISSING_APPROVAL_CARD_MESSAGE;
     }
     // 兜底：有工具调用但LLM未返回文本（弱模型常见）
     if (toolTrace.length > 0) {
@@ -4319,8 +4578,16 @@ function reconcileAssistantReply(params: {
   // 反向修正：LLM 文本声称生成了审批卡片，但实际 proposedActions 为空
   if (proposedActions.length === 0 && containsApprovalCardClaim(normalized)) {
     const cleaned = stripApprovalCardClaims(normalized);
+    if (hasPendingApprovalToolCall) {
+      return cleaned
+        ? `${cleaned}\n\n${MISSING_APPROVAL_CARD_MESSAGE}`
+        : MISSING_APPROVAL_CARD_MESSAGE;
+    }
     if (cleaned) {
       return cleaned;
+    }
+    if (hasAssistantToolCalls) {
+      return "模型已请求工具调用，请查看下方工具调用详情。";
     }
     if (toolTrace.length > 0) {
       const hasSuccess = toolTrace.some((t) => t.status === "success");
@@ -4331,6 +4598,10 @@ function reconcileAssistantReply(params: {
     return "处理完成。";
   }
 
+  if (hasPendingApprovalToolCall && proposedActions.length === 0) {
+    return `${normalized}\n\n${MISSING_APPROVAL_CARD_MESSAGE}`;
+  }
+
   if (!containsCapabilityDenial(normalized)) {
     return normalized;
   }
@@ -4338,7 +4609,7 @@ function reconcileAssistantReply(params: {
   const hasSuccessfulToolCall = toolTrace.some(
     (trace) => trace.status === "success"
   );
-  if (!hasSuccessfulToolCall) {
+  if (!hasSuccessfulToolCall && !hasPendingApprovalToolCall) {
     return normalized;
   }
 
@@ -4346,8 +4617,22 @@ function reconcileAssistantReply(params: {
     return "已生成待审批动作，请查看下方审批卡片。";
   }
 
+  if (hasPendingApprovalToolCall) {
+    return MISSING_APPROVAL_CARD_MESSAGE;
+  }
+
+  if (hasAssistantToolCalls) {
+    return "模型已请求工具调用，请查看下方工具调用详情。";
+  }
+
   return normalized;
 }
+
+export const planningServiceTestUtils = {
+  executeToolCall,
+  buildProposedActions,
+  reconcileAssistantReply,
+};
 
 function assertLocalOnlyPolicy(settings: AppSettings): void {
   if (settings.allowCloudModels) {
@@ -4519,10 +4804,10 @@ export async function runPlanningSession(
     const sessionElapsed = ((performance.now() - sessionT0) / 1000).toFixed(2);
     console.log(
       `[Planning] ═══ 会话完成 ═══ | ${sessionElapsed}s` +
-        ` | turns=${loopResult.requestRecords.length}` +
-        ` | tools=${loopResult.toolTrace.length}` +
-        ` | actions=${loopResult.proposedActions.length}` +
-        ` | in≈${totalInputTokens} out≈${totalOutputTokens}`
+      ` | turns=${loopResult.requestRecords.length}` +
+      ` | tools=${loopResult.toolTrace.length}` +
+      ` | actions=${loopResult.proposedActions.length}` +
+      ` | in≈${totalInputTokens} out≈${totalOutputTokens}`
     );
 
     const proposedActions = buildProposedActions(
@@ -4534,16 +4819,32 @@ export async function runPlanningSession(
       input.settings,
       proposedActions
     );
+    const assistantToolCalls =
+      loopResult.assistantToolCalls ??
+      (proposedActions.length > 0
+        ? proposedActions.map((action) => ({
+          id: action.toolCallId || action.id,
+          type: "function" as const,
+          function: {
+            name:
+              action.toolName ||
+              (action.type === "shell" ? "propose_shell" : "propose_file_edit"),
+            arguments: JSON.stringify(action.payload),
+          },
+        }))
+        : undefined);
     const assistantReply = reconcileAssistantReply({
       assistantReply: loopResult.assistantReply,
       proposedActions,
       toolTrace: loopResult.toolTrace,
+      assistantToolCalls,
     });
 
     return {
       assistantReply,
       plan,
       toolTrace: loopResult.toolTrace,
+      assistantToolCalls,
       tokenUsage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
     };
   } catch (error) {
@@ -4560,6 +4861,7 @@ export async function runPlanningSession(
       assistantReply: `服务员暂时无法完成本轮工具调用，请稍后重试。\n\n**错误详情**：\n\`\`\`\n${errorMessage}\n\`\`\``,
       plan: fallbackPlan,
       toolTrace: [],
+      assistantToolCalls: undefined,
       tokenUsage: { inputTokens: 0, outputTokens: 0 },
     };
   }

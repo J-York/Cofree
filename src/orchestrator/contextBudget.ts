@@ -337,11 +337,12 @@ export function mergeConsecutiveToolMessages(
       if (assistantIdx >= 0 && msg.tool_call_id) {
         const assistant = result[assistantIdx];
         if (assistant.tool_calls) {
+          const filteredToolCalls = assistant.tool_calls.filter(
+            (tc) => tc.id !== msg.tool_call_id,
+          );
           result[assistantIdx] = {
             ...assistant,
-            tool_calls: assistant.tool_calls.filter(
-              (tc) => tc.id !== msg.tool_call_id,
-            ),
+            tool_calls: filteredToolCalls,
           };
         }
       }

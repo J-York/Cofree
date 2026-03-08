@@ -84,7 +84,9 @@ function normalizeToolTrace(value: unknown): ToolExecutionTrace[] {
       typeof record.startedAt !== "string" ||
       typeof record.finishedAt !== "string" ||
       typeof record.attempts !== "number" ||
-      (record.status !== "success" && record.status !== "failed") ||
+      (record.status !== "success" &&
+        record.status !== "failed" &&
+        record.status !== "pending_approval") ||
       typeof record.retried !== "boolean"
     ) {
       continue;
@@ -139,7 +141,7 @@ export function loadChatHistory(): ChatMessageRecord[] {
       const content = typeof record.content === "string" ? record.content : "";
       const id = typeof record.id === "string" ? record.id : "";
       const createdAt = typeof record.createdAt === "string" ? record.createdAt : "";
-      
+
       let tool_calls;
       if (Array.isArray(record.tool_calls)) {
         tool_calls = record.tool_calls.filter(tc => tc && typeof tc === "object" && typeof tc.id === "string");

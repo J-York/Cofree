@@ -78,6 +78,67 @@ function createExecutionResult(
   };
 }
 
+function pickShellFailureMessage(payload: CommandExecutionResult): string {
+  const stderr = payload.stderr.trim();
+  const stdout = payload.stdout.trim();
+  const preferredOutput = stderr || stdout;
+
+  if (payload.timed_out) {
+    return preferredOutput
+      ? `命令执行超时：${preferredOutput}`
+      : `命令执行超时（exit ${payload.status}）`;
+  }
+
+  if (preferredOutput) {
+    return preferredOutput;
+  }
+
+  return `命令执行失败（exit ${payload.status}）`;
+}
+
+function nextShellRetryAttempt(action: ActionProposal): number {
+  if (action.type !== "shell") {
+    return 0;
+  }
+  return typeof action.payload.retryAttempt === "number"
+    ? action.payload.retryAttempt + 1
+    : 1;
+}
+
+export function retryFailedShellAction(
+  plan: OrchestrationPlan,
+  actionId: string
+): OrchestrationPlan {
+  const sourceAction = plan.proposedActions.find(
+    (action) => action.id === actionId && action.type === "shell" && action.status === "failed"
+  );
+  if (!sourceAction || sourceAction.type !== "shell") {
+    return plan;
+  }
+
+  const retryAttempt = nextShellRetryAttempt(sourceAction);
+  const retryAction: ActionProposal = {
+    ...sourceAction,
+    id: `retry-${sourceAction.id}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    status: "pending",
+    executed: false,
+    executionResult: undefined,
+    payload: {
+      ...sourceAction.payload,
+      retryFromActionId: sourceAction.id,
+      retryAttempt,
+    },
+  };
+
+  return {
+    ...plan,
+    state: "human_review",
+    proposedActions: plan.proposedActions.map((action) =>
+      action.id === actionId ? retryAction : action
+    ),
+  };
+}
+
 export function deriveWorkflowState(actions: ActionProposal[]): WorkflowState {
   if (actions.some((action) => action.status === "running")) {
     return "executing";
@@ -377,10 +438,10 @@ export async function approveAllPendingActions(
         const groupId = a.group?.groupId;
         const nextBatchExec = groupId
           ? {
-              ...(a.batchExec ?? { atomicEnabled: false }),
-              atomicRollbackAttempted: true,
-              atomicRollbackSuccess: rollback.success,
-            }
+            ...(a.batchExec ?? { atomicEnabled: false }),
+            atomicRollbackAttempted: true,
+            atomicRollbackSuccess: rollback.success,
+          }
           : a.batchExec;
 
         return {
@@ -481,8 +542,7 @@ export async function approveAction(
         );
         result = createExecutionResult(
           false,
-          `${payload.message}${
-            rollback.success ? "（已自动回滚）" : "（自动回滚失败）"
+          `${payload.message}${rollback.success ? "（已自动回滚）" : "（自动回滚失败）"
           }`,
           {
             files: payload.files,
@@ -508,13 +568,15 @@ export async function approveAction(
     });
     result = createExecutionResult(
       payload.success,
-      payload.success ? "命令执行成功" : "命令执行失败",
+      payload.success ? "命令执行成功" : pickShellFailureMessage(payload),
       {
         command: action.payload.shell,
         timedOut: payload.timed_out,
         status: payload.status,
         stdout: payload.stdout,
         stderr: payload.stderr,
+        retryFromActionId: action.payload.retryFromActionId,
+        retryAttempt: action.payload.retryAttempt,
       }
     );
   }

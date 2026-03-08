@@ -30,17 +30,17 @@ export const DEFAULT_MAX_HITL_CONTINUATION_ROUNDS = 10;
 
 export type HitlContinuationDecision =
   | {
-      kind: "continue";
-      memory: HitlContinuationMemory;
-      prompt: string;
-      internalSystemNote: string;
-      toolReplayMessages: ToolReplayMessage[];
-    }
+    kind: "continue";
+    memory: HitlContinuationMemory;
+    prompt: string;
+    internalSystemNote: string;
+    toolReplayMessages: ToolReplayMessage[];
+  }
   | {
-      kind: "stop";
-      memory: HitlContinuationMemory;
-      reason: string;
-    };
+    kind: "stop";
+    memory: HitlContinuationMemory;
+    reason: string;
+  };
 
 function hasPendingOrRunningActions(plan: OrchestrationPlan): boolean {
   return plan.proposedActions.some((action) => action.status === "pending" || action.status === "running");
@@ -120,8 +120,14 @@ function ensureFingerprint(action: ActionProposal): string {
 
 function buildContinuationKey(plan: OrchestrationPlan): string {
   const executedFingerprints = plan.proposedActions
-    .filter((action) => action.status === "completed" && action.executed)
-    .map((action) => ensureFingerprint(action))
+    .filter((action) => (action.status === "completed" && action.executed) || action.status === "failed")
+    .map((action) => {
+      const retryAttempt =
+        action.type === "shell" && typeof action.payload.retryAttempt === "number"
+          ? `::retry-${action.payload.retryAttempt}`
+          : "";
+      return `${ensureFingerprint(action)}${retryAttempt}`;
+    })
     .sort();
   return `${plan.prompt.trim()}::${executedFingerprints.join(";;")}`;
 }

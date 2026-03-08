@@ -226,6 +226,164 @@ fn anthropic_usage_to_openai(usage: &Value) -> Value {
     })
 }
 
+struct AnthropicStreamState {
+    full_content: String,
+    finish_reason: Option<String>,
+    tool_calls_json: Vec<Value>,
+    usage_info: Value,
+}
+
+impl AnthropicStreamState {
+    fn new() -> Self {
+        Self {
+            full_content: String::new(),
+            finish_reason: None,
+            tool_calls_json: Vec::new(),
+            usage_info: zero_usage(),
+        }
+    }
+}
+
+fn resolve_anthropic_stream_event_name<'a>(current_event: &'a str, parsed: &'a Value) -> &'a str {
+    if !current_event.trim().is_empty() {
+        return current_event;
+    }
+    parsed
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+fn serialize_tool_call_arguments(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(text) => Some(text.to_string()),
+        _ => serde_json::to_string(value).ok(),
+    }
+    .filter(|text| !text.trim().is_empty())
+}
+
+fn populate_anthropic_tool_call_from_block(
+    tool_calls_json: &mut Vec<Value>,
+    block_index: usize,
+    block: &Value,
+) {
+    if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+        return;
+    }
+
+    let entry = ensure_tool_call_entry(tool_calls_json, block_index);
+    append_tool_call_delta(
+        entry,
+        block.get("id").and_then(Value::as_str),
+        block.get("name").and_then(Value::as_str),
+        None,
+    );
+
+    if let Some(arguments) = block.get("input").and_then(serialize_tool_call_arguments) {
+        set_tool_call_arguments(entry, &arguments);
+    }
+}
+
+fn apply_anthropic_stream_event(
+    state: &mut AnthropicStreamState,
+    current_event: &str,
+    parsed: &Value,
+) -> Vec<String> {
+    let event_name = resolve_anthropic_stream_event_name(current_event, parsed);
+    let mut emitted_chunks: Vec<String> = Vec::new();
+
+    match event_name {
+        "message_start" => {
+            if let Some(message) = parsed.get("message") {
+                if let Some(usage) = message.get("usage") {
+                    state.usage_info = anthropic_usage_to_openai(usage);
+                }
+                if let Some(content_blocks) = message.get("content").and_then(Value::as_array) {
+                    for (block_index, block) in content_blocks.iter().enumerate() {
+                        if let Some(text) = block.get("text").and_then(Value::as_str) {
+                            state.full_content.push_str(text);
+                            emitted_chunks.push(text.to_string());
+                        }
+                        populate_anthropic_tool_call_from_block(
+                            &mut state.tool_calls_json,
+                            block_index,
+                            block,
+                        );
+                    }
+                }
+            }
+        }
+        "content_block_start" => {
+            let block_index = parsed.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if let Some(content_block) = parsed.get("content_block") {
+                populate_anthropic_tool_call_from_block(
+                    &mut state.tool_calls_json,
+                    block_index,
+                    content_block,
+                );
+            }
+        }
+        "content_block_delta" => {
+            let block_index = parsed.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if let Some(delta) = parsed.get("delta") {
+                if let Some(text) = delta.get("text").and_then(Value::as_str) {
+                    state.full_content.push_str(text);
+                    emitted_chunks.push(text.to_string());
+                }
+
+                if delta.get("id").is_some()
+                    || delta.get("name").is_some()
+                    || delta.get("partial_json").is_some()
+                    || delta.get("input").is_some()
+                    || delta.get("arguments").is_some()
+                {
+                    let entry = ensure_tool_call_entry(&mut state.tool_calls_json, block_index);
+                    append_tool_call_delta(
+                        entry,
+                        delta.get("id").and_then(Value::as_str),
+                        delta.get("name").and_then(Value::as_str),
+                        delta.get("partial_json").and_then(Value::as_str),
+                    );
+                    if let Some(arguments) = delta
+                        .get("input")
+                        .and_then(serialize_tool_call_arguments)
+                        .or_else(|| delta.get("arguments").and_then(serialize_tool_call_arguments))
+                    {
+                        set_tool_call_arguments(entry, &arguments);
+                    }
+                }
+            }
+        }
+        "content_block_stop" => {
+            let block_index = parsed.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if let Some(content_block) = parsed.get("content_block") {
+                populate_anthropic_tool_call_from_block(
+                    &mut state.tool_calls_json,
+                    block_index,
+                    content_block,
+                );
+            }
+        }
+        "message_delta" => {
+            if let Some(delta) = parsed.get("delta") {
+                if let Some(stop_reason) = delta.get("stop_reason").and_then(Value::as_str) {
+                    state.finish_reason = Some(stop_reason.to_string());
+                }
+            }
+            if let Some(stop_reason) = parsed.get("stop_reason").and_then(Value::as_str) {
+                state.finish_reason = Some(stop_reason.to_string());
+            }
+            if let Some(usage) = parsed.get("usage") {
+                state.usage_info = merge_anthropic_usage(&state.usage_info, usage);
+            }
+        }
+        _ => {}
+    }
+
+    emitted_chunks
+}
+
 fn merge_anthropic_usage(existing: &Value, delta: &Value) -> Value {
     let prompt_tokens = delta
         .get("input_tokens")
@@ -477,10 +635,7 @@ async fn parse_anthropic_messages_stream(
     request_id: &str,
 ) -> Result<String, String> {
     let mut current_event = String::new();
-    let mut full_content = String::new();
-    let mut finish_reason: Option<String> = None;
-    let mut tool_calls_json: Vec<Value> = Vec::new();
-    let mut usage_info: Value = zero_usage();
+    let mut state = AnthropicStreamState::new();
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
 
@@ -503,97 +658,22 @@ async fn parse_anthropic_messages_stream(
                 continue;
             }
             if raw_line == "data: [DONE]" {
-                emit_stream_chunk_event(app, request_id, "", true, finish_reason.clone());
+                emit_stream_chunk_event(app, request_id, "", true, state.finish_reason.clone());
                 continue;
             }
             if let Some(data) = raw_line.strip_prefix("data: ") {
                 if let Ok(parsed) = serde_json::from_str::<Value>(data) {
-                    match current_event.as_str() {
-                        "message_start" => {
-                            if let Some(usage) = parsed.get("message").and_then(|m| m.get("usage"))
-                            {
-                                usage_info = anthropic_usage_to_openai(usage);
-                            }
-                        }
-                        "content_block_start" => {
-                            let block_index =
-                                parsed.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                            if let Some(content_block) = parsed.get("content_block") {
-                                if content_block.get("type").and_then(Value::as_str)
-                                    == Some("tool_use")
-                                {
-                                    let entry =
-                                        ensure_tool_call_entry(&mut tool_calls_json, block_index);
-                                    append_tool_call_delta(
-                                        entry,
-                                        content_block.get("id").and_then(Value::as_str),
-                                        content_block.get("name").and_then(Value::as_str),
-                                        None,
-                                    );
-                                }
-                            }
-                        }
-                        "content_block_delta" => {
-                            let block_index =
-                                parsed.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                            if let Some(delta) = parsed.get("delta") {
-                                match delta
-                                    .get("type")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                {
-                                    "text_delta" => {
-                                        if let Some(text) =
-                                            delta.get("text").and_then(Value::as_str)
-                                        {
-                                            full_content.push_str(text);
-                                            emit_stream_chunk_event(
-                                                app, request_id, text, false, None,
-                                            );
-                                        }
-                                    }
-                                    "input_json_delta" => {
-                                        if let Some(partial_json) =
-                                            delta.get("partial_json").and_then(Value::as_str)
-                                        {
-                                            let entry = ensure_tool_call_entry(
-                                                &mut tool_calls_json,
-                                                block_index,
-                                            );
-                                            append_tool_call_delta(
-                                                entry,
-                                                None,
-                                                None,
-                                                Some(partial_json),
-                                            );
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        "message_delta" => {
-                            if let Some(delta) = parsed.get("delta") {
-                                if let Some(stop_reason) =
-                                    delta.get("stop_reason").and_then(Value::as_str)
-                                {
-                                    finish_reason = Some(stop_reason.to_string());
-                                }
-                            }
-                            if let Some(usage) = parsed.get("usage") {
-                                usage_info = merge_anthropic_usage(&usage_info, usage);
-                            }
-                        }
-                        "message_stop" => {
-                            emit_stream_chunk_event(
-                                app,
-                                request_id,
-                                "",
-                                true,
-                                finish_reason.clone(),
-                            );
-                        }
-                        _ => {}
+                    for chunk in apply_anthropic_stream_event(&mut state, &current_event, &parsed) {
+                        emit_stream_chunk_event(app, request_id, &chunk, false, None);
+                    }
+                    if resolve_anthropic_stream_event_name(&current_event, &parsed) == "message_stop" {
+                        emit_stream_chunk_event(
+                            app,
+                            request_id,
+                            "",
+                            true,
+                            state.finish_reason.clone(),
+                        );
                     }
                 }
             }
@@ -601,10 +681,10 @@ async fn parse_anthropic_messages_stream(
     }
 
     Ok(build_synthetic_stream_body(
-        full_content,
-        finish_reason,
-        tool_calls_json,
-        usage_info,
+        state.full_content,
+        state.finish_reason,
+        state.tool_calls_json,
+        state.usage_info,
     ))
 }
 
@@ -745,4 +825,139 @@ pub async fn post_litellm_chat_completions_stream(
         "请求 streaming chat/completions 失败: {}",
         errors.join(" | ")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synthetic_payload_from_state(state: AnthropicStreamState) -> Value {
+        serde_json::from_str(&build_synthetic_stream_body(
+            state.full_content,
+            state.finish_reason,
+            state.tool_calls_json,
+            state.usage_info,
+        ))
+        .expect("synthetic payload should be valid JSON")
+    }
+
+    #[test]
+    fn reconstructs_tool_use_when_event_name_only_exists_in_payload_type() {
+        let mut state = AnthropicStreamState::new();
+
+        apply_anthropic_stream_event(
+            &mut state,
+            "",
+            &serde_json::json!({
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 12,
+                        "output_tokens": 0
+                    }
+                }
+            }),
+        );
+        apply_anthropic_stream_event(
+            &mut state,
+            "",
+            &serde_json::json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_123",
+                    "name": "read_file",
+                    "input": {
+                        "relative_path": "src/App.tsx"
+                    }
+                }
+            }),
+        );
+        apply_anthropic_stream_event(
+            &mut state,
+            "",
+            &serde_json::json!({
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": "tool_use"
+                },
+                "usage": {
+                    "output_tokens": 7
+                }
+            }),
+        );
+
+        let payload = synthetic_payload_from_state(state);
+        assert_eq!(
+            payload["choices"][0]["message"]["tool_calls"],
+            serde_json::json!([
+                {
+                    "id": "toolu_123",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": "{\"relative_path\":\"src/App.tsx\"}"
+                    }
+                }
+            ])
+        );
+        assert_eq!(payload["choices"][0]["message"]["content"], Value::String(String::new()));
+        assert_eq!(payload["choices"][0]["finish_reason"], Value::String("tool_use".to_string()));
+        assert_eq!(payload["usage"]["prompt_tokens"], Value::from(12));
+        assert_eq!(payload["usage"]["completion_tokens"], Value::from(7));
+    }
+
+    #[test]
+    fn reconstructs_tool_use_from_partial_json_without_delta_type() {
+        let mut state = AnthropicStreamState::new();
+
+        apply_anthropic_stream_event(
+            &mut state,
+            "content_block_start",
+            &serde_json::json!({
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_456",
+                    "name": "grep"
+                }
+            }),
+        );
+        apply_anthropic_stream_event(
+            &mut state,
+            "content_block_delta",
+            &serde_json::json!({
+                "index": 0,
+                "delta": {
+                    "partial_json": "{\"pattern\":\"tool_call\",\"path\":\"src\"}"
+                }
+            }),
+        );
+        apply_anthropic_stream_event(
+            &mut state,
+            "message_delta",
+            &serde_json::json!({
+                "delta": {
+                    "stop_reason": "tool_use"
+                }
+            }),
+        );
+
+        let payload = synthetic_payload_from_state(state);
+        assert_eq!(
+            payload["choices"][0]["message"]["tool_calls"],
+            serde_json::json!([
+                {
+                    "id": "toolu_456",
+                    "type": "function",
+                    "function": {
+                        "name": "grep",
+                        "arguments": "{\"pattern\":\"tool_call\",\"path\":\"src\"}"
+                    }
+                }
+            ])
+        );
+        assert_eq!(payload["choices"][0]["message"]["content"], Value::String(String::new()));
+    }
 }

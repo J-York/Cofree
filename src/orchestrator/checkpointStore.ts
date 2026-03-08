@@ -95,12 +95,12 @@ function sanitizePlanForCheckpoint(plan: OrchestrationPlan): OrchestrationPlan {
           fingerprint: typeof action.fingerprint === "string" ? action.fingerprint : undefined,
           executionResult: action.executionResult
             ? {
-                ...action.executionResult,
-                message: redactSensitiveText(action.executionResult.message, 240),
-                metadata: (sanitizeForPersistence(action.executionResult.metadata) as
-                  | Record<string, unknown>
-                  | undefined)
-              }
+              ...action.executionResult,
+              message: redactSensitiveText(action.executionResult.message, 240),
+              metadata: (sanitizeForPersistence(action.executionResult.metadata) as
+                | Record<string, unknown>
+                | undefined)
+            }
             : undefined,
           payload: {
             patch: shouldRetainPatchBody
@@ -118,12 +118,12 @@ function sanitizePlanForCheckpoint(plan: OrchestrationPlan): OrchestrationPlan {
           fingerprint: typeof action.fingerprint === "string" ? action.fingerprint : undefined,
           executionResult: action.executionResult
             ? {
-                ...action.executionResult,
-                message: redactSensitiveText(action.executionResult.message, 240),
-                metadata: (sanitizeForPersistence(action.executionResult.metadata) as
-                  | Record<string, unknown>
-                  | undefined)
-              }
+              ...action.executionResult,
+              message: redactSensitiveText(action.executionResult.message, 240),
+              metadata: (sanitizeForPersistence(action.executionResult.metadata) as
+                | Record<string, unknown>
+                | undefined)
+            }
             : undefined,
           payload: {
             ...action.payload,
@@ -184,7 +184,9 @@ function normalizeToolTrace(value: unknown): ToolExecutionTrace[] {
       typeof record.startedAt !== "string" ||
       typeof record.finishedAt !== "string" ||
       typeof record.attempts !== "number" ||
-      (record.status !== "success" && record.status !== "failed") ||
+      (record.status !== "success" &&
+        record.status !== "failed" &&
+        record.status !== "pending_approval") ||
       typeof record.retried !== "boolean"
     ) {
       continue;

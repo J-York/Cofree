@@ -6,6 +6,7 @@
 
 import {
   type AppSettings,
+  type ManagedModelThinkingLevel,
   type VendorProtocol,
   getActiveManagedModel,
   getActiveVendor,
@@ -145,10 +146,10 @@ function buildProtocolEndpoints(
     resource === "models"
       ? "models"
       : protocol === "openai-chat-completions"
-      ? "chat/completions"
-      : protocol === "openai-responses"
-      ? "responses"
-      : "messages";
+        ? "chat/completions"
+        : protocol === "openai-responses"
+          ? "responses"
+          : "messages";
 
   const endpoints = [`${normalized}/${suffix}`];
   if (!normalized.endsWith("/v1")) {
@@ -243,6 +244,475 @@ function extractErrorMessage(payload: unknown): string {
   return "";
 }
 
+const LLM_DEBUG_PREVIEW_MAX_CHARS = 2000;
+const LLM_DEBUG_RECENT_ITEMS = 6;
+
+function hasOwnField(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function createLlmDebugId(): string {
+  return `llm-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function nowMs(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function elapsedMs(startedAt: number): number {
+  const current = typeof performance !== "undefined" ? performance.now() : Date.now();
+  return Math.max(0, Math.round(current - startedAt));
+}
+
+function truncateDebugText(
+  value: string,
+  maxLength = LLM_DEBUG_PREVIEW_MAX_CHARS
+): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength)}…(truncated ${value.length - maxLength} chars)`;
+}
+
+function serializeDebugValue(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? truncateDebugText(trimmed) : null;
+  }
+  if (value == null) {
+    return null;
+  }
+  try {
+    return truncateDebugText(JSON.stringify(value));
+  } catch (_error) {
+    return truncateDebugText(String(value));
+  }
+}
+
+function tryParseJson(raw: string): unknown | null {
+  if (!raw.trim()) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(
+    new Set(
+      values.filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0
+      )
+    )
+  );
+}
+
+function summarizeBlockKinds(content: unknown): string[] {
+  if (typeof content === "string") {
+    return content.trim() ? ["text"] : ["empty"];
+  }
+  if (Array.isArray(content)) {
+    return uniqueStrings(
+      content.map((item) => {
+        if (typeof item === "string") {
+          return item.trim() ? "text" : "empty";
+        }
+        if (isRecord(item) && typeof item.type === "string") {
+          return item.type;
+        }
+        return item == null ? null : typeof item;
+      })
+    );
+  }
+  if (isRecord(content)) {
+    if (typeof content.type === "string") {
+      return [content.type];
+    }
+    return ["object"];
+  }
+  return content == null ? [] : [typeof content];
+}
+
+function summarizeRoleAndBlocks(message: unknown): string | null {
+  if (!isRecord(message)) {
+    return null;
+  }
+  const role = typeof message.role === "string" ? message.role : "unknown";
+  const parts = [...summarizeBlockKinds(message.content)];
+  const toolCallCount = Array.isArray(message.tool_calls) ? message.tool_calls.length : 0;
+  if (toolCallCount > 0) {
+    parts.push(`tool_calls:${toolCallCount}`);
+  }
+  if (typeof message.tool_call_id === "string" && message.tool_call_id.trim()) {
+    parts.push("tool_result");
+  }
+  return parts.length ? `${role}:${parts.join("+")}` : role;
+}
+
+function summarizeResponsesInputItem(item: unknown): string | null {
+  if (!isRecord(item)) {
+    return null;
+  }
+  const type = typeof item.type === "string" ? item.type : "";
+  if (type === "message") {
+    const role = typeof item.role === "string" ? item.role : "message";
+    const kinds = summarizeBlockKinds(item.content);
+    return kinds.length ? `${role}:${kinds.join("+")}` : role;
+  }
+  if (!type && typeof item.role === "string") {
+    const kinds = summarizeBlockKinds(item.content);
+    return kinds.length ? `${item.role}:${kinds.join("+")}` : item.role;
+  }
+  if (type === "function_call") {
+    return "assistant:function_call";
+  }
+  if (type === "function_call_output") {
+    return "tool:function_call_output";
+  }
+  return type || null;
+}
+
+function summarizeToolChoiceValue(toolChoice: unknown): string | null {
+  if (typeof toolChoice === "string") {
+    return toolChoice;
+  }
+  if (!isRecord(toolChoice)) {
+    return null;
+  }
+  if (
+    toolChoice.type === "function" &&
+    isRecord(toolChoice.function) &&
+    typeof toolChoice.function.name === "string"
+  ) {
+    return `function:${toolChoice.function.name}`;
+  }
+  if (typeof toolChoice.type === "string" && typeof toolChoice.name === "string") {
+    return `${toolChoice.type}:${toolChoice.name}`;
+  }
+  if (typeof toolChoice.type === "string") {
+    return toolChoice.type;
+  }
+  return serializeDebugValue(toolChoice);
+}
+
+function summarizeOptionalConfig(value: unknown): string | null {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (isRecord(value)) {
+    if (typeof value.type === "string" && typeof value.budget_tokens === "number") {
+      return `${value.type}:${value.budget_tokens}`;
+    }
+    if (typeof value.effort === "string") {
+      return `effort:${value.effort}`;
+    }
+    if (
+      typeof value.type === "string" &&
+      isRecord(value.function) &&
+      typeof value.function.name === "string"
+    ) {
+      return `${value.type}:${value.function.name}`;
+    }
+    if (typeof value.type === "string" && typeof value.name === "string") {
+      return `${value.type}:${value.name}`;
+    }
+  }
+  return serializeDebugValue(value);
+}
+
+function summarizeRequestMessages(
+  protocol: VendorProtocol,
+  body: Record<string, unknown>
+): {
+  messageCount: number;
+  systemPresent: boolean;
+  recentMessages: string[];
+} {
+  if (protocol === "openai-responses") {
+    const input = Array.isArray(body.input) ? body.input : [];
+    return {
+      messageCount: input.length,
+      systemPresent: input.some(
+        (item) => isRecord(item) && item.type === "message" && item.role === "system"
+      ),
+      recentMessages: input
+        .slice(-LLM_DEBUG_RECENT_ITEMS)
+        .map(summarizeResponsesInputItem)
+        .filter((item): item is string => Boolean(item)),
+    };
+  }
+
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const systemPresent =
+    protocol === "anthropic-messages"
+      ? (typeof body.system === "string" && body.system.trim().length > 0) ||
+      (Array.isArray(body.system) && body.system.length > 0)
+      : messages.some((message) => isRecord(message) && message.role === "system");
+
+  return {
+    messageCount: messages.length,
+    systemPresent,
+    recentMessages: messages
+      .slice(-LLM_DEBUG_RECENT_ITEMS)
+      .map(summarizeRoleAndBlocks)
+      .filter((item): item is string => Boolean(item)),
+  };
+}
+
+function summarizeUsage(usage: unknown): Record<string, number> | undefined {
+  if (!isRecord(usage)) {
+    return undefined;
+  }
+  const fields: Record<string, number> = {};
+  const usageFields = [
+    "input_tokens",
+    "output_tokens",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+  ] as const;
+
+  for (const field of usageFields) {
+    const value = usage[field];
+    if (typeof value === "number") {
+      fields[field] = value;
+    }
+  }
+
+  return Object.keys(fields).length > 0 ? fields : undefined;
+}
+
+function summarizeResponseBody(
+  protocol: VendorProtocol,
+  rawBody: string
+): {
+  responseId?: string;
+  stopReason?: string;
+  finishReason?: string;
+  responseState?: string;
+  outputSummary?: string[];
+  toolCallCount?: number;
+  usage?: Record<string, number>;
+  errorMessage?: string;
+  bodyPreview?: string;
+} {
+  const parsed = tryParseJson(rawBody);
+  if (!isRecord(parsed)) {
+    return {
+      bodyPreview: serializeDebugValue(rawBody) ?? undefined,
+    };
+  }
+
+  const responseId = typeof parsed.id === "string" ? parsed.id : undefined;
+  const usage = summarizeUsage(parsed.usage);
+  const errorMessage = extractErrorMessage(parsed) || undefined;
+
+  if (protocol === "anthropic-messages") {
+    const content = Array.isArray(parsed.content) ? parsed.content : [];
+    const outputSummary = uniqueStrings(
+      content.map((item) =>
+        isRecord(item) && typeof item.type === "string" ? item.type : null
+      )
+    );
+    const toolCallCount = content.filter(
+      (item) => isRecord(item) && item.type === "tool_use"
+    ).length;
+    return {
+      responseId,
+      stopReason: typeof parsed.stop_reason === "string" ? parsed.stop_reason : undefined,
+      outputSummary: outputSummary.length ? outputSummary : undefined,
+      toolCallCount: toolCallCount > 0 ? toolCallCount : undefined,
+      usage,
+      errorMessage,
+    };
+  }
+
+  if (protocol === "openai-responses") {
+    const output = Array.isArray(parsed.output) ? parsed.output : [];
+    const outputSummary = uniqueStrings(
+      output.map((item) =>
+        isRecord(item) && typeof item.type === "string" ? item.type : null
+      )
+    );
+    const toolCallCount = output.filter(
+      (item) => isRecord(item) && item.type === "function_call"
+    ).length;
+    return {
+      responseId,
+      responseState: typeof parsed.status === "string" ? parsed.status : undefined,
+      outputSummary: outputSummary.length ? outputSummary : undefined,
+      toolCallCount: toolCallCount > 0 ? toolCallCount : undefined,
+      usage,
+      errorMessage,
+    };
+  }
+
+  const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
+  const firstChoice = isRecord(choices[0]) ? choices[0] : null;
+  const message = firstChoice && isRecord(firstChoice.message) ? firstChoice.message : null;
+  const outputSummary = message ? summarizeBlockKinds(message.content) : [];
+
+  return {
+    responseId,
+    stopReason:
+      firstChoice && typeof firstChoice.stop_reason === "string"
+        ? firstChoice.stop_reason
+        : undefined,
+    finishReason:
+      firstChoice && typeof firstChoice.finish_reason === "string"
+        ? firstChoice.finish_reason
+        : undefined,
+    outputSummary: outputSummary.length ? outputSummary : undefined,
+    toolCallCount:
+      message && Array.isArray(message.tool_calls) && message.tool_calls.length > 0
+        ? message.tool_calls.length
+        : undefined,
+    usage,
+    errorMessage,
+  };
+}
+
+function summarizeErrorPreview(rawBody: string): string | undefined {
+  const parsed = tryParseJson(rawBody);
+  if (parsed != null) {
+    return serializeDebugValue(parsed) ?? undefined;
+  }
+  return serializeDebugValue(rawBody) ?? undefined;
+}
+
+function getEndpointPath(endpoint: string): string {
+  try {
+    return new URL(endpoint).pathname || endpoint;
+  } catch (_error) {
+    return endpoint;
+  }
+}
+
+function logLlmRequest(params: {
+  requestId: string;
+  transport: "tauri" | "fetch";
+  protocol: VendorProtocol;
+  endpointCandidates: string[];
+  body: Record<string, unknown>;
+}): void {
+  const requestSummary = summarizeRequestMessages(params.protocol, params.body);
+  const tools = Array.isArray(params.body.tools) ? params.body.tools : [];
+
+  console.log("[LLM][Request]", {
+    requestId: params.requestId,
+    transport: params.transport,
+    protocol: params.protocol,
+    endpointCandidates: params.endpointCandidates,
+    endpointPaths: params.endpointCandidates.map(getEndpointPath),
+    model: typeof params.body.model === "string" ? params.body.model : undefined,
+    stream: params.body.stream === true,
+    hasTools: tools.length > 0,
+    toolCount: tools.length,
+    toolChoice: summarizeToolChoiceValue(params.body.tool_choice),
+    hasToolChoice: hasOwnField(params.body, "tool_choice"),
+    hasThinking: hasOwnField(params.body, "thinking"),
+    thinking: summarizeOptionalConfig(params.body.thinking),
+    hasReasoning: hasOwnField(params.body, "reasoning"),
+    reasoning: summarizeOptionalConfig(params.body.reasoning),
+    hasReasoningEffort: hasOwnField(params.body, "reasoning_effort"),
+    reasoningEffort: summarizeOptionalConfig(params.body.reasoning_effort),
+    hasOutputConfig: hasOwnField(params.body, "output_config"),
+    outputConfig: summarizeOptionalConfig(params.body.output_config),
+    hasResponseFormat:
+      hasOwnField(params.body, "response_format") ||
+      (isRecord(params.body.text) && hasOwnField(params.body.text, "format")),
+    messageCount: requestSummary.messageCount,
+    systemPresent: requestSummary.systemPresent,
+    recentMessages: requestSummary.recentMessages,
+  });
+}
+
+function logLlmResponse(params: {
+  requestId: string;
+  transport: "tauri" | "fetch";
+  protocol: VendorProtocol;
+  endpoint: string;
+  status: number;
+  durationMs: number;
+  rawBody: string;
+}): void {
+  const responseSummary = summarizeResponseBody(params.protocol, params.rawBody);
+
+  console.log("[LLM][Response]", {
+    requestId: params.requestId,
+    transport: params.transport,
+    protocol: params.protocol,
+    endpoint: params.endpoint,
+    endpointPath: getEndpointPath(params.endpoint),
+    status: params.status,
+    durationMs: params.durationMs,
+    responseId: responseSummary.responseId,
+    stopReason: responseSummary.stopReason,
+    finishReason: responseSummary.finishReason,
+    responseState: responseSummary.responseState,
+    outputSummary: responseSummary.outputSummary,
+    toolCallCount: responseSummary.toolCallCount,
+    usage: responseSummary.usage,
+    bodyPreview: responseSummary.bodyPreview,
+  });
+}
+
+function logLlmError(params: {
+  requestId: string;
+  transport: "tauri" | "fetch";
+  protocol: VendorProtocol;
+  endpoint?: string;
+  endpointCandidates?: string[];
+  status?: number;
+  durationMs: number;
+  rawBody?: string;
+  error?: unknown;
+  attempt?: number;
+}): void {
+  const responseSummary =
+    typeof params.rawBody === "string"
+      ? summarizeResponseBody(params.protocol, params.rawBody)
+      : undefined;
+  const errorPreview =
+    typeof params.rawBody === "string"
+      ? summarizeErrorPreview(params.rawBody)
+      : undefined;
+  const errorMessage =
+    params.error instanceof Error
+      ? params.error.message
+      : params.error != null
+        ? String(params.error)
+        : responseSummary?.errorMessage;
+
+  console.error("[LLM][Error]", {
+    requestId: params.requestId,
+    transport: params.transport,
+    protocol: params.protocol,
+    endpoint: params.endpoint,
+    endpointPath: params.endpoint ? getEndpointPath(params.endpoint) : undefined,
+    endpointCandidates: params.endpointCandidates,
+    endpointPaths: params.endpointCandidates?.map(getEndpointPath),
+    attempt: params.attempt,
+    status: params.status,
+    durationMs: params.durationMs,
+    errorMessage: errorMessage ? truncateDebugText(errorMessage) : undefined,
+    errorPreview,
+    responseId: responseSummary?.responseId,
+    stopReason: responseSummary?.stopReason,
+    finishReason: responseSummary?.finishReason,
+    responseState: responseSummary?.responseState,
+    outputSummary: responseSummary?.outputSummary,
+    toolCallCount: responseSummary?.toolCallCount,
+    usage: responseSummary?.usage,
+  });
+}
+
 export function createLiteLLMClientConfig(
   settings: AppSettings
 ): LiteLLMClientConfig {
@@ -271,6 +741,71 @@ function getActiveProtocol(settings: AppSettings): VendorProtocol {
 
 function getModelName(settings: AppSettings): string {
   return getActiveManagedModel(settings)?.name || settings.model;
+}
+
+export function isAnthropicModelName(modelName: string): boolean {
+  const normalized = modelName.trim().toLowerCase();
+  return normalized.includes("claude") || normalized.startsWith("anthropic/");
+}
+
+export function isHighRiskToolCallingModelCombo(settings: AppSettings): boolean {
+  const protocol = getActiveProtocol(settings);
+  const modelName = getModelName(settings);
+  return (
+    protocol === "openai-chat-completions" &&
+    isAnthropicModelName(modelName)
+  );
+}
+
+const ANTHROPIC_THINKING_BUDGET_BY_LEVEL: Record<ManagedModelThinkingLevel, number> = {
+  low: 1024,
+  medium: 2048,
+  high: 3072,
+};
+
+function getActiveModelThinkingLevel(
+  settings: AppSettings,
+): ManagedModelThinkingLevel | null {
+  const activeModel = getActiveManagedModel(settings);
+  if (!activeModel?.supportsThinking) {
+    return null;
+  }
+  return activeModel.thinkingLevel;
+}
+
+function isAnthropicEffortModel(modelName: string): boolean {
+  const normalized = modelName.toLowerCase();
+  return (
+    normalized.includes("claude-opus-4-6") ||
+    normalized.includes("claude-sonnet-4-6") ||
+    normalized.includes("claude-opus-4-5")
+  );
+}
+
+function canUseAnthropicManualThinking(
+  messages: LiteLLMMessage[],
+  options?: {
+    tools?: LiteLLMToolDefinition[];
+    toolChoice?:
+    | "auto"
+    | "none"
+    | { type: "function"; function: { name: string } };
+  },
+): boolean {
+  const lastModelFacingMessage = [...messages]
+    .reverse()
+    .find((message) => message.role !== "system");
+  const continuesToolTurn =
+    lastModelFacingMessage?.role === "tool" ||
+    (lastModelFacingMessage?.role === "assistant" &&
+      (lastModelFacingMessage.tool_calls?.length ?? 0) > 0);
+  const usesForcedToolChoice =
+    Boolean(options?.tools?.length) &&
+    options?.toolChoice !== undefined &&
+    options.toolChoice !== "auto" &&
+    options.toolChoice !== "none";
+
+  return !continuesToolTurn && !usesForcedToolChoice;
 }
 
 async function fetchModelIdsWithProtocol(params: {
@@ -504,9 +1039,9 @@ function createOpenAIResponsesRequestBody(
     temperature?: number;
     tools?: LiteLLMToolDefinition[];
     toolChoice?:
-      | "auto"
-      | "none"
-      | { type: "function"; function: { name: string } };
+    | "auto"
+    | "none"
+    | { type: "function"; function: { name: string } };
   }
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
@@ -515,6 +1050,11 @@ function createOpenAIResponsesRequestBody(
     temperature: options?.temperature ?? 0.2,
     stream: options?.stream ?? false,
   };
+  const thinkingLevel = getActiveModelThinkingLevel(settings);
+
+  if (thinkingLevel) {
+    body.reasoning = { effort: thinkingLevel };
+  }
 
   if (options?.tools?.length) {
     body.tools = options.tools.map((tool) => ({
@@ -548,22 +1088,41 @@ function createAnthropicRequestBody(
     temperature?: number;
     tools?: LiteLLMToolDefinition[];
     toolChoice?:
-      | "auto"
-      | "none"
-      | { type: "function"; function: { name: string } };
+    | "auto"
+    | "none"
+    | { type: "function"; function: { name: string } };
   }
 ): Record<string, unknown> {
   const anthropic = toAnthropicMessages(messages);
+  const modelName = getModelName(settings);
+  const thinkingLevel = getActiveModelThinkingLevel(settings);
+  const usesEffortMode = Boolean(thinkingLevel) && isAnthropicEffortModel(modelName);
+  const usesManualThinking =
+    Boolean(thinkingLevel) &&
+    !usesEffortMode &&
+    canUseAnthropicManualThinking(messages, options);
   const body: Record<string, unknown> = {
-    model: getModelName(settings),
+    model: modelName,
     messages: anthropic.messages,
     max_tokens: 4096,
-    temperature: options?.temperature ?? 0.2,
     stream: options?.stream ?? false,
   };
 
+  if (!usesManualThinking) {
+    body.temperature = options?.temperature ?? 0.2;
+  }
+
   if (anthropic.system) {
     body.system = anthropic.system;
+  }
+
+  if (usesEffortMode && thinkingLevel) {
+    body.output_config = { effort: thinkingLevel };
+  } else if (usesManualThinking && thinkingLevel) {
+    body.thinking = {
+      type: "enabled",
+      budget_tokens: ANTHROPIC_THINKING_BUDGET_BY_LEVEL[thinkingLevel],
+    };
   }
 
   if (options?.tools?.length && options.toolChoice !== "none") {
@@ -590,6 +1149,18 @@ export async function postLiteLLMChatCompletions(
   const baseUrl = getActiveVendor(settings)?.baseUrl || settings.liteLLMBaseUrl;
   const isTauri =
     typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  const transport: "tauri" | "fetch" = isTauri ? "tauri" : "fetch";
+  const endpoints = buildProtocolEndpoints(baseUrl, protocol, "invoke");
+  const debugRequestId = createLlmDebugId();
+  const startedAt = nowMs();
+
+  logLlmRequest({
+    requestId: debugRequestId,
+    transport,
+    protocol,
+    endpointCandidates: endpoints,
+    body,
+  });
 
   try {
     const viaTauri = await invoke<LiteLLMHttpResponse>("post_litellm_chat_completions", {
@@ -599,18 +1170,47 @@ export async function postLiteLLMChatCompletions(
       body,
       proxy: settings.proxy,
     });
+    const durationMs = elapsedMs(startedAt);
+    if (viaTauri.status >= 200 && viaTauri.status < 300) {
+      logLlmResponse({
+        requestId: debugRequestId,
+        transport: "tauri",
+        protocol,
+        endpoint: viaTauri.endpoint,
+        status: viaTauri.status,
+        durationMs,
+        rawBody: viaTauri.body,
+      });
+    } else {
+      logLlmError({
+        requestId: debugRequestId,
+        transport: "tauri",
+        protocol,
+        endpoint: viaTauri.endpoint,
+        status: viaTauri.status,
+        durationMs,
+        rawBody: viaTauri.body,
+      });
+    }
     return {
       ...viaTauri,
       body: normalizeResponseBody(protocol, viaTauri.body),
     };
   } catch (error) {
     if (isTauri) {
+      logLlmError({
+        requestId: debugRequestId,
+        transport: "tauri",
+        protocol,
+        endpointCandidates: endpoints,
+        durationMs: elapsedMs(startedAt),
+        error,
+      });
       throw error;
     }
   }
 
   const errors: string[] = [];
-  const endpoints = buildProtocolEndpoints(baseUrl, protocol, "invoke");
   for (let index = 0; index < endpoints.length; index += 1) {
     const endpoint = endpoints[index];
     try {
@@ -620,9 +1220,43 @@ export async function postLiteLLMChatCompletions(
         body: JSON.stringify(body),
       });
       const rawBody = await response.text();
+      const durationMs = elapsedMs(startedAt);
       if (response.status === 404 && index < endpoints.length - 1) {
+        logLlmError({
+          requestId: debugRequestId,
+          transport: "fetch",
+          protocol,
+          endpoint,
+          status: response.status,
+          durationMs,
+          rawBody,
+          attempt: index + 1,
+        });
         errors.push(`endpoint ${endpoint} 返回 404`);
         continue;
+      }
+
+      if (response.status >= 200 && response.status < 300) {
+        logLlmResponse({
+          requestId: debugRequestId,
+          transport: "fetch",
+          protocol,
+          endpoint,
+          status: response.status,
+          durationMs,
+          rawBody,
+        });
+      } else {
+        logLlmError({
+          requestId: debugRequestId,
+          transport: "fetch",
+          protocol,
+          endpoint,
+          status: response.status,
+          durationMs,
+          rawBody,
+          attempt: index + 1,
+        });
       }
 
       return {
@@ -631,11 +1265,29 @@ export async function postLiteLLMChatCompletions(
         endpoint,
       };
     } catch (error) {
+      logLlmError({
+        requestId: debugRequestId,
+        transport: "fetch",
+        protocol,
+        endpoint,
+        durationMs: elapsedMs(startedAt),
+        error,
+        attempt: index + 1,
+      });
       errors.push(String(error || "Unknown error"));
     }
   }
 
-  throw new Error(errors.join(" | ") || "请求 LiteLLM 失败。");
+  const aggregateError = new Error(errors.join(" | ") || "请求 LiteLLM 失败。");
+  logLlmError({
+    requestId: debugRequestId,
+    transport: "fetch",
+    protocol,
+    endpointCandidates: endpoints,
+    durationMs: elapsedMs(startedAt),
+    error: aggregateError,
+  });
+  throw aggregateError;
 }
 
 export async function fetchLiteLLMModelIds(
@@ -660,9 +1312,9 @@ export function createLiteLLMRequestBody(
     temperature?: number;
     tools?: LiteLLMToolDefinition[];
     toolChoice?:
-      | "auto"
-      | "none"
-      | { type: "function"; function: { name: string } };
+    | "auto"
+    | "none"
+    | { type: "function"; function: { name: string } };
   }
 ): Record<string, unknown> {
   const protocol = getActiveProtocol(settings);
@@ -682,6 +1334,11 @@ export function createLiteLLMRequestBody(
     temperature: options?.temperature ?? 0.2,
     stream: options?.stream ?? true,
   };
+  const thinkingLevel = getActiveModelThinkingLevel(settings);
+
+  if (thinkingLevel) {
+    body.reasoning_effort = thinkingLevel;
+  }
 
   if (options?.responseFormat) {
     body.response_format = options.responseFormat;
@@ -720,8 +1377,8 @@ function normalizeOpenAIResponsesBody(raw: string): string {
           typeof contentBlock.text === "string"
             ? contentBlock.text
             : typeof contentBlock.output_text === "string"
-            ? contentBlock.output_text
-            : "";
+              ? contentBlock.output_text
+              : "";
         if (text) {
           textParts.push(text);
         }
@@ -832,7 +1489,7 @@ function normalizeAnthropicMessagesBody(raw: string): string {
         typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
       total_tokens:
         typeof usage.input_tokens === "number" &&
-        typeof usage.output_tokens === "number"
+          typeof usage.output_tokens === "number"
           ? usage.input_tokens + usage.output_tokens
           : 0,
     },
@@ -866,10 +1523,27 @@ export async function postLiteLLMChatCompletionsStream(
   const protocol = getActiveProtocol(settings);
   const baseUrl = getActiveVendor(settings)?.baseUrl || settings.liteLLMBaseUrl;
   const apiKey = settings.apiKey;
+  const endpoints = buildProtocolEndpoints(baseUrl, protocol, "invoke");
+  const startedAt = nowMs();
 
   const requestId = `stream-${Date.now()}-${Math.random()
     .toString(16)
     .slice(2, 8)}`;
+  const effectiveStreamBody: Record<string, unknown> = {
+    ...body,
+    stream: true,
+  };
+  if (protocol === "openai-chat-completions") {
+    effectiveStreamBody.stream_options = { include_usage: true };
+  }
+
+  logLlmRequest({
+    requestId,
+    transport: "tauri",
+    protocol,
+    endpointCandidates: endpoints,
+    body: effectiveStreamBody,
+  });
 
   // Listen for streaming events, filtering by request_id
   let unlisten: UnlistenFn | undefined;
@@ -902,7 +1576,39 @@ export async function postLiteLLMChatCompletionsStream(
         proxy: settings.proxy,
       }
     );
+    const durationMs = elapsedMs(startedAt);
+    if (response.status >= 200 && response.status < 300) {
+      logLlmResponse({
+        requestId,
+        transport: "tauri",
+        protocol,
+        endpoint: response.endpoint,
+        status: response.status,
+        durationMs,
+        rawBody: response.body,
+      });
+    } else {
+      logLlmError({
+        requestId,
+        transport: "tauri",
+        protocol,
+        endpoint: response.endpoint,
+        status: response.status,
+        durationMs,
+        rawBody: response.body,
+      });
+    }
     return response;
+  } catch (error) {
+    logLlmError({
+      requestId,
+      transport: "tauri",
+      protocol,
+      endpointCandidates: endpoints,
+      durationMs: elapsedMs(startedAt),
+      error,
+    });
+    throw error;
   } finally {
     unlisten?.();
   }

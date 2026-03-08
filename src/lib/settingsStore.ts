@@ -25,6 +25,9 @@ export type VendorProtocol =
   | "anthropic-messages";
 export type ProxyMode = "off" | "http" | "https" | "socks5";
 export type ManagedModelSource = "manual" | "fetched";
+export type ManagedModelThinkingLevel = "low" | "medium" | "high";
+
+const DEFAULT_MANAGED_MODEL_THINKING_LEVEL: ManagedModelThinkingLevel = "medium";
 
 export interface ToolPermissions {
   list_files: ToolPermissionLevel;
@@ -76,6 +79,8 @@ export interface ManagedModel {
   vendorId: string;
   name: string;
   source: ManagedModelSource;
+  supportsThinking: boolean;
+  thinkingLevel: ManagedModelThinkingLevel;
   createdAt: string;
   updatedAt: string;
 }
@@ -138,6 +143,14 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim();
 }
 
+function normalizeManagedModelThinkingLevel(
+  value: unknown,
+): ManagedModelThinkingLevel {
+  return value === "low" || value === "medium" || value === "high"
+    ? value
+    : DEFAULT_MANAGED_MODEL_THINKING_LEVEL;
+}
+
 function formatLegacyModelRef(provider?: string, model?: string): string {
   const trimmedModel = model?.trim() || DEFAULT_MODEL_NAME;
   const trimmedProvider = provider?.trim();
@@ -158,6 +171,8 @@ function createFixedDefaultEntities(): { vendor: VendorConfig; model: ManagedMod
     vendorId: vendor.id,
     name: DEFAULT_MODEL_NAME,
     source: "manual",
+    supportsThinking: false,
+    thinkingLevel: DEFAULT_MANAGED_MODEL_THINKING_LEVEL,
     createdAt: FIXED_TIMESTAMP,
     updatedAt: FIXED_TIMESTAMP,
   };
@@ -202,7 +217,10 @@ export function generateVendorId(): string {
 }
 
 export function generateManagedModelId(): string {
-  return `model-${Date.now()}`;
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `model-${crypto.randomUUID()}`;
+  }
+  return `model-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
 export function createVendorConfig(
@@ -232,6 +250,8 @@ export function createManagedModel(
     vendorId,
     name: name.trim(),
     source,
+    supportsThinking: false,
+    thinkingLevel: DEFAULT_MANAGED_MODEL_THINKING_LEVEL,
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -270,6 +290,8 @@ function normalizeManagedModel(raw: unknown): ManagedModel | null {
     vendorId: raw.vendorId,
     name: typeof raw.name === "string" ? raw.name : DEFAULT_MODEL_NAME,
     source: raw.source === "fetched" ? "fetched" : "manual",
+    supportsThinking: raw.supportsThinking === true,
+    thinkingLevel: normalizeManagedModelThinkingLevel(raw.thinkingLevel),
     createdAt,
     updatedAt,
   };
@@ -324,20 +346,25 @@ export function resolveManagedModelSelection(
   settings: Pick<AppSettings, "vendors" | "managedModels">,
   selection?: { vendorId?: string | null; modelId?: string | null } | null,
 ): ResolvedSelection | null {
-  const directModel = getManagedModelById(settings, selection?.modelId);
-  if (directModel) {
-    const directVendor = getVendorById(settings, directModel.vendorId);
-    if (directVendor) {
-      return { vendor: directVendor, managedModel: directModel };
-    }
-  }
+  const requestedVendorId = selection?.vendorId ?? null;
+  const requestedModelId = selection?.modelId ?? null;
 
-  const directVendor = getVendorById(settings, selection?.vendorId);
-  if (directVendor) {
-    const firstModel = settings.managedModels.find((model) => model.vendorId === directVendor.id);
-    if (firstModel) {
-      return { vendor: directVendor, managedModel: firstModel };
+  if (requestedVendorId || requestedModelId) {
+    const directModel = getManagedModelById(settings, requestedModelId);
+    if (!directModel) {
+      return null;
     }
+
+    if (requestedVendorId && directModel.vendorId !== requestedVendorId) {
+      return null;
+    }
+
+    const directVendor = getVendorById(settings, directModel.vendorId);
+    if (!directVendor) {
+      return null;
+    }
+
+    return { vendor: directVendor, managedModel: directModel };
   }
 
   return findFirstAvailableSelection(settings);
@@ -362,6 +389,26 @@ function ensureMinimumResources(settings: AppSettings): AppSettings {
   }
 
   return { ...settings, vendors, managedModels };
+}
+
+function ensureUniqueManagedModelIds(settings: AppSettings): AppSettings {
+  const seenIds = new Set<string>();
+  let changed = false;
+  const managedModels = settings.managedModels.map((model) => {
+    if (!model.id || seenIds.has(model.id)) {
+      changed = true;
+      let nextId = generateManagedModelId();
+      while (seenIds.has(nextId)) {
+        nextId = generateManagedModelId();
+      }
+      seenIds.add(nextId);
+      return { ...model, id: nextId };
+    }
+    seenIds.add(model.id);
+    return model;
+  });
+
+  return changed ? { ...settings, managedModels } : settings;
 }
 
 function normalizeModelSelection(
@@ -408,21 +455,22 @@ function withNormalizedAgentSelections(settings: AppSettings): AppSettings {
 
 function withRuntimeSelection(settings: AppSettings, apiKey = settings.apiKey): AppSettings {
   const ensured = ensureMinimumResources(settings);
-  const resolved = resolveManagedModelSelection(ensured, {
-    vendorId: ensured.activeVendorId,
-    modelId: ensured.activeModelId,
+  const normalized = ensureUniqueManagedModelIds(ensured);
+  const resolved = resolveManagedModelSelection(normalized, {
+    vendorId: normalized.activeVendorId,
+    modelId: normalized.activeModelId,
   });
 
   if (!resolved) {
     return {
       ...DEFAULT_SETTINGS,
-      ...ensured,
+      ...normalized,
       apiKey,
     };
   }
 
   return withNormalizedAgentSelections({
-    ...ensured,
+    ...normalized,
     apiKey,
     activeVendorId: resolved.vendor.id,
     activeModelId: resolved.managedModel.id,
@@ -545,14 +593,14 @@ function migrateLegacyProfilesToManagedResources(parsed: Partial<PersistedSettin
   const sourceProfiles = rawProfiles.length > 0
     ? rawProfiles
     : [
-        {
-          id: "profile-default",
-          name: "默认配置",
-          provider: parsed.provider,
-          model: parsed.model,
-          liteLLMBaseUrl: parsed.liteLLMBaseUrl,
-        },
-      ];
+      {
+        id: "profile-default",
+        name: "默认配置",
+        provider: parsed.provider,
+        model: parsed.model,
+        liteLLMBaseUrl: parsed.liteLLMBaseUrl,
+      },
+    ];
 
   const vendors: VendorConfig[] = [];
   const managedModels: ManagedModel[] = [];
@@ -581,6 +629,8 @@ function migrateLegacyProfilesToManagedResources(parsed: Partial<PersistedSettin
       vendorId,
       name: formatLegacyModelRef(sourceProfile.provider, sourceProfile.model),
       source: "manual",
+      supportsThinking: false,
+      thinkingLevel: DEFAULT_MANAGED_MODEL_THINKING_LEVEL,
       createdAt: sourceProfile.createdAt || timestamp,
       updatedAt: timestamp,
     };
@@ -721,8 +771,8 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
     : [];
   const normalizedManagedModels = Array.isArray(parsed.managedModels)
     ? parsed.managedModels
-        .map(normalizeManagedModel)
-        .filter((value): value is ManagedModel => Boolean(value))
+      .map(normalizeManagedModel)
+      .filter((value): value is ManagedModel => Boolean(value))
     : [];
 
   const legacyMigration = (!normalizedVendors.length || !normalizedManagedModels.length)
@@ -1014,13 +1064,13 @@ export function updateCustomAgent(
     customAgents: settings.customAgents.map((agent) =>
       agent.id === agentId
         ? {
-            ...agent,
-            ...updates,
-            modelSelection: normalizeModelSelection(
-              settings,
-              updates.modelSelection ?? agent.modelSelection,
-            ),
-          }
+          ...agent,
+          ...updates,
+          modelSelection: normalizeModelSelection(
+            settings,
+            updates.modelSelection ?? agent.modelSelection,
+          ),
+        }
         : agent,
     ),
   });
@@ -1108,17 +1158,17 @@ export function updateVendor(
   const vendors = settings.vendors.map((vendor) =>
     vendor.id === vendorId
       ? {
-          ...vendor,
-          ...updates,
-          name:
-            updates.name !== undefined
-              ? updates.name === ""
-                ? ""
-                : updates.name.trim() || vendor.name
-              : vendor.name,
-          baseUrl: normalizeBaseUrl(updates.baseUrl ?? vendor.baseUrl),
-          updatedAt: nowIso(),
-        }
+        ...vendor,
+        ...updates,
+        name:
+          updates.name !== undefined
+            ? updates.name === ""
+              ? ""
+              : updates.name.trim() || vendor.name
+            : vendor.name,
+        baseUrl: normalizeBaseUrl(updates.baseUrl ?? vendor.baseUrl),
+        updatedAt: nowIso(),
+      }
       : vendor,
   );
 
@@ -1141,8 +1191,8 @@ function clearRemovedSelections(
     ...agent,
     modelSelection:
       agent.modelSelection &&
-      (agent.modelSelection.vendorId === removedVendorId ||
-        removedModelIds.has(agent.modelSelection.modelId))
+        (agent.modelSelection.vendorId === removedVendorId ||
+          removedModelIds.has(agent.modelSelection.modelId))
         ? undefined
         : agent.modelSelection,
   }));
@@ -1155,8 +1205,8 @@ function clearRemovedSelections(
           removedModelIds.has(override.modelSelection.modelId));
       const nextOverride = shouldClear
         ? Object.fromEntries(
-            Object.entries(override).filter(([key]) => key !== "modelSelection"),
-          )
+          Object.entries(override).filter(([key]) => key !== "modelSelection"),
+        )
         : override;
       return Object.keys(nextOverride).length > 0 ? [[agentId, nextOverride]] : [];
     }),
@@ -1242,16 +1292,24 @@ export function updateManagedModel(
   const managedModels = settings.managedModels.map((model) =>
     model.id === modelId
       ? {
-          ...model,
-          ...updates,
-          name:
-            updates.name !== undefined
-              ? updates.name === ""
-                ? ""
-                : updates.name.trim() || model.name
-              : model.name,
-          updatedAt: nowIso(),
-        }
+        ...model,
+        ...updates,
+        name:
+          updates.name !== undefined
+            ? updates.name === ""
+              ? ""
+              : updates.name.trim() || model.name
+            : model.name,
+        supportsThinking:
+          updates.supportsThinking !== undefined
+            ? updates.supportsThinking
+            : model.supportsThinking,
+        thinkingLevel:
+          updates.thinkingLevel !== undefined
+            ? normalizeManagedModelThinkingLevel(updates.thinkingLevel)
+            : model.thinkingLevel,
+        updatedAt: nowIso(),
+      }
       : model,
   );
   return syncRuntimeSettings({ ...settings, managedModels });
@@ -1298,9 +1356,9 @@ export function isManagedModelLocal(settings: AppSettings, modelId?: string | nu
   const selection = modelId
     ? resolveManagedModelSelection(settings, { modelId })
     : resolveManagedModelSelection(settings, {
-        vendorId: settings.activeVendorId,
-        modelId: settings.activeModelId,
-      });
+      vendorId: settings.activeVendorId,
+      modelId: settings.activeModelId,
+    });
   return isLocalVendor(selection?.vendor);
 }
 
