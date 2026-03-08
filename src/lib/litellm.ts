@@ -1221,7 +1221,10 @@ export async function postLiteLLMChatCompletions(
       });
       const rawBody = await response.text();
       const durationMs = elapsedMs(startedAt);
-      if (response.status === 404 && index < endpoints.length - 1) {
+      // 可重试的服务端错误：404 (endpoint not found), 500 (server error), 502 (bad gateway), 503 (service unavailable), 504 (gateway timeout), 429 (rate limit)
+      const isRetriableError = [404, 500, 502, 503, 504, 429].includes(response.status);
+      if (isRetriableError && index < endpoints.length - 1) {
+        console.warn(`[LLM][Retry] 端点 ${endpoint} 返回 ${response.status}，尝试下一个候选端点 (${index + 1}/${endpoints.length})`);
         logLlmError({
           requestId: debugRequestId,
           transport: "fetch",
@@ -1232,7 +1235,7 @@ export async function postLiteLLMChatCompletions(
           rawBody,
           attempt: index + 1,
         });
-        errors.push(`endpoint ${endpoint} 返回 404`);
+        errors.push(`endpoint ${endpoint} 返回 ${response.status}`);
         continue;
       }
 

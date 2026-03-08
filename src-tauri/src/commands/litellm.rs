@@ -730,8 +730,14 @@ pub async fn post_litellm_chat_completions(
         match post_chat_completion_to_endpoint(&client, endpoint, &protocol, &api_key, &body).await
         {
             Ok(response) => {
-                if response.status == 404 && index + 1 < endpoints.len() {
-                    errors.push(format!("{} 返回 HTTP 404", endpoint));
+                // 可重试的服务端错误：404 (endpoint not found), 500 (server error), 502 (bad gateway), 503 (service unavailable), 504 (gateway timeout), 429 (rate limit)
+                let is_retriable = matches!(response.status, 404 | 500 | 502 | 503 | 504 | 429);
+                if is_retriable && index + 1 < endpoints.len() {
+                    eprintln!(
+                        "[LLM][Retry] endpoint={} status={} attempt={}/{}",
+                        endpoint, response.status, index + 1, endpoints.len()
+                    );
+                    errors.push(format!("{} 返回 HTTP {}", endpoint, response.status));
                     continue;
                 }
                 return Ok(response);
@@ -789,8 +795,14 @@ pub async fn post_litellm_chat_completions_stream(
             }
         };
         let status = response.status().as_u16();
-        if status == 404 && index + 1 < endpoints.len() {
-            errors.push(format!("{} 返回 HTTP 404", endpoint));
+        // 可重试的服务端错误：404 (endpoint not found), 500 (server error), 502 (bad gateway), 503 (service unavailable), 504 (gateway timeout), 429 (rate limit)
+        let is_retriable = matches!(status, 404 | 500 | 502 | 503 | 504 | 429);
+        if is_retriable && index + 1 < endpoints.len() {
+            eprintln!(
+                "[LLM][Retry] endpoint={} status={} attempt={}/{} mode=stream",
+                endpoint, status, index + 1, endpoints.len()
+            );
+            errors.push(format!("{} 返回 HTTP {}", endpoint, status));
             continue;
         }
         if !response.status().is_success() {
