@@ -9,6 +9,8 @@ src-tauri/target/
 # Tauri auto-generated schemas
 src-tauri/gen/schemas/
 
+# Tauri snapshots
+src-tauri/.cofree/
 # Environment files
 .env
 .env.*
