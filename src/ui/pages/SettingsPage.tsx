@@ -70,6 +70,16 @@ function ModelTabFallback(): ReactElement {
   );
 }
 
+export function resolveSelectedVendorId(
+  settings: Pick<AppSettings, "vendors" | "activeVendorId" | "activeModelId" | "managedModels">,
+  currentSelectedVendorId?: string | null,
+): string | null {
+  if (getVendorById(settings, currentSelectedVendorId)) {
+    return currentSelectedVendorId ?? null;
+  }
+  return getVendorById(settings, settings.activeVendorId)?.id ?? settings.vendors[0]?.id ?? null;
+}
+
 export function SettingsPage({
   settings,
   onSave,
@@ -143,7 +153,7 @@ export function SettingsPage({
 
   useEffect(() => {
     setDraft(settings);
-    setSelectedVendorId(getActiveVendor(settings)?.id ?? settings.vendors[0]?.id ?? null);
+    setSelectedVendorId((current) => resolveSelectedVendorId(settings, current));
     setVendorApiKeys({});
   }, [settings]);
 
