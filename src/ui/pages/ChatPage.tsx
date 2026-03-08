@@ -40,6 +40,7 @@ import {
   markActionRunning,
   rejectAction,
   rejectAllPendingActions,
+  retryFailedShellAction,
 } from "../../orchestrator/hitlService";
 import {
   getChatSessionId,
@@ -80,6 +81,7 @@ import {
 import {
   MessageContent,
   LiveToolStatus,
+  AssistantToolCalls,
   SubAgentStatusPanel,
   ToolTracePanel,
   InlinePlan,
@@ -170,7 +172,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   }>({
     open: false,
     title: "",
-    onConfirm: () => {},
+    onConfirm: () => { },
   });
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<ChatMessageRecord[]>(
@@ -224,10 +226,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     applyChatViewState(
       conversation
         ? createConversationViewState({
-            conversation,
-            backgroundStream: options.backgroundStream,
-            idleSessionNote: options.idleSessionNote,
-          })
+          conversation,
+          backgroundStream: options.backgroundStream,
+          idleSessionNote: options.idleSessionNote,
+        })
         : createEmptyChatViewState(options.idleSessionNote),
     );
   };
@@ -397,11 +399,11 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             return prev.map((m, i) =>
               i === idx
                 ? {
-                    ...m,
-                    plan: latest.payload.plan,
-                    toolTrace: latest.payload.toolTrace ?? m.toolTrace,
-                    tool_calls: buildToolCallsFromPlan(latest.payload.plan),
-                  }
+                  ...m,
+                  plan: latest.payload.plan,
+                  toolTrace: latest.payload.toolTrace ?? m.toolTrace,
+                  tool_calls: buildToolCallsFromPlan(latest.payload.plan),
+                }
                 : m
             );
           }
@@ -640,8 +642,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         blockedActionFingerprints: visibleUserMessage
           ? []
           : messagesRef.current.flatMap((message) =>
-              message.plan ? collectBlockedActionFingerprints(message.plan) : []
-            ),
+            message.plan ? collectBlockedActionFingerprints(message.plan) : []
+          ),
         signal: controller.signal,
         onAssistantChunk: (chunk) => {
           localStreamBuffer += chunk;
@@ -676,10 +678,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
               prev.map((call) =>
                 call.callId === event.callId
                   ? {
-                      ...call,
-                      status: event.result === "success" ? "success" : "failed",
-                      resultPreview: event.resultPreview,
-                    }
+                    ...call,
+                    status: event.result ?? "failed",
+                    resultPreview: event.resultPreview,
+                  }
                   : call
               )
             );
@@ -717,7 +719,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
               content: result.assistantReply,
               plan: result.plan,
               toolTrace: result.toolTrace,
-              tool_calls: buildToolCallsFromPlan(result.plan),
+              tool_calls:
+                result.assistantToolCalls ?? buildToolCallsFromPlan(result.plan),
             };
           }
           return m;
@@ -869,6 +872,21 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     } finally {
       setExecutingActionId("");
     }
+  };
+
+  const handleRetryAction = async (
+    messageId: string,
+    actionId: string,
+    plan: OrchestrationPlan
+  ): Promise<void> => {
+    const retryPlan = retryFailedShellAction(plan, actionId);
+    const retryAction = retryPlan.proposedActions.find(
+      (action) => action.type === "shell" && action.payload.retryFromActionId === actionId
+    );
+    if (!retryAction) {
+      return;
+    }
+    await handleApproveAction(messageId, retryAction.id, retryPlan);
   };
 
   const handleRejectAction = (messageId: string, actionId: string): void => {
@@ -1158,61 +1176,65 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
               messages
                 .filter((message) => message.role !== "tool")
                 .map((message) => (
-                <div key={message.id} className={`chat-row ${message.role}`}>
-                  <div className={`chat-avatar ${message.role}`}>
-                    {message.role === "user" ? "U" : (currentConversation?.agentBinding?.agentNameSnapshot ?? activeAgent.name).charAt(0)}
-                  </div>
-                  <div className="chat-bubble-wrap">
-                    <p className="chat-meta">
-                      {message.role === "user" ? "你" : (currentConversation?.agentBinding?.agentNameSnapshot ?? activeAgent.name)}
-                      {formatTime(message.createdAt)
-                        ? ` · ${formatTime(message.createdAt)}`
-                        : ""}
-                    </p>
-                    <div className={`chat-bubble ${message.role}`}>
-                      <MessageContent
-                        content={message.content}
-                        isStreaming={
-                          isStreaming &&
-                          message.content === "" &&
-                          message.role === "assistant"
-                        }
-                        role={message.role}
-                      />
+                  <div key={message.id} className={`chat-row ${message.role}`}>
+                    <div className={`chat-avatar ${message.role}`}>
+                      {message.role === "user" ? "U" : (currentConversation?.agentBinding?.agentNameSnapshot ?? activeAgent.name).charAt(0)}
                     </div>
-                    {message.role === "assistant" &&
-                      isStreaming &&
-                      message === messages[messages.length - 1] &&
-                      liveToolCalls.length > 0 && (
-                        <LiveToolStatus calls={liveToolCalls} />
-                      )}
-                    {message.role === "assistant" &&
-                      isStreaming &&
-                      message === messages[messages.length - 1] &&
-                      subAgentStatus.length > 0 && (
-                        <SubAgentStatusPanel items={subAgentStatus} />
-                      )}
-                    {message.role === "assistant" &&
-                      (message.toolTrace?.length ?? 0) > 0 && (
-                        <ToolTracePanel traces={message.toolTrace!} />
-                      )}
-                    {message.plan &&
-                      message.plan.proposedActions.length > 0 && (
-                        <InlinePlan
-                          plan={message.plan}
-                          messageId={message.id}
-                          executingActionId={executingActionId}
-                          onPlanUpdate={handlePlanUpdate}
-                          onApprove={handleApproveAction}
-                          onReject={handleRejectAction}
-                          onComment={handleCommentAction}
-                          onApproveAll={handleApproveAllActions}
-                          onRejectAll={handleRejectAllActions}
+                    <div className="chat-bubble-wrap">
+                      <p className="chat-meta">
+                        {message.role === "user" ? "你" : (currentConversation?.agentBinding?.agentNameSnapshot ?? activeAgent.name)}
+                        {formatTime(message.createdAt)
+                          ? ` · ${formatTime(message.createdAt)}`
+                          : ""}
+                      </p>
+                      <div className={`chat-bubble ${message.role}`}>
+                        <MessageContent
+                          content={message.content}
+                          isStreaming={
+                            isStreaming &&
+                            message.content === "" &&
+                            message.role === "assistant"
+                          }
+                          role={message.role}
                         />
+                      </div>
+                      {message.role === "assistant" && (
+                        <AssistantToolCalls toolCalls={message.tool_calls} />
                       )}
+                      {message.role === "assistant" &&
+                        isStreaming &&
+                        message === messages[messages.length - 1] &&
+                        liveToolCalls.length > 0 && (
+                          <LiveToolStatus calls={liveToolCalls} />
+                        )}
+                      {message.role === "assistant" &&
+                        isStreaming &&
+                        message === messages[messages.length - 1] &&
+                        subAgentStatus.length > 0 && (
+                          <SubAgentStatusPanel items={subAgentStatus} />
+                        )}
+                      {message.role === "assistant" &&
+                        (message.toolTrace?.length ?? 0) > 0 && (
+                          <ToolTracePanel traces={message.toolTrace!} />
+                        )}
+                      {message.plan &&
+                        message.plan.proposedActions.length > 0 && (
+                          <InlinePlan
+                            plan={message.plan}
+                            messageId={message.id}
+                            executingActionId={executingActionId}
+                            onPlanUpdate={handlePlanUpdate}
+                            onApprove={handleApproveAction}
+                            onRetry={handleRetryAction}
+                            onReject={handleRejectAction}
+                            onComment={handleCommentAction}
+                            onApproveAll={handleApproveAllActions}
+                            onRejectAll={handleRejectAllActions}
+                          />
+                        )}
+                    </div>
                   </div>
-                </div>
-              ))
+                ))
             )}
           </div>
 
@@ -1224,11 +1246,11 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                 onRetry={
                   categorizedError.retriable
                     ? () => {
-                        setCategorizedError(null);
-                        if (lastPromptRef.current) {
-                          void runChatCycle(lastPromptRef.current);
-                        }
+                      setCategorizedError(null);
+                      if (lastPromptRef.current) {
+                        void runChatCycle(lastPromptRef.current);
                       }
+                    }
                     : undefined
                 }
                 onDismiss={() => setCategorizedError(null)}

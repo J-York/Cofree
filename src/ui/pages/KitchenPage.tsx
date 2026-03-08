@@ -66,7 +66,10 @@ export function KitchenPage(): ReactElement {
   };
 
   const successTraces = state.toolTraces.filter(t => t.status === "success").length;
-  const failedTraces = state.toolTraces.filter(t => t.status !== "success").length;
+  const pendingApprovalTraces = state.toolTraces.filter(t => t.status === "pending_approval").length;
+  const failedTraces = state.toolTraces.filter(
+    t => t.status !== "success" && t.status !== "pending_approval"
+  ).length;
 
   return (
     <div className="page-content">
@@ -82,9 +85,8 @@ export function KitchenPage(): ReactElement {
           {FLOW_STEPS.map((step, i) => (
             <div key={step} className="kitchen-flow-step">
               <span
-                className={`kitchen-flow-label${
-                  state.workflowPhase === step ? " active" : ""
-                }`}
+                className={`kitchen-flow-label${state.workflowPhase === step ? " active" : ""
+                  }`}
               >
                 {PHASE_LABELS[step]}
               </span>
@@ -139,6 +141,9 @@ export function KitchenPage(): ReactElement {
           {state.toolTraces.length > 0 && (
             <div style={{ display: "flex", gap: "8px" }}>
               <span className="badge badge-success">{successTraces} 成功</span>
+              {pendingApprovalTraces > 0 && (
+                <span className="badge badge-warning">{pendingApprovalTraces} 待审批</span>
+              )}
               {failedTraces > 0 && <span className="badge badge-error">{failedTraces} 失败</span>}
             </div>
           )}
@@ -154,20 +159,30 @@ export function KitchenPage(): ReactElement {
             {state.toolTraces.map((trace, i) => (
               <div
                 key={`${trace.name}-${i}`}
-                className={`kitchen-timeline-item ${
-                  trace.status === "success" ? "success" : "failed"
-                }`}
+                className={`kitchen-timeline-item ${trace.status === "success"
+                    ? "success"
+                    : trace.status === "pending_approval"
+                      ? "pending"
+                      : "failed"
+                  }`}
               >
                 <div className="kitchen-timeline-dot" />
                 <div className="kitchen-timeline-content">
                   <div className="kitchen-timeline-head">
                     <span className="kitchen-timeline-name">{trace.name}</span>
                     <span
-                      className={`badge ${
-                        trace.status === "success" ? "badge-success" : "badge-error"
-                      }`}
+                      className={`badge ${trace.status === "success"
+                          ? "badge-success"
+                          : trace.status === "pending_approval"
+                            ? "badge-warning"
+                            : "badge-error"
+                        }`}
                     >
-                      {trace.status === "success" ? "成功" : "失败"}
+                      {trace.status === "success"
+                        ? "成功"
+                        : trace.status === "pending_approval"
+                          ? "待审批"
+                          : "失败"}
                     </span>
                     {trace.startedAt && trace.finishedAt && (
                       <span className="badge badge-default">

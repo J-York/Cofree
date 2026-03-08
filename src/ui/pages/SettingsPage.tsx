@@ -291,6 +291,15 @@ export function SettingsPage({
     setEditingModelName("");
   };
 
+  const handleUpdateModelThinking = (
+    modelId: string,
+    updates: Partial<
+      Pick<AppSettings["managedModels"][number], "supportsThinking" | "thinkingLevel">
+    >,
+  ) => {
+    setDraft((current) => updateManagedModel(current, modelId, updates));
+  };
+
   const handleDeleteModel = (modelId: string) => {
     const nextSettings = deleteManagedModel(draft, modelId);
     if (nextSettings === draft) {
@@ -666,6 +675,7 @@ export function SettingsPage({
                 onDeleteVendor={handleDeleteVendor}
                 onRenameModel={handleRenameModel}
                 onDeleteModel={handleDeleteModel}
+                onUpdateModelThinking={handleUpdateModelThinking}
                 onAssignFirstModelForVendor={handleAssignFirstModelForVendor}
                 onFetchVendorModels={handleFetchVendorModels}
                 onAddManualModel={handleAddManualModel}

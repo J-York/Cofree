@@ -231,8 +231,8 @@ export default function App(): ReactElement {
         )}
 
         {settingsOpen && (
-          <div className="settings-modal-backdrop" onClick={() => setSettingsOpen(false)}>
-            <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="settings-modal-backdrop">
+            <div className="settings-modal">
               <Suspense fallback={<DeferredPaneFallback label="设置" />}>
                 <SettingsPage
                   settings={settings}

@@ -1,6 +1,12 @@
 import type { ReactElement } from "react";
 import type { VendorModelRowProps } from "./settingsTypes";
 
+const THINKING_LEVEL_LABELS = {
+  low: "低",
+  medium: "中",
+  high: "高",
+} as const;
+
 export function VendorModelRow({
   model,
   isEditing,
@@ -14,6 +20,8 @@ export function VendorModelRow({
   onConfirmDelete,
   onDelete,
   onCancelDelete,
+  onThinkingSupportChange,
+  onThinkingLevelChange,
 }: VendorModelRowProps): ReactElement {
   return (
     <div className="vendor-model-row">
@@ -54,9 +62,43 @@ export function VendorModelRow({
         <>
           <div className="vendor-model-row-info">
             <span className="vendor-model-row-name">{model.name}</span>
-            <span className="vendor-model-row-source">
-              {model.source === "fetched" ? "Fetch" : "Manual"}
-            </span>
+            <div className="vendor-model-row-meta">
+              <span className="vendor-model-row-source">
+                {model.source === "fetched" ? "Fetch" : "Manual"}
+              </span>
+              <span
+                className={`vendor-model-row-thinking-pill${model.supportsThinking ? " enabled" : ""}`}
+>
+                {model.supportsThinking
+                  ? `思考 · ${THINKING_LEVEL_LABELS[model.thinkingLevel]}`
+                  : "思考关闭"}
+              </span>
+            </div>
+            <div className="vendor-model-thinking-controls">
+              <label className="checkbox-row vendor-model-thinking-toggle">
+                <input
+                  checked={model.supportsThinking}
+                  onChange={(e) => onThinkingSupportChange(e.target.checked)}
+                  type="checkbox"
+                />
+                <span className="checkbox-label">支持思考</span>
+              </label>
+              <div className="vendor-model-thinking-level">
+                <span className="vendor-model-thinking-label">思考程度</span>
+                <select
+                  className="select vendor-model-thinking-select"
+                  disabled={!model.supportsThinking}
+                  onChange={(e) =>
+                    onThinkingLevelChange(e.target.value as typeof model.thinkingLevel)
+                  }
+                  value={model.thinkingLevel}
+                >
+                  <option value="low">低</option>
+                  <option value="medium">中</option>
+                  <option value="high">高</option>
+                </select>
+              </div>
+            </div>
           </div>
           <div className="vendor-model-row-actions">
             <button className="btn btn-ghost btn-sm" onClick={onStartEdit} type="button">

@@ -6,6 +6,7 @@ import { ShellResultDisplay } from "../../components/ShellResultDisplay";
 import {
   actionStatusBadgeClass,
   canApproveAction,
+  canRetryAction,
   canReviewAction,
 } from "../../utils/chatUtils";
 import { updateActionPayload } from "../../../orchestrator/hitlService";
@@ -16,6 +17,7 @@ import type {
   OrchestrationPlan,
 } from "../../../orchestrator/types";
 import type { LiveToolCall, SubAgentStatusItem } from "./types";
+import type { ChatMessageRecord } from "../../../lib/chatHistoryStore";
 import { formatToolName } from "./helpers";
 
 export function MessageContent({
@@ -122,21 +124,62 @@ export function LiveToolStatus({ calls }: { calls: LiveToolCall[] }) {
 
   return (
     <div className="live-tool-status">
-      {calls.map((call) => (
-        <div key={call.callId} className={`live-tool-item ${call.status}`}>
-          <span className="live-tool-icon">
-            {call.status === "running"
-              ? "◐"
-              : call.status === "success"
-                ? "✓"
-                : "✕"}
-          </span>
-          <span className="live-tool-name">{formatToolName(call.toolName)}</span>
-          {call.argsPreview && (
-            <span className="live-tool-args">{call.argsPreview}</span>
-          )}
-        </div>
-      ))}
+      {calls.map((call) => {
+        const icon =
+          call.status === "running"
+            ? "◐"
+            : call.status === "success"
+              ? "✓"
+              : call.status === "pending_approval"
+                ? "⏸"
+                : "✕";
+        const label =
+          call.status === "pending_approval"
+            ? `${formatToolName(call.toolName)} · 待审批`
+            : formatToolName(call.toolName);
+        return (
+          <div key={call.callId} className={`live-tool-item ${call.status}`}>
+            <span className="live-tool-icon">{icon}</span>
+            <span className="live-tool-name">{label}</span>
+            {call.argsPreview && (
+              <span className="live-tool-args">{call.argsPreview}</span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function AssistantToolCalls({
+  toolCalls,
+}: {
+  toolCalls?: ChatMessageRecord["tool_calls"];
+}) {
+  if (!toolCalls?.length) {
+    return null;
+  }
+
+  return (
+    <div className="tool-trace" style={{ marginTop: "8px" }}>
+      <p className="tool-trace-label" style={{ margin: "0 0 8px 0" }}>
+        模型工具调用 · {toolCalls.length} 次
+      </p>
+      <ul className="tool-trace-list">
+        {toolCalls.map((toolCall) => (
+          <li key={toolCall.id} className="tool-trace-item success">
+            <div className="tool-trace-head">
+              <span className="tool-trace-name">
+                {formatToolName(toolCall.function.name)}
+              </span>
+              <span className={actionStatusBadgeClass("pending")}>
+                REQUESTED
+              </span>
+            </div>
+            <pre className="tool-trace-preview">{toolCall.function.arguments}</pre>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -211,7 +254,7 @@ export function ToolTracePanel({ traces }: { traces: ToolExecutionTrace[] }) {
           {traces.map((trace) => (
             <li
               key={`${trace.callId}-${trace.startedAt}`}
-              className={`tool-trace-item ${trace.status}`}
+              className={`tool-trace-item ${trace.status === "pending_approval" ? "pending" : trace.status}`}
             >
               <div className="tool-trace-head">
                 <span className="tool-trace-name">{trace.name}</span>
@@ -220,6 +263,11 @@ export function ToolTracePanel({ traces }: { traces: ToolExecutionTrace[] }) {
                   {trace.retried ? " · retried" : ""}
                 </span>
               </div>
+              {trace.status === "pending_approval" && (
+                <p className="status-note">
+                  该工具调用仅创建了待审批动作，尚未实际执行。
+                </p>
+              )}
               {(trace.errorCategory || trace.errorMessage) && (
                 <p className="status-error">
                   {trace.errorCategory ? `[${trace.errorCategory}] ` : ""}
@@ -355,6 +403,7 @@ export function InlinePlan({
   executingActionId,
   onPlanUpdate,
   onApprove,
+  onRetry,
   onReject,
   onComment,
   onApproveAll,
@@ -368,6 +417,11 @@ export function InlinePlan({
     updater: (p: OrchestrationPlan) => OrchestrationPlan,
   ) => void;
   onApprove: (
+    messageId: string,
+    actionId: string,
+    plan: OrchestrationPlan,
+  ) => Promise<void>;
+  onRetry: (
     messageId: string,
     actionId: string,
     plan: OrchestrationPlan,
@@ -717,16 +771,26 @@ export function InlinePlan({
                 )}
 
                 <div className="action-footer">
-                  <button
-                    className="btn btn-primary btn-sm"
-                    disabled={
-                      !canApproveAction(action) || Boolean(executingActionId)
-                    }
-                    onClick={() => void onApprove(messageId, action.id, plan)}
-                    type="button"
-                  >
-                    {executingActionId === action.id ? "执行中…" : "✓ 批准"}
-                  </button>
+                  {canApproveAction(action) && (
+                    <button
+                      className="btn btn-primary btn-sm"
+                      disabled={Boolean(executingActionId)}
+                      onClick={() => void onApprove(messageId, action.id, plan)}
+                      type="button"
+                    >
+                      {executingActionId === action.id ? "执行中…" : "✓ 批准"}
+                    </button>
+                  )}
+                  {canRetryAction(action) && (
+                    <button
+                      className="btn btn-primary btn-sm"
+                      disabled={Boolean(executingActionId)}
+                      onClick={() => void onRetry(messageId, action.id, plan)}
+                      type="button"
+                    >
+                      {executingActionId === action.id ? "重试中…" : "↻ 重试命令"}
+                    </button>
+                  )}
                   <button
                     className="btn btn-ghost btn-sm"
                     disabled={

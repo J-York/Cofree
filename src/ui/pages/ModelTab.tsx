@@ -42,6 +42,7 @@ export function ModelTab({
   onDeleteVendor,
   onRenameModel,
   onDeleteModel,
+  onUpdateModelThinking,
   onAssignFirstModelForVendor,
   onFetchVendorModels,
   onAddManualModel,
@@ -369,6 +370,12 @@ export function ModelTab({
                         onConfirmDelete={() => onConfirmDeleteModelChange(model.id)}
                         onDelete={() => onDeleteModel(model.id)}
                         onCancelDelete={() => onConfirmDeleteModelChange(null)}
+                        onThinkingSupportChange={(value) =>
+                          onUpdateModelThinking(model.id, { supportsThinking: value })
+                        }
+                        onThinkingLevelChange={(value) =>
+                          onUpdateModelThinking(model.id, { thinkingLevel: value })
+                        }
                       />
                     ))}
                   </div>
