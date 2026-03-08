@@ -1,0 +1,147 @@
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({
+    invoke: vi.fn(),
+}));
+
+import { invoke } from "@tauri-apps/api/core";
+import {
+    approveAction,
+    retryFailedShellAction,
+} from "./hitlService";
+import { decideHitlContinuation } from "./hitlContinuationMachine";
+import type { OrchestrationPlan } from "./types";
+
+function createShellPlan(): OrchestrationPlan {
+    return {
+        state: "human_review",
+        prompt: "run failing shell command",
+        steps: [],
+        proposedActions: [
+            {
+                id: "shell-1",
+                type: "shell",
+                description: "Run test command",
+                gateRequired: true,
+                status: "pending",
+                executed: false,
+                toolCallId: "tool-1",
+                toolName: "propose_shell",
+                fingerprint: "fp-shell-1",
+                payload: {
+                    shell: "npm test",
+                    timeoutMs: 1000,
+                },
+            },
+        ],
+    };
+}
+
+describe("HITL shell retry flow", () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it("prefers stderr for failed shell execution messages while preserving metadata", async () => {
+        vi.mocked(invoke).mockResolvedValue({
+            success: false,
+            command: "npm test",
+            timed_out: false,
+            status: 2,
+            stdout: "stdout text",
+            stderr: "meaningful stderr",
+        });
+
+        const nextPlan = await approveAction(createShellPlan(), "shell-1", "workspace");
+        const action = nextPlan.proposedActions[0];
+
+        expect(action.status).toBe("failed");
+        expect(action.executionResult?.message).toBe("meaningful stderr");
+        expect(action.executionResult?.metadata).toMatchObject({
+            command: "npm test",
+            stdout: "stdout text",
+            stderr: "meaningful stderr",
+            status: 2,
+            timedOut: false,
+            executor: "human_reviewer",
+        });
+    });
+
+    it("creates a fresh pending shell action identity for retry", () => {
+        const failedPlan: OrchestrationPlan = {
+            ...createShellPlan(),
+            proposedActions: [
+                {
+                    ...createShellPlan().proposedActions[0],
+                    status: "failed",
+                    executionResult: {
+                        success: false,
+                        message: "boom",
+                        timestamp: "2026-03-08T00:00:00.000Z",
+                    },
+                },
+            ],
+        };
+
+        const retriedPlan = retryFailedShellAction(failedPlan, "shell-1");
+        const retriedAction = retriedPlan.proposedActions[0];
+
+        expect(retriedAction.id).not.toBe("shell-1");
+        expect(retriedAction.status).toBe("pending");
+        expect(retriedAction.executed).toBe(false);
+        expect(retriedAction.executionResult).toBeUndefined();
+        expect(retriedAction.type).toBe("shell");
+        if (retriedAction.type === "shell") {
+            expect(retriedAction.payload.retryFromActionId).toBe("shell-1");
+            expect(retriedAction.payload.retryAttempt).toBe(1);
+        }
+    });
+
+    it("treats manual retry attempts as a new continuation execution", () => {
+        const failedOriginalPlan: OrchestrationPlan = {
+            ...createShellPlan(),
+            proposedActions: [
+                {
+                    ...createShellPlan().proposedActions[0],
+                    status: "failed",
+                    executed: false,
+                    executionResult: {
+                        success: false,
+                        message: "first failure",
+                        timestamp: "2026-03-08T00:00:00.000Z",
+                    },
+                },
+            ],
+        };
+
+        const firstDecision = decideHitlContinuation({
+            plan: failedOriginalPlan,
+        });
+        expect(firstDecision.kind).toBe("continue");
+
+        const retriedPlan = retryFailedShellAction(failedOriginalPlan, "shell-1");
+        const retriedAction = retriedPlan.proposedActions[0];
+        const failedRetryPlan: OrchestrationPlan = {
+            ...retriedPlan,
+            proposedActions: [
+                {
+                    ...retriedAction,
+                    status: "failed",
+                    executed: false,
+                    executionResult: {
+                        success: false,
+                        message: "second failure",
+                        timestamp: "2026-03-08T00:01:00.000Z",
+                    },
+                },
+            ],
+        };
+
+        const secondDecision = decideHitlContinuation({
+            plan: failedRetryPlan,
+            memory: firstDecision.memory,
+        });
+
+        expect(secondDecision.kind).toBe("continue");
+    });
+});
