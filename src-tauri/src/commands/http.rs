@@ -31,11 +31,15 @@ pub fn build_protocol_endpoints(base_url: &str, protocol: &str, models_only: boo
         }
     };
 
-    let mut endpoints = vec![format!("{}/{}", normalized, suffix)];
-    if !normalized.ends_with("/v1") {
-        endpoints.push(format!("{}/v1/{}", normalized, suffix));
-    }
-    endpoints
+    // Anthropic 端点需要 /v1 前缀，自动补全
+    // 最终格式：base_url/v1/messages
+    let base_with_v1 = if normalized.ends_with("/v1") {
+        normalized.to_string()
+    } else {
+        format!("{}/v1", normalized)
+    };
+
+    vec![format!("{}/{}", base_with_v1, suffix)]
 }
 
 pub fn apply_protocol_headers(

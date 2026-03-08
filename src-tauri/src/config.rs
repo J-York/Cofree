@@ -41,6 +41,12 @@ pub const FETCH_DEFAULT_MAX_BYTES: usize = 512 * 1024;
 /// 诊断输出截断长度
 pub const DIAGNOSTICS_OUTPUT_TRUNCATE_LEN: usize = 3000;
 
+/// Repo-Map 扫描限制
+pub const REPO_MAP_MAX_FILES: usize = 200;
+pub const REPO_MAP_MAX_FILE_SIZE: u64 = 100_000;
+pub const REPO_MAP_MAX_SYMBOLS_PER_FILE: usize = 30;
+pub const REPO_MAP_SIGNATURE_MAX_LEN: usize = 120;
+
 /// 阻塞性 shell 命令黑名单（子串匹配，小写）
 pub const SHELL_BLOCKED_PATTERNS: &[&str] = &[
     "rm -rf /",

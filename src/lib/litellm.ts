@@ -151,12 +151,14 @@ function buildProtocolEndpoints(
           ? "responses"
           : "messages";
 
-  const endpoints = [`${normalized}/${suffix}`];
+  // Anthropic 端点需要 /v1 前缀，自动补全
+  // 最终格式：baseUrl/v1/messages
+  let baseWithV1 = normalized;
   if (!normalized.endsWith("/v1")) {
-    endpoints.push(`${normalized}/v1/${suffix}`);
+    baseWithV1 = `${normalized}/v1`;
   }
 
-  return endpoints;
+  return [`${baseWithV1}/${suffix}`];
 }
 
 function createAuthHeaders(

@@ -195,14 +195,25 @@ function updateRecentModifiedFiles(
 }
 
 function buildReviewSummarySystemNote(plan: OrchestrationPlan): string {
-  const summaryLines = plan.proposedActions.map((action) => {
+  // Group actions by outcome
+  const completed: typeof plan.proposedActions = [];
+  const failed: typeof plan.proposedActions = [];
+  const rejected: typeof plan.proposedActions = [];
+
+  for (const action of plan.proposedActions) {
     if (action.status === "rejected") {
-      return `[${action.type}] 用户拒绝了执行。原因：${action.executionResult?.message || "无"}`;
+      rejected.push(action);
+    } else if (action.executionResult?.success === false) {
+      failed.push(action);
+    } else {
+      completed.push(action);
     }
+  }
+
+  function formatActionDetail(action: ActionProposal): string {
     if (!action.executionResult) {
       return `[${action.type}] 状态异常未执行`;
     }
-    const resultLabel = action.executionResult.success ? "成功" : "失败";
     let detailText = action.executionResult.message;
 
     if (action.type === "apply_patch" && action.executionResult.metadata) {
@@ -231,9 +242,41 @@ function buildReviewSummarySystemNote(plan: OrchestrationPlan): string {
       detailText = cmdInfo.join("\n");
     }
 
-    return `[${action.type}] 执行${resultLabel}。详细信息：\n${detailText}`;
-  });
+    return detailText;
+  }
 
+  const sections: string[] = ["[系统通知] 计划中的所有审批动作已处理完毕。结果汇总：", ""];
+
+  // Completed actions
+  if (completed.length > 0) {
+    sections.push(`## 已完成 (${completed.length}):`);
+    for (const action of completed) {
+      sections.push(`  ✓ [${action.type}] ${formatActionDetail(action)}`);
+    }
+    sections.push("");
+  }
+
+  // Failed actions
+  if (failed.length > 0) {
+    sections.push(`## 失败 (${failed.length}):`);
+    for (const action of failed) {
+      sections.push(`  ✗ [${action.type}] ${formatActionDetail(action)}`);
+    }
+    sections.push("");
+  }
+
+  // Rejected actions — with explicit reason and instruction not to re-propose
+  if (rejected.length > 0) {
+    sections.push(`## 用户拒绝 (${rejected.length}):`);
+    for (const action of rejected) {
+      const reason = action.executionResult?.message || "用户未提供原因";
+      sections.push(`  ✗ [${action.type}] 被拒绝。原因：${reason}`);
+    }
+    sections.push("⚠️ 不要重新提出已被用户拒绝的相同动作。");
+    sections.push("");
+  }
+
+  // Completed files list
   const completedFiles: string[] = [];
   plan.proposedActions.forEach((action) => {
     if (action.type === "apply_patch" && action.executionResult?.success && action.executionResult.metadata) {
@@ -245,18 +288,15 @@ function buildReviewSummarySystemNote(plan: OrchestrationPlan): string {
     }
   });
 
-  const progressInfo = completedFiles.length > 0
-    ? `\n\n[进度] 本轮已完成文件：${completedFiles.join("、")}`
-    : "";
+  if (completedFiles.length > 0) {
+    sections.push(`[已完成文件] ${completedFiles.join("、")}`);
+  }
 
-  return [
-    "[系统通知] 计划中的所有审批动作已处理完毕。结果汇总：",
-    "",
-    summaryLines.join("\n\n"),
-    "",
-    `原始用户请求："${plan.prompt}"`,
-    `请对照原始请求检查是否所有交付物都已完成。如有剩余工作，请继续提出动作；如全部完成，请简短汇报。${progressInfo}`
-  ].join("\n");
+  sections.push("");
+  sections.push(`原始用户请求："${plan.prompt}"`);
+  sections.push("请对照原始请求检查是否所有交付物都已完成。如有剩余工作，请继续提出动作；如全部完成，请简短汇报。");
+
+  return sections.join("\n");
 }
 
 function buildToolReplayMessages(plan: OrchestrationPlan): ToolReplayMessage[] {

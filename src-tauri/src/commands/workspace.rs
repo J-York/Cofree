@@ -1,7 +1,8 @@
 use crate::config;
 use crate::domain::{
-    AppError, CommandExecutionResult, FileEntry, GitStatus, GlobEntry, GrepMatch, GrepResult,
-    PatchApplyResult, ReadFileResult, SnapshotFileRecord, SnapshotManifest, SnapshotResult,
+    AppError, CommandExecutionResult, FileEntry, FileStructure, GitStatus, GlobEntry, GrepMatch,
+    GrepResult, PatchApplyResult, ReadFileResult, SnapshotFileRecord, SnapshotManifest,
+    SnapshotResult, SymbolInfo, WorkspaceStructureResult,
 };
 use crate::infrastructure::{
     canonicalize_workspace_root, generate_id, snapshots_root_dir, validate_workspace_path,
@@ -864,5 +865,198 @@ pub fn run_shell_command(
         status: exit_status.code().unwrap_or(-1),
         stdout,
         stderr,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Repo-Map: scan workspace structure for symbol extraction
+// ---------------------------------------------------------------------------
+
+fn detect_language(ext: &str) -> Option<&'static str> {
+    match ext {
+        "ts" | "tsx" | "mts" | "cts" => Some("typescript"),
+        "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+        "py" | "pyw" => Some("python"),
+        "rs" => Some("rust"),
+        "go" => Some("go"),
+        "java" => Some("java"),
+        "kt" | "kts" => Some("kotlin"),
+        "c" | "h" => Some("c"),
+        "cpp" | "cxx" | "cc" | "hpp" | "hxx" => Some("cpp"),
+        "rb" => Some("ruby"),
+        "vue" => Some("vue"),
+        "svelte" => Some("svelte"),
+        _ => None,
+    }
+}
+
+fn build_symbol_patterns(language: &str) -> Vec<(&'static str, Regex)> {
+    match language {
+        "typescript" | "javascript" | "vue" | "svelte" => {
+            vec![
+                ("export", Regex::new(r"^export\s+(function|class|interface|type|const|enum|abstract\s+class)\s+(\w+)").unwrap()),
+                ("function", Regex::new(r"^(?:async\s+)?function\s+(\w+)").unwrap()),
+                ("class", Regex::new(r"^class\s+(\w+)").unwrap()),
+            ]
+        }
+        "python" => {
+            vec![
+                ("def", Regex::new(r"^(?:async\s+)?def\s+(\w+)").unwrap()),
+                ("class", Regex::new(r"^class\s+(\w+)").unwrap()),
+            ]
+        }
+        "rust" => {
+            vec![
+                ("pub", Regex::new(r"^pub\s+(fn|struct|enum|trait|mod|type)\s+(\w+)").unwrap()),
+                ("impl", Regex::new(r"^impl(?:<[^>]*>)?\s+(\w+)").unwrap()),
+                ("fn", Regex::new(r"^(?:pub\s*(?:\(crate\)\s*)?)?fn\s+(\w+)").unwrap()),
+            ]
+        }
+        "go" => {
+            vec![
+                ("func", Regex::new(r"^func\s+(?:\([^)]*\)\s+)?(\w+)").unwrap()),
+                ("type", Regex::new(r"^type\s+(\w+)\s+(struct|interface)").unwrap()),
+            ]
+        }
+        "java" | "kotlin" => {
+            vec![
+                ("class", Regex::new(r"(?:public|private|protected)?\s*(?:static\s+)?(?:abstract\s+)?(?:class|interface|enum)\s+(\w+)").unwrap()),
+                ("method", Regex::new(r"^\s*(?:public|private|protected)\s+(?:static\s+)?(?:\w+\s+)(\w+)\s*\(").unwrap()),
+            ]
+        }
+        "c" | "cpp" => {
+            vec![
+                ("function", Regex::new(r"^(?:\w+[\s*]+)+(\w+)\s*\(").unwrap()),
+                ("class", Regex::new(r"^(?:class|struct)\s+(\w+)").unwrap()),
+            ]
+        }
+        "ruby" => {
+            vec![
+                ("def", Regex::new(r"^\s*def\s+(\w+)").unwrap()),
+                ("class", Regex::new(r"^\s*class\s+(\w+)").unwrap()),
+                ("module", Regex::new(r"^\s*module\s+(\w+)").unwrap()),
+            ]
+        }
+        _ => vec![],
+    }
+}
+
+fn extract_symbols(content: &str, language: &str) -> Vec<SymbolInfo> {
+    let patterns = build_symbol_patterns(language);
+    if patterns.is_empty() {
+        return Vec::new();
+    }
+
+    let max_symbols = config::REPO_MAP_MAX_SYMBOLS_PER_FILE;
+    let sig_max_len = config::REPO_MAP_SIGNATURE_MAX_LEN;
+    let mut symbols = Vec::new();
+
+    for (line_idx, line) in content.lines().enumerate() {
+        if symbols.len() >= max_symbols {
+            break;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("/*") {
+            continue;
+        }
+        for (kind, regex) in &patterns {
+            if let Some(captures) = regex.captures(trimmed) {
+                let name = captures
+                    .get(captures.len() - 1)
+                    .or_else(|| captures.get(1))
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    continue;
+                }
+                let signature = if trimmed.len() > sig_max_len {
+                    format!("{}...", &trimmed[..sig_max_len])
+                } else {
+                    trimmed.to_string()
+                };
+                symbols.push(SymbolInfo {
+                    kind: kind.to_string(),
+                    name,
+                    line: line_idx + 1,
+                    signature,
+                });
+                break;
+            }
+        }
+    }
+
+    symbols
+}
+
+#[tauri::command]
+pub fn scan_workspace_structure(
+    workspace_path: String,
+    ignore_patterns: Option<Vec<String>>,
+) -> Result<WorkspaceStructureResult, AppError> {
+    let workspace = canonicalize_workspace_root(&workspace_path)?;
+    let max_files = config::REPO_MAP_MAX_FILES;
+    let max_file_size = config::REPO_MAP_MAX_FILE_SIZE;
+
+    let all_files = walk_workspace_files(&workspace, max_files * 2);
+    let total_files = all_files.len();
+
+    let mut file_structures = Vec::new();
+    let mut scanned_count = 0;
+
+    for file_path in &all_files {
+        if file_structures.len() >= max_files {
+            break;
+        }
+
+        let rel = to_workspace_relative_string(&workspace, file_path);
+        if should_ignore_rel_path(&rel, &ignore_patterns) {
+            continue;
+        }
+
+        let ext = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let language = match detect_language(&ext) {
+            Some(lang) => lang,
+            None => continue,
+        };
+
+        let metadata = match fs::metadata(file_path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if metadata.len() > max_file_size {
+            continue;
+        }
+        if is_likely_binary(file_path) {
+            continue;
+        }
+
+        let content = match fs::read_to_string(file_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        scanned_count += 1;
+        let symbols = extract_symbols(&content, language);
+        if symbols.is_empty() {
+            continue;
+        }
+
+        file_structures.push(FileStructure {
+            path: rel,
+            language: language.to_string(),
+            symbols,
+        });
+    }
+
+    let truncated = total_files > max_files * 2;
+    Ok(WorkspaceStructureResult {
+        files: file_structures,
+        scanned_count,
+        total_files,
+        truncated,
     })
 }

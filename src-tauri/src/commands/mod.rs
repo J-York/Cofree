@@ -18,5 +18,5 @@ pub use secure_store::{delete_secure_api_key, load_secure_api_key, save_secure_a
 pub use workspace::{
     apply_workspace_patch, check_workspace_patch, create_workspace_snapshot, git_diff_workspace,
     git_status_workspace, glob_workspace_files, grep_workspace_files, list_workspace_files,
-    read_workspace_file, restore_workspace_snapshot, run_shell_command,
+    read_workspace_file, restore_workspace_snapshot, run_shell_command, scan_workspace_structure,
 };

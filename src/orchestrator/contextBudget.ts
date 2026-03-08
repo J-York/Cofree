@@ -694,3 +694,177 @@ export async function compressMessagesToFitBudget(params: {
     estimatedTokensAfter: estimateTokensForMessages(currentMessages),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Context Editing: 主动淘汰旧 tool-use 对
+// ---------------------------------------------------------------------------
+// Before compression kicks in, proactively remove old read-only tool-use
+// turns whose results are already captured in workingMemory.fileKnowledge.
+// This keeps the context lean without losing information.
+// ---------------------------------------------------------------------------
+
+export interface ClearToolUsesConfig {
+  /** Preserve the most recent N tool-use turns (default 5). */
+  keepRecentTurns: number;
+  /** Minimum clearable turns required before actually clearing (default 3). */
+  clearAtLeast: number;
+  /** Number of leading messages to never touch (system prefix). */
+  pinnedPrefixLen: number;
+}
+
+export interface ClearToolUsesResult {
+  messages: LiteLLMMessage[];
+  cleared: boolean;
+  pairsRemoved: number;
+  tokensFreed: number;
+}
+
+/** Tool names whose results are read-only and safe to evict from context. */
+const CLEARABLE_TOOL_NAMES = new Set([
+  "read_file", "grep", "glob", "list_files",
+  "git_status", "git_diff", "diagnostics",
+]);
+
+interface ToolUseTurn {
+  assistantIndex: number;
+  toolMessageIndices: number[];
+  toolNames: string[];
+}
+
+/**
+ * Identify tool-use turns, remove old read-only ones, and insert a tombstone.
+ *
+ * A "tool-use turn" is an assistant message with `tool_calls` plus its
+ * corresponding tool response messages (matched by `tool_call_id`).
+ */
+export function clearOldToolUses(
+  messages: LiteLLMMessage[],
+  config: ClearToolUsesConfig,
+): ClearToolUsesResult {
+  const { keepRecentTurns, clearAtLeast, pinnedPrefixLen } = config;
+
+  // --- Step 1: Identify all tool-use turns ---
+  const turns: ToolUseTurn[] = [];
+
+  for (let i = pinnedPrefixLen; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role !== "assistant" || !msg.tool_calls || msg.tool_calls.length === 0) {
+      continue;
+    }
+
+    const callIds = new Set(msg.tool_calls.map((tc) => tc.id));
+    const toolNames = msg.tool_calls.map((tc) => tc.function.name);
+    const toolMessageIndices: number[] = [];
+
+    // Scan forward to collect matching tool response messages
+    for (let j = i + 1; j < messages.length; j++) {
+      const candidate = messages[j];
+      if (candidate.role === "system") continue; // skip interleaved system messages
+      if (candidate.role === "tool" && candidate.tool_call_id && callIds.has(candidate.tool_call_id)) {
+        toolMessageIndices.push(j);
+        continue;
+      }
+      // Stop at the next non-tool, non-system message
+      if (candidate.role !== "tool") break;
+      // tool message for a different call — also stop
+      break;
+    }
+
+    turns.push({ assistantIndex: i, toolMessageIndices, toolNames });
+  }
+
+  // --- Step 2: Filter to clearable turns (all tool_calls are read-only) ---
+  const clearableTurns = turns.filter((t) =>
+    t.toolNames.length > 0 && t.toolNames.every((name) => CLEARABLE_TOOL_NAMES.has(name)),
+  );
+
+  // --- Step 3: Protect recent N turns ---
+  const candidateTurns = clearableTurns.length > keepRecentTurns
+    ? clearableTurns.slice(0, clearableTurns.length - keepRecentTurns)
+    : [];
+
+  if (candidateTurns.length < clearAtLeast) {
+    return { messages, cleared: false, pairsRemoved: 0, tokensFreed: 0 };
+  }
+
+  // --- Step 4: Collect indices to remove and compute freed tokens ---
+  const indicesToRemove = new Set<number>();
+  let tokensFreed = 0;
+
+  for (const turn of candidateTurns) {
+    // Remove all tool response messages
+    for (const idx of turn.toolMessageIndices) {
+      indicesToRemove.add(idx);
+      tokensFreed += estimateTokensForMessage(messages[idx]);
+    }
+
+    // Handle assistant message
+    const assistantMsg = messages[turn.assistantIndex];
+    const hasContent = (assistantMsg.content ?? "").trim().length > 0;
+
+    if (!hasContent) {
+      // No textual content — remove the entire assistant message
+      indicesToRemove.add(turn.assistantIndex);
+      tokensFreed += estimateTokensForMessage(assistantMsg);
+    }
+    // If there IS content, we strip tool_calls below (after filtering)
+  }
+
+  // --- Step 5: Build new messages array ---
+  // We need the first removed index position for tombstone insertion.
+  const sortedRemoved = [...indicesToRemove].sort((a, b) => a - b);
+  const tombstonePosition = sortedRemoved.length > 0 ? sortedRemoved[0] : pinnedPrefixLen;
+
+  // Set of assistant indices where we keep the message but strip tool_calls
+  const stripToolCallsAt = new Set(
+    candidateTurns
+      .filter((t) => !indicesToRemove.has(t.assistantIndex))
+      .map((t) => t.assistantIndex),
+  );
+
+  const newMessages: LiteLLMMessage[] = [];
+  let tombstoneInserted = false;
+
+  for (let i = 0; i < messages.length; i++) {
+    if (indicesToRemove.has(i)) {
+      // Insert tombstone at the position of the first removed message
+      if (!tombstoneInserted && i >= tombstonePosition) {
+        newMessages.push({
+          role: "system",
+          content:
+            `[Context Edited] 已清除 ${candidateTurns.length} 个旧工具调用轮次以释放上下文空间。文件知识已保存在工作记忆中。`,
+        });
+        tombstoneInserted = true;
+      }
+      continue;
+    }
+
+    if (stripToolCallsAt.has(i)) {
+      // Keep content, remove tool_calls
+      const { tool_calls: _, ...rest } = messages[i];
+      tokensFreed += messages[i].tool_calls
+        ? estimateTokensFromText(JSON.stringify(messages[i].tool_calls))
+        : 0;
+      newMessages.push(rest as LiteLLMMessage);
+    } else {
+      newMessages.push(messages[i]);
+    }
+  }
+
+  // Edge case: if tombstone wasn't inserted yet (all removed indices were processed)
+  if (!tombstoneInserted && candidateTurns.length > 0) {
+    // Insert after pinned prefix
+    newMessages.splice(pinnedPrefixLen, 0, {
+      role: "system",
+      content:
+        `[Context Edited] 已清除 ${candidateTurns.length} 个旧工具调用轮次以释放上下文空间。文件知识已保存在工作记忆中。`,
+    });
+  }
+
+  return {
+    messages: newMessages,
+    cleared: true,
+    pairsRemoved: candidateTurns.length,
+    tokensFreed,
+  };
+}

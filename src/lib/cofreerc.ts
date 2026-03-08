@@ -23,6 +23,12 @@ export interface OverviewBudgetConfig {
   maxChars?: number;
 }
 
+export interface RepoMapConfig {
+  enabled?: boolean;
+  maxFiles?: number;
+  tokenBudget?: number;
+}
+
 export interface CofreeRcConfig {
   /** Additional system prompt instructions appended to the base prompt */
   systemPrompt?: string;
@@ -36,6 +42,8 @@ export interface CofreeRcConfig {
   language?: string;
   /** Budget controls for initial workspace overview injection */
   overviewBudget?: OverviewBudgetConfig;
+  /** Repo-map configuration for project structure awareness */
+  repoMap?: RepoMapConfig;
 }
 
 const COFREERC_FILENAMES = [".cofreerc", ".cofreerc.json"];
@@ -211,6 +219,28 @@ function parseCofreeRc(raw: string): CofreeRcConfig {
 
     if (Object.keys(budget).length > 0) {
       config.overviewBudget = budget;
+    }
+  }
+
+  // repoMap
+  if (
+    obj.repoMap &&
+    typeof obj.repoMap === "object" &&
+    !Array.isArray(obj.repoMap)
+  ) {
+    const repoObj = obj.repoMap as Record<string, unknown>;
+    const repoMap: RepoMapConfig = {};
+
+    if (typeof repoObj.enabled === "boolean") {
+      repoMap.enabled = repoObj.enabled;
+    }
+    const maxFiles = clampInt(repoObj.maxFiles, 1, 500);
+    if (typeof maxFiles === "number") repoMap.maxFiles = maxFiles;
+    const tokenBudget = clampInt(repoObj.tokenBudget, 100, 8000);
+    if (typeof tokenBudget === "number") repoMap.tokenBudget = tokenBudget;
+
+    if (Object.keys(repoMap).length > 0) {
+      config.repoMap = repoMap;
     }
   }
 

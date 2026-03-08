@@ -20,6 +20,7 @@ export interface FileKnowledge {
   totalLines: number;
   language?: string;
   lastReadAt: string;
+  lastReadTurn: number;
   readByAgent: string;
 }
 
@@ -41,10 +42,22 @@ export interface SubAgentExecRecord {
   completedAt: string;
 }
 
+export interface TaskProgressEntry {
+  id: string;
+  description: string;
+  toolName: string;
+  targetFile?: string;
+  status: "completed" | "failed" | "pending";
+  turnNumber: number;
+  timestamp: string;
+  errorHint?: string;
+}
+
 export interface WorkingMemory {
   fileKnowledge: Map<string, FileKnowledge>;
   discoveredFacts: DiscoveredFact[];
   subAgentHistory: SubAgentExecRecord[];
+  taskProgress: TaskProgressEntry[];
   projectContext: string;
   maxTokenBudget: number;
 }
@@ -57,6 +70,7 @@ export interface WorkingMemorySnapshot {
   fileKnowledge: Array<[string, FileKnowledge]>;
   discoveredFacts: DiscoveredFact[];
   subAgentHistory: SubAgentExecRecord[];
+  taskProgress: TaskProgressEntry[];
   projectContext: string;
   maxTokenBudget: number;
 }
@@ -68,6 +82,7 @@ export interface WorkingMemorySnapshot {
 const MAX_DISCOVERED_FACTS = 50;
 const MAX_FILE_SUMMARY_CHARS = 200;
 const MAX_SUBAGENT_HISTORY = 20;
+const MAX_TASK_PROGRESS_ENTRIES = 40;
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -81,6 +96,7 @@ export function createWorkingMemory(opts: {
     fileKnowledge: new Map(),
     discoveredFacts: [],
     subAgentHistory: [],
+    taskProgress: [],
     projectContext: opts.projectContext ?? "",
     maxTokenBudget: opts.maxTokenBudget,
   };
@@ -143,6 +159,73 @@ export function recordSubAgentExecution(
 }
 
 // ---------------------------------------------------------------------------
+// Task progress tracking
+// ---------------------------------------------------------------------------
+
+let progressIdCounter = 0;
+
+function generateProgressId(): string {
+  progressIdCounter += 1;
+  return `prog-${Date.now()}-${progressIdCounter}`;
+}
+
+export function recordTaskProgress(
+  memory: WorkingMemory,
+  entry: Omit<TaskProgressEntry, "id" | "timestamp">,
+): void {
+  memory.taskProgress.push({
+    ...entry,
+    id: generateProgressId(),
+    timestamp: new Date().toISOString(),
+  });
+
+  // Evict oldest completed entries when over limit
+  while (memory.taskProgress.length > MAX_TASK_PROGRESS_ENTRIES) {
+    const completedIdx = memory.taskProgress.findIndex(
+      (e) => e.status === "completed",
+    );
+    if (completedIdx >= 0) {
+      memory.taskProgress.splice(completedIdx, 1);
+    } else {
+      memory.taskProgress.shift();
+    }
+  }
+}
+
+export function formatTaskProgressBlock(memory: WorkingMemory): string {
+  if (memory.taskProgress.length === 0) return "";
+
+  const completed = memory.taskProgress.filter((e) => e.status === "completed");
+  const failed = memory.taskProgress.filter((e) => e.status === "failed");
+  const pending = memory.taskProgress.filter((e) => e.status === "pending");
+
+  const lines: string[] = ["[Task Progress]"];
+
+  if (completed.length > 0) {
+    lines.push(`\nCompleted (${completed.length}):`);
+    for (const e of completed.slice(-10)) {
+      lines.push(`  ✓ [turn ${e.turnNumber}] ${e.toolName}: ${e.description}${e.targetFile ? ` → ${e.targetFile}` : ""}`);
+    }
+  }
+
+  if (failed.length > 0) {
+    lines.push(`\nFailed (${failed.length}):`);
+    for (const e of failed.slice(-5)) {
+      lines.push(`  ✗ [turn ${e.turnNumber}] ${e.toolName}: ${e.description}${e.errorHint ? ` — ${e.errorHint}` : ""}`);
+    }
+  }
+
+  if (pending.length > 0) {
+    lines.push(`\nPending (${pending.length}):`);
+    for (const e of pending.slice(-5)) {
+      lines.push(`  ○ ${e.description}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // File knowledge extraction from tool results
 // ---------------------------------------------------------------------------
 
@@ -194,25 +277,66 @@ function buildFileSummaryFromContent(content: string, filePath: string): string 
   return truncateSummary(preview || `(${lines.length} lines)`);
 }
 
+/**
+ * Strip line number prefixes (e.g. "1│", "123│") from read_file content_preview.
+ */
+function stripLineNumbers(content: string): string {
+  return content
+    .split("\n")
+    .map((line) => line.replace(/^\d+│/, ""))
+    .join("\n");
+}
+
 export function extractFileKnowledge(
   toolName: string,
   toolArgs: Record<string, unknown>,
   toolResult: string,
   agentId: string,
+  turnNumber?: number,
 ): FileKnowledge | null {
   if (toolName === "read_file") {
     const relativePath = String(toolArgs.relative_path ?? toolArgs.path ?? "").trim();
     if (!relativePath) return null;
 
-    const totalLines = (toolResult.match(/\n/g) || []).length + 1;
-    return {
-      relativePath,
-      summary: buildFileSummaryFromContent(toolResult, relativePath),
-      totalLines,
-      language: inferLanguage(relativePath),
-      lastReadAt: new Date().toISOString(),
-      readByAgent: agentId,
-    };
+    // toolResult is a JSON string from executeToolCall.
+    // Parse it to extract accurate total_lines and content_preview.
+    try {
+      const parsed = JSON.parse(toolResult);
+
+      // Skip cached/dedup results — don't overwrite existing knowledge
+      if (parsed.status === "cached") return null;
+
+      const totalLines = typeof parsed.total_lines === "number"
+        ? parsed.total_lines
+        : (toolResult.match(/\n/g) || []).length + 1;
+
+      // Build summary from actual source code, not from the JSON envelope
+      const contentForSummary = typeof parsed.content_preview === "string"
+        ? stripLineNumbers(parsed.content_preview)
+        : toolResult;
+
+      return {
+        relativePath,
+        summary: buildFileSummaryFromContent(contentForSummary, relativePath),
+        totalLines,
+        language: inferLanguage(relativePath),
+        lastReadAt: new Date().toISOString(),
+        lastReadTurn: turnNumber ?? 0,
+        readByAgent: agentId,
+      };
+    } catch {
+      // Fallback for non-JSON results
+      const totalLines = (toolResult.match(/\n/g) || []).length + 1;
+      return {
+        relativePath,
+        summary: buildFileSummaryFromContent(toolResult, relativePath),
+        totalLines,
+        language: inferLanguage(relativePath),
+        lastReadAt: new Date().toISOString(),
+        lastReadTurn: turnNumber ?? 0,
+        readByAgent: agentId,
+      };
+    }
   }
 
   if (toolName === "grep" || toolName === "glob") {
@@ -232,6 +356,7 @@ export function extractFileKnowledge(
         totalLines: 0,
         language: inferLanguage(firstPath),
         lastReadAt: new Date().toISOString(),
+        lastReadTurn: turnNumber ?? 0,
         readByAgent: agentId,
       };
     }
@@ -381,6 +506,7 @@ export function snapshotWorkingMemory(memory: WorkingMemory): WorkingMemorySnaps
     fileKnowledge: [...memory.fileKnowledge.entries()],
     discoveredFacts: [...memory.discoveredFacts],
     subAgentHistory: [...memory.subAgentHistory],
+    taskProgress: [...memory.taskProgress],
     projectContext: memory.projectContext,
     maxTokenBudget: memory.maxTokenBudget,
   };
@@ -391,6 +517,7 @@ export function restoreWorkingMemory(snapshot: WorkingMemorySnapshot): WorkingMe
     fileKnowledge: new Map(snapshot.fileKnowledge),
     discoveredFacts: snapshot.discoveredFacts ?? [],
     subAgentHistory: snapshot.subAgentHistory ?? [],
+    taskProgress: snapshot.taskProgress ?? [],
     projectContext: snapshot.projectContext ?? "",
     maxTokenBudget: snapshot.maxTokenBudget ?? 4000,
   };
@@ -414,6 +541,7 @@ export function normalizeWorkingMemorySnapshot(
     fileKnowledge: obj.fileKnowledge as Array<[string, FileKnowledge]>,
     discoveredFacts: obj.discoveredFacts as DiscoveredFact[],
     subAgentHistory: obj.subAgentHistory as SubAgentExecRecord[],
+    taskProgress: Array.isArray(obj.taskProgress) ? (obj.taskProgress as TaskProgressEntry[]) : [],
     projectContext: typeof obj.projectContext === "string" ? obj.projectContext : "",
     maxTokenBudget: typeof obj.maxTokenBudget === "number" ? obj.maxTokenBudget : 4000,
   };

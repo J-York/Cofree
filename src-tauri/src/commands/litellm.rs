@@ -734,7 +734,7 @@ pub async fn post_litellm_chat_completions(
                 let is_retriable = matches!(response.status, 404 | 500 | 502 | 503 | 504 | 429);
                 if is_retriable && index + 1 < endpoints.len() {
                     eprintln!(
-                        "[LLM][Retry] endpoint={} status={} attempt={}/{}",
+                        "[LLM][Retry] endpoint={} status={} attempt={}/{} reason=retriable_http_error",
                         endpoint, response.status, index + 1, endpoints.len()
                     );
                     errors.push(format!("{} 返回 HTTP {}", endpoint, response.status));
@@ -742,7 +742,15 @@ pub async fn post_litellm_chat_completions(
                 }
                 return Ok(response);
             }
-            Err(error) => errors.push(error),
+            Err(error) => {
+                if index + 1 < endpoints.len() {
+                    eprintln!(
+                        "[LLM][Retry] endpoint={} attempt={}/{} reason=network_error error={}",
+                        endpoint, index + 1, endpoints.len(), error
+                    );
+                }
+                errors.push(error);
+            }
         }
     }
     Err(format!(
@@ -790,6 +798,12 @@ pub async fn post_litellm_chat_completions_stream(
         {
             Ok(r) => r,
             Err(e) => {
+                if index + 1 < endpoints.len() {
+                    eprintln!(
+                        "[LLM][Retry] endpoint={} attempt={}/{} mode=stream reason=network_error error={}",
+                        endpoint, index + 1, endpoints.len(), e
+                    );
+                }
                 errors.push(format!("{} 请求失败: {}", endpoint, e));
                 continue;
             }
@@ -799,7 +813,7 @@ pub async fn post_litellm_chat_completions_stream(
         let is_retriable = matches!(status, 404 | 500 | 502 | 503 | 504 | 429);
         if is_retriable && index + 1 < endpoints.len() {
             eprintln!(
-                "[LLM][Retry] endpoint={} status={} attempt={}/{} mode=stream",
+                "[LLM][Retry] endpoint={} status={} attempt={}/{} mode=stream reason=retriable_http_error",
                 endpoint, status, index + 1, endpoints.len()
             );
             errors.push(format!("{} 返回 HTTP {}", endpoint, status));

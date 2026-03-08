@@ -36,8 +36,10 @@ import {
   buildCofreeRcPromptFragment,
   type CofreeRcConfig,
 } from "../lib/cofreerc";
+import { generateRepoMap } from "./repoMapService";
 import { SummaryCache } from "../lib/summaryCache";
 import {
+  clearOldToolUses,
   compressMessagesToFitBudget,
   estimateTokensForMessages,
   estimateTokensForToolDefinitions,
@@ -52,7 +54,7 @@ import type {
   SubAgentFeedback,
 } from "../agents/types";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
-import { assembleSystemPrompt, assembleRuntimeContext } from "../agents/promptAssembly";
+import { assembleSystemPrompt, assembleRuntimeContext, classifyTaskType } from "../agents/promptAssembly";
 import { selectAgentTools } from "../agents/toolPolicy";
 import { tryExtractStructuredOutput, tryExtractFeedback } from "../agents/structuredOutput";
 import { runWithConcurrencyLimit } from "../lib/concurrency";
@@ -63,6 +65,8 @@ import {
   extractFileKnowledge,
   addDiscoveredFact,
   recordSubAgentExecution,
+  recordTaskProgress,
+  formatTaskProgressBlock,
   serializeWorkingMemory,
   type WorkingMemory,
 } from "./workingMemory";
@@ -82,6 +86,12 @@ const MIN_MESSAGES_TO_SUMMARIZE = 4;
 const MIN_RECENT_MESSAGES_TO_KEEP = 6;
 const RECENT_TOKENS_MIN_RATIO = 0.4;
 const TOOL_MESSAGE_MAX_CHARS = 3000;
+
+// --- Context Editing: proactive tool-use eviction ---
+const CONTEXT_EDIT_KEEP_RECENT_TURNS = 5;
+const CONTEXT_EDIT_CLEAR_AT_LEAST = 3;
+const CONTEXT_EDIT_TRIGGER_EVERY_N_TURNS = 8;
+const CONTEXT_EDIT_TRIGGER_TOKEN_RATIO = 0.6;
 
 // P2-2: Dynamic cooldown state — tracks token growth to adjust cooldown.
 // Capped at MAX_TRACKED_WORKSPACES to prevent unbounded memory growth.
@@ -160,11 +170,31 @@ const MAX_TOOL_RETRY = 2;
 const MAX_PATCH_REPAIR_ROUNDS = 1;
 const MAX_CREATE_HINT_REPAIR_ROUNDS = 1;
 const MAX_SHELL_DIALECT_REPAIR_ROUNDS = 1;
+const MAX_SEARCH_NOT_FOUND_REPAIR_ROUNDS = 2;
 const MAX_MULTI_ARTIFACT_REMINDER_ROUNDS = 2;
 const MAX_PROPOSED_ACTIONS_PER_BATCH = 5;
 
 const MAX_TOOL_NOT_FOUND_STRIKES = 3;
 const MAX_CONSECUTIVE_FAILURE_TURNS = 5;
+
+const MAX_LLM_REQUEST_RETRIES = 3;
+const LLM_RETRY_BASE_DELAY_MS = 1000;
+const LLM_RETRY_MAX_DELAY_MS = 15000;
+
+const INCREMENTAL_CHECKPOINT_INTERVAL = 10;
+const MAX_ABSOLUTE_TURNS = 150;
+
+const TASK_TYPE_TURN_LIMITS: Record<string, number> = {
+  review: 20,
+  information: 15,
+  exploration: 25,
+  shell_ops: MAX_ABSOLUTE_TURNS,
+  code_edit: MAX_ABSOLUTE_TURNS,
+  mixed: MAX_ABSOLUTE_TURNS,
+};
+
+const MAX_CONSECUTIVE_READ_ONLY_TURNS = 8;
+const DEDUP_TURN_WINDOW = 10;
 
 /**
  * Find the nearest line boundary before or at the given index.
@@ -438,8 +468,42 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     type: "function",
     function: {
       name: "propose_file_edit",
-      description:
-        "Propose deterministic single-file text edit. Supports replace/insert/delete/create operations. System will generate and validate patch for HITL approval.\n\nUsage examples:\n- Create new file: {relative_path:'src/foo.ts', operation:'create', content:'...'}\n- Replace by search: {relative_path:'src/foo.ts', search:'old text', replace:'new text'}\n- Replace by line range: {relative_path:'src/foo.ts', start_line:10, end_line:15, content:'replacement'}\n- Insert after line: {relative_path:'src/foo.ts', operation:'insert', line:5, content:'new line'}\n- Delete snippet: {relative_path:'src/foo.ts', operation:'delete', search:'text to remove'}\n\nIMPORTANT: relative_path is REQUIRED for all operations.",
+      description: [
+        "Propose a deterministic single-file text edit. System generates and validates a patch for HITL approval.",
+        "",
+        "## Mode 1: REPLACE (default operation)",
+        "Replace existing text in a file.",
+        "  Required: relative_path + (search OR start_line/end_line)",
+        "  Optional: replace (new text), replace_all/apply_all",
+        "  Example A — search-based: {relative_path:'src/foo.ts', search:'old text', replace:'new text'}",
+        "  Example B — line-range:   {relative_path:'src/foo.ts', start_line:10, end_line:15, content:'replacement lines'}",
+        "",
+        "## Mode 2: INSERT",
+        "Insert new content before/after an anchor point.",
+        "  Required: relative_path, operation:'insert', content + (anchor OR line)",
+        "  Optional: position ('before'|'after', default 'after'), apply_all",
+        "  Example: {relative_path:'src/foo.ts', operation:'insert', line:5, content:'new line', position:'after'}",
+        "",
+        "## Mode 3: DELETE",
+        "Remove text from a file.",
+        "  Required: relative_path, operation:'delete' + (search OR start_line/end_line)",
+        "  Optional: apply_all",
+        "  Example: {relative_path:'src/foo.ts', operation:'delete', search:'text to remove'}",
+        "",
+        "## Mode 4: CREATE",
+        "Create a new file (or overwrite existing with overwrite:true).",
+        "  Required: relative_path, operation:'create', content",
+        "  Optional: overwrite (boolean)",
+        "  Example: {relative_path:'src/new.ts', operation:'create', content:'export const x = 1;'}",
+        "",
+        "## COMMON MISTAKES — avoid these:",
+        "- Do NOT include line number prefixes (e.g. '  10│') in search/anchor — they are display-only.",
+        "- Do NOT use operation:'replace' on a file that does not exist — use operation:'create' instead.",
+        "- Do NOT omit content when using operation:'create' — content is required.",
+        "- Do NOT use start_line/end_line without first reading the file to confirm current line numbers.",
+        "",
+        "IMPORTANT: relative_path is REQUIRED for ALL operations.",
+      ].join("\n"),
       parameters: {
         type: "object",
         required: ["relative_path"],
@@ -947,6 +1011,13 @@ export interface RunPlanningSessionInput {
   onContextUpdate?: (estimatedTokens: number) => void;
   /** Called with sub-agent progress events during task tool execution. */
   onSubAgentProgress?: (role: string, event: SubAgentProgressEvent) => void;
+  /** Called periodically during the tool loop with partial results for incremental checkpoint persistence. */
+  onLoopCheckpoint?: (checkpoint: {
+    turn: number;
+    proposedActions: ActionProposal[];
+    toolTrace: ToolExecutionTrace[];
+    assistantReply: string;
+  }) => void;
 }
 
 export interface PlanningSessionResult {
@@ -1619,6 +1690,60 @@ function classifyToolError(message: string): ToolErrorCategory {
 function shouldRetryToolCall(category: ToolErrorCategory): boolean {
   return category === "transport" || category === "timeout";
 }
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function isRetriableLLMError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return false;
+  }
+  const raw = error instanceof Error ? error.message : String(error);
+  const lower = raw.toLowerCase();
+  // Rate limit (429)
+  if (lower.includes("429") || lower.includes("rate limit") || lower.includes("too many requests")) {
+    return true;
+  }
+  // Server errors (500, 502, 503, 504)
+  if (/(?:^|\D)(500|502|503|504)(?:\D|$)/.test(lower)) {
+    return true;
+  }
+  // Network / transport errors
+  if (
+    lower.includes("timeout") ||
+    lower.includes("超时") ||
+    lower.includes("timed out") ||
+    lower.includes("econnrefused") ||
+    lower.includes("enotfound") ||
+    lower.includes("network") ||
+    lower.includes("connection refused") ||
+    lower.includes("bad gateway") ||
+    lower.includes("gateway") ||
+    lower.includes("upstream")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function computeRetryDelay(attempt: number): number {
+  const delay = LLM_RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+  const jitter = delay * 0.2 * Math.random();
+  return Math.min(delay + jitter, LLM_RETRY_MAX_DELAY_MS);
+}
+
 function resultPreview(content: string): string {
   return content.slice(0, MAX_TOOL_RESULT_PREVIEW);
 }
@@ -2257,6 +2382,7 @@ async function executeToolCall(
   workingMemory?: WorkingMemory,
   onSubAgentProgress?: (event: SubAgentProgressEvent) => void,
   signal?: AbortSignal,
+  turn?: number,
 ): Promise<ToolExecutionResult> {
   const safeWorkspace = workspacePath.trim();
   if (!safeWorkspace) {
@@ -2327,6 +2453,26 @@ async function executeToolCall(
           errorMessage: message,
         };
       }
+
+      // --- 读取去重：仅对无行范围的全文读取进行去重 ---
+      if (!startLine && !endLine && workingMemory && turn !== undefined) {
+        const existing = workingMemory.fileKnowledge.get(relativePath);
+        if (existing && existing.lastReadTurn !== undefined
+            && (turn - existing.lastReadTurn) < DEDUP_TURN_WINDOW) {
+          return {
+            success: true,
+            content: JSON.stringify({
+              status: "cached",
+              message: `此文件已在第 ${existing.lastReadTurn + 1} 轮读取过（当前第 ${turn + 1} 轮）。`,
+              cached_summary: existing.summary,
+              total_lines: existing.totalLines,
+              language: existing.language || "unknown",
+              hint: "如需查看特定区域，请使用 start_line/end_line 参数精确读取。如需更新信息，请使用 grep 搜索特定内容。",
+            }),
+          };
+        }
+      }
+
       const result = await invoke<{
         content: string;
         total_lines: number;
@@ -2366,7 +2512,9 @@ async function executeToolCall(
           truncated: wasTruncated,
           ...(wasTruncated
             ? {
-              hint: `文件共 ${result.total_lines} 行，当前内容被截断。请用 start_line/end_line 分段读取剩余部分。`,
+              hint: `文件共 ${result.total_lines} 行，当前预览已被截断（仅显示头部和尾部）。` +
+                `若需编辑此文件，请勿直接从预览中复制长段落作为 search 片段（可能与实际内容不一致）。` +
+                `推荐：先用 read_file 的 start_line/end_line 读取目标区域的精确内容，再用 propose_file_edit 的 start_line/end_line 行范围方式编辑。`,
             }
             : {}),
         }),
@@ -2667,7 +2815,7 @@ async function executeToolCall(
         const createContent = asString(args.content, asString(args.replace));
         const overwrite = asBoolean(args.overwrite, false);
         if (!createContent) {
-          const message = "create 操作要求 content 非空";
+          const message = "create 操作要求 content 非空。operation='create' 必须提供 content 参数，包含要写入的完整文件内容。";
           return {
             content: JSON.stringify({ error: message }),
             success: false,
@@ -2777,7 +2925,7 @@ async function executeToolCall(
               }
               const hits = countOccurrences(original, search);
               if (hits < 1) {
-                const message = `search 片段未找到: ${relativePath}`;
+                const message = `search 片段未找到: ${relativePath}。search 必须精确匹配文件内容（不含行号前缀）。建议改用 start_line/end_line 行范围方式编辑。`;
                 return {
                   content: JSON.stringify({ error: message }),
                   success: false,
@@ -2838,7 +2986,7 @@ async function executeToolCall(
               }
               const hits = countOccurrences(original, anchor);
               if (hits < 1) {
-                const message = `anchor 片段未找到: ${relativePath}`;
+                const message = `anchor 片段未找到: ${relativePath}。anchor 必须精确匹配文件内容（不含行号前缀）。建议改用 line 参数指定插入位置。`;
                 return {
                   content: JSON.stringify({ error: message }),
                   success: false,
@@ -2891,7 +3039,7 @@ async function executeToolCall(
               }
               const hits = countOccurrences(original, search);
               if (hits < 1) {
-                const message = `search 片段未找到: ${relativePath}`;
+                const message = `search 片段未找到: ${relativePath}。search 必须精确匹配文件内容（不含行号前缀）。建议改用 start_line/end_line 行范围方式编辑。`;
                 return {
                   content: JSON.stringify({ error: message }),
                   success: false,
@@ -3431,6 +3579,7 @@ async function executeToolCallWithRetry(
   workingMemory?: WorkingMemory,
   onSubAgentProgress?: (event: SubAgentProgressEvent) => void,
   signal?: AbortSignal,
+  turn?: number,
 ): Promise<{
   result: ToolExecutionResult;
   trace: ToolExecutionTrace;
@@ -3457,6 +3606,7 @@ async function executeToolCallWithRetry(
       workingMemory,
       onSubAgentProgress,
       signal,
+      turn,
     );
     const success = current.success !== false;
     const traceStatus: ToolExecutionStatus = success
@@ -3519,7 +3669,8 @@ export async function requestToolCompletion(
   messages: LiteLLMMessage[],
   settings: AppSettings,
   activeTools: LiteLLMToolDefinition[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  toolChoiceOverride?: "auto" | "none",
 ): Promise<{
   assistantMessage: LiteLLMMessage;
   toolCalls: ToolCallRecord[];
@@ -3530,16 +3681,17 @@ export async function requestToolCompletion(
     throw new DOMException("The operation was aborted.", "AbortError");
   }
 
+  const effectiveToolChoice = toolChoiceOverride ?? "auto";
   const body = createLiteLLMRequestBody(messages, settings, {
     stream: false,
     temperature: 0.1,
-    tools: activeTools,
-    toolChoice: "auto",
+    tools: effectiveToolChoice === "none" ? undefined : activeTools,
+    toolChoice: effectiveToolChoice === "none" ? undefined : effectiveToolChoice,
   });
 
   const t0 = performance.now();
   console.log(
-    `[LLM] 发送请求 (非流式) | model=${settings.model} | messages=${messages.length} | tools=${activeTools.length}`
+    `[LLM] 发送请求 (非流式) | model=${settings.model} | messages=${messages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
   );
 
   const response = await postLiteLLMChatCompletions(settings, body);
@@ -3599,7 +3751,8 @@ async function requestToolCompletionWithStream(
   settings: AppSettings,
   activeTools: LiteLLMToolDefinition[],
   signal?: AbortSignal,
-  onChunk?: (content: string) => void
+  onChunk?: (content: string) => void,
+  toolChoiceOverride?: "auto" | "none",
 ): Promise<{
   assistantMessage: LiteLLMMessage;
   toolCalls: ToolCallRecord[];
@@ -3610,16 +3763,17 @@ async function requestToolCompletionWithStream(
     throw new DOMException("The operation was aborted.", "AbortError");
   }
 
+  const effectiveToolChoice = toolChoiceOverride ?? "auto";
   const body = createLiteLLMRequestBody(messages, settings, {
     stream: true,
     temperature: 0.1,
-    tools: activeTools,
-    toolChoice: "auto",
+    tools: effectiveToolChoice === "none" ? undefined : activeTools,
+    toolChoice: effectiveToolChoice === "none" ? undefined : effectiveToolChoice,
   });
 
   const t0 = performance.now();
   console.log(
-    `[LLM] 发送请求 (流式) | model=${settings.model} | messages=${messages.length} | tools=${activeTools.length}`
+    `[LLM] 发送请求 (流式) | model=${settings.model} | messages=${messages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
   );
 
   const response = await postLiteLLMChatCompletionsStream(
@@ -3704,6 +3858,7 @@ async function executeToolCompletionForTurn(
   turn: number,
   signal?: AbortSignal,
   onChunk?: (content: string) => void,
+  toolChoiceOverride?: "auto" | "none",
 ): Promise<{
   completion: {
     assistantMessage: LiteLLMMessage;
@@ -3732,7 +3887,7 @@ async function executeToolCompletionForTurn(
   );
 
   if (requestMode === "nonstream") {
-    const completion = await requestToolCompletion(messages, settings, activeTools, signal);
+    const completion = await requestToolCompletion(messages, settings, activeTools, signal, toolChoiceOverride);
     return {
       completion,
       requestMode,
@@ -3749,6 +3904,7 @@ async function executeToolCompletionForTurn(
       activeTools,
       signal,
       onChunk,
+      toolChoiceOverride,
     );
     return {
       completion,
@@ -3764,7 +3920,7 @@ async function executeToolCompletionForTurn(
     console.warn(
       `[Loop][Fallback] turn=${turn + 1} | from=stream | to=nonstream | reason=${error instanceof Error ? error.message : String(error)}`,
     );
-    const completion = await requestToolCompletion(messages, settings, activeTools, signal);
+    const completion = await requestToolCompletion(messages, settings, activeTools, signal, toolChoiceOverride);
     return {
       completion,
       requestMode: "nonstream",
@@ -3790,6 +3946,7 @@ async function runNativeToolCallingLoop(
   onToolCallEvent?: (event: ToolCallEvent) => void,
   onContextUpdate?: (estimatedTokens: number) => void,
   onSubAgentProgress?: (role: string, event: SubAgentProgressEvent) => void,
+  onLoopCheckpoint?: RunPlanningSessionInput["onLoopCheckpoint"],
 ): Promise<{
   assistantReply: string;
   requestRecords: RequestRecord[];
@@ -3812,7 +3969,15 @@ async function runNativeToolCallingLoop(
     "请读取必要文件片段后，重新调用 propose_file_edit。";
   const createPathRepairInstruction =
     "若目标是新建文件，请调用 propose_file_edit 并设置 operation='create'；若目录不存在，可先调用 propose_shell 创建目录。Windows/PowerShell 下使用 New-Item -ItemType Directory -Force <目录>；Unix 下可用 mkdir -p <目录>。";
-  const agentSystemPrompt = assembleSystemPrompt(runtime);
+  const searchNotFoundRepairInstruction =
+    "search/anchor 片段在完整文件中未匹配到（search 必须精确匹配文件内容）。这通常是因为文件较大、read_file 返回的内容被截断，你基于截断视图构造的 search 片段与实际文件内容不一致。" +
+    "\n请改用以下策略之一：" +
+    "\n1. 使用 start_line/end_line 行号范围方式编辑（推荐）：先用 read_file 的 start_line/end_line 参数读取目标区域的精确内容，再用 propose_file_edit 的 start_line/end_line 参数做行范围替换。" +
+    "\n2. 缩短 search 片段：只使用你确定在文件中唯一存在的短片段（1-3 行），避免包含可能被截断的长段落。" +
+    "\n3. 先用 read_file 分段读取目标区域获取精确内容，再构造精确匹配的 search 片段。" +
+    "\n注意：search 中不要包含行号前缀（如 '  10│'），这些仅用于显示。";
+  const taskType = classifyTaskType(prompt);
+  const agentSystemPrompt = assembleSystemPrompt(runtime, taskType);
   const runtimeContext = assembleRuntimeContext(runtime, settings.workspacePath);
   const requestedArtifactCount =
     phase === "default" ? estimateRequestedArtifactCount(prompt) : 0;
@@ -3863,6 +4028,11 @@ async function runNativeToolCallingLoop(
   let multiArtifactReminderRounds = 0;
   let toolNotFoundStrikes = 0;
   let consecutiveFailureTurns = 0;
+  let searchNotFoundRepairRounds = 0;
+  let fileEditFailureTracker = new Map<string, number>(); // relativePath → consecutive fail count
+  const MAX_SAME_FILE_EDIT_FAILURES = 4;
+  let consecutiveReadOnlyTurns = 0;
+  let toolChoiceOverride: "auto" | "none" | undefined = undefined;
 
   // --- Context window management ---
   const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
@@ -3909,6 +4079,17 @@ async function runNativeToolCallingLoop(
   };
 
   for (let turn = 0; ; turn += 1) {
+    if (turn >= MAX_ABSOLUTE_TURNS) {
+      console.warn(`[Loop] 达到绝对轮次上限 (${MAX_ABSOLUTE_TURNS})，强制终止`);
+      return {
+        assistantReply: `已达到工具调用轮次硬上限（${MAX_ABSOLUTE_TURNS} 轮），已自动终止。请检查任务复杂度或拆分为更小的子任务。`,
+        requestRecords,
+        proposedActions,
+        toolTrace,
+        assistantToolCalls: lastAssistantToolCalls,
+      };
+    }
+
     if (turn > 0 && turn % TOOL_LOOP_CHECKPOINT_TURNS === 0) {
       console.log(`[Loop] 已运行 ${turn} 轮，到达检查点，暂停等待用户确认`);
       return {
@@ -3920,8 +4101,48 @@ async function runNativeToolCallingLoop(
       };
     }
 
+    // --- 任务类型轮次预算 ---
+    const taskTypeTurnLimit = TASK_TYPE_TURN_LIMITS[taskType] ?? MAX_ABSOLUTE_TURNS;
+    if (turn >= taskTypeTurnLimit && taskTypeTurnLimit < MAX_ABSOLUTE_TURNS) {
+      console.log(`[Loop] 任务类型 "${taskType}" 达到轮次预算 (${taskTypeTurnLimit})，强制总结`);
+      messages.push({
+        role: "system",
+        content: `你已达到当前任务类型（${taskType}）的工具调用预算（${taskTypeTurnLimit} 轮）。请立即基于已收集的所有信息给出完整的总结性回答。不要再调用任何工具。`,
+      });
+      toolChoiceOverride = "none";
+    }
+
+    // Incremental checkpoint: persist partial progress every N turns
+    if (turn > 0 && turn % INCREMENTAL_CHECKPOINT_INTERVAL === 0 && onLoopCheckpoint) {
+      try {
+        const assistantMsgs = messages.filter((m) => m.role === "assistant");
+        const lastReply = assistantMsgs.length > 0 ? assistantMsgs[assistantMsgs.length - 1].content : "";
+        onLoopCheckpoint({
+          turn,
+          proposedActions: [...proposedActions],
+          toolTrace: [...toolTrace],
+          assistantReply: lastReply,
+        });
+        console.log(`[Loop] 增量检查点已保存 | turn=${turn} | actions=${proposedActions.length} | traces=${toolTrace.length}`);
+      } catch (checkpointError) {
+        console.warn(`[Loop] 增量检查点保存失败:`, checkpointError);
+      }
+    }
+
     const estTokens = estimateTokensForMessages(messages);
     console.log(`[Loop] ── Turn ${turn + 1} ── messages=${messages.length} | ~${estTokens} tokens`);
+
+    // Inject task progress summary every 5 turns or when failures accumulate
+    const failedCount = workingMemory.taskProgress.filter((e) => e.status === "failed").length;
+    if (turn > 0 && (turn % 5 === 0 || failedCount >= 3)) {
+      const progressBlock = formatTaskProgressBlock(workingMemory);
+      if (progressBlock) {
+        messages.push({
+          role: "system",
+          content: progressBlock,
+        });
+      }
+    }
 
     if (turn === TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD) {
       messages.push({
@@ -3934,6 +4155,27 @@ async function runNativeToolCallingLoop(
       });
     }
 
+    // --- Context Editing: 主动淘汰旧 tool-use 对 ---
+    const shouldEditByTurns = CONTEXT_EDIT_TRIGGER_EVERY_N_TURNS > 0
+      && turn > 0 && turn % CONTEXT_EDIT_TRIGGER_EVERY_N_TURNS === 0;
+    const shouldEditByTokens = estTokens > promptBudgetTarget * CONTEXT_EDIT_TRIGGER_TOKEN_RATIO;
+
+    if (shouldEditByTurns || shouldEditByTokens) {
+      const editResult = clearOldToolUses(messages, {
+        keepRecentTurns: CONTEXT_EDIT_KEEP_RECENT_TURNS,
+        clearAtLeast: CONTEXT_EDIT_CLEAR_AT_LEAST,
+        pinnedPrefixLen,
+      });
+      if (editResult.cleared) {
+        messages.splice(0, messages.length, ...editResult.messages);
+        console.log(
+          `[Loop] Context Editing: 清除 ${editResult.pairsRemoved} 个旧 tool-use 轮次 | ` +
+          `释放 ~${editResult.tokensFreed} tokens | 剩余 ${messages.length} messages`
+        );
+      }
+    }
+
+    // 现有的 compression pipeline 继续执行
     const compression = await compressMessagesToFitBudget({
       messages,
       policy: compressionPolicy,
@@ -3948,30 +4190,71 @@ async function runNativeToolCallingLoop(
         `[Loop] 上下文压缩: ${beforeLen} → ${messages.length} messages | ~${afterTokens} tokens`
       );
     }
+    if (compression.compressed && workingMemory.fileKnowledge.size > 0) {
+      const knownFiles = [...workingMemory.fileKnowledge.entries()]
+        .sort((a, b) => (b[1].lastReadTurn ?? 0) - (a[1].lastReadTurn ?? 0))
+        .slice(0, 30)
+        .map(([path, fk]) => `- ${path} (${fk.totalLines}行, ${fk.language ?? "?"}): ${fk.summary}`)
+        .join("\n");
+
+      messages.push({
+        role: "system",
+        content: [
+          "上下文已压缩。以下是你在本次会话中已读取过的文件清单，无需重复读取：",
+          knownFiles,
+          "如需特定文件的详细内容，请使用 start_line/end_line 精确读取目标区域，而非重新全文读取。",
+        ].join("\n"),
+      });
+    }
     onContextUpdate?.(estimateTokensForMessages(messages));
 
 
     let completion;
-    try {
-      const turnRequest = await executeToolCompletionForTurn(
-        messages,
-        settings,
-        activeTools,
-        turn,
-        signal,
-        onAssistantChunk,
-      );
-      completion = turnRequest.completion;
-      console.log(
-        `[Loop][ModeResult] turn=${turn + 1} | mode=${turnRequest.requestMode} | highRisk=${turnRequest.highRisk} | fallback=${turnRequest.fallbackTriggered}` +
-        ` | reasons=${turnRequest.highRiskReasons.length ? turnRequest.highRiskReasons.join(",") : "none"}`,
-      );
-    } catch (error) {
-      const currentTokens = estimateTokensForMessages(messages);
-      console.error(
-        `[Loop][Failure] tool completion failed | turn=${turn + 1} | ~tokens=${currentTokens} | messages=${messages.length} | model=${settings.model} | error=${error instanceof Error ? error.message : String(error)}`,
-      );
-      throw error;
+    {
+      let lastLLMError: unknown;
+      let llmRetryAttempt = 0;
+      for (; llmRetryAttempt < MAX_LLM_REQUEST_RETRIES; llmRetryAttempt += 1) {
+        try {
+          const turnRequest = await executeToolCompletionForTurn(
+            messages,
+            settings,
+            activeTools,
+            turn,
+            signal,
+            onAssistantChunk,
+            toolChoiceOverride,
+          );
+          // Reset override after use
+          toolChoiceOverride = undefined;
+          completion = turnRequest.completion;
+          console.log(
+            `[Loop][ModeResult] turn=${turn + 1} | mode=${turnRequest.requestMode} | highRisk=${turnRequest.highRisk} | fallback=${turnRequest.fallbackTriggered}` +
+            (llmRetryAttempt > 0 ? ` | retryAttempt=${llmRetryAttempt}` : "") +
+            ` | reasons=${turnRequest.highRiskReasons.length ? turnRequest.highRiskReasons.join(",") : "none"}`,
+          );
+          break;
+        } catch (error) {
+          lastLLMError = error;
+          const currentTokens = estimateTokensForMessages(messages);
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          const retriable = isRetriableLLMError(error);
+          const hasRetriesLeft = llmRetryAttempt + 1 < MAX_LLM_REQUEST_RETRIES;
+          console.error(
+            `[Loop][Failure] tool completion failed | turn=${turn + 1} | attempt=${llmRetryAttempt + 1}/${MAX_LLM_REQUEST_RETRIES}` +
+            ` | retriable=${retriable} | ~tokens=${currentTokens} | messages=${messages.length}` +
+            ` | model=${settings.model} | error=${errorMsg}`,
+          );
+          if (!retriable || !hasRetriesLeft) {
+            throw error;
+          }
+          const delay = computeRetryDelay(llmRetryAttempt);
+          console.log(`[Loop][Retry] 等待 ${Math.round(delay)}ms 后重试 (attempt ${llmRetryAttempt + 2}/${MAX_LLM_REQUEST_RETRIES})`);
+          await sleep(delay, signal);
+        }
+      }
+      if (!completion) {
+        throw lastLLMError ?? new Error("LLM 请求在重试后仍然失败。");
+      }
     }
     requestRecords.push(completion.requestRecord);
     messages.push(completion.assistantMessage);
@@ -4015,12 +4298,15 @@ async function runNativeToolCallingLoop(
       `[Loop] Turn ${turn + 1} 收到 ${completion.toolCalls.length} 个工具调用: [${toolNames.join(", ")}]`
     );
 
+    const actionCountBeforeTurn = proposedActions.length;
     let patchPreflightFailure: string | null = null;
     let createPathUsageFailure: string | null = null;
     let shellDialectRepairInstruction: string | null = null;
+    let searchNotFoundFailure: string | null = null;
     let turnHasToolNotFound = false;
     let turnSuccessCount = 0;
     let turnFailureCount = 0;
+    let turnDedupHitCount = 0;
 
     // Helper: execute a single tool call and collect results
     const executeSingleToolCall = async (toolCall: ToolCallRecord) => {
@@ -4055,6 +4341,7 @@ async function runNativeToolCallingLoop(
         workingMemory,
         progressForCall,
         signal,
+        turn,
       );
       const toolMs = (performance.now() - toolT0).toFixed(0);
 
@@ -4090,6 +4377,15 @@ async function runNativeToolCallingLoop(
         }
       } else {
         turnSuccessCount += 1;
+
+        // Detect dedup cache hits
+        try {
+          const parsedContent = JSON.parse(toolResult.content);
+          if (parsedContent.status === "cached") {
+            turnDedupHitCount += 1;
+          }
+        } catch { /* not JSON or not cached */ }
+
         try {
           const parsedArgs = JSON.parse(toolCall.function.arguments || "{}");
           const knowledge = extractFileKnowledge(
@@ -4097,12 +4393,35 @@ async function runNativeToolCallingLoop(
             parsedArgs,
             toolResult.content,
             "main",
+            turn,
           );
           if (knowledge) {
             workingMemory.fileKnowledge.set(knowledge.relativePath, knowledge);
           }
         } catch {
           // Ignore parse errors for working memory extraction
+        }
+      }
+
+      // Record task progress for propose_* tools (always) and read tools (on failure only)
+      const toolName = toolCall.function.name;
+      const isProposeTool = toolName.startsWith("propose_");
+      const isReadTool = ["read_file", "grep", "glob", "list_files", "git_status", "git_diff"].includes(toolName);
+      if (isProposeTool || (isReadTool && toolResult.success === false)) {
+        try {
+          const parsedArgs = JSON.parse(toolCall.function.arguments || "{}");
+          recordTaskProgress(workingMemory, {
+            description: isProposeTool
+              ? `${toolName}(${parsedArgs.relative_path || parsedArgs.shell || ""})`
+              : `${toolName} failed`,
+            toolName,
+            targetFile: parsedArgs.relative_path || parsedArgs.path || undefined,
+            status: toolResult.success === false ? "failed" : "completed",
+            turnNumber: turn,
+            errorHint: toolResult.success === false ? toolResult.errorMessage?.slice(0, 100) : undefined,
+          });
+        } catch {
+          // Ignore parse errors for progress recording
         }
       }
 
@@ -4127,6 +4446,38 @@ async function runNativeToolCallingLoop(
             .includes("no such file or directory"))
       ) {
         createPathUsageFailure = toolResult.errorMessage ?? "目标路径不存在";
+      }
+      if (
+        toolResult.success === false &&
+        toolResult.errorCategory === "validation" &&
+        toolCall.function.name === "propose_file_edit" &&
+        ((toolResult.errorMessage ?? "").includes("片段未找到"))
+      ) {
+        searchNotFoundFailure = toolResult.errorMessage ?? "search 片段未找到";
+      }
+      if (
+        toolCall.function.name === "propose_file_edit" &&
+        toolResult.success === false &&
+        toolResult.errorCategory === "validation"
+      ) {
+        try {
+          const editArgs = JSON.parse(toolCall.function.arguments || "{}");
+          const editPath = editArgs.relative_path ?? "";
+          if (editPath) {
+            fileEditFailureTracker.set(editPath, (fileEditFailureTracker.get(editPath) ?? 0) + 1);
+          }
+        } catch { /* ignore */ }
+      } else if (
+        toolCall.function.name === "propose_file_edit" &&
+        toolResult.success !== false
+      ) {
+        try {
+          const editArgs = JSON.parse(toolCall.function.arguments || "{}");
+          const editPath = editArgs.relative_path ?? "";
+          if (editPath) {
+            fileEditFailureTracker.delete(editPath);
+          }
+        } catch { /* ignore */ }
       }
       const shellRepairHint = buildShellDialectRepairInstruction(
         toolCall,
@@ -4183,6 +4534,48 @@ async function runNativeToolCallingLoop(
     const postToolTokens = estimateTokensForMessages(messages);
     onContextUpdate?.(postToolTokens);
 
+    // --- 重复读取提醒：当本轮大部分 read_file 都命中缓存时，注入已知文件清单 ---
+    if (turnDedupHitCount > 0 && turnDedupHitCount >= Math.ceil(turnSuccessCount * 0.5)) {
+      const knownFilesList = [...workingMemory.fileKnowledge.entries()]
+        .sort((a, b) => (b[1].lastReadTurn ?? 0) - (a[1].lastReadTurn ?? 0))
+        .slice(0, 20)
+        .map(([path, fk]) => `- ${path} (${fk.totalLines}行, ${fk.language ?? "?"}): ${fk.summary}`)
+        .join("\n");
+      console.log(`[Loop] Turn ${turn + 1}: ${turnDedupHitCount}/${turnSuccessCount} 个工具调用命中去重缓存`);
+      messages.push({
+        role: "system",
+        content: [
+          `系统提示：本轮 ${turnDedupHitCount} 个文件读取命中了去重缓存，说明你正在重复读取已知文件。`,
+          "以下是你已经读取过的文件及其摘要，请直接利用这些信息，不要再次读取：",
+          knownFilesList,
+          "请基于已有信息继续推进任务，而非重复读取。如需特定代码片段，请用 start_line/end_line 精确读取。",
+        ].join("\n"),
+      });
+    }
+
+    // --- 连续纯读取检测 ---
+    const turnHasPropose = completion.toolCalls.some(tc => tc.function.name.startsWith("propose_"));
+    const turnHasTaskDelegation = completion.toolCalls.some(tc => tc.function.name === "task");
+
+    if (!turnHasPropose && !turnHasTaskDelegation && turnSuccessCount > 0) {
+      consecutiveReadOnlyTurns += 1;
+    } else {
+      consecutiveReadOnlyTurns = 0;
+    }
+
+    if (consecutiveReadOnlyTurns >= MAX_CONSECUTIVE_READ_ONLY_TURNS) {
+      console.log(`[Loop] 连续 ${consecutiveReadOnlyTurns} 轮纯读取，强制要求总结`);
+      messages.push({
+        role: "system",
+        content: [
+          `系统警告：你已连续 ${consecutiveReadOnlyTurns} 轮只在读取文件而没有给出任何回复或提出动作。`,
+          "请立即基于已收集的信息给出回答。如果信息不足以完成任务，请说明已了解的内容和还需要什么信息，而不是继续读取更多文件。",
+        ].join("\n"),
+      });
+      toolChoiceOverride = "none";
+      consecutiveReadOnlyTurns = 0;
+    }
+
     // --- Circuit breaker: tool_not_found ---
     if (turnHasToolNotFound) {
       toolNotFoundStrikes += 1;
@@ -4227,8 +4620,32 @@ async function runNativeToolCallingLoop(
       };
     }
 
+    // --- Circuit breaker: same-file consecutive edit failures ---
+    for (const [filePath, failCount] of fileEditFailureTracker) {
+      if (failCount >= MAX_SAME_FILE_EDIT_FAILURES) {
+        console.warn(`[Loop] 熔断: 文件 ${filePath} 连续编辑失败 ${failCount} 次`);
+        messages.push({
+          role: "system",
+          content: [
+            `系统提示：对文件 "${filePath}" 的编辑已连续失败 ${failCount} 次，继续重试不太可能成功。`,
+            "请放弃 search/replace 方式，改用以下方案之一：",
+            "1. 使用 read_file 的 start_line/end_line 精确读取目标区域，然后用 propose_file_edit 的 start_line/end_line 做行范围替换。",
+            "2. 如果编辑内容较多，考虑用 operation='create' + overwrite=true 重写整个文件。",
+            "3. 将大编辑拆分为多个小编辑，每次只修改一小段。",
+          ].join("\n"),
+        });
+        fileEditFailureTracker.delete(filePath);
+        break;
+      }
+    }
+
+    // Repair hints: trigger when the current turn produced no new actions (i.e. the
+    // failure prevented creating a proposal). Previously gated on `!proposedActions.length`
+    // which silently skipped repairs when earlier turns had already accumulated actions.
+    const noNewActionsThisTurn = proposedActions.length === actionCountBeforeTurn;
+
     if (
-      !proposedActions.length &&
+      noNewActionsThisTurn &&
       patchPreflightFailure &&
       patchRepairRounds < MAX_PATCH_REPAIR_ROUNDS
     ) {
@@ -4246,7 +4663,7 @@ async function runNativeToolCallingLoop(
     }
 
     if (
-      !proposedActions.length &&
+      noNewActionsThisTurn &&
       createPathUsageFailure &&
       createHintRepairRounds < MAX_CREATE_HINT_REPAIR_ROUNDS
     ) {
@@ -4263,7 +4680,24 @@ async function runNativeToolCallingLoop(
     }
 
     if (
-      !proposedActions.length &&
+      noNewActionsThisTurn &&
+      searchNotFoundFailure &&
+      searchNotFoundRepairRounds < MAX_SEARCH_NOT_FOUND_REPAIR_ROUNDS
+    ) {
+      searchNotFoundRepairRounds += 1;
+      messages.push({
+        role: "system",
+        content: [
+          "系统提示：文件编辑失败 — search/anchor 片段在文件中未匹配。",
+          `错误信息：${searchNotFoundFailure}`,
+          searchNotFoundRepairInstruction,
+        ].join("\n"),
+      });
+      continue;
+    }
+
+    if (
+      noNewActionsThisTurn &&
       shellDialectRepairInstruction &&
       shellDialectRepairRounds < MAX_SHELL_DIALECT_REPAIR_ROUNDS
     ) {
@@ -4705,6 +5139,34 @@ export async function runPlanningSession(
       console.warn("Failed to generate workspace overview", e);
     }
 
+    // Inject repo-map (project structure with symbols)
+    if (projectConfig.repoMap?.enabled !== false) try {
+      const contextLimit = input.settings.maxContextTokens > 0 ? input.settings.maxContextTokens : 128000;
+      const repoMapBudget = Math.min(
+        4000,
+        Math.max(500, Math.floor(contextLimit * 0.03)),
+      );
+      const repoMap = await generateRepoMap(
+        input.settings.workspacePath,
+        projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+          ? projectConfig.ignorePatterns
+          : null,
+        projectConfig.repoMap?.tokenBudget ?? repoMapBudget,
+      );
+      if (repoMap) {
+        if (initialInternalNote) {
+          initialInternalNote = `${initialInternalNote}\n\n${repoMap}`;
+        } else {
+          initialInternalNote = repoMap;
+        }
+        console.log(
+          `[Planning] Repo-map injected (~${repoMap.length} chars)`,
+        );
+      }
+    } catch (e) {
+      console.warn("Failed to generate repo-map", e);
+    }
+
     // Inject .cofreerc prompt fragment
     const rcFragment = buildCofreeRcPromptFragment(projectConfig);
     if (rcFragment) {
@@ -4777,6 +5239,7 @@ export async function runPlanningSession(
       input.onToolCallEvent,
       input.onContextUpdate,
       input.onSubAgentProgress,
+      input.onLoopCheckpoint,
     );
     for (const record of loopResult.requestRecords) {
       recordLLMAudit({

@@ -154,6 +154,29 @@ pub struct FetchResult {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+pub struct SymbolInfo {
+    pub kind: String,
+    pub name: String,
+    pub line: usize,
+    pub signature: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct FileStructure {
+    pub path: String,
+    pub language: String,
+    pub symbols: Vec<SymbolInfo>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct WorkspaceStructureResult {
+    pub files: Vec<FileStructure>,
+    pub scanned_count: usize,
+    pub total_files: usize,
+    pub truncated: bool,
+}
+
 #[derive(Clone, Deserialize)]
 pub struct ProxySettings {
     pub mode: String,

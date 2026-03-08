@@ -13,6 +13,10 @@ vi.mock("./readOnlyWorkspaceService", () => ({
     summarizeWorkspaceFiles: vi.fn(async () => "workspace summary"),
 }));
 
+vi.mock("./repoMapService", () => ({
+    generateRepoMap: vi.fn(async () => ""),
+}));
+
 vi.mock("../agents/resolveAgentRuntime", () => ({
     resolveAgentRuntime: vi.fn(() => ({
         agentId: "agent-default",
@@ -37,6 +41,7 @@ vi.mock("../agents/resolveAgentRuntime", () => ({
 vi.mock("../agents/promptAssembly", () => ({
     assembleSystemPrompt: vi.fn(() => "system prompt"),
     assembleRuntimeContext: vi.fn(() => "runtime context"),
+    classifyTaskType: vi.fn(() => "mixed"),
 }));
 
 vi.mock("../agents/toolPolicy", () => ({
@@ -64,7 +69,7 @@ vi.mock("../lib/litellm", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { postLiteLLMChatCompletions } from "../lib/litellm";
+import { postLiteLLMChatCompletions, type LiteLLMMessage } from "../lib/litellm";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { DEFAULT_SETTINGS, type AppSettings } from "../lib/settingsStore";
 import {
@@ -72,6 +77,7 @@ import {
     runPlanningSession,
     type ToolExecutionTrace,
 } from "./planningService";
+import { clearOldToolUses } from "./contextBudget";
 
 function createSettings(): AppSettings {
     return {
@@ -391,6 +397,149 @@ describe("planningService approval-flow repair", () => {
         expect(result.assistantReply).toContain("审批卡片未能保留");
     });
 
+    it("classifies review task type correctly", async () => {
+        const actual = await vi.importActual<typeof import("../agents/promptAssembly")>(
+            "../agents/promptAssembly",
+        );
+        expect(actual.classifyTaskType("前端页面怎么样 有没有值得优化的地方")).toBe("review");
+        expect(actual.classifyTaskType("代码质量如何评价")).toBe("review");
+        expect(actual.classifyTaskType("review the codebase and give suggestions")).toBe("review");
+    });
+
+    it("does not misclassify code_edit as review", async () => {
+        const actual = await vi.importActual<typeof import("../agents/promptAssembly")>(
+            "../agents/promptAssembly",
+        );
+        expect(actual.classifyTaskType("帮我修改登录页面")).toBe("code_edit");
+        expect(actual.classifyTaskType("fix the bug in App.tsx")).toBe("code_edit");
+    });
+
+    it("includes review strategy rules for review task type", async () => {
+        const actual = await vi.importActual<typeof import("../agents/promptAssembly")>(
+            "../agents/promptAssembly",
+        );
+        const prompt = actual.assembleSystemPrompt(
+            {
+                agentId: "agent-default",
+                systemPrompt: "system prompt",
+                enabledTools: ["read_file", "grep"],
+                toolPermissions: DEFAULT_SETTINGS.toolPermissions,
+                allowedSubAgents: [],
+            } as any,
+            "review",
+        );
+        expect(prompt).toContain("审查/评估任务策略");
+        expect(prompt).toContain("禁止穷举");
+        expect(prompt).toContain("抽样阅读");
+        // review type should NOT include editing rules (propose_* tool usage guide)
+        expect(prompt).not.toContain("必须通过当前已暴露的 propose_* 工具提出待审批动作");
+        // review type should NOT include toolSelection rules
+        expect(prompt).not.toContain("工具选择关键规则");
+    });
+
+    it("returns cached result for deduplicated read_file calls", async () => {
+        const { createWorkingMemory } = await vi.importActual<typeof import("./workingMemory")>(
+            "./workingMemory",
+        );
+        const wm = createWorkingMemory({ maxTokenBudget: 4000 });
+        wm.fileKnowledge.set("src/App.tsx", {
+            relativePath: "src/App.tsx",
+            summary: "Main app component",
+            totalLines: 100,
+            language: "typescript",
+            lastReadAt: new Date().toISOString(),
+            lastReadTurn: 3,
+            readByAgent: "main",
+        });
+
+        // Simulate a second read of the same file at turn 5 (within dedup window)
+        const result = await planningServiceTestUtils.executeToolCall(
+            {
+                id: "tool-dedup",
+                type: "function",
+                function: {
+                    name: "read_file",
+                    arguments: JSON.stringify({ relative_path: "src/App.tsx" }),
+                },
+            },
+            "d:/Code/cofree",
+            DEFAULT_SETTINGS.toolPermissions,
+            undefined,   // settings
+            undefined,   // projectConfig
+            undefined,   // allowedSubAgents
+            undefined,   // enabledToolNames
+            wm,          // workingMemory
+            undefined,   // onSubAgentProgress
+            undefined,   // signal
+            5,           // turn
+        );
+
+        expect(result.success).toBe(true);
+        const payload = JSON.parse(result.content) as Record<string, unknown>;
+        expect(payload.status).toBe("cached");
+        expect(payload.cached_summary).toBe("Main app component");
+    });
+
+    it("allows read_file with line range even if file was recently read", async () => {
+        const { createWorkingMemory } = await vi.importActual<typeof import("./workingMemory")>(
+            "./workingMemory",
+        );
+        const wm = createWorkingMemory({ maxTokenBudget: 4000 });
+        wm.fileKnowledge.set("src/App.tsx", {
+            relativePath: "src/App.tsx",
+            summary: "Main app component",
+            totalLines: 100,
+            language: "typescript",
+            lastReadAt: new Date().toISOString(),
+            lastReadTurn: 3,
+            readByAgent: "main",
+        });
+
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            if (command === "read_workspace_file") {
+                return {
+                    content: "line content here\n",
+                    total_lines: 100,
+                    start_line: 10,
+                    end_line: 20,
+                };
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        // Read with start_line/end_line should NOT be deduplicated
+        const result = await planningServiceTestUtils.executeToolCall(
+            {
+                id: "tool-range",
+                type: "function",
+                function: {
+                    name: "read_file",
+                    arguments: JSON.stringify({
+                        relative_path: "src/App.tsx",
+                        start_line: 10,
+                        end_line: 20,
+                    }),
+                },
+            },
+            "d:/Code/cofree",
+            DEFAULT_SETTINGS.toolPermissions,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            wm,
+            undefined,
+            undefined,
+            5,
+        );
+
+        expect(result.success).toBe(true);
+        const payload = JSON.parse(result.content) as Record<string, unknown>;
+        // Should NOT be cached — it's a targeted line range read
+        expect(payload.status).not.toBe("cached");
+        expect(payload.ok).toBe(true);
+    });
+
     it("adds a PowerShell repair hint after failed auto propose_shell execution and allows a corrected retry", async () => {
         vi.mocked(resolveAgentRuntime).mockReturnValue({
             agentId: "agent-default",
@@ -553,5 +702,301 @@ describe("planningService approval-flow repair", () => {
             "New-Item -ItemType Directory -Force <目录>",
         );
         expect(result.assistantReply).toBe("done");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Context Editing: clearOldToolUses tests
+// ---------------------------------------------------------------------------
+
+/** Helper: build a read_file tool-use turn (assistant + tool response). */
+function makeReadFileTurn(turnIndex: number): LiteLLMMessage[] {
+    const callId = `call-rf-${turnIndex}`;
+    return [
+        {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+                {
+                    id: callId,
+                    type: "function" as const,
+                    function: { name: "read_file", arguments: JSON.stringify({ relative_path: `file${turnIndex}.ts` }) },
+                },
+            ],
+        },
+        {
+            role: "tool",
+            content: `contents of file${turnIndex}.ts — lots of code here...`,
+            tool_call_id: callId,
+            name: "read_file",
+        },
+    ];
+}
+
+/** Helper: build a propose_file_edit tool-use turn. */
+function makeEditTurn(turnIndex: number): LiteLLMMessage[] {
+    const callId = `call-edit-${turnIndex}`;
+    return [
+        {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+                {
+                    id: callId,
+                    type: "function" as const,
+                    function: { name: "propose_file_edit", arguments: JSON.stringify({ path: `file${turnIndex}.ts`, edit: "change" }) },
+                },
+            ],
+        },
+        {
+            role: "tool",
+            content: `edit applied to file${turnIndex}.ts`,
+            tool_call_id: callId,
+            name: "propose_file_edit",
+        },
+    ];
+}
+
+describe("clearOldToolUses", () => {
+    it("clears old read_file turns while keeping the most recent ones", () => {
+        const pinned: LiteLLMMessage[] = [
+            { role: "system", content: "system prompt" },
+            { role: "system", content: "runtime context" },
+        ];
+        const turns: LiteLLMMessage[] = [];
+        for (let i = 0; i < 10; i++) {
+            turns.push(...makeReadFileTurn(i));
+        }
+
+        const messages = [...pinned, ...turns];
+
+        const result = clearOldToolUses(messages, {
+            keepRecentTurns: 3,
+            clearAtLeast: 3,
+            pinnedPrefixLen: 2,
+        });
+
+        expect(result.cleared).toBe(true);
+        expect(result.pairsRemoved).toBe(7);
+        // Remaining: 2 pinned + 1 tombstone + 3 recent turns * 2 messages = 9
+        expect(result.messages.length).toBe(9);
+    });
+
+    it("does not clear turns containing action tools like propose_file_edit", () => {
+        const pinned: LiteLLMMessage[] = [
+            { role: "system", content: "system prompt" },
+        ];
+        // 4 read_file turns, then 1 propose_file_edit turn, then 2 read_file turns
+        const turns: LiteLLMMessage[] = [
+            ...makeReadFileTurn(0),
+            ...makeReadFileTurn(1),
+            ...makeReadFileTurn(2),
+            ...makeReadFileTurn(3),
+            ...makeEditTurn(4),
+            ...makeReadFileTurn(5),
+            ...makeReadFileTurn(6),
+        ];
+
+        const messages = [...pinned, ...turns];
+
+        const result = clearOldToolUses(messages, {
+            keepRecentTurns: 2,
+            clearAtLeast: 3,
+            pinnedPrefixLen: 1,
+        });
+
+        expect(result.cleared).toBe(true);
+        // Only read_file turns are clearable (6 total), keep recent 2 → clear 4
+        expect(result.pairsRemoved).toBe(4);
+
+        // The propose_file_edit turn should still be present
+        const editAssistant = result.messages.find(
+            (m) => m.tool_calls?.some((tc) => tc.function.name === "propose_file_edit"),
+        );
+        expect(editAssistant).toBeDefined();
+    });
+
+    it("does not execute when clearable turns < clearAtLeast", () => {
+        const pinned: LiteLLMMessage[] = [
+            { role: "system", content: "system prompt" },
+        ];
+        // Only 5 read_file turns, keepRecentTurns=3 → only 2 clearable, clearAtLeast=3
+        const turns: LiteLLMMessage[] = [];
+        for (let i = 0; i < 5; i++) {
+            turns.push(...makeReadFileTurn(i));
+        }
+
+        const messages = [...pinned, ...turns];
+
+        const result = clearOldToolUses(messages, {
+            keepRecentTurns: 3,
+            clearAtLeast: 3,
+            pinnedPrefixLen: 1,
+        });
+
+        expect(result.cleared).toBe(false);
+        expect(result.pairsRemoved).toBe(0);
+        expect(result.messages).toBe(messages); // same reference, no copy
+    });
+
+    it("maintains pair integrity: every remaining tool_calls[].id has a matching tool message", () => {
+        const pinned: LiteLLMMessage[] = [
+            { role: "system", content: "system prompt" },
+            { role: "system", content: "runtime context" },
+        ];
+        const turns: LiteLLMMessage[] = [];
+        for (let i = 0; i < 12; i++) {
+            turns.push(...makeReadFileTurn(i));
+        }
+
+        const messages = [...pinned, ...turns];
+
+        const result = clearOldToolUses(messages, {
+            keepRecentTurns: 4,
+            clearAtLeast: 3,
+            pinnedPrefixLen: 2,
+        });
+
+        expect(result.cleared).toBe(true);
+
+        // Verify integrity: for each remaining assistant with tool_calls,
+        // every tool_call id must have a corresponding tool message
+        const remainingToolCallIds = new Set<string>();
+        const remainingToolResponseIds = new Set<string>();
+
+        for (const msg of result.messages) {
+            if (msg.role === "assistant" && msg.tool_calls) {
+                for (const tc of msg.tool_calls) {
+                    remainingToolCallIds.add(tc.id);
+                }
+            }
+            if (msg.role === "tool" && msg.tool_call_id) {
+                remainingToolResponseIds.add(msg.tool_call_id);
+            }
+        }
+
+        for (const id of remainingToolCallIds) {
+            expect(remainingToolResponseIds.has(id)).toBe(true);
+        }
+    });
+
+    it("does not modify messages in the pinned prefix", () => {
+        const pinned: LiteLLMMessage[] = [
+            { role: "system", content: "system prompt" },
+            { role: "system", content: "runtime context" },
+            { role: "system", content: "workspace overview" },
+        ];
+        const turns: LiteLLMMessage[] = [];
+        for (let i = 0; i < 10; i++) {
+            turns.push(...makeReadFileTurn(i));
+        }
+
+        const messages = [...pinned, ...turns];
+
+        const result = clearOldToolUses(messages, {
+            keepRecentTurns: 3,
+            clearAtLeast: 3,
+            pinnedPrefixLen: 3,
+        });
+
+        expect(result.cleared).toBe(true);
+
+        // First 3 messages should be exactly the pinned prefix
+        expect(result.messages[0]).toEqual(pinned[0]);
+        expect(result.messages[1]).toEqual(pinned[1]);
+        expect(result.messages[2]).toEqual(pinned[2]);
+    });
+
+    it("inserts exactly one tombstone system message after clearing", () => {
+        const pinned: LiteLLMMessage[] = [
+            { role: "system", content: "system prompt" },
+        ];
+        const turns: LiteLLMMessage[] = [];
+        for (let i = 0; i < 10; i++) {
+            turns.push(...makeReadFileTurn(i));
+        }
+
+        const messages = [...pinned, ...turns];
+
+        const result = clearOldToolUses(messages, {
+            keepRecentTurns: 3,
+            clearAtLeast: 3,
+            pinnedPrefixLen: 1,
+        });
+
+        expect(result.cleared).toBe(true);
+
+        const tombstones = result.messages.filter(
+            (m) => m.role === "system" && m.content.includes("[Context Edited]"),
+        );
+        expect(tombstones).toHaveLength(1);
+        expect(tombstones[0].content).toContain("已清除 7 个旧工具调用轮次");
+    });
+
+    it("removes the entire assistant message when content is empty and all tool_calls are cleared", () => {
+        const pinned: LiteLLMMessage[] = [
+            { role: "system", content: "system prompt" },
+        ];
+
+        // Create turns where assistant has empty content
+        const turns: LiteLLMMessage[] = [];
+        for (let i = 0; i < 8; i++) {
+            turns.push(...makeReadFileTurn(i)); // content is ""
+        }
+
+        // Add one turn where assistant has textual content
+        const specialCallId = "call-special";
+        turns.push(
+            {
+                role: "assistant",
+                content: "I found important information about the architecture.",
+                tool_calls: [
+                    {
+                        id: specialCallId,
+                        type: "function" as const,
+                        function: { name: "read_file", arguments: JSON.stringify({ relative_path: "special.ts" }) },
+                    },
+                ],
+            },
+            {
+                role: "tool",
+                content: "special file contents",
+                tool_call_id: specialCallId,
+                name: "read_file",
+            },
+        );
+
+        // Add recent turns to protect
+        for (let i = 9; i < 14; i++) {
+            turns.push(...makeReadFileTurn(i));
+        }
+
+        const messages = [...pinned, ...turns];
+
+        const result = clearOldToolUses(messages, {
+            keepRecentTurns: 5,
+            clearAtLeast: 3,
+            pinnedPrefixLen: 1,
+        });
+
+        expect(result.cleared).toBe(true);
+
+        // The assistant messages with empty content should be fully removed.
+        // The assistant with "I found important information" should still exist (content preserved).
+        const assistantsWithContent = result.messages.filter(
+            (m) => m.role === "assistant" && (m.content ?? "").includes("important information"),
+        );
+        // It was in a clearable turn (read_file, not in recent 5), so it gets cleared
+        // but the assistant message should be kept with content, tool_calls stripped
+        if (assistantsWithContent.length > 0) {
+            // If kept, it should NOT have tool_calls
+            expect(assistantsWithContent[0].tool_calls).toBeUndefined();
+        }
+
+        // The empty-content assistant messages that were cleared should not exist
+        const emptyAssistants = result.messages.filter(
+            (m) => m.role === "assistant" && (m.content ?? "").trim() === "" && !m.tool_calls,
+        );
+        expect(emptyAssistants).toHaveLength(0);
     });
 });

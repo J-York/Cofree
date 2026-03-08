@@ -19,7 +19,7 @@ use crate::commands::{
     healthcheck, list_workspace_files, load_latest_workflow_checkpoint, load_secure_api_key,
     post_litellm_chat_completions, post_litellm_chat_completions_stream, read_workspace_file,
     restore_workspace_snapshot, run_shell_command, save_file_dialog, save_secure_api_key,
-    save_workflow_checkpoint, select_workspace_folder, validate_git_repo,
+    save_workflow_checkpoint, scan_workspace_structure, select_workspace_folder, validate_git_repo,
 };
 use tauri::Manager;
 use tracing::info;
@@ -73,7 +73,8 @@ pub fn run() {
             delete_secure_api_key,
             save_file_dialog,
             get_workspace_diagnostics,
-            fetch_url
+            fetch_url,
+            scan_workspace_structure
         ])
         .run(tauri::generate_context!())
         .expect("error while running cofree tauri application");
