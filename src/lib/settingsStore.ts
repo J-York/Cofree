@@ -17,6 +17,7 @@ const DEFAULT_MODEL_NAME = "openai/gpt-4o-mini";
 const DEFAULT_VENDOR_ID = "vendor-default";
 const DEFAULT_MODEL_ID = "model-default";
 const FIXED_TIMESTAMP = "2026-03-06T00:00:00.000Z";
+const MAX_RECENT_WORKSPACES = 5;
 
 export type ToolPermissionLevel = "auto" | "ask";
 export type VendorProtocol =
@@ -96,6 +97,7 @@ export interface AppSettings {
   sendRelativePathOnly: boolean;
   lastSavedAt: string | null;
   workspacePath: string;
+  recentWorkspaces: string[];
   toolPermissions: ToolPermissions;
   proxy: ProxySettings;
   activeVendorId: string | null;
@@ -141,6 +143,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim();
+}
+
+function normalizeWorkspacePath(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeRecentWorkspaces(raw: unknown, activeWorkspacePath = ""): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  const pushPath = (value: unknown) => {
+    const normalized = normalizeWorkspacePath(value);
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  };
+
+  pushPath(activeWorkspacePath);
+  if (Array.isArray(raw)) {
+    for (const value of raw) {
+      pushPath(value);
+      if (result.length >= MAX_RECENT_WORKSPACES) {
+        break;
+      }
+    }
+  }
+
+  return result.slice(0, MAX_RECENT_WORKSPACES);
 }
 
 function normalizeManagedModelThinkingLevel(
@@ -192,6 +223,7 @@ function createInitialSettings(): AppSettings {
     sendRelativePathOnly: true,
     lastSavedAt: null,
     workspacePath: "",
+    recentWorkspaces: [],
     toolPermissions: { ...DEFAULT_TOOL_PERMISSIONS },
     proxy: {
       mode: "off",
@@ -454,7 +486,16 @@ function withNormalizedAgentSelections(settings: AppSettings): AppSettings {
 }
 
 function withRuntimeSelection(settings: AppSettings, apiKey = settings.apiKey): AppSettings {
-  const ensured = ensureMinimumResources(settings);
+  const workspacePath = normalizeWorkspacePath(settings.workspacePath);
+  const recentWorkspaces = normalizeRecentWorkspaces(
+    settings.recentWorkspaces,
+    workspacePath,
+  );
+  const ensured = ensureMinimumResources({
+    ...settings,
+    workspacePath,
+    recentWorkspaces,
+  });
   const normalized = ensureUniqueManagedModelIds(ensured);
   const resolved = resolveManagedModelSelection(normalized, {
     vendorId: normalized.activeVendorId,
@@ -485,7 +526,15 @@ export function syncRuntimeSettings(settings: AppSettings, apiKey = settings.api
 }
 
 export function updateWorkspacePath(settings: AppSettings, workspacePath: string): AppSettings {
-  return syncRuntimeSettings({ ...settings, workspacePath });
+  const normalizedWorkspacePath = normalizeWorkspacePath(workspacePath);
+  return syncRuntimeSettings({
+    ...settings,
+    workspacePath: normalizedWorkspacePath,
+    recentWorkspaces: normalizeRecentWorkspaces(
+      settings.recentWorkspaces,
+      normalizedWorkspacePath,
+    ),
+  });
 }
 
 export function updateToolPermission(
@@ -766,6 +815,11 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
   settings: AppSettings;
   legacyProfileSelections: Record<string, LegacyProfileSelection>;
 } {
+  const normalizedWorkspacePath = normalizeWorkspacePath(parsed.workspacePath);
+  const normalizedRecentWorkspaces = normalizeRecentWorkspaces(
+    (parsed as Record<string, unknown>).recentWorkspaces,
+    normalizedWorkspacePath,
+  );
   const normalizedVendors = Array.isArray(parsed.vendors)
     ? parsed.vendors.map(normalizeVendor).filter((value): value is VendorConfig => Boolean(value))
     : [];
@@ -783,6 +837,8 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
     ...DEFAULT_SETTINGS,
     ...parsed,
     apiKey: "",
+    workspacePath: normalizedWorkspacePath,
+    recentWorkspaces: normalizedRecentWorkspaces,
     activeVendorId:
       typeof parsed.activeVendorId === "string"
         ? parsed.activeVendorId

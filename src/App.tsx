@@ -9,6 +9,7 @@ import {
   setActiveManagedModelSelection,
   switchAgent,
   syncRuntimeSettings,
+  updateWorkspacePath,
 } from "./lib/settingsStore";
 import { getAllChatAgents, getChatAgentFromSettings } from "./agents/builtinChatAgents";
 import { ChatPage } from "./ui/pages/ChatPage";
@@ -124,16 +125,25 @@ export default function App(): ReactElement {
     setSettings(next);
   }, []);
 
+  const commitWorkspaceSelection = useCallback((workspacePath: string) => {
+    const normalizedPath = workspacePath.trim();
+    if (!normalizedPath) return;
+    const next = updateWorkspacePath(settingsRef.current, normalizedPath);
+    saveSettings(next);
+    setSettings(next);
+  }, []);
+
   const handleSelectWorkspace = useCallback(async () => {
     try {
       const path = await invoke<string | null>("select_workspace_folder");
       if (!path) return;
-      const current = settingsRef.current;
-      const next: AppSettings = syncRuntimeSettings({ ...current, workspacePath: path });
-      saveSettings(next);
-      setSettings(next);
+      commitWorkspaceSelection(path);
     } catch { /* ignore */ }
-  }, []);
+  }, [commitWorkspaceSelection]);
+
+  const handleSwitchWorkspace = useCallback((workspacePath: string) => {
+    commitWorkspaceSelection(workspacePath);
+  }, [commitWorkspaceSelection]);
 
   const handleSwitchAgent = useCallback((agentId: string) => {
     const current = settingsRef.current;
@@ -183,6 +193,7 @@ export default function App(): ReactElement {
       <div className="app-shell">
         <TitleBar
           workspacePath={settings.workspacePath}
+          recentWorkspaces={settings.recentWorkspaces}
           gitBranch={gitBranch}
           currentModel={settings.model}
           modelOptions={settings.managedModels.map((managedModel) => ({
@@ -199,6 +210,7 @@ export default function App(): ReactElement {
           onSwitchModel={(id) => void handleSwitchModel(id)}
           onSwitchAgent={handleSwitchAgent}
           onSelectWorkspace={() => void handleSelectWorkspace()}
+          onSwitchWorkspace={handleSwitchWorkspace}
           kitchenOpen={kitchenOpen}
         />
 

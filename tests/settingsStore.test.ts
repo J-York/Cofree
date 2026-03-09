@@ -4,6 +4,7 @@ import {
   addModelsToVendor,
   createManagedModel,
   syncRuntimeSettings,
+  updateWorkspacePath,
 } from "../src/lib/settingsStore";
 
 describe("settingsStore managed model ids", () => {
@@ -61,5 +62,42 @@ describe("settingsStore managed model ids", () => {
     expect(repaired.activeModelId).toBe(duplicateId);
     expect(repaired.model).toBe("alpha");
     expect(repaired.managedModels.filter((model) => model.id === repaired.activeModelId)).toHaveLength(1);
+  });
+
+  it("pins the current workspace to the front of recent workspaces and caps the list", () => {
+    const normalized = syncRuntimeSettings({
+      ...DEFAULT_SETTINGS,
+      workspacePath: "/repo/current",
+      recentWorkspaces: [
+        "/repo/older",
+        "/repo/current",
+        "   ",
+        "/repo/older-2",
+        "/repo/older-3",
+        "/repo/older-4",
+        "/repo/older-5",
+      ],
+    });
+
+    expect(normalized.recentWorkspaces).toEqual([
+      "/repo/current",
+      "/repo/older",
+      "/repo/older-2",
+      "/repo/older-3",
+      "/repo/older-4",
+    ]);
+  });
+
+  it("moves a switched workspace to the front without duplicating history", () => {
+    const seeded = syncRuntimeSettings({
+      ...DEFAULT_SETTINGS,
+      workspacePath: "/repo/a",
+      recentWorkspaces: ["/repo/a", "/repo/b", "/repo/c"],
+    });
+
+    const switched = updateWorkspacePath(seeded, "/repo/b");
+
+    expect(switched.workspacePath).toBe("/repo/b");
+    expect(switched.recentWorkspaces).toEqual(["/repo/b", "/repo/a", "/repo/c"]);
   });
 });

@@ -103,6 +103,36 @@ describe("settingsStore managed model thinking", () => {
     });
   });
 
+  it("loads recent workspaces with the active workspace pinned first", () => {
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY_V3,
+      JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        apiKey: "",
+        workspacePath: "/repo/current",
+        recentWorkspaces: [
+          "/repo/older",
+          "/repo/current",
+          42,
+          "   ",
+          "/repo/older-2",
+          "/repo/older-3",
+          "/repo/older-4",
+        ],
+      }),
+    );
+
+    const loaded = loadSettings();
+
+    expect(loaded.recentWorkspaces).toEqual([
+      "/repo/current",
+      "/repo/older",
+      "/repo/older-2",
+      "/repo/older-3",
+      "/repo/older-4",
+    ]);
+  });
+
   it("returns null for mismatched vendor/model selections instead of cross-vendor fallback", () => {
     const settings: AppSettings = {
       ...DEFAULT_SETTINGS,

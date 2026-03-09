@@ -12,6 +12,7 @@ interface TitleBarModelOption {
 
 interface TitleBarProps {
   workspacePath: string;
+  recentWorkspaces: string[];
   gitBranch?: string;
   currentModel?: string;
   modelOptions: TitleBarModelOption[];
@@ -23,11 +24,18 @@ interface TitleBarProps {
   onSwitchModel: (modelId: string) => void;
   onSwitchAgent: (agentId: string) => void;
   onSelectWorkspace: () => void;
+  onSwitchWorkspace: (workspacePath: string) => void;
   kitchenOpen: boolean;
+}
+
+function getWorkspaceLabel(workspacePath: string): string {
+  const parts = workspacePath.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || workspacePath;
 }
 
 export function TitleBar({
   workspacePath,
+  recentWorkspaces,
   gitBranch,
   currentModel,
   modelOptions,
@@ -39,11 +47,10 @@ export function TitleBar({
   onSwitchModel,
   onSwitchAgent,
   onSelectWorkspace,
+  onSwitchWorkspace,
   kitchenOpen,
 }: TitleBarProps): ReactElement {
-  const folderName = workspacePath
-    ? workspacePath.split("/").pop() || workspacePath
-    : "";
+  const folderName = workspacePath ? getWorkspaceLabel(workspacePath) : "";
 
   const [agentPopover, setAgentPopover] = useState(false);
   const [wsPopover, setWsPopover] = useState(false);
@@ -65,6 +72,8 @@ export function TitleBar({
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId) ?? agents[0];
   const displayModel = currentModel ? currentModel.split(/[:/]/).pop() : "未配置模型";
+  const recentWorkspaceOptions = recentWorkspaces.filter((path) => path !== workspacePath);
+  const workspaceActionLabel = workspacePath ? "更换工作区…" : "选择工作区…";
 
   return (
     <header className="titlebar" data-tauri-drag-region>
@@ -106,6 +115,33 @@ export function TitleBar({
               ) : (
                 <div className="titlebar-popover-empty">尚未选择工作区</div>
               )}
+              {recentWorkspaceOptions.length > 0 && (
+                <>
+                  <div className="titlebar-popover-divider" />
+                  <div className="titlebar-popover-header">最近使用</div>
+                  <div className="titlebar-popover-list">
+                    {recentWorkspaceOptions.map((path) => (
+                      <button
+                        key={path}
+                        className="titlebar-popover-option"
+                        onClick={() => {
+                          onSwitchWorkspace(path);
+                          setWsPopover(false);
+                        }}
+                        type="button"
+                      >
+                        <div className="titlebar-popover-option-dot" />
+                        <div className="titlebar-popover-option-info">
+                          <span className="titlebar-popover-option-name">
+                            {getWorkspaceLabel(path)}
+                          </span>
+                          <span className="titlebar-popover-option-model">{path}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
               <div className="titlebar-popover-divider" />
               <button
                 className="titlebar-popover-action"
@@ -116,7 +152,7 @@ export function TitleBar({
                   <path d="M2 7L7 2L12 7M7 2V12" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" transform="rotate(0 7 7)"/>
                   <rect x="1.5" y="1.5" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="1.2" fill="none"/>
                 </svg>
-                更换工作区…
+                {workspaceActionLabel}
               </button>
             </div>
           )}
