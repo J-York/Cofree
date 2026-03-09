@@ -1811,7 +1811,8 @@ function asString(value: unknown, fallback = ""): string {
  * Models may accidentally copy these into search/anchor fields.
  */
 function stripLineNumberPrefixes(text: string): string {
-  return text.replace(/^[0-9]+│/gm, "");
+  // \s* handles optional leading spaces that some models copy from the display format (e.g. "  10│")
+  return text.replace(/^\s*[0-9]+│/gm, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 function asNumber(value: unknown, fallback: number): number {
@@ -3429,6 +3430,8 @@ async function executeToolCall(
               relativePath,
             })
           ).content;
+          // Normalize CRLF → LF so search snippets (which models always generate with \n) match correctly
+          original = original.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
         } catch (_readError) {
           fileExists = false;
           // File doesn't exist — auto-detect as create intent

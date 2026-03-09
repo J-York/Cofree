@@ -220,6 +220,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   const lastPromptRef = useRef<string>("");
   const lastContextAttachmentsRef = useRef<ChatContextAttachment[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
+  const prevIsStreamingRef = useRef<boolean>(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
@@ -521,6 +522,20 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   );
 
   useEffect(() => {
+    const justFinished = prevIsStreamingRef.current && !isStreaming;
+    prevIsStreamingRef.current = isStreaming;
+
+    if (justFinished && threadRef.current) {
+      // Streaming just ended — scroll back to the bottom of the last assistant message
+      // so the user sees the response text which is now correctly at the bottom.
+      const bubbles =
+        threadRef.current.querySelectorAll<HTMLElement>(".chat-bubble.assistant");
+      const lastBubble = bubbles[bubbles.length - 1];
+      if (lastBubble) {
+        lastBubble.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return;
+      }
+    }
     if (threadRef.current) {
       threadRef.current.scrollTop = threadRef.current.scrollHeight;
     }
@@ -1561,23 +1576,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                           ? ` · ${formatTime(message.createdAt)}`
                           : ""}
                       </p>
-                      <div className={`chat-bubble ${message.role}`}>
-                        {message.role === "user" && (
-                          <ContextAttachmentPills
-                            attachments={message.contextAttachments ?? []}
-                            compact
-                          />
-                        )}
-                        <MessageContent
-                          content={message.content}
-                          isStreaming={
-                            isStreaming &&
-                            message.content === "" &&
-                            message.role === "assistant"
-                          }
-                          role={message.role}
-                        />
-                      </div>
                       {message.role === "assistant" && settings.debugMode && (
                         <AssistantToolCalls toolCalls={message.tool_calls} />
                       )}
@@ -1613,6 +1611,23 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                             onRejectAll={handleRejectAllActions}
                           />
                         )}
+                      <div className={`chat-bubble ${message.role}`}>
+                        {message.role === "user" && (
+                          <ContextAttachmentPills
+                            attachments={message.contextAttachments ?? []}
+                            compact
+                          />
+                        )}
+                        <MessageContent
+                          content={message.content}
+                          isStreaming={
+                            isStreaming &&
+                            message.content === "" &&
+                            message.role === "assistant"
+                          }
+                          role={message.role}
+                        />
+                      </div>
                     </div>
                   </div>
                 ))
