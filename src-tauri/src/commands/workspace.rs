@@ -97,6 +97,47 @@ fn sanitize_relative_path(relative_path: &str) -> Option<PathBuf> {
     }
 }
 
+struct TempDirCleanup(PathBuf);
+
+impl TempDirCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDirCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn rewrite_edit_patch_paths(raw_patch: &str, relative_path: &str) -> String {
+    let mut rewritten = Vec::new();
+    for line in raw_patch.lines() {
+        if line.starts_with("diff --git ") {
+            rewritten.push(format!(
+                "diff --git a/{} b/{}",
+                relative_path, relative_path
+            ));
+        } else if line.starts_with("--- ") {
+            rewritten.push(format!("--- a/{}", relative_path));
+        } else if line.starts_with("+++ ") {
+            rewritten.push(format!("+++ b/{}", relative_path));
+        } else {
+            rewritten.push(line.to_string());
+        }
+    }
+    let mut patch = rewritten.join("\n");
+    if raw_patch.ends_with('\n') {
+        patch.push('\n');
+    }
+    patch
+}
+
 fn snapshot_patch_files(
     workspace: &Path,
     snapshot_dir: &Path,
@@ -551,6 +592,70 @@ pub fn git_diff_workspace(
 }
 
 #[tauri::command]
+pub fn build_workspace_edit_patch(
+    relative_path: String,
+    before: String,
+    after: String,
+) -> Result<String, AppError> {
+    if before == after {
+        return Err(AppError::validation("编辑结果为空，未产生文件变更。"));
+    }
+
+    let sanitized = sanitize_relative_path(&relative_path)
+        .ok_or_else(|| AppError::validation("relative_path 非法"))?;
+    let normalized_relative = sanitized.to_string_lossy().replace('\\', "/");
+
+    let temp_root = TempDirCleanup::new(std::env::temp_dir().join(generate_id("edit-patch")));
+    let before_path = temp_root.path().join("__cofree_before__").join(&sanitized);
+    let after_path = temp_root.path().join("__cofree_after__").join(&sanitized);
+
+    if let Some(parent) = before_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| AppError::file(format!("创建临时 diff 目录失败: {}", e)))?;
+    }
+    if let Some(parent) = after_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| AppError::file(format!("创建临时 diff 目录失败: {}", e)))?;
+    }
+    fs::write(&before_path, before)
+        .map_err(|e| AppError::file(format!("写入旧版本临时文件失败: {}", e)))?;
+    fs::write(&after_path, after)
+        .map_err(|e| AppError::file(format!("写入新版本临时文件失败: {}", e)))?;
+
+    let output = Command::new("git")
+        .args([
+            "diff",
+            "--no-index",
+            "--no-ext-diff",
+            "--unified=3",
+            "--minimal",
+            "--text",
+            "--",
+        ])
+        .arg(&before_path)
+        .arg(&after_path)
+        .output()
+        .map_err(|e| AppError::git(format!("生成编辑 patch 失败: {}", e)))?;
+
+    let status_code = output.status.code().unwrap_or(-1);
+    if status_code != 0 && status_code != 1 {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(AppError::git(if stderr.is_empty() {
+            "生成编辑 patch 失败".to_string()
+        } else {
+            stderr
+        }));
+    }
+
+    let raw_patch = String::from_utf8_lossy(&output.stdout).to_string();
+    if raw_patch.trim().is_empty() {
+        return Err(AppError::validation("编辑结果为空，未产生文件变更。"));
+    }
+
+    Ok(rewrite_edit_patch_paths(&raw_patch, &normalized_relative))
+}
+
+#[tauri::command]
 pub fn grep_workspace_files(
     workspace_path: String,
     pattern: String,
@@ -907,15 +1012,27 @@ fn build_symbol_patterns(language: &str) -> Vec<(&'static str, Regex)> {
         }
         "rust" => {
             vec![
-                ("pub", Regex::new(r"^pub\s+(fn|struct|enum|trait|mod|type)\s+(\w+)").unwrap()),
+                (
+                    "pub",
+                    Regex::new(r"^pub\s+(fn|struct|enum|trait|mod|type)\s+(\w+)").unwrap(),
+                ),
                 ("impl", Regex::new(r"^impl(?:<[^>]*>)?\s+(\w+)").unwrap()),
-                ("fn", Regex::new(r"^(?:pub\s*(?:\(crate\)\s*)?)?fn\s+(\w+)").unwrap()),
+                (
+                    "fn",
+                    Regex::new(r"^(?:pub\s*(?:\(crate\)\s*)?)?fn\s+(\w+)").unwrap(),
+                ),
             ]
         }
         "go" => {
             vec![
-                ("func", Regex::new(r"^func\s+(?:\([^)]*\)\s+)?(\w+)").unwrap()),
-                ("type", Regex::new(r"^type\s+(\w+)\s+(struct|interface)").unwrap()),
+                (
+                    "func",
+                    Regex::new(r"^func\s+(?:\([^)]*\)\s+)?(\w+)").unwrap(),
+                ),
+                (
+                    "type",
+                    Regex::new(r"^type\s+(\w+)\s+(struct|interface)").unwrap(),
+                ),
             ]
         }
         "java" | "kotlin" => {
@@ -926,7 +1043,10 @@ fn build_symbol_patterns(language: &str) -> Vec<(&'static str, Regex)> {
         }
         "c" | "cpp" => {
             vec![
-                ("function", Regex::new(r"^(?:\w+[\s*]+)+(\w+)\s*\(").unwrap()),
+                (
+                    "function",
+                    Regex::new(r"^(?:\w+[\s*]+)+(\w+)\s*\(").unwrap(),
+                ),
                 ("class", Regex::new(r"^(?:class|struct)\s+(\w+)").unwrap()),
             ]
         }
@@ -956,7 +1076,11 @@ fn extract_symbols(content: &str, language: &str) -> Vec<SymbolInfo> {
             break;
         }
         let trimmed = line.trim_start();
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("/*") {
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with('#')
+            || trimmed.starts_with("/*")
+        {
             continue;
         }
         for (kind, regex) in &patterns {
@@ -1059,4 +1183,28 @@ pub fn scan_workspace_structure(
         total_files,
         truncated,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_workspace_edit_patch;
+
+    #[test]
+    fn build_workspace_edit_patch_generates_minimal_hunk() {
+        let patch = build_workspace_edit_patch(
+            "src/example.ts".to_string(),
+            "alpha\nbeta\ngamma\n".to_string(),
+            "alpha\nbeta\ninserted\ngamma\n".to_string(),
+        )
+        .expect("patch should be generated");
+
+        assert!(patch.starts_with("diff --git a/src/example.ts b/src/example.ts\n"));
+        assert!(patch.contains("--- a/src/example.ts\n"));
+        assert!(patch.contains("+++ b/src/example.ts\n"));
+        assert!(patch.contains("@@ -1,3 +1,4 @@\n"));
+        assert!(patch.contains("\n beta\n+inserted\n gamma\n"));
+        assert!(!patch.contains("\n-alpha\n"));
+        assert!(!patch.contains("\n-beta\n"));
+        assert!(!patch.contains("\n-gamma\n"));
+    }
 }

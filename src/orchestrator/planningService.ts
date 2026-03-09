@@ -1549,49 +1549,19 @@ function formatUnifiedRange(start: number, count: number): string {
   return `${start},${count}`;
 }
 
-function buildReplacementPatch(
+async function buildReplacementPatch(
   relativePath: string,
   before: string,
   after: string
-): string {
+): Promise<string> {
   if (before === after) {
     throw new Error("编辑结果为空，未产生文件变更。");
   }
-
-  const previous = splitPatchLines(before);
-  const next = splitPatchLines(after);
-  const previousCount = previous.lines.length;
-  const nextCount = next.lines.length;
-  const previousStart = previousCount > 0 ? 1 : 0;
-  const nextStart = nextCount > 0 ? 1 : 0;
-  const hunkLines: string[] = [];
-
-  for (const line of previous.lines) {
-    hunkLines.push(`-${line}`);
-  }
-  if (previous.lines.length > 0 && !previous.hasTrailingNewline) {
-    hunkLines.push("\\ No newline at end of file");
-  }
-
-  for (const line of next.lines) {
-    hunkLines.push(`+${line}`);
-  }
-  if (next.lines.length > 0 && !next.hasTrailingNewline) {
-    hunkLines.push("\\ No newline at end of file");
-  }
-
-  return (
-    [
-      `diff --git a/${relativePath} b/${relativePath}`,
-      `--- a/${relativePath}`,
-      `+++ b/${relativePath}`,
-      `@@ -${formatUnifiedRange(
-        previousStart,
-        previousCount
-      )} +${formatUnifiedRange(nextStart, nextCount)} @@`,
-      ...hunkLines,
-    ].join("\n") + "\n"
-  );
+  return invoke<string>("build_workspace_edit_patch", {
+    relativePath,
+    before,
+    after,
+  });
 }
 
 function buildCreateFilePatch(relativePath: string, content: string): string {
@@ -2854,7 +2824,7 @@ async function executeToolCall(
         patch =
           existingContent === null
             ? buildCreateFilePatch(relativePath, createContent)
-            : buildReplacementPatch(
+            : await buildReplacementPatch(
               relativePath,
               existingContent,
               createContent
@@ -3072,7 +3042,11 @@ async function executeToolCall(
             };
           }
 
-          patch = buildReplacementPatch(relativePath, original, nextContent);
+          patch = await buildReplacementPatch(
+            relativePath,
+            original,
+            nextContent
+          );
         } // end if (!patch && fileExists)
       }
 

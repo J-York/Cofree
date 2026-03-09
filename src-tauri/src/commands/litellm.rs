@@ -348,7 +348,11 @@ fn apply_anthropic_stream_event(
                     if let Some(arguments) = delta
                         .get("input")
                         .and_then(serialize_tool_call_arguments)
-                        .or_else(|| delta.get("arguments").and_then(serialize_tool_call_arguments))
+                        .or_else(|| {
+                            delta
+                                .get("arguments")
+                                .and_then(serialize_tool_call_arguments)
+                        })
                     {
                         set_tool_call_arguments(entry, &arguments);
                     }
@@ -666,7 +670,9 @@ async fn parse_anthropic_messages_stream(
                     for chunk in apply_anthropic_stream_event(&mut state, &current_event, &parsed) {
                         emit_stream_chunk_event(app, request_id, &chunk, false, None);
                     }
-                    if resolve_anthropic_stream_event_name(&current_event, &parsed) == "message_stop" {
+                    if resolve_anthropic_stream_event_name(&current_event, &parsed)
+                        == "message_stop"
+                    {
                         emit_stream_chunk_event(
                             app,
                             request_id,
@@ -746,7 +752,10 @@ pub async fn post_litellm_chat_completions(
                 if index + 1 < endpoints.len() {
                     eprintln!(
                         "[LLM][Retry] endpoint={} attempt={}/{} reason=network_error error={}",
-                        endpoint, index + 1, endpoints.len(), error
+                        endpoint,
+                        index + 1,
+                        endpoints.len(),
+                        error
                     );
                 }
                 errors.push(error);
@@ -928,8 +937,14 @@ mod tests {
                 }
             ])
         );
-        assert_eq!(payload["choices"][0]["message"]["content"], Value::String(String::new()));
-        assert_eq!(payload["choices"][0]["finish_reason"], Value::String("tool_use".to_string()));
+        assert_eq!(
+            payload["choices"][0]["message"]["content"],
+            Value::String(String::new())
+        );
+        assert_eq!(
+            payload["choices"][0]["finish_reason"],
+            Value::String("tool_use".to_string())
+        );
         assert_eq!(payload["usage"]["prompt_tokens"], Value::from(12));
         assert_eq!(payload["usage"]["completion_tokens"], Value::from(7));
     }
@@ -984,6 +999,9 @@ mod tests {
                 }
             ])
         );
-        assert_eq!(payload["choices"][0]["message"]["content"], Value::String(String::new()));
+        assert_eq!(
+            payload["choices"][0]["message"]["content"],
+            Value::String(String::new())
+        );
     }
 }

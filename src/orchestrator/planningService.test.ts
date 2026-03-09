@@ -703,6 +703,87 @@ describe("planningService approval-flow repair", () => {
         );
         expect(result.assistantReply).toBe("done");
     });
+
+    it("uses build_workspace_edit_patch for minimal propose_file_edit diffs", async () => {
+        const original = "alpha\nbeta\ngamma\n";
+        const minimalPatch = [
+            "diff --git a/src/example.ts b/src/example.ts",
+            "index 85c3040..9b8acd0 100644",
+            "--- a/src/example.ts",
+            "+++ b/src/example.ts",
+            "@@ -1,3 +1,4 @@",
+            " alpha",
+            " beta",
+            "+inserted",
+            " gamma",
+            "",
+        ].join("\n");
+
+        vi.mocked(invoke).mockImplementation(async (command: string, args?: any) => {
+            if (command === "read_workspace_file") {
+                return {
+                    content: original,
+                    total_lines: 3,
+                    start_line: 1,
+                    end_line: 3,
+                };
+            }
+            if (command === "build_workspace_edit_patch") {
+                expect(args).toMatchObject({
+                    relativePath: "src/example.ts",
+                    before: original,
+                    after: "alpha\nbeta\ninserted\ngamma\n",
+                });
+                return minimalPatch;
+            }
+            if (command === "check_workspace_patch") {
+                expect(args?.patch).toBe(minimalPatch);
+                return {
+                    success: true,
+                    message: "Patch 可应用（1 files）",
+                    files: ["src/example.ts"],
+                };
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const result = await planningServiceTestUtils.executeToolCall(
+            {
+                id: "tool-file-edit",
+                type: "function",
+                function: {
+                    name: "propose_file_edit",
+                    arguments: JSON.stringify({
+                        relative_path: "src/example.ts",
+                        operation: "insert",
+                        line: 2,
+                        content: "inserted\n",
+                        position: "after",
+                    }),
+                },
+            },
+            "d:/Code/cofree",
+            {
+                ...DEFAULT_SETTINGS.toolPermissions,
+                propose_file_edit: "ask",
+            },
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.proposedAction).toMatchObject({
+            type: "apply_patch",
+            status: "pending",
+            executed: false,
+            payload: {
+                patch: minimalPatch,
+            },
+        });
+
+        const buildCalls = vi.mocked(invoke).mock.calls.filter(
+            ([command]) => command === "build_workspace_edit_patch",
+        );
+        expect(buildCalls).toHaveLength(1);
+    });
 });
 
 // ---------------------------------------------------------------------------
