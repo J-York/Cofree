@@ -6,7 +6,8 @@
   justify-content: space-between;
   padding: 0 16px;
   padding-left: 80px; /* macOS traffic lights */
-  background: transparent;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-1);
   flex-shrink: 0;
   user-select: none;
   -webkit-app-region: drag;

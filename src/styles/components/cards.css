@@ -1,17 +1,16 @@
 /* ── Cards ──────────────────────────────────────────────── */
 .card {
   background: var(--surface-1);
-  border: 1px solid var(--border-1);
-  border-radius: var(--r-lg);
-  padding: 24px 28px;
-  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-md);
+  padding: 24px;
+  box-shadow: var(--shadow-sm);
   transition: all var(--t-med);
 }
 
 .card:hover {
-  box-shadow: var(--shadow-lg);
-  transform: translateY(-2px);
-  border-color: var(--border-2);
+  box-shadow: var(--shadow-md);
+  border-color: var(--border-3);
 }
 
 .card-title {

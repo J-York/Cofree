@@ -32,8 +32,7 @@
 }
 .btn-primary:hover:not(:disabled) {
   background: #A3B8DE;
-  box-shadow: var(--shadow-md), 0 0 0 1px var(--accent-muted);
-  transform: translateY(-1px);
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--accent-muted);
 }
 
 .btn-ghost {
