@@ -1,0 +1,235 @@
+/* ── Terminal Dock ─────────────────────────────────────── */
+.terminal-dock {
+  flex-shrink: 0;
+  height: 0;
+  min-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  border-top: 1px solid transparent;
+  background: var(--surface-0);
+  transition:
+    height var(--t-med),
+    opacity var(--t-fast),
+    border-color var(--t-fast);
+}
+
+.terminal-dock.open {
+  height: 340px;
+  opacity: 1;
+  pointer-events: auto;
+  border-top-color: var(--border-1);
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.28);
+}
+
+.terminal-shell {
+  --terminal-bg: #0d1319;
+  --terminal-surface: rgba(255, 255, 255, 0.04);
+  --terminal-border: rgba(255, 255, 255, 0.08);
+  --terminal-text: #e8edf4;
+  --terminal-muted: #92a0b3;
+  --terminal-accent: #7ae7a1;
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background:
+    radial-gradient(circle at top right, rgba(122, 231, 161, 0.10), transparent 26%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 22%),
+    var(--terminal-bg);
+}
+
+.terminal-shell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--terminal-border);
+  background: rgba(6, 10, 14, 0.55);
+  backdrop-filter: blur(10px);
+}
+
+.terminal-shell-title-row,
+.terminal-shell-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.terminal-shell-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--terminal-text);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.terminal-shell-close {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--terminal-border);
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--terminal-muted);
+  cursor: pointer;
+  transition: all var(--t-fast);
+}
+
+.terminal-shell-close:hover {
+  color: var(--terminal-text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.terminal-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.terminal-empty {
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.terminal-empty-title {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--terminal-text);
+}
+
+.terminal-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--terminal-border);
+  border-radius: var(--r-md);
+  background: var(--terminal-surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.terminal-entry-running {
+  border-color: rgba(122, 231, 161, 0.18);
+}
+
+.terminal-entry-head,
+.terminal-entry-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.terminal-entry-prompt,
+.terminal-entry-command,
+.terminal-entry-output,
+.terminal-composer-prompt,
+.terminal-input {
+  font-family: var(--font-mono);
+}
+
+.terminal-entry-prompt,
+.terminal-composer-prompt {
+  color: var(--terminal-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.terminal-entry-command {
+  margin: 0;
+  color: var(--terminal-text);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.terminal-entry-meta {
+  color: var(--terminal-muted);
+}
+
+.terminal-entry-time {
+  font-size: 11px;
+  color: var(--terminal-muted);
+}
+
+.terminal-entry-output {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--terminal-text);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.terminal-entry-output-error {
+  color: #ffb8b2;
+  border-color: rgba(248, 113, 113, 0.18);
+  background: rgba(248, 113, 113, 0.07);
+}
+
+.terminal-composer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid var(--terminal-border);
+  background: rgba(6, 10, 14, 0.58);
+}
+
+.terminal-composer-field {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.terminal-input {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: var(--terminal-text);
+  box-shadow: none;
+}
+
+.terminal-input::placeholder {
+  color: var(--terminal-muted);
+}
+
+.terminal-input:focus {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(122, 231, 161, 0.3);
+  box-shadow: 0 0 0 3px rgba(122, 231, 161, 0.12);
+}
+
+.terminal-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.terminal-composer-hint {
+  font-size: 11px;
+  color: var(--terminal-muted);
+}

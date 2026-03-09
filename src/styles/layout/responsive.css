@@ -2,10 +2,11 @@
 @media (max-width: 900px) {
   .conv-panel { width: 200px; }
 
-  .kitchen-stats-grid { grid-template-columns: repeat(3,1fr); }
   .grid-2 { grid-template-columns: 1fr; }
   .action-grid { grid-template-columns: 1fr; }
   .diff-split-container { grid-template-columns: 1fr; }
+  .terminal-composer { align-items: flex-start; flex-direction: column; }
+  .terminal-composer-actions { width: 100%; justify-content: space-between; }
 
   .settings-modal { width: 95vw; height: 85vh; }
   .settings-nav { width: 140px; }
@@ -16,7 +17,17 @@
 
   .titlebar { padding-left: 12px; }
 
-  .kitchen-stats-grid { grid-template-columns: repeat(2,1fr); }
+  .terminal-dock.open { height: 46vh; }
+  .terminal-shell-header,
+  .terminal-viewport,
+  .terminal-composer { padding-left: 14px; padding-right: 14px; }
+  .terminal-shell-header,
+  .terminal-composer { gap: 10px; }
+  .terminal-shell-header { align-items: flex-start; flex-direction: column; }
+  .terminal-shell-actions,
+  .terminal-shell-title-row,
+  .terminal-composer-actions { width: 100%; justify-content: space-between; }
+  .terminal-composer-field { align-items: stretch; flex-direction: column; }
   .settings-nav { width: 48px; }
   .settings-tab-label { display: none; }
   .settings-nav-title, .settings-nav-workspace { display: none; }

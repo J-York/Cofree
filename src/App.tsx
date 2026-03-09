@@ -14,6 +14,7 @@ import {
 import { getAllChatAgents, getChatAgentFromSettings } from "./agents/builtinChatAgents";
 import { ChatPage } from "./ui/pages/ChatPage";
 import { TitleBar } from "./ui/components/TitleBar";
+import { TerminalPanel } from "./ui/components/TerminalPanel";
 import { UpdateBanner } from "./ui/components/UpdateBanner";
 import { useUpdater } from "./hooks/useUpdater";
 import {
@@ -27,10 +28,6 @@ import { invoke } from "@tauri-apps/api/core";
 interface WorkspaceInfo {
   git_branch?: string;
 }
-
-const KitchenPage = lazy(() =>
-  import("./ui/pages/KitchenPage").then((module) => ({ default: module.KitchenPage }))
-);
 
 const SettingsPage = lazy(() =>
   import("./ui/pages/SettingsPage").then((module) => ({ default: module.SettingsPage }))
@@ -51,7 +48,7 @@ export default function App(): ReactElement {
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [kitchenOpen, setKitchenOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [gitBranch, setGitBranch] = useState<string>("");
 
   const sessionActions: SessionActions = useMemo(
@@ -156,6 +153,12 @@ export default function App(): ReactElement {
   // ── Global keyboard shortcuts ──
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (settingsOpen) { setSettingsOpen(false); e.preventDefault(); }
+        else if (terminalOpen) { setTerminalOpen(false); e.preventDefault(); }
+        return;
+      }
+
       const meta = e.metaKey || e.ctrlKey;
       if (!meta) return;
 
@@ -170,7 +173,7 @@ export default function App(): ReactElement {
           break;
         case "j":
           e.preventDefault();
-          setKitchenOpen((v) => !v);
+          setTerminalOpen((v) => !v);
           break;
         case "n":
           e.preventDefault();
@@ -178,15 +181,10 @@ export default function App(): ReactElement {
           window.dispatchEvent(new CustomEvent("cofree:new-conversation"));
           break;
       }
-
-      if (e.key === "Escape") {
-        if (settingsOpen) { setSettingsOpen(false); e.preventDefault(); }
-        else if (kitchenOpen) { setKitchenOpen(false); e.preventDefault(); }
-      }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [settingsOpen, kitchenOpen]);
+  }, [settingsOpen, terminalOpen]);
 
   return (
     <SessionContext.Provider value={{ state: sessionState, actions: sessionActions }}>
@@ -205,13 +203,13 @@ export default function App(): ReactElement {
           activeModelId={settings.activeModelId}
           agents={getAllChatAgents(settings)}
           activeAgentId={settings.activeAgentId}
-          onToggleKitchen={() => setKitchenOpen((v) => !v)}
+          onToggleTerminal={() => setTerminalOpen((v) => !v)}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
           onSwitchModel={(id) => void handleSwitchModel(id)}
           onSwitchAgent={handleSwitchAgent}
           onSelectWorkspace={() => void handleSelectWorkspace()}
           onSwitchWorkspace={handleSwitchWorkspace}
-          kitchenOpen={kitchenOpen}
+          terminalOpen={terminalOpen}
         />
 
         <div className="app-body">
@@ -224,23 +222,11 @@ export default function App(): ReactElement {
           />
         </div>
 
-        {kitchenOpen && (
-          <div className="kitchen-panel-container">
-            <div className="kitchen-panel-header">
-              <span className="kitchen-panel-title">控制台</span>
-              <button
-                className="kitchen-panel-close"
-                onClick={() => setKitchenOpen(false)}
-                type="button"
-              >
-                &times;
-              </button>
-            </div>
-            <Suspense fallback={<DeferredPaneFallback label="控制台" />}>
-              <KitchenPage />
-            </Suspense>
-          </div>
-        )}
+        <TerminalPanel
+          isOpen={terminalOpen}
+          workspacePath={settings.workspacePath}
+          onClose={() => setTerminalOpen(false)}
+        />
 
         {settingsOpen && (
           <div className="settings-modal-backdrop">

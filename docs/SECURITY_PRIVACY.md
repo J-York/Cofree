@@ -1,4 +1,4 @@
-# Cofree Security & Privacy（v0.0.7）
+# Cofree Security & Privacy（v0.0.8）
 
 本文件只描述当前版本真实存在的安全与隐私机制。
 

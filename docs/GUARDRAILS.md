@@ -1,4 +1,4 @@
-# Cofree Guardrails（v0.0.7）
+# Cofree Guardrails（v0.0.8）
 
 本文件定义当前版本如何控制模型的本地副作用。
 

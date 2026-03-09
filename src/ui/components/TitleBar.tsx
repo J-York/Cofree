@@ -1,6 +1,6 @@
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { WindowControls } from "./WindowControls";
-import { IconSettings, IconPanelBottom, IconBranch, IconFolder } from "./Icons";
+import { IconSettings, IconTerminal, IconBranch, IconFolder } from "./Icons";
 import type { ChatAgentDefinition } from "../../agents/types";
 
 interface TitleBarModelOption {
@@ -19,13 +19,13 @@ interface TitleBarProps {
   activeModelId: string | null;
   agents: ChatAgentDefinition[];
   activeAgentId: string | null;
-  onToggleKitchen: () => void;
+  onToggleTerminal: () => void;
   onToggleSettings: () => void;
   onSwitchModel: (modelId: string) => void;
   onSwitchAgent: (agentId: string) => void;
   onSelectWorkspace: () => void;
   onSwitchWorkspace: (workspacePath: string) => void;
-  kitchenOpen: boolean;
+  terminalOpen: boolean;
 }
 
 function getWorkspaceLabel(workspacePath: string): string {
@@ -42,13 +42,13 @@ export function TitleBar({
   activeModelId,
   agents,
   activeAgentId,
-  onToggleKitchen,
+  onToggleTerminal,
   onToggleSettings,
   onSwitchModel,
   onSwitchAgent,
   onSelectWorkspace,
   onSwitchWorkspace,
-  kitchenOpen,
+  terminalOpen,
 }: TitleBarProps): ReactElement {
   const folderName = workspacePath ? getWorkspaceLabel(workspacePath) : "";
 
@@ -256,12 +256,12 @@ export function TitleBar({
 
       <div className="titlebar-right">
         <button
-          className={`titlebar-btn${kitchenOpen ? " active" : ""}`}
-          onClick={onToggleKitchen}
+          className={`titlebar-btn${terminalOpen ? " active" : ""}`}
+          onClick={onToggleTerminal}
           type="button"
-          title="控制台 (⌘J)"
+          title="终端 (⌘J)"
         >
-          <IconPanelBottom size={14} />
+          <IconTerminal size={14} />
         </button>
         <WindowControls />
       </div>
