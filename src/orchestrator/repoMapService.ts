@@ -90,14 +90,36 @@ export async function generateRepoMap(
 // Formatting
 // ---------------------------------------------------------------------------
 
-function formatRepoMap(
-  result: WorkspaceStructureResult,
-  tokenBudget: number,
-): string {
-  // Group files by directory
-  const dirMap = new Map<string, FileStructure[]>();
+/**
+ * Format a symbol with its kind prefix for compact display.
+ * Uses single-char prefixes: f=function, c=class, i=interface, t=type, v=variable, e=enum, m=method
+ */
+function formatSymbolCompact(symbol: SymbolInfo): string {
+  const kindPrefixMap: Record<string, string> = {
+    function: "f",
+    class: "c",
+    interface: "i",
+    type: "t",
+    variable: "v",
+    constant: "v",
+    enum: "e",
+    method: "m",
+    property: "p",
+    struct: "c",
+    trait: "i",
+    impl: "m",
+    module: "mod",
+  };
+  const prefix = kindPrefixMap[symbol.kind.toLowerCase()] ?? symbol.kind.charAt(0).toLowerCase();
+  return `${prefix}:${symbol.name}`;
+}
 
-  for (const file of result.files) {
+/**
+ * Group files by directory for tree-like display.
+ */
+function groupFilesByDirectory(files: FileStructure[]): Map<string, FileStructure[]> {
+  const dirMap = new Map<string, FileStructure[]>();
+  for (const file of files) {
     const lastSlash = file.path.lastIndexOf("/");
     const dir = lastSlash > 0 ? file.path.slice(0, lastSlash) : ".";
     const existing = dirMap.get(dir);
@@ -107,40 +129,68 @@ function formatRepoMap(
       dirMap.set(dir, [file]);
     }
   }
+  return dirMap;
+}
 
-  // Sort directories alphabetically
+/**
+ * Build the repo map text from a list of files.
+ * Each file shows its name followed by typed symbol names.
+ */
+function buildRepoMapText(
+  files: FileStructure[],
+  truncated: boolean,
+  scannedCount: number,
+  totalFiles: number,
+): string {
+  const dirMap = groupFilesByDirectory(files);
   const sortedDirs = [...dirMap.keys()].sort();
 
-  // Build compact text: each file gets one line with symbol names
   const lines: string[] = ["[Repo Map]"];
-  if (result.truncated) {
-    lines.push(`(scanned ${result.scanned_count}/${result.total_files} files, truncated)`);
+  if (truncated) {
+    lines.push(`(scanned ${scannedCount}/${totalFiles} files, truncated)`);
   }
+  lines.push("Symbol key: f=function, c=class, i=interface, t=type, v=variable, e=enum, m=method");
   lines.push("");
 
   for (const dir of sortedDirs) {
-    const files = dirMap.get(dir)!;
+    const dirFiles = dirMap.get(dir)!;
     lines.push(`📁 ${dir}/`);
 
     // Sort files within dir by symbol count (more symbols = more important)
-    files.sort((a, b) => b.symbols.length - a.symbols.length);
+    dirFiles.sort((a, b) => b.symbols.length - a.symbols.length);
 
-    for (const file of files) {
+    for (const file of dirFiles) {
       const fileName = file.path.slice(file.path.lastIndexOf("/") + 1);
-      const symbolNames = file.symbols.map((s) => s.name).join(", ");
-      lines.push(`  ${fileName}: ${symbolNames}`);
+      if (file.symbols.length === 0) {
+        lines.push(`  ${fileName}`);
+      } else {
+        const symbolList = file.symbols.map(formatSymbolCompact).join(", ");
+        lines.push(`  ${fileName}: ${symbolList}`);
+      }
     }
   }
 
-  let text = lines.join("\n");
+  return lines.join("\n");
+}
 
-  // Trim from files with fewest symbols if over budget
+function formatRepoMap(
+  result: WorkspaceStructureResult,
+  tokenBudget: number,
+): string {
+  let text = buildRepoMapText(
+    result.files,
+    result.truncated,
+    result.scanned_count,
+    result.total_files,
+  );
+
+  // Check if within budget
   const currentTokens = estimateTokensFromText(text);
   if (currentTokens <= tokenBudget) {
     return text;
   }
 
-  // Over budget: rebuild with fewer files, starting by removing files with fewest symbols
+  // Over budget: rebuild with fewer files, removing files with fewest symbols first
   const allFiles = [...result.files].sort(
     (a, b) => a.symbols.length - b.symbols.length,
   );
@@ -148,50 +198,16 @@ function formatRepoMap(
   while (allFiles.length > 0) {
     allFiles.shift(); // Remove file with fewest symbols
 
-    const trimmedResult: WorkspaceStructureResult = {
-      ...result,
-      files: allFiles,
-    };
-    text = formatRepoMapCore(trimmedResult);
+    text = buildRepoMapText(
+      allFiles,
+      result.truncated,
+      result.scanned_count,
+      result.total_files,
+    );
     if (estimateTokensFromText(text) <= tokenBudget) {
       return text;
     }
   }
 
   return "";
-}
-
-function formatRepoMapCore(result: WorkspaceStructureResult): string {
-  const dirMap = new Map<string, FileStructure[]>();
-
-  for (const file of result.files) {
-    const lastSlash = file.path.lastIndexOf("/");
-    const dir = lastSlash > 0 ? file.path.slice(0, lastSlash) : ".";
-    const existing = dirMap.get(dir);
-    if (existing) {
-      existing.push(file);
-    } else {
-      dirMap.set(dir, [file]);
-    }
-  }
-
-  const sortedDirs = [...dirMap.keys()].sort();
-  const lines: string[] = ["[Repo Map]"];
-  if (result.truncated) {
-    lines.push(`(scanned ${result.scanned_count}/${result.total_files} files, truncated)`);
-  }
-  lines.push("");
-
-  for (const dir of sortedDirs) {
-    const files = dirMap.get(dir)!;
-    lines.push(`📁 ${dir}/`);
-    files.sort((a, b) => b.symbols.length - a.symbols.length);
-    for (const file of files) {
-      const fileName = file.path.slice(file.path.lastIndexOf("/") + 1);
-      const symbolNames = file.symbols.map((s) => s.name).join(", ");
-      lines.push(`  ${fileName}: ${symbolNames}`);
-    }
-  }
-
-  return lines.join("\n");
 }

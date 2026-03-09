@@ -13,6 +13,11 @@
 
 import type { ResolvedAgentRuntime, SubAgentRole } from "./types";
 import { DEFAULT_AGENTS } from "./defaultAgents";
+import {
+  getModelCapabilities,
+  type ModelCapabilities,
+} from "../lib/modelCapabilities";
+import type { VendorProtocol } from "../lib/settingsStore";
 
 // ---------------------------------------------------------------------------
 // Rule Categories
@@ -102,11 +107,45 @@ const RULE_META = [
 ].join("\n");
 
 // ---------------------------------------------------------------------------
+// Few-shot tool calling examples (critical for weaker models)
+// ---------------------------------------------------------------------------
+
+const RULE_FEW_SHOT_EXAMPLES = [
+  "## 工具调用示例",
+  "",
+  "### 示例 1：查找并修改文件",
+  "用户：「把 utils.ts 里的 formatDate 函数改成返回 ISO 格式」",
+  "正确流程：",
+  "1. 先调用 grep 搜索 formatDate 的定义位置",
+  "2. 调用 read_file 读取该文件的相关内容",
+  "3. 调用 propose_file_edit 提出修改",
+  "",
+  "### 示例 2：创建新文件",
+  "用户：「创建一个 logger.ts 工具模块」",
+  "正确流程：",
+  "1. 调用 list_files 或 glob 了解项目结构和命名规范",
+  "2. 调用 propose_file_edit（operation='create'）创建文件",
+  "",
+  "### 示例 3：运行命令",
+  "用户：「运行测试」",
+  "正确流程：",
+  "1. 调用 read_file 读取 package.json 了解测试命令",
+  "2. 调用 propose_shell 提出执行测试命令",
+  "",
+  "### 常见错误（必须避免）",
+  "- ❌ 不读取文件就直接提出修改（search 字段不匹配原文会导致 patch 失败）",
+  "- ❌ 在回复文本中输出完整代码块而不使用 propose_file_edit",
+  "- ❌ 编造工具调用结果（如假装已经读取了文件）",
+  "- ❌ 使用未在可用工具列表中的工具名称",
+  "- ❌ 在 propose_file_edit 的 search 字段中包含行号前缀",
+].join("\n");
+
+// ---------------------------------------------------------------------------
 // Rule category registry
 // ---------------------------------------------------------------------------
 
 type RuleCategory = "core" | "editing" | "toolSelection" | "searchStrategy"
-  | "taskCompletion" | "reviewStrategy" | "metaRules";
+  | "taskCompletion" | "reviewStrategy" | "fewShotExamples" | "metaRules";
 
 const RULE_CATEGORIES: Record<RuleCategory, string> = {
   core: RULE_CORE,
@@ -115,6 +154,7 @@ const RULE_CATEGORIES: Record<RuleCategory, string> = {
   searchStrategy: RULE_SEARCH_STRATEGY,
   taskCompletion: RULE_TASK_COMPLETION,
   reviewStrategy: RULE_REVIEW_STRATEGY,
+  fewShotExamples: RULE_FEW_SHOT_EXAMPLES,
   metaRules: RULE_META,
 };
 
@@ -212,11 +252,11 @@ export function classifyTaskType(prompt: string): TaskType {
 
 const RULES_BY_TASK_TYPE: Record<TaskType, RuleCategory[]> = {
   information: ["core", "metaRules"],
-  exploration: ["core", "searchStrategy", "taskCompletion", "metaRules"],
-  shell_ops: ["core", "toolSelection", "taskCompletion", "metaRules"],
-  code_edit: ["core", "editing", "toolSelection", "searchStrategy", "taskCompletion", "metaRules"],
-  review: ["core", "searchStrategy", "reviewStrategy", "taskCompletion", "metaRules"],
-  mixed: ["core", "editing", "toolSelection", "searchStrategy", "taskCompletion", "metaRules"],
+  exploration: ["core", "searchStrategy", "fewShotExamples", "taskCompletion", "metaRules"],
+  shell_ops: ["core", "toolSelection", "fewShotExamples", "taskCompletion", "metaRules"],
+  code_edit: ["core", "editing", "toolSelection", "searchStrategy", "fewShotExamples", "taskCompletion", "metaRules"],
+  review: ["core", "searchStrategy", "reviewStrategy", "fewShotExamples", "taskCompletion", "metaRules"],
+  mixed: ["core", "editing", "toolSelection", "searchStrategy", "fewShotExamples", "taskCompletion", "metaRules"],
 };
 
 // ---------------------------------------------------------------------------
@@ -232,18 +272,101 @@ const BASE_WORKFLOW_RULES = Object.values(RULE_CATEGORIES).join("\n\n");
 /**
  * Assemble the full system prompt for a resolved agent runtime.
  * When taskType is provided, only the relevant rule categories are included.
+ *
+ * Model-aware adaptation: injects model-specific system prompt additions
+ * based on the detected model family. This is critical for making weaker
+ * models (DeepSeek, Qwen, Llama) perform closer to GPT-4o/Claude levels
+ * by providing explicit guidance on tool calling patterns.
  */
 export function assembleSystemPrompt(
   runtime: ResolvedAgentRuntime,
   taskType?: TaskType,
 ): string {
-  if (!taskType) {
-    return `${runtime.systemPrompt}\n\n${BASE_WORKFLOW_RULES}`;
+  const categories = taskType
+    ? RULES_BY_TASK_TYPE[taskType]
+    : (Object.keys(RULE_CATEGORIES) as RuleCategory[]);
+  const rules = categories.map((cat) => RULE_CATEGORIES[cat]).join("\n\n");
+
+  const protocol = (runtime.vendorProtocol || "openai-chat-completions") as VendorProtocol;
+  const capabilities = getModelCapabilities(runtime.modelRef, protocol);
+  const modelAdaptations = buildModelAdaptationBlock(capabilities);
+
+  const parts = [runtime.systemPrompt, rules];
+  if (modelAdaptations) {
+    parts.push(modelAdaptations);
   }
 
-  const categories = RULES_BY_TASK_TYPE[taskType];
-  const rules = categories.map((cat) => RULE_CATEGORIES[cat]).join("\n\n");
-  return `${runtime.systemPrompt}\n\n${rules}`;
+  return parts.join("\n\n");
+}
+
+/**
+ * Build model-specific adaptation instructions based on detected capabilities.
+ * This bridges the gap between what mature Vibe Coding tools do (per-model tuning)
+ * and Cofree's previous one-size-fits-all approach.
+ */
+function buildModelAdaptationBlock(capabilities: ModelCapabilities): string {
+  const sections: string[] = [];
+
+  // Inject model-family-specific instructions
+  if (capabilities.systemPromptAdditions.length > 0) {
+    sections.push(
+      "## 模型适配指令",
+      ...capabilities.systemPromptAdditions,
+    );
+  }
+
+  // Brevity hints for verbose models
+  if (capabilities.needsBrevityHints) {
+    sections.push(
+      "## 输出约束",
+      "你的回复必须极其简洁。不要重复用户的问题，不要解释显而易见的内容。",
+      "代码修改必须通过工具完成，不要在回复文本中包含完整的代码块。",
+      "完成任务后只需说「已完成」并简述结果。",
+    );
+  }
+
+  // Step-by-step guidance for models that struggle with complex tool chains
+  if (capabilities.needsStepByStepGuidance) {
+    sections.push(
+      "## 工具调用策略",
+      "按以下步骤执行任务：",
+      "1. 先使用 grep/glob/list_files 定位相关文件",
+      "2. 使用 read_file 读取需要修改的文件内容",
+      "3. 确认理解文件结构后，使用 propose_file_edit 提出修改",
+      "4. 每次只调用一个工具，等待结果后再决定下一步",
+      "不要跳过步骤，不要假设文件内容。",
+    );
+  }
+
+  // Anti-hallucination hints for prone models
+  if (capabilities.proneToToolHallucination) {
+    sections.push(
+      "## 工具调用准确性",
+      "**严格遵守**：",
+      "- 工具名称必须完全匹配可用工具列表中的名称，不要编造工具",
+      "- 工具参数必须严格遵循 JSON Schema 定义，不要添加未定义的字段",
+      "- 文件路径必须使用相对路径（相对于工作区根目录），不要使用绝对路径",
+      "- 不要在回复中伪造工具调用结果，必须等待系统返回实际结果",
+    );
+  }
+
+  // Models that don't support tool calling need special handling
+  if (!capabilities.supportsToolCalling) {
+    sections.push(
+      "## 非工具调用模式",
+      "当前模型不支持原生工具调用。请在回复中直接给出：",
+      "1. 需要执行的操作描述",
+      "2. 使用 markdown 代码块展示需要修改的代码，并标注文件路径",
+      "3. 需要执行的命令（如有）",
+      "系统会解析你的回复并转换为相应的操作。",
+    );
+  }
+
+  if (sections.length === 0) {
+    return "";
+  }
+
+  return sections.join("\n");
 }
 
 /**
@@ -274,9 +397,20 @@ export function assembleRuntimeContext(
       (a) => `- ${a.role}: tools=[${a.tools.join(", ")}], sensitiveActionAllowed=${a.sensitiveActionAllowed}`,
     );
 
+  // Detect OS for shell command guidance
+  const isWindows = typeof navigator !== "undefined"
+    ? navigator.userAgent?.includes("Windows") ?? false
+    : typeof process !== "undefined"
+      ? (process.platform === "win32")
+      : false;
+  const osHint = isWindows
+    ? "操作系统: Windows (shell 命令通过 PowerShell 执行，请使用 PowerShell 语法)"
+    : "操作系统: Unix/macOS (shell 命令通过 sh 执行，请使用 POSIX shell 语法)";
+
   return [
     "运行时上下文：",
     workspaceLine,
+    osHint,
     enabledToolsLine,
     `自动执行工具（无需审批）: [${autoTools.join(", ")}]`,
     `需审批工具: [${askTools.join(", ")}]`,

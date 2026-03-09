@@ -616,7 +616,13 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     type: "function",
     function: {
       name: "list_files",
-      description: "List files/directories under workspace relative path.",
+      description:
+        "List files and directories under a workspace-relative path. Returns name, type (file/dir), size, and modification time for each entry. " +
+        "Use this to understand project structure, find configuration files, or explore unfamiliar directories before reading specific files.\n\n" +
+        "Returns up to 120 entries sorted alphabetically. For deeper exploration, call with subdirectory paths.\n\n" +
+        "Examples:\n" +
+        "- list_files() — list workspace root\n" +
+        "- list_files(relative_path='src/components') — list a specific directory",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -624,7 +630,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           relative_path: {
             type: "string",
             description:
-              "Workspace-relative directory path. Empty means workspace root.",
+              "Workspace-relative directory path. Empty or omitted means workspace root. Must be a directory, not a file.",
           },
         },
       },
@@ -635,8 +641,15 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "read_file",
       description:
-        "Read a text file by workspace-relative path. Returns line-numbered content, total_lines, and showing_lines range. " +
-        "For large files (500+ lines), use start_line/end_line to read in segments (e.g. 1-300, then 301-600).",
+        "Read a text file by workspace-relative path. Returns content with line number prefixes (format: '行号│内容'), total_lines (file total line count), and showing_lines (current range displayed).\n\n" +
+        "IMPORTANT: Line number prefixes ('行号│') are for reference only — do NOT include them in propose_file_edit search/anchor fields.\n\n" +
+        "Reading strategy:\n" +
+        "- Small files (<400 lines): call without start_line/end_line to read entire file\n" +
+        "- Large files (400+ lines): read in segments of ~300 lines. First call without range to see the beginning and total_lines, then use start_line/end_line for subsequent parts\n" +
+        "- If you only need a specific function: use grep first to find the line number, then read that range\n\n" +
+        "Examples:\n" +
+        "- read_file(relative_path='src/app.ts') — read entire small file\n" +
+        "- read_file(relative_path='src/large.ts', start_line=301, end_line=600) — read a segment",
       parameters: {
         type: "object",
         required: ["relative_path"],
@@ -645,17 +658,17 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           relative_path: {
             type: "string",
             minLength: 1,
-            description: "Workspace-relative file path.",
+            description: "Workspace-relative file path. Must point to a file, not a directory.",
           },
           start_line: {
             type: "number",
             minimum: 1,
-            description: "Optional 1-based start line for partial read.",
+            description: "1-based start line for partial read. Must be used together with end_line.",
           },
           end_line: {
             type: "number",
             minimum: 1,
-            description: "Optional 1-based end line for partial read.",
+            description: "1-based end line (inclusive) for partial read. Must be used together with start_line.",
           },
         },
       },
@@ -666,7 +679,9 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "git_status",
       description:
-        "Get git status summary in workspace repository. Returns empty result for non-git directories.",
+        "Get git status summary showing modified, staged, untracked, and deleted files in the workspace repository. " +
+        "Returns empty result for non-git directories (this is normal, not an error).\n\n" +
+        "Use this to understand what has changed before proposing edits, or to verify changes after edits are applied.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -679,14 +694,19 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "git_diff",
       description:
-        "Get workspace git diff, optionally filtered to one file. Returns empty result for non-git directories.",
+        "Get unified diff of uncommitted changes in the workspace. Optionally filter to a single file. " +
+        "Returns empty result for non-git directories (this is normal, not an error).\n\n" +
+        "Use this to review what has been modified, verify applied patches, or understand the scope of recent changes.\n\n" +
+        "Examples:\n" +
+        "- git_diff() — show all uncommitted changes\n" +
+        "- git_diff(file_path='src/app.ts') — show changes in a specific file",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
           file_path: {
             type: "string",
-            description: "Optional workspace-relative file path.",
+            description: "Optional workspace-relative file path to filter diff to a single file.",
           },
         },
       },
@@ -697,8 +717,18 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "grep",
       description:
-        "Search file contents in workspace using a regular expression pattern. Returns matching lines with file paths and line numbers. " +
-        "Use this to quickly locate code, function definitions, variable usages, imports, etc. Much faster than reading files one by one.",
+        "Search file contents in workspace using a regular expression pattern. Returns matching lines with file paths and line numbers (format: 'file:line: content').\n\n" +
+        "This is the fastest way to locate code — use it BEFORE read_file to find the right file and line range. " +
+        "Ideal for finding function definitions, variable usages, imports, error messages, configuration values, etc.\n\n" +
+        "Tips:\n" +
+        "- Use simple patterns for broad search: grep(pattern='functionName')\n" +
+        "- Use regex for precise matching: grep(pattern='export (function|const) myFunc')\n" +
+        "- Filter by file type: grep(pattern='import.*React', include_glob='*.tsx')\n" +
+        "- Automatically excludes .git, node_modules, target, dist, build directories\n\n" +
+        "Examples:\n" +
+        "- grep(pattern='handleSubmit') — find all usages of handleSubmit\n" +
+        "- grep(pattern='class UserService', include_glob='*.ts') — find class definition in TypeScript files\n" +
+        "- grep(pattern='TODO|FIXME|HACK') — find code annotations",
       parameters: {
         type: "object",
         required: ["pattern"],
@@ -708,19 +738,19 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
             type: "string",
             minLength: 1,
             description:
-              "Regular expression pattern to search for in file contents.",
+              "Regular expression pattern to search for. Supports standard regex syntax (|, *, +, ?, [], (), etc.).",
           },
           include_glob: {
             type: "string",
             description:
-              "Optional glob pattern to filter files (e.g. '*.ts', '*.py'). Matches against both file name and relative path.",
+              "Optional glob pattern to restrict search to matching files. Examples: '*.ts', '*.py', 'src/**/*.tsx'. Matches against both file name and relative path.",
           },
           max_results: {
             type: "number",
             minimum: 1,
             maximum: 200,
             description:
-              "Maximum number of matching lines to return. Defaults to 50.",
+              "Maximum number of matching lines to return. Defaults to 50. Increase for broad searches, decrease for focused ones.",
           },
         },
       },
@@ -731,8 +761,17 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "glob",
       description:
-        "Find files in workspace by glob pattern matching. Returns matching file paths sorted by modification time (most recent first). " +
-        "Use this to discover project structure, find files by extension or naming convention. Automatically excludes .git, node_modules, target, etc.",
+        "Find files in workspace by glob pattern matching. Returns matching file paths sorted by modification time (most recent first).\n\n" +
+        "Use this to discover project structure, find files by extension, naming convention, or directory pattern. " +
+        "Automatically excludes .git, node_modules, target, dist, build, __pycache__ directories.\n\n" +
+        "Common patterns:\n" +
+        "- '**/*.tsx' — all TSX files in any directory\n" +
+        "- 'src/**/*.test.ts' — all test files under src/\n" +
+        "- '**/package.json' — find all package.json files\n" +
+        "- 'src/components/*.tsx' — components in a specific directory\n\n" +
+        "Examples:\n" +
+        "- glob(pattern='**/*.py') — find all Python files\n" +
+        "- glob(pattern='**/Dockerfile*') — find all Dockerfiles",
       parameters: {
         type: "object",
         required: ["pattern"],
@@ -742,7 +781,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
             type: "string",
             minLength: 1,
             description:
-              "Glob pattern to match files (e.g. '**/*.tsx', 'src/**/*.py', '**/test_*.js').",
+              "Glob pattern to match files. Use ** for recursive directory matching, * for single-level wildcard. Examples: '**/*.tsx', 'src/**/*.py', '**/test_*.js'.",
           },
           max_results: {
             type: "number",
@@ -1739,14 +1778,123 @@ function parseErrorMessage(raw: string, status: number): string {
 }
 
 function parseCompletionPayload(raw: string): ChatCompletionPayload {
+  const trimmed = raw.trim();
+
+  // Handle empty response
+  if (!trimmed) {
+    throw new Error("模型响应为空。");
+  }
+
   try {
-    const parsed = JSON.parse(raw) as ChatCompletionPayload;
+    const parsed = JSON.parse(trimmed) as ChatCompletionPayload;
     if (!parsed || typeof parsed !== "object") {
       throw new Error("completion payload invalid");
     }
     return parsed;
-  } catch (_error) {
+  } catch (primaryError) {
+    // Some streaming responses may have trailing garbage after the JSON object.
+    // Try to extract the first valid JSON object from the response.
+    const firstBrace = trimmed.indexOf("{");
+    if (firstBrace >= 0) {
+      let depth = 0;
+      let inStr = false;
+      let escape = false;
+      for (let i = firstBrace; i < trimmed.length; i++) {
+        const char = trimmed[i];
+        if (escape) { escape = false; continue; }
+        if (char === "\\") { escape = true; continue; }
+        if (char === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (char === "{") depth++;
+        else if (char === "}") {
+          depth--;
+          if (depth === 0) {
+            try {
+              const extracted = JSON.parse(trimmed.slice(firstBrace, i + 1)) as ChatCompletionPayload;
+              if (extracted && typeof extracted === "object") {
+                console.warn("[parseCompletionPayload] Recovered valid JSON from partial response");
+                return extracted;
+              }
+            } catch {
+              // Continue to throw original error
+            }
+            break;
+          }
+        }
+      }
+    }
+
     throw new Error("模型响应不是有效 JSON。");
+  }
+}
+
+/**
+ * Attempt to repair truncated or malformed JSON arguments from streaming responses.
+ * Some models (especially during streaming) may produce incomplete JSON that can be
+ * salvaged by closing open brackets/braces.
+ */
+function tryRepairJsonArguments(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  // Already valid JSON
+  try {
+    JSON.parse(trimmed);
+    return trimmed;
+  } catch {
+    // Continue to repair attempts
+  }
+
+  // Count unmatched brackets/braces and try to close them
+  let openBraces = 0;
+  let openBrackets = 0;
+  let inString = false;
+  let escapeNext = false;
+
+  for (const char of trimmed) {
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    if (char === "\\") {
+      escapeNext = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (char === "{") openBraces++;
+    else if (char === "}") openBraces--;
+    else if (char === "[") openBrackets++;
+    else if (char === "]") openBrackets--;
+  }
+
+  // If we're inside a string, close it first
+  let repaired = trimmed;
+  if (inString) {
+    repaired += '"';
+  }
+
+  // Close any remaining open brackets/braces
+  while (openBrackets > 0) {
+    repaired += "]";
+    openBrackets--;
+  }
+  while (openBraces > 0) {
+    repaired += "}";
+    openBraces--;
+  }
+
+  // Validate the repaired JSON
+  try {
+    JSON.parse(repaired);
+    console.warn(`[parseToolCalls] Repaired truncated JSON arguments: "${trimmed.slice(0, 60)}..." → valid`);
+    return repaired;
+  } catch {
+    return null;
   }
 }
 
@@ -1769,15 +1917,38 @@ function parseToolCalls(raw: unknown): { parsed: ToolCallRecord[]; droppedCount:
         return null;
       }
       const fnRecord = fn as Record<string, unknown>;
-      if (
-        typeof fnRecord.name !== "string" ||
-        typeof fnRecord.arguments !== "string" ||
-        !fnRecord.name.trim() ||
-        !fnRecord.arguments.trim()
-      ) {
+
+      // Validate tool name
+      if (typeof fnRecord.name !== "string" || !fnRecord.name.trim()) {
         dropped += 1;
         return null;
       }
+
+      // Handle arguments: allow empty object "{}" as valid (some models send this for no-arg tools)
+      let argsStr = typeof fnRecord.arguments === "string"
+        ? fnRecord.arguments.trim()
+        : "";
+
+      // If arguments is an object (some providers return parsed JSON instead of string)
+      if (!argsStr && fnRecord.arguments && typeof fnRecord.arguments === "object") {
+        argsStr = JSON.stringify(fnRecord.arguments);
+      }
+
+      // Default to empty object for tools with no required parameters
+      if (!argsStr) {
+        argsStr = "{}";
+      }
+
+      // Attempt to repair truncated JSON from streaming responses
+      const repairedArgs = tryRepairJsonArguments(argsStr);
+      if (!repairedArgs) {
+        console.warn(
+          `[parseToolCalls] Dropping tool call "${fnRecord.name}" with unparseable arguments: "${argsStr.slice(0, 100)}"`
+        );
+        dropped += 1;
+        return null;
+      }
+
       const id =
         typeof record.id === "string" && record.id.trim()
           ? record.id
@@ -1787,7 +1958,7 @@ function parseToolCalls(raw: unknown): { parsed: ToolCallRecord[]; droppedCount:
         type: "function" as const,
         function: {
           name: fnRecord.name.trim(),
-          arguments: fnRecord.arguments.trim(),
+          arguments: repairedArgs,
         },
       };
     })
@@ -2051,7 +2222,109 @@ function classifyToolError(message: string): ToolErrorCategory {
 }
 
 function shouldRetryToolCall(category: ToolErrorCategory): boolean {
-  return category === "transport" || category === "timeout";
+  switch (category) {
+    case "transport":
+    case "timeout":
+      return true;
+    case "workspace":
+      // Workspace errors (e.g. file temporarily locked) may resolve on retry
+      return true;
+    case "validation":
+    case "permission":
+    case "allowlist":
+    case "guardrail":
+    case "tool_not_found":
+      // These are deterministic failures — retrying won't help
+      return false;
+    case "unknown":
+      // Unknown errors get one retry in case they're transient
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Compute exponential backoff delay for tool call retries.
+ * Uses a shorter base than LLM retries since tool calls are local operations.
+ */
+function computeToolRetryDelay(attempt: number): number {
+  const baseDelayMs = 500;
+  const maxDelayMs = 5000;
+  const delay = baseDelayMs * Math.pow(2, attempt - 1);
+  const jitter = delay * 0.2 * Math.random();
+  return Math.min(delay + jitter, maxDelayMs);
+}
+
+/**
+ * Build a contextual error recovery hint for the LLM based on the tool error category.
+ * This helps the model understand what went wrong and how to fix it.
+ */
+function buildToolErrorRecoveryHint(
+  toolName: string,
+  category: ToolErrorCategory,
+  errorMessage: string,
+): string {
+  const hints: string[] = [
+    `工具 "${toolName}" 执行失败。`,
+    `错误类别: ${category}`,
+    `错误信息: ${errorMessage}`,
+  ];
+
+  switch (category) {
+    case "validation":
+      hints.push(
+        "恢复建议: 参数格式或值不正确。请检查工具参数是否符合要求，特别注意：",
+        "- relative_path 必须是工作区相对路径，不能是绝对路径",
+        "- search 字段必须与文件中的实际内容完全匹配（包括空格和缩进）",
+        "- 必填参数不能省略",
+      );
+      break;
+    case "workspace":
+      hints.push(
+        "恢复建议: 工作区操作失败。可能的原因：",
+        "- 文件或目录不存在 — 先用 list_files 或 glob 确认路径",
+        "- 文件被锁定或权限不足 — 尝试其他文件或等待后重试",
+        "- 路径拼写错误 — 使用 glob 搜索正确的文件名",
+      );
+      break;
+    case "timeout":
+      hints.push(
+        "恢复建议: 操作超时。对于耗时操作：",
+        "- 缩小操作范围（如减少 grep 的 max_results）",
+        "- 对于 shell 命令，增加 timeout_ms 参数",
+        "- 将大操作拆分为多个小操作",
+      );
+      break;
+    case "transport":
+      hints.push(
+        "恢复建议: 网络或传输错误，通常是暂时性的。系统会自动重试。",
+      );
+      break;
+    case "tool_not_found":
+      hints.push(
+        "恢复建议: 调用了不存在的工具。请检查工具名称拼写，可用工具列表见系统提示。",
+      );
+      break;
+    case "permission":
+    case "allowlist":
+    case "guardrail":
+      hints.push(
+        "恢复建议: 权限或安全策略阻止了此操作。请：",
+        "- 使用其他方式完成任务",
+        "- 如果是 shell 命令被阻止，尝试使用更安全的替代命令",
+      );
+      break;
+    default:
+      hints.push(
+        "恢复建议: 发生未知错误。请尝试：",
+        "- 检查参数是否正确",
+        "- 使用 read_file 确认目标文件的当前状态",
+        "- 尝试不同的方法完成任务",
+      );
+  }
+
+  return hints.join("\n");
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -4111,6 +4384,16 @@ async function executeToolCallWithRetry(
 
   while (attempts < MAX_TOOL_RETRY) {
     attempts += 1;
+
+    // Apply exponential backoff delay between retry attempts
+    if (attempts > 1) {
+      const retryDelay = computeToolRetryDelay(attempts);
+      console.log(
+        `[ToolRetry] 工具 "${call.function.name}" 第 ${attempts} 次重试，延迟 ${Math.round(retryDelay)}ms`
+      );
+      await sleep(retryDelay, signal);
+    }
+
     const current = await executeToolCall(
       call,
       workspacePath,
@@ -4163,8 +4446,30 @@ async function executeToolCallWithRetry(
     }
   }
 
+  // Append contextual error recovery hint to help the LLM self-correct
+  const recoveryHint = buildToolErrorRecoveryHint(
+    call.function.name,
+    lastResult.errorCategory ?? "unknown",
+    lastResult.errorMessage ?? "未知错误",
+  );
+  const enrichedContent = (() => {
+    try {
+      const parsed = JSON.parse(lastResult.content);
+      parsed._recovery_hint = recoveryHint;
+      return JSON.stringify(parsed);
+    } catch {
+      return JSON.stringify({
+        error: lastResult.errorMessage ?? "工具调用失败",
+        _recovery_hint: recoveryHint,
+      });
+    }
+  })();
+
   return {
-    result: lastResult,
+    result: {
+      ...lastResult,
+      content: enrichedContent,
+    },
     trace: {
       callId: call.id,
       name: call.function.name,
@@ -4176,7 +4481,7 @@ async function executeToolCallWithRetry(
       retried: attempts > 1,
       errorCategory: lastResult.errorCategory,
       errorMessage: lastResult.errorMessage,
-      resultPreview: resultPreview(lastResult.content),
+      resultPreview: resultPreview(enrichedContent),
     },
   };
 }
@@ -4361,11 +4666,51 @@ function hasPreviousAssistantToolCalls(messages: LiteLLMMessage[]): boolean {
 function shouldFallbackToNonStreamingForToolTurn(error: unknown): boolean {
   const raw = error instanceof Error ? error.message : String(error);
   const normalized = raw.toLowerCase();
-  return /(?:^|\D)(502|503|504)(?:\D|$)/.test(normalized) ||
+
+  // Gateway / server errors (streaming infrastructure failure)
+  if (
+    /(?:^|\D)(502|503|504)(?:\D|$)/.test(normalized) ||
     normalized.includes("bad gateway") ||
     normalized.includes("gateway") ||
     normalized.includes("server error") ||
-    normalized.includes("upstream");
+    normalized.includes("upstream")
+  ) {
+    return true;
+  }
+
+  // JSON parse errors from streamed response assembly
+  if (
+    normalized.includes("json") ||
+    normalized.includes("unexpected token") ||
+    normalized.includes("unexpected end") ||
+    normalized.includes("不是有效 json") ||
+    normalized.includes("模型响应不是有效") ||
+    normalized.includes("invalid json")
+  ) {
+    return true;
+  }
+
+  // Stream-specific errors
+  if (
+    normalized.includes("stream") ||
+    normalized.includes("sse") ||
+    normalized.includes("event source") ||
+    normalized.includes("chunk") ||
+    normalized.includes("incomplete")
+  ) {
+    return true;
+  }
+
+  // Missing message in response (can happen when streaming drops data)
+  if (
+    normalized.includes("缺少 message") ||
+    normalized.includes("missing message") ||
+    normalized.includes("模型响应缺少")
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 async function executeToolCompletionForTurn(

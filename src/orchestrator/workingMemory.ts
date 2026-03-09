@@ -397,18 +397,41 @@ export function serializeWorkingMemory(
     });
   }
 
-  // 3. File knowledge (sorted by relevance to role)
+  // 3. File knowledge (sorted by recency first, then by relevance to role)
   const fileEntries = [...memory.fileKnowledge.values()];
   if (fileEntries.length > 0) {
-    const sorted = sortFilesByRole(fileEntries, forRole);
+    // Primary sort: most recently read first (most relevant to current context)
+    // Secondary sort: by role relevance
+    const sorted = sortFilesByRole(
+      [...fileEntries].sort((a, b) => b.lastReadAt.localeCompare(a.lastReadAt)),
+      forRole,
+    );
     const fileLines = sorted.slice(0, 15).map((fk) => {
       const lang = fk.language ? ` (${fk.language})` : "";
-      return `- ${fk.relativePath}${lang}: ${fk.summary} [${fk.totalLines} lines, read by ${fk.readByAgent}]`;
+      const turnInfo = fk.lastReadTurn > 0 ? `, turn ${fk.lastReadTurn}` : "";
+      return `- ${fk.relativePath}${lang}: ${fk.summary} [${fk.totalLines} lines${turnInfo}]`;
     });
     sections.push({
       priority: 3,
       label: "已读取文件",
       content: fileLines.join("\n"),
+    });
+  }
+
+  // 3.5. Failed operations context (helps LLM avoid repeating mistakes)
+  const recentFailures = memory.taskProgress
+    .filter((e) => e.status === "failed")
+    .slice(-5);
+  if (recentFailures.length > 0) {
+    const failureLines = recentFailures.map((e) => {
+      const target = e.targetFile ? ` on ${e.targetFile}` : "";
+      const hint = e.errorHint ? ` — ${e.errorHint}` : "";
+      return `- ${e.toolName}${target}: ${e.description}${hint}`;
+    });
+    sections.push({
+      priority: 3,
+      label: "最近失败操作（避免重复）",
+      content: failureLines.join("\n"),
     });
   }
 

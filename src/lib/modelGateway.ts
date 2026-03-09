@@ -17,6 +17,11 @@ import {
   type LiteLLMMessage,
   type LiteLLMToolDefinition,
 } from "./litellm";
+import {
+  adaptRequestParams,
+  getModelCapabilities,
+  type ModelCapabilities,
+} from "./modelCapabilities";
 
 export interface ModelGatewayConfig {
   endpoint: string;
@@ -56,8 +61,11 @@ export function createModelGatewayConfig(
 
 /**
  * Create a request body using the agent runtime's model ref.
- * This is a thin pass-through to litellm but lets the orchestrator
- * stay unaware of protocol details.
+ *
+ * This layer applies model-capability-aware parameter adaptation before
+ * delegating to litellm. This is the key integration point that makes
+ * different LLMs perform better by tuning temperature, tool_choice,
+ * parallel_tool_calls, and max_tokens per model family.
  */
 export function createGatewayRequestBody(
   messages: LiteLLMMessage[],
@@ -74,5 +82,44 @@ export function createGatewayRequestBody(
     ? { ...settings, model: runtime.modelRef, liteLLMBaseUrl: runtime.baseUrl, apiKey: runtime.apiKey }
     : settings;
 
-  return createLiteLLMRequestBody(messages, effectiveSettings, options);
+  const protocol = (runtime?.vendorProtocol || "openai-chat-completions") as VendorProtocol;
+  const modelRef = runtime?.modelRef || settings.model;
+  const hasTools = (options?.tools?.length ?? 0) > 0;
+
+  // Apply model-capability-aware parameter adaptation
+  const adapted = adaptRequestParams(modelRef, protocol, hasTools, options?.temperature);
+
+  const adaptedOptions = {
+    ...options,
+    temperature: options?.temperature ?? adapted.temperature,
+    toolChoice: options?.toolChoice ?? adapted.toolChoice,
+  };
+
+  const body = createLiteLLMRequestBody(messages, effectiveSettings, adaptedOptions);
+
+  // Inject parallel_tool_calls if the model supports it (OpenAI-specific)
+  if (adapted.parallelToolCalls !== undefined && hasTools && protocol === "openai-chat-completions") {
+    body.parallel_tool_calls = adapted.parallelToolCalls;
+  }
+
+  // Inject max_tokens if the model has a recommended limit and it's not already set
+  if (adapted.maxTokens && !body.max_tokens) {
+    body.max_tokens = adapted.maxTokens;
+  }
+
+  return body;
+}
+
+/**
+ * Get model capabilities for the current runtime configuration.
+ * Useful for the orchestrator to make decisions about prompt assembly,
+ * context budget, and tool selection.
+ */
+export function getGatewayModelCapabilities(
+  runtime: ResolvedAgentRuntime | null,
+  settings: AppSettings,
+): ModelCapabilities {
+  const modelRef = runtime?.modelRef || settings.model;
+  const protocol = (runtime?.vendorProtocol || "openai-chat-completions") as VendorProtocol;
+  return getModelCapabilities(modelRef, protocol);
 }
