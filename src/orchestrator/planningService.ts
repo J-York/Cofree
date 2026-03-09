@@ -545,7 +545,7 @@ function formatTodoPlanBlock(state: TodoPlanState): string {
                 ? "↷"
                 : "○";
       const suffix = step.id === state.activeStepId ? " [当前]" : "";
-      return `${icon} (${step.owner}/${step.status}) ${step.title}${suffix}`;
+      return `${icon} [${step.id}] (${step.owner}/${step.status}) ${step.title}${suffix}`;
     })
     .join("\n");
 }
