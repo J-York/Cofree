@@ -1,4 +1,5 @@
 import type { ChatMessageRecord } from "../../../lib/chatHistoryStore";
+import { formatContextAttachmentManifest } from "../../../lib/contextAttachments";
 import type { OrchestrationPlan } from "../../../orchestrator/types";
 
 export interface ConversationHistoryMessage {
@@ -71,7 +72,14 @@ export function toConversationHistory(
     )
     .map((record) => ({
       role: record.role,
-      content: record.content.trim(),
+      content: (() => {
+        const content = record.content.trim();
+        const manifest = formatContextAttachmentManifest(record.contextAttachments ?? []);
+        if (!manifest) {
+          return content;
+        }
+        return content ? `${content}\n\n${manifest}` : manifest;
+      })(),
       ...(record.tool_calls ? { tool_calls: record.tool_calls } : {}),
       ...(record.tool_call_id ? { tool_call_id: record.tool_call_id } : {}),
       ...(record.name ? { name: record.name } : {}),

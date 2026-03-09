@@ -12,6 +12,10 @@
 import type { OrchestrationPlan } from "../orchestrator/types";
 import { normalizeOrchestrationPlan } from "../orchestrator/planGuards";
 import type { ToolErrorCategory, ToolExecutionTrace } from "../orchestrator/planningService";
+import {
+  normalizeContextAttachments,
+  type ChatContextAttachment,
+} from "./contextAttachments";
 
 export const CHAT_HISTORY_STORAGE_KEY = "cofree.chat.history.v1";
 
@@ -21,6 +25,7 @@ export interface ChatMessageRecord {
   content: string;
   createdAt: string;
   plan: OrchestrationPlan | null;
+  contextAttachments?: ChatContextAttachment[];
   toolTrace?: ToolExecutionTrace[];
   tool_calls?: Array<{
     id: string;
@@ -163,6 +168,7 @@ export function loadChatHistory(): ChatMessageRecord[] {
         content,
         createdAt,
         plan: normalizePlan(record.plan),
+        contextAttachments: normalizeContextAttachments(record.contextAttachments),
         toolTrace: normalizeToolTrace(record.toolTrace),
         tool_calls,
         tool_call_id,
@@ -185,6 +191,7 @@ export function saveChatHistory(messages: ChatMessageRecord[]): void {
   const trimmedMessages = messages.slice(-80).map((message) => ({
     ...message,
     plan: null,
+    contextAttachments: normalizeContextAttachments(message.contextAttachments),
     toolTrace: (message.toolTrace ?? []).slice(-20).map((trace) => ({
       callId: trace.callId,
       name: trace.name,

@@ -42,6 +42,35 @@ describe("chat helpers tool-call preservation", () => {
         ]);
     });
 
+    it("appends context attachment manifests to user history messages", () => {
+        const records: ChatMessageRecord[] = [
+            {
+                id: "user-1",
+                role: "user",
+                content: "请帮我看一下",
+                createdAt: "2026-03-08T00:00:00.000Z",
+                plan: null,
+                contextAttachments: [
+                    {
+                        id: "ctx-1",
+                        kind: "file",
+                        source: "mention",
+                        relativePath: "src/App.tsx",
+                        displayName: "App.tsx",
+                        addedAt: "2026-03-08T00:00:00.000Z",
+                    },
+                ],
+            },
+        ];
+
+        expect(toConversationHistory(records)).toEqual([
+            {
+                role: "user",
+                content: "请帮我看一下\n\n[用户显式附加的上下文路径]\n- [文件] src/App.tsx",
+            },
+        ]);
+    });
+
     it("builds assistant-visible tool call records from proposed actions", () => {
         expect(
             buildToolCallsFromPlan({

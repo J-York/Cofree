@@ -7,6 +7,7 @@ import {
 } from "../../../lib/settingsStore";
 import type { ModelSelection } from "../../../lib/modelSelection";
 import type { Conversation } from "../../../lib/conversationStore";
+import type { ChatContextAttachment } from "../../../lib/contextAttachments";
 import { actionFingerprint, type PlanningSessionPhase } from "../../../orchestrator/planningService";
 import type { ChatAgentDefinition } from "../../../agents/types";
 import { createAgentBinding } from "../../../agents/resolveAgentRuntime";
@@ -15,6 +16,7 @@ import type { OrchestrationPlan } from "../../../orchestrator/types";
 export interface RunChatCycleOptions {
   visibleUserMessage?: boolean;
   internalSystemNote?: string;
+  contextAttachments?: ChatContextAttachment[];
   phase?: PlanningSessionPhase;
 }
 

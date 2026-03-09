@@ -10,6 +10,7 @@ import {
   canReviewAction,
 } from "../../utils/chatUtils";
 import { updateActionPayload } from "../../../orchestrator/hitlService";
+import type { ChatContextAttachment } from "../../../lib/contextAttachments";
 import type { ToolExecutionTrace } from "../../../orchestrator/planningService";
 import type {
   ActionProposal,
@@ -19,6 +20,44 @@ import type {
 import type { LiveToolCall, SubAgentStatusItem } from "./types";
 import type { ChatMessageRecord } from "../../../lib/chatHistoryStore";
 import { formatToolName } from "./helpers";
+
+export function ContextAttachmentPills({
+  attachments,
+  onRemove,
+  compact = false,
+}: {
+  attachments: ChatContextAttachment[];
+  onRemove?: (attachmentId: string) => void;
+  compact?: boolean;
+}) {
+  if (attachments.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className={`chat-context-pills${compact ? " compact" : ""}`}>
+      {attachments.map((attachment) => (
+        <span key={attachment.id} className="chat-context-pill">
+          <span className="chat-context-pill-prefix">@</span>
+          <span className="chat-context-pill-label" title={attachment.relativePath}>
+            {attachment.relativePath}{attachment.kind === "folder" ? "/" : ""}
+          </span>
+          {onRemove && (
+            <button
+              type="button"
+              className="chat-context-pill-remove"
+              onClick={() => onRemove(attachment.id)}
+              aria-label={`移除 ${attachment.relativePath}`}
+              title={`移除 ${attachment.relativePath}`}
+            >
+              ×
+            </button>
+          )}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 export function MessageContent({
   content,

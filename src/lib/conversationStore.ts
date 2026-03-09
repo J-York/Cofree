@@ -248,8 +248,19 @@ function generateConversationId(): string {
 
 export function generateConversationTitle(messages: ChatMessageRecord[]): string {
   const firstUserMessage = messages.find((message) => message.role === "user");
-  if (firstUserMessage && firstUserMessage.content.trim()) {
+  if (firstUserMessage) {
     const trimmed = firstUserMessage.content.trim();
+    if (
+      firstUserMessage.contextAttachments?.length &&
+      (!trimmed || trimmed === "请基于我附加的上下文文件或目录协助我。")
+    ) {
+      const firstAttachment = firstUserMessage.contextAttachments[0];
+      const title = `@${firstAttachment.displayName}${firstAttachment.kind === "folder" ? "/" : ""}`;
+      return title.length > 30 ? `${title.slice(0, 30)}...` : title;
+    }
+    if (!trimmed) {
+      return "新对话";
+    }
     const preview = trimmed.slice(0, 30);
     return preview.length < trimmed.length ? `${preview}...` : preview;
   }
@@ -450,4 +461,3 @@ export function migrateOldChatHistory(
   const conversation = createConversation(workspacePath, oldMessages);
   console.log("Migrated old chat history to conversation:", conversation.id);
 }
-

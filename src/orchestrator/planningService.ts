@@ -37,6 +37,7 @@ import {
   type CofreeRcConfig,
 } from "../lib/cofreerc";
 import { generateRepoMap } from "./repoMapService";
+import { buildExplicitContextNote } from "./explicitContextService";
 import { SummaryCache } from "../lib/summaryCache";
 import {
   clearOldToolUses,
@@ -60,6 +61,7 @@ import { tryExtractStructuredOutput, tryExtractFeedback } from "../agents/struct
 import { runWithConcurrencyLimit } from "../lib/concurrency";
 import { BUILTIN_TEAMS } from "../agents/agentTeam";
 import { executeAgentTeam } from "./teamExecutor";
+import type { ChatContextAttachment } from "../lib/contextAttachments";
 import {
   createWorkingMemory,
   extractFileKnowledge,
@@ -1001,6 +1003,7 @@ export interface RunPlanningSessionInput {
     tool_call_id?: string;
     name?: string;
   }>;
+  contextAttachments?: ChatContextAttachment[];
   isContinuation?: boolean;
   internalSystemNote?: string;
   blockedActionFingerprints?: string[];
@@ -5080,119 +5083,148 @@ export async function runPlanningSession(
   let projectConfig: CofreeRcConfig = {};
 
   if (
-    historyMessages.length === 0 &&
-    !input.isContinuation &&
     input.settings.workspacePath
   ) {
+    const shouldLoadProjectConfig =
+      (historyMessages.length === 0 && !input.isContinuation) ||
+      (input.contextAttachments?.length ?? 0) > 0;
+
     // Load project-level .cofreerc config
     try {
-      projectConfig = await loadCofreeRc(input.settings.workspacePath);
+      if (shouldLoadProjectConfig) {
+        projectConfig = await loadCofreeRc(input.settings.workspacePath);
+      }
     } catch (e) {
       console.warn("Failed to load .cofreerc", e);
     }
 
-    // Inject workspace overview
-    try {
-      const overviewBudget: WorkspaceOverviewBudget | undefined =
-        projectConfig.overviewBudget;
-
-      const overview = await summarizeWorkspaceFiles(
-        input.settings.workspacePath,
-        projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
-          ? projectConfig.ignorePatterns
-          : null,
-        overviewBudget
-      );
-      const overviewPrompt = `项目概览：\n${overview}`;
-      if (initialInternalNote) {
-        initialInternalNote = `${initialInternalNote}\n\n${overviewPrompt}`;
-      } else {
-        initialInternalNote = overviewPrompt;
-      }
-    } catch (e) {
-      console.warn("Failed to generate workspace overview", e);
-    }
-
-    // Inject repo-map (project structure with symbols)
-    if (projectConfig.repoMap?.enabled !== false) try {
-      const contextLimit = input.settings.maxContextTokens > 0 ? input.settings.maxContextTokens : 128000;
-      const repoMapBudget = Math.min(
-        4000,
-        Math.max(500, Math.floor(contextLimit * 0.03)),
-      );
-      const repoMap = await generateRepoMap(
-        input.settings.workspacePath,
-        projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
-          ? projectConfig.ignorePatterns
-          : null,
-        projectConfig.repoMap?.tokenBudget ?? repoMapBudget,
-      );
-      if (repoMap) {
-        if (initialInternalNote) {
-          initialInternalNote = `${initialInternalNote}\n\n${repoMap}`;
-        } else {
-          initialInternalNote = repoMap;
+    if ((input.contextAttachments?.length ?? 0) > 0) {
+      try {
+        const explicitContext = await buildExplicitContextNote({
+          attachments: input.contextAttachments ?? [],
+          settings: input.settings,
+          ignorePatterns:
+            projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+              ? projectConfig.ignorePatterns
+              : null,
+        });
+        if (explicitContext) {
+          initialInternalNote = initialInternalNote
+            ? `${explicitContext}\n\n${initialInternalNote}`
+            : explicitContext;
         }
-        console.log(
-          `[Planning] Repo-map injected (~${repoMap.length} chars)`,
-        );
-      }
-    } catch (e) {
-      console.warn("Failed to generate repo-map", e);
-    }
-
-    // Inject .cofreerc prompt fragment
-    const rcFragment = buildCofreeRcPromptFragment(projectConfig);
-    if (rcFragment) {
-      if (initialInternalNote) {
-        initialInternalNote = `${initialInternalNote}\n\n${rcFragment}`;
-      } else {
-        initialInternalNote = rcFragment;
+      } catch (e) {
+        console.warn("Failed to build explicit context note", e);
       }
     }
 
-    // Load contextFiles specified in .cofreerc
     if (
-      projectConfig.contextFiles &&
-      projectConfig.contextFiles.length > 0 &&
-      input.settings.workspacePath
+      historyMessages.length === 0 &&
+      !input.isContinuation
     ) {
-      const contextSnippets: string[] = [];
-      const ignorePatterns =
-        projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
-          ? projectConfig.ignorePatterns
-          : null;
+      // Inject workspace overview
+      try {
+        const overviewBudget: WorkspaceOverviewBudget | undefined =
+          projectConfig.overviewBudget;
 
-      for (const relPath of projectConfig.contextFiles) {
-        try {
-          const result = await invoke<{
-            content: string;
-            total_lines: number;
-            start_line: number;
-            end_line: number;
-          }>("read_workspace_file", {
-            workspacePath: input.settings.workspacePath,
-            relativePath: relPath,
-            startLine: null,
-            endLine: null,
-            ignorePatterns,
-          });
-          if (result.content && result.content.trim()) {
-            const truncated =
-              result.content.length > 2000
-                ? result.content.slice(0, 2000) + "\n... (truncated)"
-                : result.content;
-            contextSnippets.push(`--- ${relPath} ---\n${truncated}`);
+        const overview = await summarizeWorkspaceFiles(
+          input.settings.workspacePath,
+          projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+            ? projectConfig.ignorePatterns
+            : null,
+          overviewBudget
+        );
+        const overviewPrompt = `项目概览：\n${overview}`;
+        if (initialInternalNote) {
+          initialInternalNote = `${initialInternalNote}\n\n${overviewPrompt}`;
+        } else {
+          initialInternalNote = overviewPrompt;
+        }
+      } catch (e) {
+        console.warn("Failed to generate workspace overview", e);
+      }
+
+      // Inject repo-map (project structure with symbols)
+      if (projectConfig.repoMap?.enabled !== false) try {
+        const contextLimit = input.settings.maxContextTokens > 0 ? input.settings.maxContextTokens : 128000;
+        const repoMapBudget = Math.min(
+          4000,
+          Math.max(500, Math.floor(contextLimit * 0.03)),
+        );
+        const repoMap = await generateRepoMap(
+          input.settings.workspacePath,
+          projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+            ? projectConfig.ignorePatterns
+            : null,
+          projectConfig.repoMap?.tokenBudget ?? repoMapBudget,
+        );
+        if (repoMap) {
+          if (initialInternalNote) {
+            initialInternalNote = `${initialInternalNote}\n\n${repoMap}`;
+          } else {
+            initialInternalNote = repoMap;
           }
-        } catch {
-          // File not found / ignored / can't be read — skip silently
+          console.log(
+            `[Planning] Repo-map injected (~${repoMap.length} chars)`,
+          );
+        }
+      } catch (e) {
+        console.warn("Failed to generate repo-map", e);
+      }
+
+      // Inject .cofreerc prompt fragment
+      const rcFragment = buildCofreeRcPromptFragment(projectConfig);
+      if (rcFragment) {
+        if (initialInternalNote) {
+          initialInternalNote = `${initialInternalNote}\n\n${rcFragment}`;
+        } else {
+          initialInternalNote = rcFragment;
         }
       }
-      if (contextSnippets.length > 0) {
-        const contextBlock = `[项目关键文件]\n${contextSnippets.join("\n\n")}`;
-        initialInternalNote = initialInternalNote
-          ? `${initialInternalNote}\n\n${contextBlock}`
-          : contextBlock;
+
+      // Load contextFiles specified in .cofreerc
+      if (
+        projectConfig.contextFiles &&
+        projectConfig.contextFiles.length > 0 &&
+        input.settings.workspacePath
+      ) {
+        const contextSnippets: string[] = [];
+        const ignorePatterns =
+          projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+            ? projectConfig.ignorePatterns
+            : null;
+
+        for (const relPath of projectConfig.contextFiles) {
+          try {
+            const result = await invoke<{
+              content: string;
+              total_lines: number;
+              start_line: number;
+              end_line: number;
+            }>("read_workspace_file", {
+              workspacePath: input.settings.workspacePath,
+              relativePath: relPath,
+              startLine: null,
+              endLine: null,
+              ignorePatterns,
+            });
+            if (result.content && result.content.trim()) {
+              const truncated =
+                result.content.length > 2000
+                  ? result.content.slice(0, 2000) + "\n... (truncated)"
+                  : result.content;
+              contextSnippets.push(`--- ${relPath} ---\n${truncated}`);
+            }
+          } catch {
+            // File not found / ignored / can't be read — skip silently
+          }
+        }
+        if (contextSnippets.length > 0) {
+          const contextBlock = `[项目关键文件]\n${contextSnippets.join("\n\n")}`;
+          initialInternalNote = initialInternalNote
+            ? `${initialInternalNote}\n\n${contextBlock}`
+            : contextBlock;
+        }
       }
     }
   }

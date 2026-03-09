@@ -1,0 +1,103 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  clearChatHistory,
+  loadChatHistory,
+  saveChatHistory,
+  type ChatMessageRecord,
+} from "./chatHistoryStore";
+
+class MemoryStorage implements Storage {
+  private data = new Map<string, string>();
+
+  get length(): number {
+    return this.data.size;
+  }
+
+  clear(): void {
+    this.data.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.data.get(key) ?? null;
+  }
+
+  key(index: number): string | null {
+    return Array.from(this.data.keys())[index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.data.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.data.set(key, value);
+  }
+}
+
+describe("chatHistoryStore context attachments", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", { localStorage: new MemoryStorage() });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("persists and reloads message context attachments", () => {
+    const messages: ChatMessageRecord[] = [
+      {
+        id: "user-1",
+        role: "user",
+        content: "请分析",
+        createdAt: "2026-03-09T00:00:00.000Z",
+        plan: null,
+        contextAttachments: [
+          {
+            id: "ctx-1",
+            kind: "file",
+            source: "mention",
+            relativePath: "src/App.tsx",
+            displayName: "App.tsx",
+            addedAt: "2026-03-09T00:00:00.000Z",
+          },
+        ],
+      },
+    ];
+
+    saveChatHistory(messages);
+
+    expect(loadChatHistory()).toEqual([
+      expect.objectContaining({
+        id: "user-1",
+        role: "user",
+        content: "请分析",
+        createdAt: "2026-03-09T00:00:00.000Z",
+        plan: null,
+        contextAttachments: [
+          expect.objectContaining({
+            relativePath: "src/App.tsx",
+            displayName: "App.tsx",
+            kind: "file",
+            source: "mention",
+          }),
+        ],
+      }),
+    ]);
+  });
+
+  it("clears stored history", () => {
+    saveChatHistory([
+      {
+        id: "user-1",
+        role: "user",
+        content: "hello",
+        createdAt: "2026-03-09T00:00:00.000Z",
+        plan: null,
+      },
+    ]);
+
+    clearChatHistory();
+
+    expect(loadChatHistory()).toEqual([]);
+  });
+});

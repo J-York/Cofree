@@ -19,10 +19,20 @@ import {
   type Conversation,
 } from "../../lib/conversationStore";
 import { migrateGlobalToWorkspace } from "../../lib/conversationMaintenance";
+import { loadCofreeRc } from "../../lib/cofreerc";
+import {
+  dedupeContextAttachments,
+  type ChatContextAttachment,
+} from "../../lib/contextAttachments";
 import { ConversationSidebar } from "../components/ConversationSidebar";
 import { IconTrash } from "../components/Icons";
 import { getActiveManagedModel, isActiveModelLocal } from "../../lib/settingsStore";
 import type { AppSettings } from "../../lib/settingsStore";
+import {
+  gitStatusWorkspace,
+  globWorkspaceFiles,
+  listWorkspaceFiles,
+} from "../../lib/tauriBridge";
 import type { ChatAgentDefinition } from "../../agents/types";
 import {
   classifyError,
@@ -82,6 +92,7 @@ import {
   MessageContent,
   LiveToolStatus,
   AssistantToolCalls,
+  ContextAttachmentPills,
   SubAgentStatusPanel,
   ToolTracePanel,
   InlinePlan,
@@ -95,6 +106,22 @@ import {
   markActionExecutionError,
   type RunChatCycleOptions,
 } from "./chat/execution";
+import {
+  applyMentionSuggestion,
+  buildDefaultMentionSuggestions,
+  buildFolderSuggestionsFromFiles,
+  buildGitModifiedSuggestions,
+  buildMentionSearchPattern,
+  buildRecentAttachmentSuggestions,
+  buildRootDirectorySuggestions,
+  buildSubmittedPrompt,
+  createAttachmentFromSuggestion,
+  findActiveMention,
+  rankMentionSuggestions,
+  type ActiveMention,
+  type MentionRankingSignals,
+  type MentionSuggestion,
+} from "./chat/mentions";
 import type { BackgroundStreamState, LiveToolCall, SubAgentStatusItem } from "./chat/types";
 
 interface ChatPageProps {
@@ -147,6 +174,13 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     });
 
   const [prompt, setPrompt] = useState("");
+  const [composerAttachments, setComposerAttachments] = useState<ChatContextAttachment[]>([]);
+  const [activeMention, setActiveMention] = useState<ActiveMention | null>(null);
+  const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
+  const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0);
+  const [mentionIgnorePatterns, setMentionIgnorePatterns] = useState<string[]>([]);
+  const [rootDirectorySuggestions, setRootDirectorySuggestions] = useState<MentionSuggestion[]>([]);
+  const [gitMentionSuggestions, setGitMentionSuggestions] = useState<MentionSuggestion[]>([]);
   const [messages, setMessages] = useState<ChatMessageRecord[]>(
     currentConversation?.messages ?? []
   );
@@ -179,6 +213,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     currentConversation?.messages ?? []
   );
   const lastPromptRef = useRef<string>("");
+  const lastContextAttachmentsRef = useRef<ChatContextAttachment[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -207,6 +242,65 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     setLiveToolCalls(viewState.liveToolCalls);
     setCategorizedError(viewState.categorizedError);
     setSubAgentStatus(viewState.subAgentStatus);
+  };
+
+  const clearMentionUi = (): void => {
+    setActiveMention(null);
+    setMentionSuggestions([]);
+    setMentionSelectionIndex(0);
+  };
+
+  const syncActiveMention = (nextText: string, caretIndex?: number): void => {
+    const resolvedCaret =
+      typeof caretIndex === "number"
+        ? caretIndex
+        : textareaRef.current?.selectionStart ?? nextText.length;
+    const mention = findActiveMention(nextText, resolvedCaret);
+    setActiveMention(mention);
+    setMentionSelectionIndex(0);
+    if (!mention || mention.query.trim().length === 0) {
+      setMentionSuggestions([]);
+    }
+  };
+
+  const getLatestUserContextAttachments = (): ChatContextAttachment[] => {
+    for (let index = messagesRef.current.length - 1; index >= 0; index -= 1) {
+      const record = messagesRef.current[index];
+      if (record.role === "user" && (record.contextAttachments?.length ?? 0) > 0) {
+        return dedupeContextAttachments(record.contextAttachments ?? []);
+      }
+    }
+    return [];
+  };
+
+  const getRecentContextAttachments = (): ChatContextAttachment[] => {
+    const attachments: ChatContextAttachment[] = [...composerAttachments];
+    for (let index = messagesRef.current.length - 1; index >= 0; index -= 1) {
+      const record = messagesRef.current[index];
+      if (!record.contextAttachments?.length) {
+        continue;
+      }
+      attachments.push(...record.contextAttachments);
+      if (attachments.length >= 24) {
+        break;
+      }
+    }
+    return dedupeContextAttachments(attachments).slice(0, 12);
+  };
+
+  const getMentionRankingSignals = (): MentionRankingSignals => {
+    const recentAttachments = getRecentContextAttachments();
+    const recentPaths = recentAttachments.slice(0, 6).map((attachment) => attachment.relativePath);
+    const relatedPaths = recentAttachments.map((attachment) => attachment.relativePath);
+    const gitModifiedPaths = gitMentionSuggestions
+      .filter((suggestion) => suggestion.kind === "file")
+      .map((suggestion) => suggestion.relativePath);
+
+    return {
+      recentPaths,
+      relatedPaths,
+      gitModifiedPaths,
+    };
   };
 
   const activateConversation = (
@@ -354,6 +448,62 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
     // Reset session state
     resetChatSessionState();
+    setPrompt("");
+    setComposerAttachments([]);
+    clearMentionUi();
+  }, [wsPath]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!wsPath) {
+      setMentionIgnorePatterns([]);
+      setRootDirectorySuggestions([]);
+      setGitMentionSuggestions([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void loadCofreeRc(wsPath)
+      .then(async (config) => {
+        const ignorePatterns = config.ignorePatterns ?? [];
+        const [rootEntries, gitStatus] = await Promise.all([
+          listWorkspaceFiles({
+            workspacePath: wsPath,
+            relativePath: "",
+            ignorePatterns,
+          }).catch(() => []),
+          gitStatusWorkspace(wsPath).catch(() => ({
+            modified: [],
+            added: [],
+            deleted: [],
+            untracked: [],
+          })),
+        ]);
+        if (!cancelled) {
+          setMentionIgnorePatterns(ignorePatterns);
+          setRootDirectorySuggestions(buildRootDirectorySuggestions(rootEntries));
+          setGitMentionSuggestions(
+            buildGitModifiedSuggestions([
+              ...gitStatus.modified,
+              ...gitStatus.added,
+              ...gitStatus.untracked,
+            ]),
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMentionIgnorePatterns([]);
+          setRootDirectorySuggestions([]);
+          setGitMentionSuggestions([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [wsPath]);
 
   useEffect(
@@ -384,6 +534,102 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
   }, [prompt]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const mention = activeMention;
+    if (!mention || !wsPath) {
+      setMentionSuggestions([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const rankingSignals = getMentionRankingSignals();
+    const recentSuggestions = buildRecentAttachmentSuggestions(
+      getRecentContextAttachments(),
+    );
+    if (mention.query.trim().length === 0) {
+      const defaults = buildDefaultMentionSuggestions({
+        recentSuggestions,
+        gitSuggestions: gitMentionSuggestions,
+        rootDirectorySuggestions,
+        signals: rankingSignals,
+      }).filter(
+        (entry) =>
+          !composerAttachments.some(
+            (attachment) =>
+              attachment.relativePath === entry.relativePath &&
+              attachment.kind === entry.kind,
+          ),
+      );
+      setMentionSuggestions(defaults);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const timer = window.setTimeout(() => {
+      void globWorkspaceFiles({
+        workspacePath: wsPath,
+        pattern: buildMentionSearchPattern(mention.query),
+        maxResults: 80,
+        ignorePatterns: mentionIgnorePatterns,
+      })
+        .then((entries) => {
+          if (cancelled) return;
+          const fileSuggestions = entries.map((entry) => ({
+            kind: "file" as const,
+            relativePath: entry.path.replace(/\\/g, "/"),
+            displayName: entry.path.split(/[\\/]/).filter(Boolean).pop() ?? entry.path,
+            modified: entry.modified,
+            size: entry.size,
+            source: "search" as const,
+          }));
+          const folderSuggestions = buildFolderSuggestionsFromFiles(
+            mention.query,
+            entries,
+          );
+          const suggestions = rankMentionSuggestions(
+            mention.query,
+            [
+              ...fileSuggestions,
+              ...folderSuggestions,
+              ...rootDirectorySuggestions,
+              ...recentSuggestions,
+              ...gitMentionSuggestions,
+            ],
+            rankingSignals,
+          ).filter(
+            (entry) =>
+              !composerAttachments.some(
+                (attachment) =>
+                  attachment.relativePath === entry.relativePath &&
+                  attachment.kind === entry.kind,
+              ),
+          );
+          setMentionSuggestions(suggestions);
+          setMentionSelectionIndex(0);
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setMentionSuggestions([]);
+          }
+        });
+    }, 120);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    activeMention,
+    composerAttachments,
+    gitMentionSuggestions,
+    mentionIgnorePatterns,
+    rootDirectorySuggestions,
+    wsPath,
+  ]);
 
   /* Restore checkpoint */
   useEffect(() => {
@@ -513,6 +759,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     if (!streamConvId) return;
 
     const visibleUserMessage = options.visibleUserMessage !== false;
+    const contextAttachments = dedupeContextAttachments(
+      options.contextAttachments ??
+      (visibleUserMessage ? [] : getLatestUserContextAttachments()),
+    );
     if (visibleUserMessage) {
       resetHitlContinuationMemory(getChatSessionId());
     }
@@ -520,6 +770,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     abortControllersRef.current.set(streamConvId, controller);
     abortControllerRef.current = controller;
     lastPromptRef.current = promptText;
+    lastContextAttachmentsRef.current = contextAttachments;
     const conversationHistory = toConversationHistory(messagesRef.current);
     const assistantMessageId = createMessageId("assistant");
     const now = new Date().toISOString();
@@ -608,6 +859,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         content: promptText,
         createdAt: now,
         plan: null,
+        contextAttachments,
       };
       setMessages((prev) => {
         const next = [...prev, userMsg, assistantMsg];
@@ -637,6 +889,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         agentId: convBinding ?? activeAgent.id,
         phase: options.phase,
         conversationHistory,
+        contextAttachments,
         isContinuation: options.isContinuation,
         internalSystemNote: options.internalSystemNote,
         blockedActionFingerprints: visibleUserMessage
@@ -803,11 +1056,55 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     }
   };
 
+  const handleMentionSuggestionSelect = (suggestion: MentionSuggestion): void => {
+    if (!activeMention) {
+      return;
+    }
+
+    const attachment = createAttachmentFromSuggestion(suggestion);
+    const { nextText, nextCaret } = applyMentionSuggestion(prompt, activeMention);
+
+    setComposerAttachments((prev) =>
+      dedupeContextAttachments([...prev, attachment]),
+    );
+    setPrompt(nextText);
+    clearMentionUi();
+
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCaret, nextCaret);
+      syncActiveMention(nextText, nextCaret);
+    });
+  };
+
+  const handleRemoveComposerAttachment = (attachmentId: string): void => {
+    setComposerAttachments((prev) =>
+      prev.filter((attachment) => attachment.id !== attachmentId),
+    );
+    textareaRef.current?.focus();
+  };
+
   const handleSubmit = async (): Promise<void> => {
-    const text = prompt.trim();
-    if (!text || isStreaming) return;
+    const attachments = dedupeContextAttachments(composerAttachments);
+    const text = buildSubmittedPrompt(prompt, attachments);
+    if ((!text && attachments.length === 0) || isStreaming) return;
+
+    const previousPrompt = prompt;
+    const previousAttachments = composerAttachments;
     setPrompt("");
-    await runChatCycle(text);
+    setComposerAttachments([]);
+    clearMentionUi();
+
+    try {
+      await runChatCycle(text, {
+        contextAttachments: attachments,
+      });
+    } catch (error) {
+      setPrompt(previousPrompt);
+      setComposerAttachments(previousAttachments);
+      syncActiveMention(previousPrompt);
+      setCategorizedError(classifyError(error));
+    }
   };
 
   const handlePlanUpdate = (
@@ -992,6 +1289,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     setCurrentConversation(clearedConversation);
     applyChatViewState(createEmptyChatViewState());
     setConversations(loadConversationList(wsPath));
+    setComposerAttachments([]);
+    clearMentionUi();
   };
 
   const snapshotToBackground = () => {
@@ -1027,6 +1326,9 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     skipNextTimestampRef.current = true;
     activateConversation(newConv);
     setConversations(loadConversationList(wsPath));
+    setPrompt("");
+    setComposerAttachments([]);
+    clearMentionUi();
 
     resetChatSessionState();
   };
@@ -1046,6 +1348,9 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       backgroundStream: takeBackgroundStream(conv.id),
       idleSessionNote: conv.messages.length ? "已切换对话" : "",
     });
+    setPrompt("");
+    setComposerAttachments([]);
+    clearMentionUi();
 
     resetChatSessionState();
   };
@@ -1075,6 +1380,9 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             backgroundStream: takeBackgroundStream(nextConversation.id),
             idleSessionNote: nextConversation.messages.length ? "已切换对话" : "",
           });
+          setPrompt("");
+          setComposerAttachments([]);
+          clearMentionUi();
 
           resetChatSessionState();
         }
@@ -1102,7 +1410,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
   const handleSuggestionClick = (text: string) => {
     setPrompt(text);
-    textareaRef.current?.focus();
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      const caret = text.length;
+      textareaRef.current?.setSelectionRange(caret, caret);
+      syncActiveMention(text, caret);
+    });
   };
 
   // Listen for global new-conversation shortcut
@@ -1188,6 +1501,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                           : ""}
                       </p>
                       <div className={`chat-bubble ${message.role}`}>
+                        {message.role === "user" && (
+                          <ContextAttachmentPills
+                            attachments={message.contextAttachments ?? []}
+                            compact
+                          />
+                        )}
                         <MessageContent
                           content={message.content}
                           isStreaming={
@@ -1248,7 +1567,9 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                     ? () => {
                       setCategorizedError(null);
                       if (lastPromptRef.current) {
-                        void runChatCycle(lastPromptRef.current);
+                        void runChatCycle(lastPromptRef.current, {
+                          contextAttachments: lastContextAttachmentsRef.current,
+                        });
                       }
                     }
                     : undefined
@@ -1263,22 +1584,92 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
               }}
             >
               <div className="chat-input-box">
+                <ContextAttachmentPills
+                  attachments={composerAttachments}
+                  onRemove={handleRemoveComposerAttachment}
+                />
+                {activeMention && mentionSuggestions.length > 0 && (
+                  <div className="chat-mention-menu" role="listbox" aria-label="@ 文件候选">
+                    {mentionSuggestions.map((suggestion, index) => (
+                      <button
+                        key={suggestion.relativePath}
+                        type="button"
+                        className={`chat-mention-item${index === mentionSelectionIndex ? " active" : ""}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          handleMentionSuggestionSelect(suggestion);
+                        }}
+                      >
+                        <span className="chat-mention-item-name">
+                          {suggestion.displayName}
+                          {suggestion.kind === "folder" ? "/" : ""}
+                        </span>
+                        <span className="chat-mention-item-path">
+                          {suggestion.kind === "folder" ? "目录" : "文件"} · {suggestion.relativePath}
+                          {suggestion.kind === "folder" ? "/" : ""}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   ref={textareaRef}
                   className="chat-textarea"
                   value={prompt}
                   disabled={chatBlocked}
-                  onChange={(e) => setPrompt(e.target.value)}
+                  onChange={(e) => {
+                    const nextText = e.target.value;
+                    setPrompt(nextText);
+                    syncActiveMention(nextText, e.target.selectionStart ?? nextText.length);
+                  }}
                   onKeyDown={(e) => {
+                    if (activeMention && mentionSuggestions.length > 0) {
+                      if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        setMentionSelectionIndex((prev) =>
+                          Math.min(prev + 1, mentionSuggestions.length - 1),
+                        );
+                        return;
+                      }
+                      if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        setMentionSelectionIndex((prev) => Math.max(prev - 1, 0));
+                        return;
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        clearMentionUi();
+                        return;
+                      }
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        handleMentionSuggestionSelect(
+                          mentionSuggestions[mentionSelectionIndex] ?? mentionSuggestions[0],
+                        );
+                        return;
+                      }
+                    }
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       void handleSubmit();
                     }
                   }}
+                  onClick={(e) =>
+                    syncActiveMention(
+                      e.currentTarget.value,
+                      e.currentTarget.selectionStart ?? e.currentTarget.value.length,
+                    )
+                  }
+                  onKeyUp={(e) =>
+                    syncActiveMention(
+                      e.currentTarget.value,
+                      e.currentTarget.selectionStart ?? e.currentTarget.value.length,
+                    )
+                  }
                   placeholder={
                     chatBlocked
                       ? "请先完成设置…"
-                      : "描述你的编码任务…  Enter 发送，Shift+Enter 换行"
+                      : "描述你的编码任务…  输入 @ 搜索文件或目录，Enter 发送，Shift+Enter 换行"
                   }
                   rows={1}
                 />
@@ -1328,7 +1719,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                       disabled={
                         isStreaming ||
                         Boolean(executingActionId) ||
-                        !prompt.trim() ||
+                        (!prompt.trim() && composerAttachments.length === 0) ||
                         chatBlocked
                       }
                       type="submit"
