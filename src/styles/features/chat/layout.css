@@ -41,11 +41,10 @@
 /* ── Floating Sidebar Toggle ───────────────────────────── */
 .chat-sidebar-fab {
   position: absolute;
-  top: 12px;
+  top: 24px;
   left: 12px;
-  z-index: 10;
-  display: flex;
-  align-items: center;
+  z-index: 2;
+  display: flex;  align-items: center;
   justify-content: center;
   width: 32px;
   height: 32px;
