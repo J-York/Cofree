@@ -16,19 +16,25 @@ function createPlanSteps(prompt: string): OrchestrationPlan["steps"] {
   return [
     {
       id: "step-plan",
+      title: "分析需求",
       owner: "planner",
-      summary: `分析需求并拆解执行步骤: ${prompt}`
+      status: "in_progress",
+      summary: `分析需求并拆解执行步骤: ${prompt}`,
     },
     {
       id: "step-patch",
+      title: "生成补丁",
       owner: "coder",
-      summary: "基于需求生成内存 patch（不写盘）"
+      status: "pending",
+      summary: "基于需求生成内存 patch（不写盘）",
     },
     {
       id: "step-validate",
+      title: "验证风险",
       owner: "tester",
-      summary: "生成测试建议与风险摘要，等待人工审批"
-    }
+      status: "pending",
+      summary: "生成测试建议与风险摘要，等待人工审批",
+    },
   ];
 }
 

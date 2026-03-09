@@ -9,7 +9,11 @@
  * Description: Runtime guards for restoring orchestration plans from local persistence.
  */
 
-import type { ActionProposal, OrchestrationPlan } from "./types";
+import type {
+  ActionProposal,
+  OrchestrationPlan,
+  PlanStepStatus,
+} from "./types";
 
 const WORKFLOW_STATES = new Set<OrchestrationPlan["state"]>([
   "planning",
@@ -26,7 +30,15 @@ const ACTION_STATUSES = new Set<ActionProposal["status"]>([
   "rejected"
 ]);
 
-const STEP_OWNERS = new Set(["planner", "coder", "tester"]);
+const STEP_OWNERS = new Set(["planner", "coder", "tester", "debugger", "reviewer"]);
+const STEP_STATUSES = new Set<PlanStepStatus>([
+  "pending",
+  "in_progress",
+  "blocked",
+  "completed",
+  "failed",
+  "skipped",
+]);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") {
@@ -89,6 +101,7 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
   const toolCallId = typeof record.toolCallId === "string" ? record.toolCallId : undefined;
   const toolName = typeof record.toolName === "string" ? record.toolName : undefined;
   const fingerprint = typeof record.fingerprint === "string" ? record.fingerprint : undefined;
+  const planStepId = typeof record.planStepId === "string" ? record.planStepId : undefined;
 
   if (record.type === "apply_patch") {
     return {
@@ -102,6 +115,7 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       toolCallId,
       toolName,
       fingerprint,
+      planStepId,
       payload: {
         patch: asString(payload.patch, "")
       }
@@ -126,6 +140,7 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       toolCallId,
       toolName,
       fingerprint,
+      planStepId,
       payload: {
         shell: shellCommand,
         timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000))
@@ -159,6 +174,7 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       toolCallId,
       toolName,
       fingerprint,
+      planStepId,
       payload: {
         shell: shellCommand,
         timeoutMs: 120000
@@ -178,6 +194,7 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       toolCallId,
       toolName,
       fingerprint,
+      planStepId,
       payload: {
         shell: asString(payload.shell, "pnpm build"),
         timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000))
@@ -202,25 +219,43 @@ export function normalizeOrchestrationPlan(value: unknown): OrchestrationPlan | 
   const prompt = asString(record.prompt, "恢复的工作流");
 
   const rawSteps = Array.isArray(record.steps) ? record.steps : [];
-  const steps = rawSteps
-    .map((step, index) => {
+  const steps: OrchestrationPlan["steps"] = rawSteps.flatMap((step, index) => {
       const stepRecord = asRecord(step);
       if (!stepRecord) {
-        return null;
+        return [];
       }
       const ownerCandidate = asString(stepRecord.owner, "planner");
       const owner = STEP_OWNERS.has(ownerCandidate) ? ownerCandidate : "planner";
       const summary = asString(stepRecord.summary, "").trim();
       if (!summary) {
-        return null;
+        return [];
       }
-      return {
+      const title = asString(stepRecord.title, summary).trim() || summary;
+      const statusCandidate = asString(stepRecord.status, "pending");
+      const status = STEP_STATUSES.has(statusCandidate as PlanStepStatus)
+        ? (statusCandidate as PlanStepStatus)
+        : "pending";
+      const dependsOn = Array.isArray(stepRecord.dependsOn)
+        ? stepRecord.dependsOn
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : undefined;
+      const linkedActionIds = Array.isArray(stepRecord.linkedActionIds)
+        ? stepRecord.linkedActionIds
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : undefined;
+      return [{
         id: asString(stepRecord.id, `step-${index + 1}`),
+        title,
         summary,
-        owner: owner as OrchestrationPlan["steps"][number]["owner"]
-      };
-    })
-    .filter((step): step is OrchestrationPlan["steps"][number] => Boolean(step));
+        owner: owner as OrchestrationPlan["steps"][number]["owner"],
+        status,
+        dependsOn,
+        linkedActionIds,
+        note: typeof stepRecord.note === "string" ? stepRecord.note : undefined,
+        startedAt: typeof stepRecord.startedAt === "string" ? stepRecord.startedAt : undefined,
+        completedAt: typeof stepRecord.completedAt === "string" ? stepRecord.completedAt : undefined,
+      }];
+    });
 
   const rawActions = Array.isArray(record.proposedActions) ? record.proposedActions : [];
   const proposedActions = rawActions
@@ -231,6 +266,7 @@ export function normalizeOrchestrationPlan(value: unknown): OrchestrationPlan | 
     state,
     prompt,
     steps,
+    activeStepId: typeof record.activeStepId === "string" ? record.activeStepId : undefined,
     proposedActions,
     workspacePath: typeof record.workspacePath === "string" ? record.workspacePath : undefined
   };

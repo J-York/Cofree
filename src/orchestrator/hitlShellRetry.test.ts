@@ -16,7 +16,16 @@ function createShellPlan(): OrchestrationPlan {
     return {
         state: "human_review",
         prompt: "run failing shell command",
-        steps: [],
+        steps: [
+            {
+                id: "step-shell",
+                title: "执行验证命令",
+                summary: "运行 shell 命令并检查输出",
+                owner: "tester",
+                status: "in_progress",
+            },
+        ],
+        activeStepId: "step-shell",
         proposedActions: [
             {
                 id: "shell-1",
@@ -28,6 +37,7 @@ function createShellPlan(): OrchestrationPlan {
                 toolCallId: "tool-1",
                 toolName: "propose_shell",
                 fingerprint: "fp-shell-1",
+                planStepId: "step-shell",
                 payload: {
                     shell: "npm test",
                     timeoutMs: 1000,
@@ -65,6 +75,9 @@ describe("HITL shell retry flow", () => {
             timedOut: false,
             executor: "human_reviewer",
         });
+        expect(nextPlan.activeStepId).toBeUndefined();
+        expect(nextPlan.steps[0].status).toBe("failed");
+        expect(nextPlan.steps[0].note).toContain("meaningful stderr");
     });
 
     it("creates a fresh pending shell action identity for retry", () => {
@@ -90,6 +103,9 @@ describe("HITL shell retry flow", () => {
         expect(retriedAction.status).toBe("pending");
         expect(retriedAction.executed).toBe(false);
         expect(retriedAction.executionResult).toBeUndefined();
+        expect(retriedPlan.activeStepId).toBe("step-shell");
+        expect(retriedPlan.steps[0].status).toBe("in_progress");
+        expect(retriedPlan.steps[0].note).toContain("已重新创建重试动作");
         expect(retriedAction.type).toBe("shell");
         if (retriedAction.type === "shell") {
             expect(retriedAction.payload.retryFromActionId).toBe("shell-1");

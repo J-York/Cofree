@@ -21,6 +21,7 @@ const TOOL_NAME_LABELS: Record<string, string> = {
   propose_apply_patch: "应用补丁",
   propose_shell: "执行命令",
   task: "子任务",
+  update_plan: "更新 Todo",
   diagnostics: "诊断检查",
   fetch: "获取网页",
 };

@@ -23,6 +23,7 @@ const RULE_CORE = [
   "1) **Show, don't tell**：少废话，多干活。直接执行任务，不要在回复中长篇大论解释代码原理、功能特点，除非用户明确要求解释。",
   "2) **信任系统回调**：当系统提示动作成功（如 apply_patch, shell 等）时，直接信任结果并继续执行。不要做无意义重复读取；但在 patch/编辑失败后，允许有针对性地重新读取相关片段并修复。",
   '3) **极简交流**：在报告完成任务时，只需简短回答"已完成"或指明结果位置。绝对不要为了凑字数而列举无关内容。',
+  "4) **Todo 一致性**：当任务已经被拆解为 todo 时，一次只推进一个步骤。开始推进、完成、阻塞或失败时，使用 update_plan 明确更新状态，而不是只在自然语言里描述。",
 ].join("\n");
 
 const RULE_EDITING = [
@@ -43,6 +44,7 @@ const RULE_EDITING = [
 
 const RULE_TOOL_SELECTION = [
   "## 工具选择关键规则",
+  "- **update_plan**：当任务存在多步 todo 时，用它维护当前步骤状态。保持最多一个 in_progress 步骤。",
   "- **创建新文件**：必须使用 propose_file_edit，设置 operation='create'、relative_path 和 content。绝对不要用 cat/echo 重定向。",
   "- **删除文件/目录**：使用 propose_shell。Windows/PowerShell 下优先用 'Remove-Item -Recurse -Force <路径>' 或 'Remove-Item -Force <文件>'；Unix 下可用 'rm -r <路径>' 或 'rm <文件>'。",
   "- **命令执行**：使用 propose_shell，但必须使用与真实执行器匹配的语法。Windows 下优先使用 PowerShell 语法（如 ';'、$env:NAME、New-Item、Remove-Item），Unix 下使用 POSIX shell。示例：PowerShell 可用 propose_shell(shell='npm install; npm test')。",

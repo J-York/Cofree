@@ -5,7 +5,7 @@
  *              Runtime CRUD and migration concerns are intentionally kept separate.
  */
 
-import type { ChatMessageRecord } from "./chatHistoryStore";
+import { normalizeChatMessages, type ChatMessageRecord } from "./chatHistoryStore";
 import type { ConversationAgentBinding } from "../agents/types";
 
 export const CONVERSATIONS_STORAGE_KEY = "cofree.conversations.v1";
@@ -133,7 +133,7 @@ function normalizeConversation(value: unknown, fallbackConversationId: string): 
     title: typeof value.title === "string" ? value.title : "未命名对话",
     createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",
-    messages: Array.isArray(value.messages) ? (value.messages as ChatMessageRecord[]) : [],
+    messages: normalizeChatMessages(value.messages),
     lastTokenCount: typeof value.lastTokenCount === "number" ? value.lastTokenCount : null,
     agentBinding: normalizeAgentBinding(value.agentBinding),
   };

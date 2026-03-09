@@ -292,6 +292,29 @@ function buildReviewSummarySystemNote(plan: OrchestrationPlan): string {
     sections.push(`[已完成文件] ${completedFiles.join("、")}`);
   }
 
+  if (plan.steps.length > 0) {
+    sections.push("");
+    sections.push("## Todo 进度:");
+    for (const step of plan.steps) {
+      const marker = step.status === "completed"
+        ? "✓"
+        : step.status === "in_progress"
+          ? "▶"
+          : step.status === "blocked"
+            ? "⏸"
+            : step.status === "failed"
+              ? "✕"
+              : step.status === "skipped"
+                ? "↷"
+                : "○";
+      const activeSuffix = step.id === plan.activeStepId ? " [当前]" : "";
+      sections.push(`  ${marker} ${step.title} (${step.status})${activeSuffix}`);
+      if (step.note?.trim()) {
+        sections.push(`    note: ${step.note.trim()}`);
+      }
+    }
+  }
+
   sections.push("");
   sections.push(`原始用户请求："${plan.prompt}"`);
   sections.push("请对照原始请求检查是否所有交付物都已完成。如有剩余工作，请继续提出动作；如全部完成，请简短汇报。");

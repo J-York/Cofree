@@ -231,12 +231,12 @@ describe("selectAgentTools", () => {
 
   it("QA agent allowedSubAgents is only tester", () => {
     const runtime = resolveAgentRuntime("agent-qa", makeSettings());
-    expect(runtime.allowedSubAgents).toEqual(["tester"]);
+    expect(runtime.allowedSubAgents).toEqual(["tester", "reviewer"]);
   });
 
   it("fullstack agent allowedSubAgents includes all three roles", () => {
     const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
-    expect(runtime.allowedSubAgents).toEqual(["planner", "coder", "tester"]);
+    expect(runtime.allowedSubAgents).toEqual(["planner", "coder", "tester", "debugger", "reviewer"]);
   });
 });
 

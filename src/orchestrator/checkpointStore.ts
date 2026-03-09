@@ -93,6 +93,7 @@ function sanitizePlanForCheckpoint(plan: OrchestrationPlan): OrchestrationPlan {
           toolCallId: typeof action.toolCallId === "string" ? action.toolCallId : undefined,
           toolName: typeof action.toolName === "string" ? action.toolName : undefined,
           fingerprint: typeof action.fingerprint === "string" ? action.fingerprint : undefined,
+          planStepId: typeof action.planStepId === "string" ? action.planStepId : undefined,
           executionResult: action.executionResult
             ? {
               ...action.executionResult,
@@ -116,6 +117,7 @@ function sanitizePlanForCheckpoint(plan: OrchestrationPlan): OrchestrationPlan {
           toolCallId: typeof action.toolCallId === "string" ? action.toolCallId : undefined,
           toolName: typeof action.toolName === "string" ? action.toolName : undefined,
           fingerprint: typeof action.fingerprint === "string" ? action.fingerprint : undefined,
+          planStepId: typeof action.planStepId === "string" ? action.planStepId : undefined,
           executionResult: action.executionResult
             ? {
               ...action.executionResult,

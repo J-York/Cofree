@@ -22,6 +22,14 @@ export type ActionStatus =
   | "failed"
   | "rejected";
 
+export type PlanStepStatus =
+  | "pending"
+  | "in_progress"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "skipped";
+
 export type ActionGroupMeta = {
   groupId: string;
   title?: string;
@@ -65,6 +73,7 @@ interface ActionProposalBase {
   toolCallId?: string;
   toolName?: string;
   fingerprint?: string;
+  planStepId?: string;
 }
 
 export interface ApplyPatchActionProposal extends ActionProposalBase {
@@ -83,14 +92,22 @@ export type ActionProposal = ApplyPatchActionProposal | ShellActionProposal;
 
 export interface PlanStep {
   id: string;
+  title: string;
   summary: string;
   owner: AgentRole;
+  status: PlanStepStatus;
+  dependsOn?: string[];
+  linkedActionIds?: string[];
+  note?: string;
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export interface OrchestrationPlan {
   state: WorkflowState;
   prompt: string;
   steps: PlanStep[];
+  activeStepId?: string;
   proposedActions: ActionProposal[];
   workspacePath?: string;
 }

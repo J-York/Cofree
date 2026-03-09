@@ -49,6 +49,55 @@ function normalizePlan(value: unknown): OrchestrationPlan | null {
   return normalizeOrchestrationPlan(value);
 }
 
+export function normalizeChatMessages(value: unknown): ChatMessageRecord[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const records: ChatMessageRecord[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const record = item as Record<string, unknown>;
+    const role = normalizeRole(record.role);
+    const content = typeof record.content === "string" ? record.content : "";
+    const id = typeof record.id === "string" ? record.id : "";
+    const createdAt = typeof record.createdAt === "string" ? record.createdAt : "";
+
+    let tool_calls;
+    if (Array.isArray(record.tool_calls)) {
+      tool_calls = record.tool_calls.filter(tc => tc && typeof tc === "object" && typeof tc.id === "string");
+    }
+
+    const tool_call_id = typeof record.tool_call_id === "string" ? record.tool_call_id : undefined;
+    const name = typeof record.name === "string" ? record.name : undefined;
+
+    const hasValidContent = content.trim() || role === "tool" || (role === "assistant" && tool_calls && tool_calls.length > 0);
+
+    if (!role || !id || !createdAt || !hasValidContent) {
+      continue;
+    }
+
+    records.push({
+      id,
+      role,
+      content,
+      createdAt,
+      plan: normalizePlan(record.plan),
+      contextAttachments: normalizeContextAttachments(record.contextAttachments),
+      toolTrace: normalizeToolTrace(record.toolTrace),
+      tool_calls,
+      tool_call_id,
+      name,
+      agentId: typeof record.agentId === "string" ? record.agentId : undefined,
+    });
+  }
+
+  return records.slice(-80);
+}
+
 function isToolErrorCategory(value: unknown): value is ToolErrorCategory {
   return (
     value === "validation" ||
@@ -131,53 +180,7 @@ export function loadChatHistory(): ChatMessageRecord[] {
 
   try {
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    const records: ChatMessageRecord[] = [];
-    for (const item of parsed) {
-      if (!item || typeof item !== "object") {
-        continue;
-      }
-
-      const record = item as Record<string, unknown>;
-      const role = normalizeRole(record.role);
-      const content = typeof record.content === "string" ? record.content : "";
-      const id = typeof record.id === "string" ? record.id : "";
-      const createdAt = typeof record.createdAt === "string" ? record.createdAt : "";
-
-      let tool_calls;
-      if (Array.isArray(record.tool_calls)) {
-        tool_calls = record.tool_calls.filter(tc => tc && typeof tc === "object" && typeof tc.id === "string");
-      }
-
-      const tool_call_id = typeof record.tool_call_id === "string" ? record.tool_call_id : undefined;
-      const name = typeof record.name === "string" ? record.name : undefined;
-
-      // For tool role, content can be empty string, but for others it should exist unless there are tool_calls
-      const hasValidContent = content.trim() || role === "tool" || (role === "assistant" && tool_calls && tool_calls.length > 0);
-
-      if (!role || !id || !createdAt || !hasValidContent) {
-        continue;
-      }
-
-      records.push({
-        id,
-        role,
-        content,
-        createdAt,
-        plan: normalizePlan(record.plan),
-        contextAttachments: normalizeContextAttachments(record.contextAttachments),
-        toolTrace: normalizeToolTrace(record.toolTrace),
-        tool_calls,
-        tool_call_id,
-        name,
-        agentId: typeof record.agentId === "string" ? record.agentId : undefined,
-      });
-    }
-
-    return records.slice(-80);
+    return normalizeChatMessages(parsed);
   } catch (_error) {
     return [];
   }

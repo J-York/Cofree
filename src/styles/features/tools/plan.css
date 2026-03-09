@@ -68,6 +68,114 @@
   margin: 0;
 }
 
+.plan-step-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-step {
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  padding: 10px 12px;
+}
+
+.plan-step.is-active {
+  border-color: var(--accent-solid);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-solid) 16%, transparent);
+}
+
+.plan-step-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.plan-step-title {
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.plan-step-summary {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.plan-step-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--text-3);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.plan-step-note {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.plan-step-status {
+  text-transform: none;
+}
+
+.plan-step-status-in_progress {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+}
+
+.plan-step-status-completed,
+.plan-step-status-skipped {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+
+.plan-step-status-blocked,
+.plan-step-status-failed {
+  background: var(--color-error-bg);
+  color: var(--color-error);
+}
+
+.plan-step-actions {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-1);
+}
+
+.plan-action-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.plan-step-action-list {
+  margin-top: 8px;
+}
+
 .action-list {
   display: flex;
   flex-direction: column;
@@ -95,6 +203,14 @@
   gap: 8px;
 }
 .action-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-1); }
+
+.plan-action-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-3);
+  font-size: 11px;
+}
 
 .action-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
 .action-wide { grid-column: 1/-1; }
@@ -124,4 +240,3 @@
   padding-top: 8px;
   border-top: 1px solid var(--border-1);
 }
-

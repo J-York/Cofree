@@ -26,7 +26,13 @@ import {
   type AppSettings,
   type ToolPermissions,
 } from "../lib/settingsStore";
-import type { ActionProposal, OrchestrationPlan, PlanStep, SubAgentProgressEvent } from "./types";
+import type {
+  ActionProposal,
+  OrchestrationPlan,
+  PlanStep,
+  PlanStepStatus,
+  SubAgentProgressEvent,
+} from "./types";
 import {
   summarizeWorkspaceFiles,
   type WorkspaceOverviewBudget,
@@ -48,6 +54,7 @@ import {
 } from "./contextBudget";
 import type {
   ResolvedAgentRuntime,
+  PlannerOutput,
   SubAgentRole,
   ConversationAgentBinding,
   StructuredSubAgentOutput,
@@ -56,7 +63,6 @@ import type {
 } from "../agents/types";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { assembleSystemPrompt, assembleRuntimeContext, classifyTaskType } from "../agents/promptAssembly";
-import { selectAgentTools } from "../agents/toolPolicy";
 import { tryExtractStructuredOutput, tryExtractFeedback } from "../agents/structuredOutput";
 import { runWithConcurrencyLimit } from "../lib/concurrency";
 import { BUILTIN_TEAMS } from "../agents/agentTeam";
@@ -266,6 +272,308 @@ interface ToolExecutionResult {
   errorMessage?: string;
   success?: boolean;
   traceStatus?: ToolExecutionStatus;
+}
+
+const INTERNAL_TOOL_NAMES = ["update_plan"] as const;
+
+export interface TodoPlanState {
+  steps: PlanStep[];
+  activeStepId?: string;
+}
+
+interface InitialPlanSeed extends TodoPlanState {
+  source: "fallback" | "planner" | "existing";
+}
+
+function clonePlanStep(step: PlanStep): PlanStep {
+  return {
+    ...step,
+    dependsOn: step.dependsOn ? [...step.dependsOn] : undefined,
+    linkedActionIds: step.linkedActionIds ? [...step.linkedActionIds] : undefined,
+  };
+}
+
+function clonePlanState(state: TodoPlanState): TodoPlanState {
+  return {
+    steps: state.steps.map(clonePlanStep),
+    activeStepId: state.activeStepId,
+  };
+}
+
+function sanitizeStepTitle(title: string, fallback: string): string {
+  const normalized = title.trim() || fallback.trim();
+  return normalized || "未命名步骤";
+}
+
+function isTerminalPlanStepStatus(status: PlanStepStatus): boolean {
+  return status === "completed" || status === "failed" || status === "skipped";
+}
+
+function areStepDependenciesSatisfied(step: PlanStep, steps: PlanStep[]): boolean {
+  if (!step.dependsOn?.length) {
+    return true;
+  }
+  const byId = new Map(steps.map((entry) => [entry.id, entry]));
+  return step.dependsOn.every((depId) => {
+    const dependency = byId.get(depId);
+    return dependency ? dependency.status === "completed" || dependency.status === "skipped" : false;
+  });
+}
+
+function findRunnablePendingStep(steps: PlanStep[]): PlanStep | undefined {
+  return steps.find(
+    (step) => step.status === "pending" && areStepDependenciesSatisfied(step, steps),
+  );
+}
+
+interface SyncPlanStateOptions {
+  promoteNextRunnable?: boolean;
+}
+
+function normalizeTodoPlanStateInternal(
+  state: TodoPlanState,
+  options?: SyncPlanStateOptions,
+): TodoPlanState {
+  const promoteNextRunnable = options?.promoteNextRunnable !== false;
+  const steps = state.steps.map((step, index) => {
+    const fallbackTitle = step.summary?.trim() || `步骤 ${index + 1}`;
+    return {
+      ...clonePlanStep(step),
+      title: sanitizeStepTitle(step.title ?? "", fallbackTitle),
+      summary: step.summary?.trim() || fallbackTitle,
+      status: step.status ?? "pending",
+      owner: step.owner ?? "planner",
+      dependsOn: step.dependsOn?.filter(Boolean),
+      linkedActionIds: step.linkedActionIds?.filter(Boolean),
+    };
+  });
+
+  let activeStepId = state.activeStepId?.trim() || steps.find((step) => step.status === "in_progress")?.id;
+  if (activeStepId) {
+    const active = steps.find((step) => step.id === activeStepId);
+    if (!active || isTerminalPlanStepStatus(active.status)) {
+      activeStepId = undefined;
+    } else if (active.status !== "in_progress") {
+      active.status = "in_progress";
+      active.startedAt = active.startedAt ?? nowIso();
+    }
+  }
+
+  if (!activeStepId && promoteNextRunnable) {
+    const runnable = findRunnablePendingStep(steps);
+    if (runnable) {
+      runnable.status = "in_progress";
+      runnable.startedAt = runnable.startedAt ?? nowIso();
+      activeStepId = runnable.id;
+    }
+  }
+
+  for (const step of steps) {
+    if (step.id !== activeStepId && step.status === "in_progress") {
+      step.status = "pending";
+    }
+  }
+
+  return { steps, activeStepId };
+}
+
+export function normalizeTodoPlanState(state: TodoPlanState): TodoPlanState {
+  return normalizeTodoPlanStateInternal(state);
+}
+
+function appendPlanStepNote(step: PlanStep, note?: string): void {
+  const normalized = note?.trim();
+  if (!normalized) {
+    return;
+  }
+  step.note = step.note?.trim()
+    ? `${step.note.trim()}\n${normalized}`
+    : normalized;
+}
+
+export function setActivePlanStep(state: TodoPlanState, stepId: string): string {
+  const target = state.steps.find((step) => step.id === stepId);
+  if (!target) {
+    return `未找到步骤 ${stepId}`;
+  }
+
+  for (const step of state.steps) {
+    if (step.id !== stepId && step.status === "in_progress") {
+      step.status = "pending";
+    }
+  }
+
+  target.status = "in_progress";
+  target.startedAt = target.startedAt ?? nowIso();
+  state.activeStepId = target.id;
+  return `当前执行步骤已切换为「${target.title}」`;
+}
+
+function promoteNextRunnableStep(state: TodoPlanState): void {
+  if (state.activeStepId) {
+    return;
+  }
+  const runnable = findRunnablePendingStep(state.steps);
+  if (!runnable) {
+    return;
+  }
+  runnable.status = "in_progress";
+  runnable.startedAt = runnable.startedAt ?? nowIso();
+  state.activeStepId = runnable.id;
+}
+
+export function setPlanStepStatus(
+  state: TodoPlanState,
+  stepId: string,
+  status: Exclude<PlanStepStatus, "pending" | "in_progress">,
+  note?: string,
+): string {
+  const target = state.steps.find((step) => step.id === stepId);
+  if (!target) {
+    return `未找到步骤 ${stepId}`;
+  }
+
+  target.status = status;
+  appendPlanStepNote(target, note);
+  if (status === "completed") {
+    target.completedAt = nowIso();
+  }
+  if (state.activeStepId === stepId) {
+    state.activeStepId = undefined;
+  }
+  if (status === "completed" || status === "skipped") {
+    promoteNextRunnableStep(state);
+  }
+  return `步骤「${target.title}」已更新为 ${status}`;
+}
+
+function addPlanStep(state: TodoPlanState, params: {
+  title: string;
+  summary?: string;
+  owner?: PlanStep["owner"];
+  afterStepId?: string;
+  note?: string;
+}): PlanStep {
+  const step: PlanStep = {
+    id: createActionId("step"),
+    title: sanitizeStepTitle(params.title, params.summary ?? params.title),
+    summary: params.summary?.trim() || params.title.trim(),
+    owner: params.owner ?? "planner",
+    status: "pending",
+    note: params.note?.trim() || undefined,
+  };
+
+  const afterIndex = params.afterStepId
+    ? state.steps.findIndex((entry) => entry.id === params.afterStepId)
+    : -1;
+  if (afterIndex >= 0) {
+    state.steps.splice(afterIndex + 1, 0, step);
+  } else {
+    state.steps.push(step);
+  }
+
+  if (!state.activeStepId) {
+    promoteNextRunnableStep(state);
+  }
+  return step;
+}
+
+export function attachActionToPlanStep(state: TodoPlanState, action: ActionProposal): ActionProposal {
+  const planStepId = action.planStepId ?? state.activeStepId;
+  if (!planStepId) {
+    return action;
+  }
+  const target = state.steps.find((step) => step.id === planStepId);
+  if (!target) {
+    return action;
+  }
+  if (!target.linkedActionIds?.includes(action.id)) {
+    target.linkedActionIds = [...(target.linkedActionIds ?? []), action.id];
+  }
+  if (target.status === "pending") {
+    target.status = "in_progress";
+    target.startedAt = target.startedAt ?? nowIso();
+  }
+  return {
+    ...action,
+    planStepId,
+  };
+}
+
+export function syncPlanStateWithActions(
+  state: TodoPlanState,
+  actions: ActionProposal[],
+  options?: SyncPlanStateOptions,
+): TodoPlanState {
+  const next = clonePlanState(state);
+  for (const step of next.steps) {
+    step.linkedActionIds = [];
+  }
+  for (const action of actions) {
+    if (!action.planStepId) {
+      continue;
+    }
+    const target = next.steps.find((step) => step.id === action.planStepId);
+    if (!target) {
+      continue;
+    }
+    target.linkedActionIds = [...(target.linkedActionIds ?? []), action.id];
+  }
+  return normalizeTodoPlanStateInternal(next, options);
+}
+
+function formatTodoPlanBlock(state: TodoPlanState): string {
+  if (!state.steps.length) {
+    return "暂无 todo。";
+  }
+  return state.steps
+    .map((step) => {
+      const icon = step.status === "completed"
+        ? "✓"
+        : step.status === "in_progress"
+          ? "▶"
+          : step.status === "blocked"
+            ? "⏸"
+            : step.status === "failed"
+              ? "✕"
+              : step.status === "skipped"
+                ? "↷"
+                : "○";
+      const suffix = step.id === state.activeStepId ? " [当前]" : "";
+      return `${icon} (${step.owner}/${step.status}) ${step.title}${suffix}`;
+    })
+    .join("\n");
+}
+
+export function buildTodoSystemPrompt(state: TodoPlanState): string {
+  if (!state.steps.length) {
+    return "";
+  }
+  return [
+    "[Todo Plan]",
+    "当前任务已经拆解为以下 todo。一次只推进一个步骤；完成、阻塞或失败时，必须调用 update_plan 更新状态。",
+    "如果新增了明确的子任务，可以用 update_plan 添加步骤；不要静默偏离当前 todo。",
+    formatTodoPlanBlock(state),
+  ].join("\n");
+}
+
+export function derivePlanWorkflowState(
+  proposedActions: ActionProposal[],
+  planState: TodoPlanState,
+): OrchestrationPlan["state"] {
+  if (proposedActions.some((action) => action.status === "running")) {
+    return "executing";
+  }
+  if (proposedActions.some((action) => action.status === "pending" || action.status === "failed")) {
+    return "human_review";
+  }
+  if (planState.steps.some((step) => step.status === "in_progress")) {
+    return "executing";
+  }
+  if (planState.steps.some((step) => step.status === "pending" || step.status === "blocked" || step.status === "failed")) {
+    return "planning";
+  }
+  return "done";
 }
 
 interface ChatCompletionChoiceMessage {
@@ -657,6 +965,52 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "update_plan",
+      description:
+        "Update the internal todo plan for the current task. Use this to mark a step as active, completed, blocked, failed, skipped, add notes, or append a new step. This tool has no side effects on the workspace and never requires approval.",
+      parameters: {
+        type: "object",
+        required: ["operation", "step_id"],
+        additionalProperties: false,
+        properties: {
+          operation: {
+            type: "string",
+            enum: ["set_active", "complete", "block", "fail", "skip", "note", "add"],
+            description: "Plan update operation to perform.",
+          },
+          step_id: {
+            type: "string",
+            minLength: 1,
+            description: "Target step id. For operation='add', this acts as the new step id hint and can be any non-empty string.",
+          },
+          title: {
+            type: "string",
+            description: "Required when operation='add'. Short title for the new todo step.",
+          },
+          summary: {
+            type: "string",
+            description: "Optional step summary when operation='add'.",
+          },
+          owner: {
+            type: "string",
+            enum: ["planner", "coder", "tester", "debugger", "reviewer"],
+            description: "Optional owner for operation='add'.",
+          },
+          note: {
+            type: "string",
+            description: "Optional note or rationale for the step update.",
+          },
+          after_step_id: {
+            type: "string",
+            description: "Optional insertion anchor when operation='add'.",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "diagnostics",
       description:
         "Get compilation errors and warnings for the workspace. " +
@@ -723,6 +1077,7 @@ const ALL_TOOL_NAMES = [
   "propose_apply_patch",
   "propose_shell",
   "task",
+  "update_plan",
   "diagnostics",
   "fetch",
 ];
@@ -952,7 +1307,11 @@ function selectToolDefinitions(toolNames: string[]): LiteLLMToolDefinition[] {
  */
 function buildAgentToolDefs(runtime: ResolvedAgentRuntime): LiteLLMToolDefinition[] {
   const allowedRoles = runtime.allowedSubAgents;
+  const enabled = new Set<string>([...runtime.enabledTools, ...INTERNAL_TOOL_NAMES]);
   return TOOL_DEFINITIONS.map((td) => {
+    if (!enabled.has(td.function.name)) {
+      return null;
+    }
     if (td.function.name !== "task") return td;
     if (allowedRoles.length === 0) return null;
     return {
@@ -1006,6 +1365,7 @@ export interface RunPlanningSessionInput {
   contextAttachments?: ChatContextAttachment[];
   isContinuation?: boolean;
   internalSystemNote?: string;
+  existingPlan?: OrchestrationPlan | null;
   blockedActionFingerprints?: string[];
   signal?: AbortSignal;
   onAssistantChunk?: (chunk: string) => void;
@@ -1018,6 +1378,7 @@ export interface RunPlanningSessionInput {
   onLoopCheckpoint?: (checkpoint: {
     turn: number;
     proposedActions: ActionProposal[];
+    planState: TodoPlanState;
     toolTrace: ToolExecutionTrace[];
     assistantReply: string;
   }) => void;
@@ -1817,6 +2178,8 @@ function summarizeToolArgs(toolName: string, argsJson: string): string {
       }
       case "task":
         return `${args.role}: ${String(args.description || "").slice(0, 30)}...`;
+      case "update_plan":
+        return `${String(args.operation || "")}: ${String(args.step_id || "")}`;
       case "diagnostics":
         return args.changed_files ? `${(args.changed_files as string[]).length} files` : "(all)";
       case "fetch":
@@ -2352,6 +2715,7 @@ async function executeToolCall(
   projectConfig?: CofreeRcConfig,
   allowedSubAgents?: SubAgentRole[],
   enabledToolNames?: string[],
+  planState?: TodoPlanState,
   workingMemory?: WorkingMemory,
   onSubAgentProgress?: (event: SubAgentProgressEvent) => void,
   signal?: AbortSignal,
@@ -2614,6 +2978,112 @@ async function executeToolCall(
       };
     }
 
+    if (call.function.name === "update_plan") {
+      if (!planState) {
+        const message = "update_plan 缺少当前计划上下文";
+        return {
+          content: JSON.stringify({ error: message }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message,
+        };
+      }
+
+      const operation = asString(args.operation).trim();
+      const stepId = asString(args.step_id).trim();
+      const note = asString(args.note).trim();
+      if (!operation) {
+        const message = "operation 不能为空";
+        return {
+          content: JSON.stringify({ error: message }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message,
+        };
+      }
+      if (!stepId) {
+        const message = "step_id 不能为空";
+        return {
+          content: JSON.stringify({ error: message }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message,
+        };
+      }
+
+      let message = "";
+      switch (operation) {
+        case "set_active":
+          message = setActivePlanStep(planState, stepId);
+          break;
+        case "complete":
+          message = setPlanStepStatus(planState, stepId, "completed", note);
+          break;
+        case "block":
+          message = setPlanStepStatus(planState, stepId, "blocked", note);
+          break;
+        case "fail":
+          message = setPlanStepStatus(planState, stepId, "failed", note);
+          break;
+        case "skip":
+          message = setPlanStepStatus(planState, stepId, "skipped", note);
+          break;
+        case "note": {
+          const target = planState.steps.find((step) => step.id === stepId);
+          if (!target) {
+            message = `未找到步骤 ${stepId}`;
+          } else {
+            appendPlanStepNote(target, note || asString(args.summary).trim());
+            message = `步骤「${target.title}」备注已更新`;
+          }
+          break;
+        }
+        case "add": {
+          const title = asString(args.title).trim() || stepId;
+          if (!title) {
+            message = "operation=add 时必须提供 title";
+            break;
+          }
+          const added = addPlanStep(planState, {
+            title,
+            summary: asString(args.summary).trim(),
+            owner: (["planner", "coder", "tester", "debugger", "reviewer"].includes(asString(args.owner).trim())
+              ? (asString(args.owner).trim() as PlanStep["owner"])
+              : undefined),
+            afterStepId: asString(args.after_step_id).trim() || undefined,
+            note,
+          });
+          message = `已新增步骤「${added.title}」`;
+          break;
+        }
+        default:
+          message = `不支持的 update_plan operation: ${operation}`;
+      }
+
+      const isError = message.startsWith("未找到") || message.startsWith("不支持") || message.startsWith("operation=");
+      return {
+        content: JSON.stringify({
+          ok: !isError,
+          action_type: "update_plan",
+          operation,
+          step_id: stepId,
+          message,
+          active_step_id: planState.activeStepId ?? null,
+          plan_summary: formatTodoPlanBlock(planState),
+          steps: planState.steps.map((step) => ({
+            id: step.id,
+            title: step.title,
+            owner: step.owner,
+            status: step.status,
+            linkedActionIds: step.linkedActionIds ?? [],
+          })),
+        }),
+        success: !isError,
+        errorCategory: isError ? "validation" : undefined,
+        errorMessage: isError ? message : undefined,
+      };
+    }
+
     if (call.function.name === "propose_apply_patch") {
       const patch = asString(args.patch).trim();
       if (!patch) {
@@ -2692,6 +3162,7 @@ async function executeToolCall(
         id: createActionId("gate-a-apply-patch"),
         toolCallId: call.id,
         toolName: call.function.name,
+        planStepId: planState?.activeStepId,
         type: "apply_patch",
         description: asString(
           args.description,
@@ -3122,6 +3593,7 @@ async function executeToolCall(
         id: createActionId("gate-a-apply-patch"),
         toolCallId: call.id,
         toolName: call.function.name,
+        planStepId: planState?.activeStepId,
         type: "apply_patch",
         description: asString(
           args.description,
@@ -3209,6 +3681,7 @@ async function executeToolCall(
         id: createActionId("gate-shell"),
         toolCallId: call.id,
         toolName: call.function.name,
+        planStepId: planState?.activeStepId,
         type: "shell",
         description: asString(args.description, "Execute shell command (Gate)"),
         gateRequired: true,
@@ -3553,6 +4026,7 @@ async function executeToolCallWithRetry(
   projectConfig?: CofreeRcConfig,
   allowedSubAgents?: SubAgentRole[],
   enabledToolNames?: string[],
+  planState?: TodoPlanState,
   workingMemory?: WorkingMemory,
   onSubAgentProgress?: (event: SubAgentProgressEvent) => void,
   signal?: AbortSignal,
@@ -3580,6 +4054,7 @@ async function executeToolCallWithRetry(
       projectConfig,
       allowedSubAgents,
       enabledToolNames,
+      planState,
       workingMemory,
       onSubAgentProgress,
       signal,
@@ -3914,6 +4389,7 @@ async function runNativeToolCallingLoop(
   runtime: ResolvedAgentRuntime,
   phase: PlanningSessionPhase,
   conversationHistory: LiteLLMMessage[],
+  initialPlanState: TodoPlanState,
   internalSystemNote?: string,
   blockedActionFingerprints: string[] = [],
   signal?: AbortSignal,
@@ -3928,12 +4404,13 @@ async function runNativeToolCallingLoop(
   assistantReply: string;
   requestRecords: RequestRecord[];
   proposedActions: ActionProposal[];
+  planState: TodoPlanState;
   toolTrace: ToolExecutionTrace[];
   assistantToolCalls?: LiteLLMMessage["tool_calls"];
 }> {
-  const agentToolCtx = selectAgentTools(runtime, buildAgentToolDefs(runtime));
-  const activeTools = agentToolCtx.visibleToolDefs;
-  const enabledToolNames = runtime.enabledTools;
+  const activeTools = buildAgentToolDefs(runtime);
+  const enabledToolNames = [...runtime.enabledTools, ...INTERNAL_TOOL_NAMES];
+  const planState = normalizeTodoPlanState(clonePlanState(initialPlanState));
   // Merge tool permissions: runtime (agent-specific) take priority, then .cofreerc overrides
   const basePermissions = runtime.toolPermissions as unknown as ToolPermissions;
   const toolPermissions: ToolPermissions = projectConfig?.toolPermissions
@@ -3956,6 +4433,7 @@ async function runNativeToolCallingLoop(
   const taskType = classifyTaskType(prompt);
   const agentSystemPrompt = assembleSystemPrompt(runtime, taskType);
   const runtimeContext = assembleRuntimeContext(runtime, settings.workspacePath);
+  const effectiveRuntimeContext = `${runtimeContext}\n内置计划工具: [update_plan]`;
   const requestedArtifactCount =
     phase === "default" ? estimateRequestedArtifactCount(prompt) : 0;
   const blockedFingerprints = blockedActionFingerprints
@@ -3965,7 +4443,10 @@ async function runNativeToolCallingLoop(
 
   const messages: LiteLLMMessage[] = [
     { role: "system", content: agentSystemPrompt },
-    { role: "system", content: runtimeContext },
+    { role: "system", content: effectiveRuntimeContext },
+    ...(planState.steps.length > 0
+      ? [{ role: "system" as const, content: buildTodoSystemPrompt(planState) }]
+      : []),
     ...(blockedFingerprints.length > 0
       ? [
         {
@@ -4062,6 +4543,7 @@ async function runNativeToolCallingLoop(
         assistantReply: `已达到工具调用轮次硬上限（${MAX_ABSOLUTE_TURNS} 轮），已自动终止。请检查任务复杂度或拆分为更小的子任务。`,
         requestRecords,
         proposedActions,
+        planState,
         toolTrace,
         assistantToolCalls: lastAssistantToolCalls,
       };
@@ -4073,6 +4555,7 @@ async function runNativeToolCallingLoop(
         assistantReply: `已经持续调用了 ${turn} 轮工具，任务仍在进行中。如果需要继续，请回复「继续」。`,
         requestRecords,
         proposedActions,
+        planState,
         toolTrace,
         assistantToolCalls: lastAssistantToolCalls,
       };
@@ -4097,6 +4580,7 @@ async function runNativeToolCallingLoop(
         onLoopCheckpoint({
           turn,
           proposedActions: [...proposedActions],
+          planState: clonePlanState(planState),
           toolTrace: [...toolTrace],
           assistantReply: lastReply,
         });
@@ -4264,6 +4748,7 @@ async function runNativeToolCallingLoop(
         assistantReply: finalText,
         requestRecords,
         proposedActions,
+        planState,
         toolTrace,
         assistantToolCalls:
           completion.assistantMessage.tool_calls ?? lastAssistantToolCalls,
@@ -4287,9 +4772,9 @@ async function runNativeToolCallingLoop(
 
     // Helper: execute a single tool call and collect results
     const executeSingleToolCall = async (toolCall: ToolCallRecord) => {
-      onToolCallEvent?.({
-        type: "start",
-        callId: toolCall.id,
+        onToolCallEvent?.({
+          type: "start",
+          callId: toolCall.id,
         toolName: toolCall.function.name,
         argsPreview: summarizeToolArgs(toolCall.function.name, toolCall.function.arguments),
       });
@@ -4315,6 +4800,7 @@ async function runNativeToolCallingLoop(
         projectConfig,
         runtime.allowedSubAgents,
         enabledToolNames,
+        planState,
         workingMemory,
         progressForCall,
         signal,
@@ -4464,7 +4950,8 @@ async function runNativeToolCallingLoop(
         shellDialectRepairInstruction = shellRepairHint;
       }
       if (toolResult.proposedAction) {
-        proposedActions.push(toolResult.proposedAction);
+        const linkedAction = attachActionToPlanStep(planState, toolResult.proposedAction);
+        proposedActions.push(linkedAction);
       }
       messages.push({
         role: "tool",
@@ -4566,6 +5053,7 @@ async function runNativeToolCallingLoop(
           "模型多次调用不存在的工具，已自动终止。请检查模型能力或切换至更强的模型。",
         requestRecords,
         proposedActions,
+        planState,
         toolTrace,
       };
     }
@@ -4593,6 +5081,7 @@ async function runNativeToolCallingLoop(
           "连续多轮工具调用全部失败，已自动终止。请检查工具参数或任务描述后重试。",
         requestRecords,
         proposedActions,
+        planState,
         toolTrace,
       };
     }
@@ -4734,6 +5223,7 @@ async function runNativeToolCallingLoop(
         assistantReply: completion.assistantMessage.content.trim(),
         requestRecords,
         proposedActions,
+        planState,
         toolTrace,
       };
     }
@@ -4744,29 +5234,120 @@ async function runNativeToolCallingLoop(
     assistantReply: "工具调用循环已结束。如果任务尚未完成，请回复「继续」。",
     requestRecords,
     proposedActions,
+    planState,
     toolTrace,
   };
 }
 
 function sanitizeStepsFromPrompt(prompt: string): PlanStep[] {
   const normalized = prompt.trim() || "实现用户提出的功能";
-  return [
-    {
-      id: "step-plan",
-      owner: "planner",
-      summary: `分析需求并拆解执行步骤: ${normalized}`,
-    },
-    {
-      id: "step-implement",
-      owner: "coder",
-      summary: "基于任务生成实现或回答",
-    },
-    {
-      id: "step-verify",
-      owner: "tester",
-      summary: "补充验证建议并总结风险",
-    },
-  ];
+  return normalizeTodoPlanState({
+    steps: [
+      {
+        id: "step-plan",
+        title: "分析需求",
+        owner: "planner",
+        status: "in_progress",
+        summary: `分析需求并拆解执行步骤: ${normalized}`,
+      },
+      {
+        id: "step-implement",
+        title: "执行实现",
+        owner: "coder",
+        status: "pending",
+        summary: "基于任务生成实现或回答",
+        dependsOn: ["step-plan"],
+      },
+      {
+        id: "step-verify",
+        title: "补充验证",
+        owner: "tester",
+        status: "pending",
+        summary: "补充验证建议并总结风险",
+        dependsOn: ["step-implement"],
+      },
+    ],
+    activeStepId: "step-plan",
+  }).steps;
+}
+
+function inferStepOwnerFromPlannerTask(task: PlannerOutput["tasks"][number]): PlanStep["owner"] {
+  const corpus = `${task.title} ${task.description}`.toLowerCase();
+  if (/(test|verify|validation|验证|回归|检查)/.test(corpus)) {
+    return "tester";
+  }
+  if (/(review|audit|审查)/.test(corpus)) {
+    return "reviewer";
+  }
+  if (/(debug|diagnose|排查|调试)/.test(corpus)) {
+    return "debugger";
+  }
+  if (/(analy|plan|investig|梳理|分析|确认)/.test(corpus)) {
+    return "planner";
+  }
+  return "coder";
+}
+
+function mapPlannerTasksToPlanSeed(
+  plannerOutput: PlannerOutput,
+): InitialPlanSeed | null {
+  if (!plannerOutput.tasks.length) {
+    return null;
+  }
+
+  const titleToId = new Map<string, string>();
+  const stepMeta = plannerOutput.tasks.map((task, index) => {
+    const title = sanitizeStepTitle(task.title, task.description || `步骤 ${index + 1}`);
+    const id = `step-${index + 1}-${hashText(title).slice(0, 6)}`;
+    titleToId.set(task.title.trim().toLowerCase(), id);
+    return { task, index, title, id };
+  });
+
+  const rawSteps = stepMeta.map(({ task, index, title, id }) => {
+    const summaryParts = [task.description.trim() || title];
+    if (task.targetFiles.length > 0) {
+      summaryParts.push(`目标文件: ${task.targetFiles.join(", ")}`);
+    }
+    return {
+      id,
+      title,
+      summary: summaryParts.join("\n"),
+      owner: inferStepOwnerFromPlannerTask(task),
+      status: index === 0 ? "in_progress" as const : "pending" as const,
+      dependsOn: task.dependencies
+        ?.map((dep) => titleToId.get(dep.trim().toLowerCase()) ?? null)
+        .filter((dep): dep is string => Boolean(dep)),
+    };
+  });
+
+  return {
+    ...normalizeTodoPlanState({
+      steps: rawSteps,
+      activeStepId: rawSteps[0]?.id,
+    }),
+    source: "planner",
+  };
+}
+
+function shouldUseTodoPlanning(
+  prompt: string,
+  taskType: ReturnType<typeof classifyTaskType>,
+  requestedArtifactCount: number,
+): boolean {
+  const normalized = prompt.trim();
+  if (!normalized) {
+    return false;
+  }
+  if (/(todo|拆解|分步|步骤|计划|逐项|先.+再)/i.test(normalized)) {
+    return true;
+  }
+  if (requestedArtifactCount >= 2) {
+    return true;
+  }
+  if (taskType === "code_edit" || taskType === "mixed") {
+    return normalized.length >= 50;
+  }
+  return false;
 }
 
 function buildProposedActions(
@@ -4844,13 +5425,15 @@ function buildProposedActions(
 function initializePlan(
   prompt: string,
   settings: AppSettings,
-  proposedActions: ActionProposal[]
+  proposedActions: ActionProposal[],
+  planState: TodoPlanState,
 ): OrchestrationPlan {
-  const steps = sanitizeStepsFromPrompt(prompt);
+  const normalizedPlanState = syncPlanStateWithActions(planState, proposedActions);
   return {
-    state: proposedActions.length ? "human_review" : "done",
+    state: derivePlanWorkflowState(proposedActions, normalizedPlanState),
     prompt: prompt.trim() || "实现用户提出的功能",
-    steps,
+    steps: normalizedPlanState.steps,
+    activeStepId: normalizedPlanState.activeStepId,
     proposedActions,
     workspacePath: settings.workspacePath.trim(),
   };
@@ -5081,6 +5664,15 @@ export async function runPlanningSession(
 
   let initialInternalNote = input.internalSystemNote;
   let projectConfig: CofreeRcConfig = {};
+  let initialPlanSeed: InitialPlanSeed = {
+    ...normalizeTodoPlanState({
+      steps: input.existingPlan?.steps?.length
+        ? input.existingPlan.steps
+        : [],
+      activeStepId: input.existingPlan?.activeStepId,
+    }),
+    source: input.existingPlan?.steps?.length ? "existing" : "fallback",
+  };
 
   if (
     input.settings.workspacePath
@@ -5229,6 +5821,54 @@ export async function runPlanningSession(
     }
   }
 
+  if (!input.existingPlan?.steps?.length) {
+    const taskType = classifyTaskType(normalizedPrompt);
+    const requestedArtifactCount = estimateRequestedArtifactCount(normalizedPrompt);
+    if (shouldUseTodoPlanning(normalizedPrompt, taskType, requestedArtifactCount)) {
+      initialPlanSeed = {
+        ...normalizeTodoPlanState({
+          steps: sanitizeStepsFromPrompt(normalizedPrompt),
+          activeStepId: "step-plan",
+        }),
+        source: "fallback",
+      };
+      try {
+        const plannerMemory = createWorkingMemory({
+          maxTokenBudget: 4000,
+          projectContext: initialInternalNote?.slice(0, 1200) ?? "",
+        });
+        const plannerDescription = [
+          "请先将下面的用户任务拆解为一个可执行的 todo 列表。",
+          `用户请求：${normalizedPrompt}`,
+          initialInternalNote?.trim()
+            ? `补充上下文：\n${initialInternalNote.trim().slice(0, 1500)}`
+            : "",
+          "要求：步骤必须可执行、粒度适中、顺序清晰；若有验证步骤请显式列出。",
+        ].filter(Boolean).join("\n\n");
+
+        const plannerResult = await executeSubAgentTask(
+          "planner",
+          plannerDescription,
+          input.settings.workspacePath,
+          input.settings,
+          DEFAULT_TOOL_PERMISSIONS,
+          plannerMemory,
+          undefined,
+          input.signal,
+        );
+
+        if (plannerResult.structuredOutput?.role === "planner") {
+          const plannerSeed = mapPlannerTasksToPlanSeed(plannerResult.structuredOutput.data);
+          if (plannerSeed) {
+            initialPlanSeed = plannerSeed;
+          }
+        }
+      } catch (error) {
+        console.warn("Failed to bootstrap planner todo list", error);
+      }
+    }
+  }
+
   try {
     const loopResult = await runNativeToolCallingLoop(
       normalizedPrompt,
@@ -5236,6 +5876,7 @@ export async function runPlanningSession(
       runtime,
       phase,
       historyMessages,
+      initialPlanSeed,
       initialInternalNote,
       input.blockedActionFingerprints,
       input.signal,
@@ -5286,7 +5927,8 @@ export async function runPlanningSession(
     const plan = initializePlan(
       normalizedPrompt,
       input.settings,
-      proposedActions
+      proposedActions,
+      loopResult.planState,
     );
     const assistantToolCalls =
       loopResult.assistantToolCalls ??
@@ -5325,7 +5967,12 @@ export async function runPlanningSession(
     const sessionElapsed = ((performance.now() - sessionT0) / 1000).toFixed(2);
     console.error(`[Planning] ═══ 会话失败 ═══ | ${sessionElapsed}s |`, error);
     const errorMessage = String(error || "Unknown error");
-    const fallbackPlan = initializePlan(normalizedPrompt, input.settings, []);
+    const fallbackPlan = initializePlan(
+      normalizedPrompt,
+      input.settings,
+      [],
+      initialPlanSeed,
+    );
     return {
       assistantReply: `服务员暂时无法完成本轮工具调用，请稍后重试。\n\n**错误详情**：\n\`\`\`\n${errorMessage}\n\`\`\``,
       plan: fallbackPlan,

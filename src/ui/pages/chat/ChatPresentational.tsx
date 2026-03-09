@@ -436,6 +436,137 @@ function renderAtomicStatus(actions: ApplyPatchActionProposal[]) {
   );
 }
 
+function ActionBatchMeta({ action }: { action: ActionProposal }) {
+  if (action.type !== "apply_patch" || (!action.group && !action.batchExec)) {
+    return null;
+  }
+
+  return (
+    <div className="plan-action-meta">
+      {action.group?.title ? <span>批次：{action.group.title}</span> : null}
+      {action.batchExec?.atomicEnabled ? (
+        <span>原子保护已启用</span>
+      ) : action.batchExec ? (
+        <span>原子保护已降级</span>
+      ) : null}
+      {action.batchExec?.atomicRollbackAttempted ? (
+        <span>
+          回滚
+          {action.batchExec.atomicRollbackSuccess ? "成功" : "失败"}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function PlanActionCard({
+  action,
+  plan,
+  messageId,
+  executingActionId,
+  onPlanUpdate,
+  onApprove,
+  onRetry,
+  onReject,
+  onComment,
+}: {
+  action: ActionProposal;
+  plan: OrchestrationPlan;
+  messageId: string;
+  executingActionId: string;
+  onPlanUpdate: (
+    messageId: string,
+    updater: (p: OrchestrationPlan) => OrchestrationPlan,
+  ) => void;
+  onApprove: (
+    messageId: string,
+    actionId: string,
+    plan: OrchestrationPlan,
+  ) => Promise<void>;
+  onRetry: (
+    messageId: string,
+    actionId: string,
+    plan: OrchestrationPlan,
+  ) => Promise<void>;
+  onReject: (messageId: string, actionId: string) => void;
+  onComment: (messageId: string, actionId: string) => void;
+}) {
+  return (
+    <li className="action-item">
+      <div className="action-header">
+        <h4 className="action-title">{action.type}</h4>
+        <span className={actionStatusBadgeClass(action.status)}>
+          {action.status.toUpperCase()}
+          {action.executed ? " · Executed" : ""}
+        </span>
+      </div>
+
+      <ActionBatchMeta action={action} />
+
+      <ActionPayloadFields
+        action={action}
+        messageId={messageId}
+        onPlanUpdate={onPlanUpdate}
+      />
+
+      {action.executionResult && (
+        <p
+          className={
+            action.executionResult.success
+              ? "status-success"
+              : "status-error"
+          }
+        >
+          {action.executionResult.message}
+        </p>
+      )}
+
+      <div className="action-footer">
+        {canApproveAction(action) && (
+          <button
+            className="btn btn-primary btn-sm"
+            disabled={Boolean(executingActionId)}
+            onClick={() => void onApprove(messageId, action.id, plan)}
+            type="button"
+          >
+            {executingActionId === action.id ? "执行中…" : "✓ 批准"}
+          </button>
+        )}
+        {canRetryAction(action) && (
+          <button
+            className="btn btn-primary btn-sm"
+            disabled={Boolean(executingActionId)}
+            onClick={() => void onRetry(messageId, action.id, plan)}
+            type="button"
+          >
+            {executingActionId === action.id ? "重试中…" : "↻ 重试命令"}
+          </button>
+        )}
+        <button
+          className="btn btn-ghost btn-sm"
+          disabled={
+            !canReviewAction(action) || Boolean(executingActionId)
+          }
+          onClick={() => onReject(messageId, action.id)}
+          type="button"
+        >
+          ✕ 拒绝
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
+          disabled={
+            !canReviewAction(action) || Boolean(executingActionId)
+          }
+          onClick={() => onComment(messageId, action.id)}
+          type="button"
+        >
+          💬 备注
+        </button>
+      </div>
+    </li>
+  );
+}
+
 export function InlinePlan({
   plan,
   messageId,
@@ -472,17 +603,39 @@ export function InlinePlan({
 }) {
   const safePlan: OrchestrationPlan = {
     ...plan,
-    steps: Array.isArray(plan.steps) ? plan.steps : [],
+    steps: Array.isArray(plan.steps)
+      ? plan.steps.map((step, index) => ({
+        ...step,
+        title:
+          typeof step.title === "string" && step.title.trim()
+            ? step.title
+            : step.summary || `步骤 ${index + 1}`,
+        summary: step.summary || step.title || `步骤 ${index + 1}`,
+        status: step.status || "pending",
+        linkedActionIds: Array.isArray(step.linkedActionIds)
+          ? step.linkedActionIds
+          : [],
+      }))
+      : [],
     proposedActions: Array.isArray(plan.proposedActions)
       ? plan.proposedActions
       : [],
   };
 
-  const allResolved =
-    safePlan.proposedActions.length > 0 &&
-    safePlan.proposedActions.every(
-      (action) => action.status !== "pending" && action.status !== "running",
+  const allStepsResolved =
+    safePlan.steps.length > 0 &&
+    safePlan.steps.every(
+      (step) =>
+        step.status === "completed" ||
+        step.status === "failed" ||
+        step.status === "skipped",
     );
+  const allResolved =
+    (safePlan.proposedActions.length === 0 ||
+      safePlan.proposedActions.every(
+        (action) => action.status !== "pending" && action.status !== "running",
+      )) &&
+    (safePlan.steps.length === 0 || allStepsResolved);
 
   const [expanded, setExpanded] = useState(!allResolved);
 
@@ -506,34 +659,37 @@ export function InlinePlan({
   const pendingCount = safePlan.proposedActions.filter(
     (action) => action.status === "pending",
   ).length;
+  const todoCompletedCount = safePlan.steps.filter(
+    (step) => step.status === "completed" || step.status === "skipped",
+  ).length;
+  const todoBlockedCount = safePlan.steps.filter(
+    (step) => step.status === "blocked" || step.status === "failed",
+  ).length;
+  const todoInProgressCount = safePlan.steps.filter(
+    (step) => step.status === "in_progress",
+  ).length;
+  const actionsByStepId = safePlan.proposedActions.reduce((acc, action) => {
+    if (!action.planStepId) {
+      return acc;
+    }
+    const current = acc.get(action.planStepId) ?? [];
+    current.push(action);
+    acc.set(action.planStepId, current);
+    return acc;
+  }, new Map<string, ActionProposal[]>());
+  const actionCountByStepId = Array.from(actionsByStepId.entries()).reduce(
+    (acc, [stepId, actions]) => acc.set(stepId, actions.length),
+    new Map<string, number>(),
+  );
 
   const stateLabel = allResolved ? "已完成" : safePlan.state;
   const pendingPatchActions = safePlan.proposedActions.filter(
     (action): action is ApplyPatchActionProposal =>
       action.status === "pending" && action.type === "apply_patch",
   );
-
-  const groupIdToPatchActions = new Map<string, ApplyPatchActionProposal[]>();
-  for (const action of pendingPatchActions) {
-    const groupId = action.group?.groupId;
-    if (!groupId) continue;
-    const list = groupIdToPatchActions.get(groupId) ?? [];
-    list.push(action);
-    groupIdToPatchActions.set(groupId, list);
-  }
-
-  const groupedPatchActions = Array.from(groupIdToPatchActions.entries())
-    .map(([groupId, actions]) => ({ groupId, actions }))
-    .filter((group) => group.actions.length > 1);
-
-  const ungroupedActions = safePlan.proposedActions.filter((action) => {
-    if (action.type !== "apply_patch") return true;
-    return (
-      !action.group?.groupId ||
-      !(groupIdToPatchActions.get(action.group.groupId)?.length ?? 0) ||
-      (groupIdToPatchActions.get(action.group.groupId)?.length ?? 0) < 2
-    );
-  });
+  const unlinkedActions = safePlan.proposedActions.filter(
+    (action) => !action.planStepId,
+  );
 
   return (
     <div
@@ -562,8 +718,19 @@ export function InlinePlan({
         <p className="inline-plan-title" style={{ margin: 0 }}>
           执行计划 · {stateLabel}
         </p>
-        {!expanded && safePlan.proposedActions.length > 0 && (
+        {!expanded && (safePlan.proposedActions.length > 0 || safePlan.steps.length > 0) && (
           <span className="plan-summary-badges">
+            {safePlan.steps.length > 0 && (
+              <span className="plan-badge">
+                {todoCompletedCount}/{safePlan.steps.length} 已完成
+              </span>
+            )}
+            {todoInProgressCount > 0 && (
+              <span className="plan-badge plan-badge-pending">{todoInProgressCount} 进行中</span>
+            )}
+            {todoBlockedCount > 0 && (
+              <span className="plan-badge plan-badge-failed">{todoBlockedCount} 阻塞</span>
+            )}
             {approvedCount > 0 && (
               <span className="plan-badge plan-badge-approved">✓ {approvedCount}</span>
             )}
@@ -581,141 +748,66 @@ export function InlinePlan({
       </div>
 
       {expanded && safePlan.steps.length > 0 && (
-        <ol
-          style={{
-            margin: 0,
-            paddingLeft: "1.4em",
-            display: "flex",
-            flexDirection: "column",
-            gap: "4px",
-          }}
-        >
-          {safePlan.steps.map((step) => (
-            <li key={step.id} className="plan-item">
-              <span style={{ color: "var(--text-2)", fontSize: "14px" }}>
-                {step.summary}
-              </span>
-            </li>
-          ))}
+        <ol className="plan-step-list">
+          {safePlan.steps.map((step) => {
+            const stepActions = actionsByStepId.get(step.id) ?? [];
+            return (
+              <li
+                key={step.id}
+                className={`plan-item plan-step plan-step-${step.status}${step.id === safePlan.activeStepId ? " is-active" : ""}`}
+              >
+                <div className="plan-step-header">
+                  <span className="plan-step-title">
+                    {step.title}
+                    {step.id === safePlan.activeStepId ? " · 当前" : ""}
+                  </span>
+                  <span className={`plan-badge plan-step-status plan-step-status-${step.status}`}>
+                    {step.status}
+                  </span>
+                </div>
+                <div className="plan-step-summary">{step.summary}</div>
+                <div className="plan-step-meta">
+                  <span>{step.owner}</span>
+                  {actionCountByStepId.get(step.id) ? (
+                    <span>{actionCountByStepId.get(step.id)} 个关联动作</span>
+                  ) : null}
+                  {step.dependsOn?.length ? <span>依赖 {step.dependsOn.length} 项</span> : null}
+                </div>
+                {step.note?.trim() && (
+                  <div className="plan-step-note">{step.note.trim()}</div>
+                )}
+                {stepActions.length > 0 && (
+                  <div className="plan-step-actions">
+                    <div className="plan-section-label">
+                      关联动作 · {stepActions.length}
+                    </div>
+                    <ul className="action-list plan-step-action-list">
+                      {stepActions.map((action) => (
+                        <PlanActionCard
+                          key={action.id}
+                          action={action}
+                          plan={safePlan}
+                          messageId={messageId}
+                          executingActionId={executingActionId}
+                          onPlanUpdate={onPlanUpdate}
+                          onApprove={onApprove}
+                          onRetry={onRetry}
+                          onReject={onReject}
+                          onComment={onComment}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ol>
       )}
 
       {expanded && safePlan.proposedActions.length > 0 && (
         <>
-          {groupedPatchActions.map((group) => {
-            const title = group.actions[0].group?.title ?? "批量变更";
-            const affectedFiles = getAffectedFiles(group.actions);
-            const rollbackMeta = group.actions[0].batchExec;
-            const rollbackBadge = rollbackMeta?.atomicRollbackAttempted
-              ? rollbackMeta.atomicRollbackSuccess
-                ? " · 回滚成功"
-                : " · 回滚失败"
-              : "";
-
-            return (
-              <div key={group.groupId} style={{ marginBottom: "8px" }}>
-                <div
-                  style={{
-                    fontSize: "13px",
-                    color: "var(--text-3)",
-                    marginBottom: "6px",
-                    padding: "8px 12px",
-                    background: "var(--surface-2)",
-                    borderRadius: "8px",
-                    lineHeight: "1.6",
-                    border: "1px solid var(--border-1)",
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: "8px",
-                    }}
-                  >
-                    <div style={{ minWidth: 0 }}>
-                      <strong>{title}</strong>
-                      <span style={{ marginLeft: "6px", opacity: 0.7 }}>
-                        ({group.actions.length} 个 patch)
-                      </span>
-                      {renderAtomicStatus(group.actions)}
-                      {rollbackBadge && (
-                        <span style={{ marginLeft: "6px", opacity: 0.8 }}>
-                          {rollbackBadge}
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
-                      <button
-                        className="btn btn-primary btn-sm"
-                        disabled={Boolean(executingActionId)}
-                        onClick={() => void onApproveAll(messageId, plan)}
-                        type="button"
-                      >
-                        ✓ 批量批准
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        disabled={Boolean(executingActionId)}
-                        onClick={() => onRejectAll(messageId)}
-                        type="button"
-                      >
-                        ✕ 批量拒绝
-                      </button>
-                    </div>
-                  </div>
-
-                  {affectedFiles.length > 0 && (
-                    <div style={{ marginTop: "6px" }}>
-                      <div style={{ marginBottom: "4px" }}>
-                        涉及 {affectedFiles.length} 个文件
-                      </div>
-                      <div>
-                        {affectedFiles.map((file) => (
-                          <span
-                            key={file}
-                            style={{
-                              display: "inline-block",
-                              marginRight: "8px",
-                              fontFamily: "monospace",
-                              fontSize: "12px",
-                            }}
-                          >
-                            📄 {file}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <details style={{ marginTop: "8px" }}>
-                    <summary style={{ cursor: "pointer" }}>
-                      展开查看每个 patch
-                    </summary>
-                    <ul className="action-list" style={{ marginTop: "8px" }}>
-                      {group.actions.map((action) => (
-                        <li key={action.id} className="action-item">
-                          <div className="action-header">
-                            <h4 className="action-title">{action.type}</h4>
-                            <span className={actionStatusBadgeClass(action.status)}>
-                              {action.status.toUpperCase()}
-                            </span>
-                          </div>
-                          <ActionPayloadFields
-                            action={action}
-                            messageId={messageId}
-                            onPlanUpdate={onPlanUpdate}
-                          />
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                </div>
-              </div>
-            );
-          })}
-
-          {pendingCount > 1 && groupedPatchActions.length === 0 && (
+          {pendingCount > 1 && (
             <div style={{ marginBottom: "8px" }}>
               {(() => {
                 const batchAffectedFiles = getAffectedFiles(pendingPatchActions);
@@ -740,6 +832,7 @@ export function InlinePlan({
                           (原子执行：全部成功或全部回滚)
                         </span>
                       )}
+                      {pendingPatchActions.length > 1 && renderAtomicStatus(pendingPatchActions)}
                       <div style={{ marginTop: "2px" }}>
                         {batchAffectedFiles.map((file) => (
                           <span
@@ -763,7 +856,7 @@ export function InlinePlan({
                 <button
                   className="btn btn-primary btn-sm"
                   disabled={Boolean(executingActionId)}
-                  onClick={() => void onApproveAll(messageId, plan)}
+                  onClick={() => void onApproveAll(messageId, safePlan)}
                   type="button"
                 >
                   ✓ 全部批准 ({pendingCount})
@@ -780,80 +873,29 @@ export function InlinePlan({
             </div>
           )}
 
-          <ul className="action-list">
-            {ungroupedActions.map((action) => (
-              <li key={action.id} className="action-item">
-                <div className="action-header">
-                  <h4 className="action-title">{action.type}</h4>
-                  <span className={actionStatusBadgeClass(action.status)}>
-                    {action.status.toUpperCase()}
-                    {action.executed ? " · Executed" : ""}
-                  </span>
-                </div>
-
-                <ActionPayloadFields
-                  action={action}
-                  messageId={messageId}
-                  onPlanUpdate={onPlanUpdate}
-                />
-
-                {action.executionResult && (
-                  <p
-                    className={
-                      action.executionResult.success
-                        ? "status-success"
-                        : "status-error"
-                    }
-                  >
-                    {action.executionResult.message}
-                  </p>
-                )}
-
-                <div className="action-footer">
-                  {canApproveAction(action) && (
-                    <button
-                      className="btn btn-primary btn-sm"
-                      disabled={Boolean(executingActionId)}
-                      onClick={() => void onApprove(messageId, action.id, plan)}
-                      type="button"
-                    >
-                      {executingActionId === action.id ? "执行中…" : "✓ 批准"}
-                    </button>
-                  )}
-                  {canRetryAction(action) && (
-                    <button
-                      className="btn btn-primary btn-sm"
-                      disabled={Boolean(executingActionId)}
-                      onClick={() => void onRetry(messageId, action.id, plan)}
-                      type="button"
-                    >
-                      {executingActionId === action.id ? "重试中…" : "↻ 重试命令"}
-                    </button>
-                  )}
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    disabled={
-                      !canReviewAction(action) || Boolean(executingActionId)
-                    }
-                    onClick={() => onReject(messageId, action.id)}
-                    type="button"
-                  >
-                    ✕ 拒绝
-                  </button>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    disabled={
-                      !canReviewAction(action) || Boolean(executingActionId)
-                    }
-                    onClick={() => onComment(messageId, action.id)}
-                    type="button"
-                  >
-                    💬 备注
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
+          {unlinkedActions.length > 0 && (
+            <div className="plan-action-section">
+              <div className="plan-section-label">
+                未关联动作 · {unlinkedActions.length}
+              </div>
+              <ul className="action-list">
+                {unlinkedActions.map((action) => (
+                  <PlanActionCard
+                    key={action.id}
+                    action={action}
+                    plan={safePlan}
+                    messageId={messageId}
+                    executingActionId={executingActionId}
+                    onPlanUpdate={onPlanUpdate}
+                    onApprove={onApprove}
+                    onRetry={onRetry}
+                    onReject={onReject}
+                    onComment={onComment}
+                  />
+                ))}
+              </ul>
+            </div>
+          )}
         </>
       )}
     </div>

@@ -15,9 +15,17 @@ import type {
   ActionExecutionResult,
   ActionProposal,
   OrchestrationPlan,
+  PlanStep,
   WorkflowState,
 } from "./types";
-import { actionFingerprint } from "./planningService";
+import {
+  actionFingerprint,
+  derivePlanWorkflowState,
+  setActivePlanStep,
+  setPlanStepStatus,
+  syncPlanStateWithActions,
+  type TodoPlanState,
+} from "./planningService";
 
 interface PatchApplyResult {
   success: boolean;
@@ -105,6 +113,53 @@ function nextShellRetryAttempt(action: ActionProposal): number {
     : 1;
 }
 
+function createPlanState(plan: OrchestrationPlan): TodoPlanState {
+  return {
+    steps: plan.steps,
+    activeStepId: plan.activeStepId,
+  };
+}
+
+function appendPlanStepNote(step: PlanStep | undefined, note?: string): void {
+  if (!step) {
+    return;
+  }
+  const normalized = note?.trim();
+  if (!normalized) {
+    return;
+  }
+  step.note = step.note?.trim()
+    ? `${step.note.trim()}\n${normalized}`
+    : normalized;
+}
+
+function applyPlanStateUpdate(
+  plan: OrchestrationPlan,
+  nextActions: ActionProposal[],
+  updater?: (planState: TodoPlanState) => void,
+): OrchestrationPlan {
+  const planState = syncPlanStateWithActions(
+    createPlanState(plan),
+    nextActions,
+    { promoteNextRunnable: false },
+  );
+  updater?.(planState);
+  return {
+    ...plan,
+    state: derivePlanWorkflowState(nextActions, planState),
+    steps: planState.steps,
+    activeStepId: planState.activeStepId,
+    proposedActions: nextActions,
+  };
+}
+
+function linkedPlanStep(planState: TodoPlanState, action?: ActionProposal): PlanStep | undefined {
+  if (!action?.planStepId) {
+    return undefined;
+  }
+  return planState.steps.find((step) => step.id === action.planStepId);
+}
+
 export function retryFailedShellAction(
   plan: OrchestrationPlan,
   actionId: string
@@ -130,16 +185,34 @@ export function retryFailedShellAction(
     },
   };
 
-  return {
-    ...plan,
-    state: "human_review",
-    proposedActions: plan.proposedActions.map((action) =>
-      action.id === actionId ? retryAction : action
-    ),
-  };
+  const nextActions = plan.proposedActions.map((action) =>
+    action.id === actionId ? retryAction : action
+  );
+
+  return applyPlanStateUpdate(plan, nextActions, (planState) => {
+    if (retryAction.planStepId) {
+      setActivePlanStep(planState, retryAction.planStepId);
+      appendPlanStepNote(
+        linkedPlanStep(planState, retryAction),
+        "已重新创建重试动作，等待再次执行。",
+      );
+    }
+  });
 }
 
-export function deriveWorkflowState(actions: ActionProposal[]): WorkflowState {
+export function deriveWorkflowState(
+  actions: ActionProposal[],
+  planState?: TodoPlanState,
+): WorkflowState {
+  if (planState) {
+    const syncedPlanState = syncPlanStateWithActions(
+      planState,
+      actions,
+      { promoteNextRunnable: false },
+    );
+    return derivePlanWorkflowState(actions, syncedPlanState);
+  }
+
   if (actions.some((action) => action.status === "running")) {
     return "executing";
   }
@@ -148,8 +221,7 @@ export function deriveWorkflowState(actions: ActionProposal[]): WorkflowState {
     actions.some(
       (action) =>
         action.status === "pending" ||
-        action.status === "failed" ||
-        action.status === "rejected"
+        action.status === "failed"
     )
   ) {
     return "human_review";
@@ -168,11 +240,12 @@ export function markActionRunning(
     executed: false,
   }));
 
-  return {
-    ...plan,
-    state: "executing",
-    proposedActions: nextActions,
-  };
+  const nextAction = nextActions.find((action) => action.id === actionId);
+  return applyPlanStateUpdate(plan, nextActions, (planState) => {
+    if (nextAction?.planStepId) {
+      setActivePlanStep(planState, nextAction.planStepId);
+    }
+  });
 }
 
 export function rejectAction(
@@ -196,11 +269,12 @@ export function rejectAction(
     executionResult: createExecutionResult(false, normalizedReason),
   }));
 
-  return {
-    ...plan,
-    state: deriveWorkflowState(nextActions),
-    proposedActions: nextActions,
-  };
+  const nextAction = nextActions.find((action) => action.id === actionId);
+  return applyPlanStateUpdate(plan, nextActions, (planState) => {
+    if (nextAction?.planStepId) {
+      setPlanStepStatus(planState, nextAction.planStepId, "blocked", normalizedReason);
+    }
+  });
 }
 
 export function commentAction(
@@ -228,11 +302,10 @@ export function commentAction(
     }),
   }));
 
-  return {
-    ...plan,
-    state: deriveWorkflowState(nextActions),
-    proposedActions: nextActions,
-  };
+  const nextAction = nextActions.find((action) => action.id === actionId);
+  return applyPlanStateUpdate(plan, nextActions, (planState) => {
+    appendPlanStepNote(linkedPlanStep(planState, nextAction), normalizedComment);
+  });
 }
 
 export function updateActionPayload(
@@ -306,11 +379,20 @@ export function rejectAllPendingActions(
     };
   });
 
-  return {
-    ...plan,
-    state: deriveWorkflowState(nextActions),
-    proposedActions: nextActions,
-  };
+  return applyPlanStateUpdate(plan, nextActions, (planState) => {
+    const blockedStepIds = new Set(
+      nextActions
+        .filter(
+          (action) =>
+            (action.status === "rejected" || action.status === "failed") &&
+            action.planStepId,
+        )
+        .map((action) => action.planStepId as string),
+    );
+    for (const stepId of blockedStepIds) {
+      setPlanStepStatus(planState, stepId, "blocked", normalizedReason);
+    }
+  });
 }
 
 export async function approveAllPendingActions(
@@ -457,11 +539,21 @@ export async function approveAllPendingActions(
           }),
         };
       });
-      currentPlan = {
-        ...currentPlan,
-        state: deriveWorkflowState(nextActions),
-        proposedActions: nextActions,
-      };
+      currentPlan = applyPlanStateUpdate(currentPlan, nextActions, (planState) => {
+        const failedStepIds = new Set(
+          nextActions
+            .filter(
+              (action) =>
+                action.type === "apply_patch" &&
+                pendingActions.some((pendingAction) => pendingAction.id === action.id) &&
+                action.planStepId,
+            )
+            .map((action) => action.planStepId as string),
+        );
+        for (const stepId of failedStepIds) {
+          setPlanStepStatus(planState, stepId, "failed", rollbackMsg);
+        }
+      });
     } catch {
       // Rollback invocation failed — leave current state as-is
       currentPlan = {
@@ -609,9 +701,19 @@ export async function approveAction(
     details: result.metadata ?? {},
   });
 
-  return {
-    ...plan,
-    state: deriveWorkflowState(nextActions),
-    proposedActions: nextActions,
-  };
+  const nextAction = nextActions.find((entry) => entry.id === actionId);
+  return applyPlanStateUpdate(plan, nextActions, (planState) => {
+    if (!nextAction?.planStepId) {
+      return;
+    }
+    if (result.success) {
+      setActivePlanStep(planState, nextAction.planStepId);
+      appendPlanStepNote(
+        linkedPlanStep(planState, nextAction),
+        `审批动作执行成功：${result.message}`,
+      );
+      return;
+    }
+    setPlanStepStatus(planState, nextAction.planStepId, "failed", result.message);
+  });
 }

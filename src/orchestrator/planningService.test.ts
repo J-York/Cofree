@@ -171,6 +171,9 @@ describe("planningService approval-flow repair", () => {
         const shellTool = firstRequestBody.tools.find(
             (tool) => tool.function.name === "propose_shell",
         );
+        const planTool = firstRequestBody.tools.find(
+            (tool) => tool.function.name === "update_plan",
+        );
 
         expect(shellTool?.function.description).toContain("PowerShell");
         expect(shellTool?.function.description).toContain("New-Item -ItemType Directory -Force");
@@ -178,6 +181,61 @@ describe("planningService approval-flow repair", () => {
         expect(shellTool?.function.parameters.properties.shell.description).toContain(
             "On Windows prefer PowerShell syntax",
         );
+        expect(planTool?.function.description).toContain("internal todo plan");
+    });
+
+    it("updates todo plan state through the internal update_plan tool", async () => {
+        const planState = {
+            steps: [
+                {
+                    id: "step-plan",
+                    title: "分析需求",
+                    summary: "分析需求并拆解",
+                    owner: "planner",
+                    status: "in_progress" as const,
+                },
+                {
+                    id: "step-implement",
+                    title: "执行实现",
+                    summary: "执行代码改动",
+                    owner: "coder",
+                    status: "pending" as const,
+                    dependsOn: ["step-plan"],
+                },
+            ],
+            activeStepId: "step-plan",
+        };
+
+        const result = await planningServiceTestUtils.executeToolCall(
+            {
+                id: "tool-plan-1",
+                type: "function",
+                function: {
+                    name: "update_plan",
+                    arguments: JSON.stringify({
+                        operation: "complete",
+                        step_id: "step-plan",
+                        note: "需求已分析完成",
+                    }),
+                },
+            },
+            "d:/Code/cofree",
+            DEFAULT_SETTINGS.toolPermissions,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            planState as any,
+        );
+
+        const payload = JSON.parse(result.content) as Record<string, unknown>;
+
+        expect(result.success).toBe(true);
+        expect(planState.steps[0].status).toBe("completed");
+        expect((planState.steps[0] as any).note).toContain("需求已分析完成");
+        expect(planState.steps[1].status).toBe("in_progress");
+        expect(planState.activeStepId).toBe("step-implement");
+        expect(payload.active_step_id).toBe("step-implement");
     });
 
     it("returns explicit pending-approval semantics for gated shell proposals", async () => {
@@ -468,6 +526,7 @@ describe("planningService approval-flow repair", () => {
             undefined,   // projectConfig
             undefined,   // allowedSubAgents
             undefined,   // enabledToolNames
+            undefined,   // planState
             wm,          // workingMemory
             undefined,   // onSubAgentProgress
             undefined,   // signal
@@ -523,6 +582,7 @@ describe("planningService approval-flow repair", () => {
             },
             "d:/Code/cofree",
             DEFAULT_SETTINGS.toolPermissions,
+            undefined,
             undefined,
             undefined,
             undefined,

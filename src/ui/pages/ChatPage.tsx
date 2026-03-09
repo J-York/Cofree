@@ -723,6 +723,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
               visibleUserMessage: false,
               isContinuation: true,
               internalSystemNote: decision.internalSystemNote,
+              existingPlan: plan,
             }),
           100
         );
@@ -892,6 +893,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         contextAttachments,
         isContinuation: options.isContinuation,
         internalSystemNote: options.internalSystemNote,
+        existingPlan: options.existingPlan,
         blockedActionFingerprints: visibleUserMessage
           ? []
           : messagesRef.current.flatMap((message) =>
@@ -991,11 +993,15 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         durationMs: Date.now() - new Date(now).getTime(),
       });
       guardedSetTokens(result.tokenUsage.inputTokens + result.tokenUsage.outputTokens);
-      if (result.plan.proposedActions.length > 0) {
-        session.setWorkflowPhase("human_review");
-      } else {
-        session.setWorkflowPhase("done");
-      }
+      session.setWorkflowPhase(
+        result.plan.state === "human_review"
+          ? "human_review"
+          : result.plan.state === "executing"
+            ? "executing"
+            : result.plan.state === "planning"
+              ? "planning"
+              : "done"
+      );
 
       void saveWorkflowCheckpoint(
         getChatSessionId(),
@@ -1010,9 +1016,13 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       );
 
       guardedSetNote(
-        result.plan.proposedActions.length > 0
+        result.plan.state === "human_review"
           ? "已进入 HITL 审批阶段，请逐项审批"
-          : "回复完成"
+          : result.plan.steps.some(
+            (step) => step.status !== "completed" && step.status !== "skipped"
+          )
+            ? "todo 已更新"
+            : "回复完成"
       );
     } catch (error) {
       if (controller.signal.aborted) {
@@ -1537,7 +1547,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                           <ToolTracePanel traces={message.toolTrace!} />
                         )}
                       {message.plan &&
-                        message.plan.proposedActions.length > 0 && (
+                        (message.plan.proposedActions.length > 0 ||
+                          message.plan.steps.length > 0) && (
                           <InlinePlan
                             plan={message.plan}
                             messageId={message.id}

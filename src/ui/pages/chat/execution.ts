@@ -8,7 +8,13 @@ import {
 import type { ModelSelection } from "../../../lib/modelSelection";
 import type { Conversation } from "../../../lib/conversationStore";
 import type { ChatContextAttachment } from "../../../lib/contextAttachments";
-import { actionFingerprint, type PlanningSessionPhase } from "../../../orchestrator/planningService";
+import {
+  actionFingerprint,
+  derivePlanWorkflowState,
+  setPlanStepStatus,
+  syncPlanStateWithActions,
+  type PlanningSessionPhase,
+} from "../../../orchestrator/planningService";
 import type { ChatAgentDefinition } from "../../../agents/types";
 import { createAgentBinding } from "../../../agents/resolveAgentRuntime";
 import type { OrchestrationPlan } from "../../../orchestrator/types";
@@ -18,6 +24,7 @@ export interface RunChatCycleOptions {
   internalSystemNote?: string;
   contextAttachments?: ChatContextAttachment[];
   phase?: PlanningSessionPhase;
+  existingPlan?: OrchestrationPlan | null;
 }
 
 export function resolveConversationModelSelection(
@@ -174,8 +181,26 @@ export function markActionExecutionError(
         status: "failed" as const,
         executed: false,
         executionResult: { success: false, message: reason, timestamp },
-      }
+        }
       : action,
   );
-  return { ...plan, state: "human_review", proposedActions: nextActions };
+  const nextPlanState = syncPlanStateWithActions(
+    {
+      steps: plan.steps,
+      activeStepId: plan.activeStepId,
+    },
+    nextActions,
+    { promoteNextRunnable: false },
+  );
+  const nextAction = nextActions.find((action) => action.id === actionId);
+  if (nextAction?.planStepId) {
+    setPlanStepStatus(nextPlanState, nextAction.planStepId, "failed", reason);
+  }
+  return {
+    ...plan,
+    state: derivePlanWorkflowState(nextActions, nextPlanState),
+    steps: nextPlanState.steps,
+    activeStepId: nextPlanState.activeStepId,
+    proposedActions: nextActions,
+  };
 }
