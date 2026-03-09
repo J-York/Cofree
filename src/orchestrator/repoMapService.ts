@@ -10,6 +10,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { estimateTokensFromText } from "./contextBudget";
 import { SummaryCache } from "../lib/summaryCache";
 
+export interface RepoMapGenerationOptions {
+  taskDescription?: string;
+  prioritizedPaths?: string[];
+  maxFiles?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Types matching Rust DTOs
 // ---------------------------------------------------------------------------
@@ -34,11 +40,53 @@ interface WorkspaceStructureResult {
   truncated: boolean;
 }
 
+interface RankedFileStructure extends FileStructure {
+  score: number;
+  keywordHits: string[];
+  focusMatch: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Cache: reuse repo-map across turns within same workspace, 10-minute TTL
 // ---------------------------------------------------------------------------
 
 const repoMapCache = new SummaryCache({ ttlMs: 10 * 60 * 1000, maxEntries: 20 });
+
+const TASK_KEYWORD_LIMIT = 10;
+const DEFAULT_MAX_FILES = 80;
+const ENTRY_FILE_NAMES = new Set([
+  "index",
+  "main",
+  "app",
+  "server",
+  "cli",
+  "api",
+  "router",
+  "routes",
+  "layout",
+  "root",
+]);
+const CONFIG_FILE_NAMES = new Set([
+  "package.json",
+  "tsconfig.json",
+  "vite.config.ts",
+  "vite.config.js",
+  "cargo.toml",
+  "pyproject.toml",
+  "requirements.txt",
+  "readme.md",
+]);
+const LOW_SIGNAL_DIRECTORIES = ["docs/", "test/", "tests/", "fixtures/", "examples/"];
+const HIGH_SIGNAL_DIRECTORIES = ["src/", "app/", "lib/", "packages/", "server/", "client/"];
+const ENGLISH_STOPWORDS = new Set([
+  "add", "build", "change", "check", "code", "create", "current", "debug",
+  "feature", "file", "files", "fix", "improve", "issue", "make", "project",
+  "refactor", "review", "run", "start", "task", "test", "tests", "update", "work",
+]);
+const CJK_STOPWORDS = new Set([
+  "开始", "实现", "修改", "优化", "当前", "代码", "文件", "项目", "问题",
+  "测试", "检查", "功能", "现在", "需要", "一个", "这个", "那个", "对齐",
+]);
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -56,10 +104,19 @@ export async function generateRepoMap(
   workspacePath: string,
   ignorePatterns: string[] | null,
   tokenBudget: number,
+  options?: RepoMapGenerationOptions,
 ): Promise<string> {
   if (!workspacePath.trim() || tokenBudget <= 0) return "";
 
-  const cacheKey = `repomap:${workspacePath}:${tokenBudget}`;
+  const normalizedOptions = normalizeRepoMapOptions(options);
+  const cacheKey = [
+    "repomap",
+    workspacePath,
+    String(tokenBudget),
+    String(normalizedOptions.maxFiles ?? "all"),
+    normalizedOptions.taskKeywords.join(","),
+    normalizedOptions.prioritizedPaths.join(","),
+  ].join(":");
   const cached = repoMapCache.get(cacheKey);
   if (cached !== null) return cached;
 
@@ -77,7 +134,7 @@ export async function generateRepoMap(
       return "";
     }
 
-    const formatted = formatRepoMap(result, tokenBudget);
+    const formatted = formatRepoMap(result, tokenBudget, normalizedOptions);
     repoMapCache.set(cacheKey, formatted);
     return formatted;
   } catch (e) {
@@ -111,7 +168,177 @@ function formatSymbolCompact(symbol: SymbolInfo): string {
     module: "mod",
   };
   const prefix = kindPrefixMap[symbol.kind.toLowerCase()] ?? symbol.kind.charAt(0).toLowerCase();
-  return `${prefix}:${symbol.name}`;
+  const signature = compactSignature(symbol);
+  return `${prefix}:${signature || symbol.name}`;
+}
+
+function compactSignature(symbol: SymbolInfo): string {
+  const raw = symbol.signature.trim();
+  if (!raw) {
+    return symbol.name;
+  }
+
+  const flattened = raw.replace(/\s+/g, " ").trim();
+  const signatureOnly = flattened.includes(symbol.name)
+    ? flattened
+    : `${symbol.name}${flattened.startsWith("(") ? "" : " "}${flattened}`;
+
+  return signatureOnly.slice(0, 72);
+}
+
+function normalizePath(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+}
+
+function basename(value: string): string {
+  const normalized = value.replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? normalized;
+}
+
+function extractTaskKeywords(text: string | undefined): string[] {
+  if (!text) {
+    return [];
+  }
+
+  const tokens = text.toLowerCase().match(/[a-z][a-z0-9._-]{2,}|[\u4e00-\u9fff]{2,}/g) ?? [];
+  const seen = new Set<string>();
+  const keywords: string[] = [];
+
+  for (const token of tokens) {
+    if (
+      ENGLISH_STOPWORDS.has(token) ||
+      CJK_STOPWORDS.has(token) ||
+      seen.has(token)
+    ) {
+      continue;
+    }
+    seen.add(token);
+    keywords.push(token);
+    if (keywords.length >= TASK_KEYWORD_LIMIT) {
+      break;
+    }
+  }
+
+  return keywords;
+}
+
+function normalizeRepoMapOptions(options: RepoMapGenerationOptions | undefined): {
+  taskKeywords: string[];
+  prioritizedPaths: string[];
+  maxFiles?: number;
+} {
+  const prioritizedPaths = (options?.prioritizedPaths ?? [])
+    .map(normalizePath)
+    .filter(Boolean)
+    .slice(0, 20);
+  const maxFiles =
+    typeof options?.maxFiles === "number" && Number.isFinite(options.maxFiles)
+      ? Math.max(1, Math.floor(options.maxFiles))
+      : undefined;
+
+  return {
+    taskKeywords: extractTaskKeywords(options?.taskDescription),
+    prioritizedPaths,
+    maxFiles,
+  };
+}
+
+function computeDirectoryWeight(path: string): number {
+  if (HIGH_SIGNAL_DIRECTORIES.some((dir) => path.includes(dir))) {
+    return 4;
+  }
+  if (LOW_SIGNAL_DIRECTORIES.some((dir) => path.includes(dir))) {
+    return -2;
+  }
+  return 0;
+}
+
+function computeFocusWeight(path: string, prioritizedPaths: string[]): number {
+  if (prioritizedPaths.length === 0) {
+    return 0;
+  }
+
+  let weight = 0;
+  for (const focusPath of prioritizedPaths) {
+    if (path === focusPath) {
+      weight = Math.max(weight, 30);
+      continue;
+    }
+    if (path.startsWith(`${focusPath}/`) || focusPath.startsWith(`${path}/`)) {
+      weight = Math.max(weight, 18);
+      continue;
+    }
+    if (path.includes(focusPath) || focusPath.includes(path)) {
+      weight = Math.max(weight, 12);
+    }
+  }
+  return weight;
+}
+
+function computeKeywordHits(file: FileStructure, taskKeywords: string[]): string[] {
+  if (taskKeywords.length === 0) {
+    return [];
+  }
+
+  const searchCorpus = [
+    normalizePath(file.path),
+    ...file.symbols.flatMap((symbol) => [symbol.name.toLowerCase(), symbol.signature.toLowerCase()]),
+  ];
+
+  const hits: string[] = [];
+  for (const keyword of taskKeywords) {
+    if (searchCorpus.some((entry) => entry.includes(keyword))) {
+      hits.push(keyword);
+    }
+  }
+  return hits;
+}
+
+function rankFiles(
+  files: FileStructure[],
+  options: ReturnType<typeof normalizeRepoMapOptions>,
+): RankedFileStructure[] {
+  const ranked = files.map((file) => {
+    const normalizedPath = normalizePath(file.path);
+    const fileName = basename(normalizedPath);
+    const baseNameWithoutExt = fileName.includes(".")
+      ? fileName.slice(0, fileName.indexOf("."))
+      : fileName;
+    const keywordHits = computeKeywordHits(file, options.taskKeywords);
+    const focusWeight = computeFocusWeight(normalizedPath, options.prioritizedPaths);
+    const symbolWeight = Math.min(file.symbols.length, 12);
+    const entryWeight = ENTRY_FILE_NAMES.has(baseNameWithoutExt) ? 4 : 0;
+    const configWeight = CONFIG_FILE_NAMES.has(fileName) ? 6 : 0;
+    const keywordWeight = keywordHits.length * 7;
+    const score =
+      symbolWeight +
+      computeDirectoryWeight(normalizedPath) +
+      entryWeight +
+      configWeight +
+      keywordWeight +
+      focusWeight;
+
+    return {
+      ...file,
+      score,
+      keywordHits,
+      focusMatch: focusWeight >= 18,
+    } satisfies RankedFileStructure;
+  });
+
+  ranked.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+    if (right.symbols.length !== left.symbols.length) {
+      return right.symbols.length - left.symbols.length;
+    }
+    return left.path.localeCompare(right.path);
+  });
+
+  const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
+  return ranked.slice(0, Math.max(1, maxFiles));
 }
 
 /**
@@ -137,10 +364,11 @@ function groupFilesByDirectory(files: FileStructure[]): Map<string, FileStructur
  * Each file shows its name followed by typed symbol names.
  */
 function buildRepoMapText(
-  files: FileStructure[],
+  files: RankedFileStructure[],
   truncated: boolean,
   scannedCount: number,
   totalFiles: number,
+  options: ReturnType<typeof normalizeRepoMapOptions>,
 ): string {
   const dirMap = groupFilesByDirectory(files);
   const sortedDirs = [...dirMap.keys()].sort();
@@ -149,6 +377,13 @@ function buildRepoMapText(
   if (truncated) {
     lines.push(`(scanned ${scannedCount}/${totalFiles} files, truncated)`);
   }
+  lines.push(`(showing ${files.length}/${totalFiles} prioritized files)`);
+  if (options.taskKeywords.length > 0) {
+    lines.push(`Task keywords: ${options.taskKeywords.join(", ")}`);
+  }
+  if (options.prioritizedPaths.length > 0) {
+    lines.push(`Focused paths: ${options.prioritizedPaths.join(", ")}`);
+  }
   lines.push("Symbol key: f=function, c=class, i=interface, t=type, v=variable, e=enum, m=method");
   lines.push("");
 
@@ -156,16 +391,23 @@ function buildRepoMapText(
     const dirFiles = dirMap.get(dir)!;
     lines.push(`📁 ${dir}/`);
 
-    // Sort files within dir by symbol count (more symbols = more important)
-    dirFiles.sort((a, b) => b.symbols.length - a.symbols.length);
+    dirFiles.sort((a, b) => b.score - a.score || b.symbols.length - a.symbols.length);
 
     for (const file of dirFiles) {
       const fileName = file.path.slice(file.path.lastIndexOf("/") + 1);
       if (file.symbols.length === 0) {
         lines.push(`  ${fileName}`);
       } else {
-        const symbolList = file.symbols.map(formatSymbolCompact).join(", ");
-        lines.push(`  ${fileName}: ${symbolList}`);
+        const symbolList = file.symbols.slice(0, 5).map(formatSymbolCompact).join(", ");
+        const hints: string[] = [];
+        if (file.focusMatch) {
+          hints.push("focus");
+        }
+        if (file.keywordHits.length > 0) {
+          hints.push(`match=${file.keywordHits.join("/")}`);
+        }
+        const hintSuffix = hints.length > 0 ? ` [${hints.join(", ")}]` : "";
+        lines.push(`  ${fileName}: ${symbolList}${hintSuffix}`);
       }
     }
   }
@@ -176,12 +418,15 @@ function buildRepoMapText(
 function formatRepoMap(
   result: WorkspaceStructureResult,
   tokenBudget: number,
+  options: ReturnType<typeof normalizeRepoMapOptions>,
 ): string {
+  let rankedFiles = rankFiles(result.files, options);
   let text = buildRepoMapText(
-    result.files,
+    rankedFiles,
     result.truncated,
     result.scanned_count,
     result.total_files,
+    options,
   );
 
   // Check if within budget
@@ -190,19 +435,15 @@ function formatRepoMap(
     return text;
   }
 
-  // Over budget: rebuild with fewer files, removing files with fewest symbols first
-  const allFiles = [...result.files].sort(
-    (a, b) => a.symbols.length - b.symbols.length,
-  );
-
-  while (allFiles.length > 0) {
-    allFiles.shift(); // Remove file with fewest symbols
+  while (rankedFiles.length > 1) {
+    rankedFiles = rankedFiles.slice(0, -1);
 
     text = buildRepoMapText(
-      allFiles,
+      rankedFiles,
       result.truncated,
       result.scanned_count,
       result.total_files,
+      options,
     );
     if (estimateTokensFromText(text) <= tokenBudget) {
       return text;

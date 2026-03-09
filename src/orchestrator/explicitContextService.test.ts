@@ -113,4 +113,51 @@ describe("explicitContextService", () => {
     expect(note).toContain("目录样本文件");
     expect(note).toContain("src/ui/pages/chat/mentions.ts");
   });
+
+  it("injects matching path rules and lazy-loads supplemental rule files", async () => {
+    vi.mocked(readWorkspaceFile).mockImplementation(async (params) => {
+      if (params.relativePath === "src/ui/pages/chat/mentions.ts") {
+        return {
+          content: "export const mention = true;\n",
+          total_lines: 10,
+          start_line: 1,
+          end_line: 10,
+        };
+      }
+      if (params.relativePath === "docs/ARCHITECTURE.md") {
+        return {
+          content: "# Architecture\nChat UI lives under src/ui/pages/chat.\n",
+          total_lines: 20,
+          start_line: 1,
+          end_line: 20,
+        };
+      }
+      throw new Error(`Unexpected path: ${params.relativePath}`);
+    });
+
+    const note = await buildExplicitContextNote({
+      attachments: [createFileContextAttachment("src/ui/pages/chat/mentions.ts")],
+      settings: {
+        ...DEFAULT_SETTINGS,
+        workspacePath: "/repo",
+      },
+      projectConfig: {
+        contextRules: [
+          {
+            id: "chat-ui",
+            paths: ["src/ui/pages/chat/**/*"],
+            instructions: "Preserve existing chat interaction patterns.",
+            contextFiles: ["docs/ARCHITECTURE.md"],
+          },
+        ],
+      },
+    });
+
+    expect(note).toContain("[匹配的项目规则]");
+    expect(note).toContain("chat-ui");
+    expect(note).toContain("Preserve existing chat interaction patterns.");
+    expect(note).toContain("[规则补充文件]");
+    expect(note).toContain("docs/ARCHITECTURE.md");
+    expect(note).toContain("Chat UI lives under src/ui/pages/chat.");
+  });
 });

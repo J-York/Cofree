@@ -275,6 +275,39 @@ describe("serializeWorkingMemory", () => {
     const indexB = output.indexOf("src/b.ts");
     expect(indexB).toBeLessThan(indexA);
   });
+
+  it("prioritizes query-matching and focused files in retrieved memory context", () => {
+    const mem = makeMemory();
+    mem.fileKnowledge.set("src/shared/logger.ts", {
+      relativePath: "src/shared/logger.ts",
+      summary: "Generic logging helpers",
+      totalLines: 60,
+      language: "typescript",
+      lastReadAt: "2026-03-09T00:00:00.000Z",
+      lastReadTurn: 8,
+      readByAgent: "main",
+    });
+    mem.fileKnowledge.set("src/auth/login.ts", {
+      relativePath: "src/auth/login.ts",
+      summary: "Handles login validation and auth tokens",
+      totalLines: 80,
+      language: "typescript",
+      lastReadAt: "2026-03-08T00:00:00.000Z",
+      lastReadTurn: 2,
+      readByAgent: "planner",
+    });
+
+    const output = serializeWorkingMemory(mem, 2000, undefined, {
+      query: "fix login token bug",
+      focusedPaths: ["src/auth/login.ts"],
+    });
+
+    const loginIndex = output.indexOf("src/auth/login.ts");
+    const loggerIndex = output.indexOf("src/shared/logger.ts");
+    expect(loginIndex).toBeGreaterThan(-1);
+    expect(loggerIndex).toBeGreaterThan(-1);
+    expect(loginIndex).toBeLessThan(loggerIndex);
+  });
 });
 
 describe("snapshot and restore", () => {

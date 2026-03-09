@@ -29,6 +29,13 @@ export interface RepoMapConfig {
   tokenBudget?: number;
 }
 
+export interface ContextRuleConfig {
+  id?: string;
+  paths?: string[];
+  instructions?: string;
+  contextFiles?: string[];
+}
+
 export interface CofreeRcConfig {
   /** Additional system prompt instructions appended to the base prompt */
   systemPrompt?: string;
@@ -44,6 +51,8 @@ export interface CofreeRcConfig {
   overviewBudget?: OverviewBudgetConfig;
   /** Repo-map configuration for project structure awareness */
   repoMap?: RepoMapConfig;
+  /** Path-scoped or global context rules for lazy project guidance */
+  contextRules?: ContextRuleConfig[];
 }
 
 const COFREERC_FILENAMES = [".cofreerc", ".cofreerc.json"];
@@ -114,7 +123,7 @@ export function invalidateCofreeRcCache(workspacePath: string): void {
 /**
  * Parse raw JSON content into a validated CofreeRcConfig.
  */
-function parseCofreeRc(raw: string): CofreeRcConfig {
+export function parseCofreeRc(raw: string): CofreeRcConfig {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -244,7 +253,141 @@ function parseCofreeRc(raw: string): CofreeRcConfig {
     }
   }
 
+  // contextRules
+  if (Array.isArray(obj.contextRules)) {
+    const rules: ContextRuleConfig[] = [];
+    for (const [index, entry] of obj.contextRules.entries()) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        continue;
+      }
+      const record = entry as Record<string, unknown>;
+      const rule: ContextRuleConfig = {};
+
+      if (typeof record.id === "string" && record.id.trim()) {
+        rule.id = record.id.trim().slice(0, 80);
+      } else {
+        rule.id = `rule-${index + 1}`;
+      }
+
+      if (typeof record.instructions === "string" && record.instructions.trim()) {
+        rule.instructions = record.instructions.trim().slice(0, 4000);
+      }
+
+      if (Array.isArray(record.paths)) {
+        const paths = record.paths
+          .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+          .map((item) => item.trim().replace(/\\/g, "/").replace(/^\/+/, "").slice(0, 200))
+          .slice(0, 12);
+        if (paths.length > 0) {
+          rule.paths = paths;
+        }
+      }
+
+      if (Array.isArray(record.contextFiles)) {
+        const contextFiles = record.contextFiles
+          .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+          .map((item) => item.trim().replace(/\\/g, "/").replace(/^\/+/, "").slice(0, 300))
+          .slice(0, 12);
+        if (contextFiles.length > 0) {
+          rule.contextFiles = contextFiles;
+        }
+      }
+
+      if (rule.instructions || rule.contextFiles?.length || rule.paths?.length) {
+        rules.push(rule);
+      }
+      if (rules.length >= 20) {
+        break;
+      }
+    }
+    if (rules.length > 0) {
+      config.contextRules = rules;
+    }
+  }
+
   return config;
+}
+
+function normalizePath(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "").toLowerCase();
+}
+
+function globPatternToRegExp(pattern: string): RegExp {
+  const normalized = normalizePath(pattern);
+  let regex = "^";
+
+  for (let index = 0; index < normalized.length; ) {
+    const char = normalized[index];
+    const next = normalized[index + 1];
+    const nextNext = normalized[index + 2];
+
+    if (char === "*" && next === "*" && nextNext === "/") {
+      regex += "(?:.*/)?";
+      index += 3;
+      continue;
+    }
+    if (char === "*" && next === "*") {
+      regex += ".*";
+      index += 2;
+      continue;
+    }
+    if (char === "*") {
+      regex += "[^/]*";
+      index += 1;
+      continue;
+    }
+    if (/[.+^${}()|[\]\\]/.test(char)) {
+      regex += `\\${char}`;
+    } else {
+      regex += char;
+    }
+    index += 1;
+  }
+
+  regex += "$";
+  return new RegExp(regex, "i");
+}
+
+function patternMatchesPath(pattern: string, candidatePath: string): boolean {
+  const normalizedPattern = normalizePath(pattern);
+  const normalizedCandidate = normalizePath(candidatePath);
+  if (!normalizedPattern || !normalizedCandidate) {
+    return false;
+  }
+
+  if (!normalizedPattern.includes("*")) {
+    return normalizedCandidate === normalizedPattern
+      || normalizedCandidate.startsWith(`${normalizedPattern}/`)
+      || normalizedPattern.startsWith(`${normalizedCandidate}/`);
+  }
+
+  return globPatternToRegExp(normalizedPattern).test(normalizedCandidate);
+}
+
+function isPathScopedRule(rule: ContextRuleConfig): boolean {
+  return !!rule.paths && rule.paths.length > 0;
+}
+
+export function resolveMatchingContextRules(
+  config: CofreeRcConfig,
+  targetPaths: string[],
+): ContextRuleConfig[] {
+  const normalizedTargets = targetPaths.map(normalizePath).filter(Boolean);
+  if (normalizedTargets.length === 0 || !config.contextRules?.length) {
+    return [];
+  }
+
+  const matched: ContextRuleConfig[] = [];
+  for (const rule of config.contextRules) {
+    if (!isPathScopedRule(rule)) {
+      continue;
+    }
+    if (rule.paths!.some((pattern) => normalizedTargets.some((path) => patternMatchesPath(pattern, path)))) {
+      matched.push(rule);
+    }
+  }
+
+  return matched;
 }
 
 /**
@@ -268,6 +411,22 @@ export function buildCofreeRcPromptFragment(config: CofreeRcConfig): string {
 
   if (config.systemPrompt) {
     parts.push(`[项目自定义指令]\n${config.systemPrompt}`);
+  }
+
+  const globalRules = (config.contextRules ?? []).filter(
+    (rule) => !isPathScopedRule(rule) && rule.instructions,
+  );
+  if (globalRules.length > 0) {
+    parts.push(
+      [
+        "[项目规则]",
+        ...globalRules.map((rule) =>
+          rule.id
+            ? `- ${rule.id}: ${rule.instructions}`
+            : `- ${rule.instructions}`,
+        ),
+      ].join("\n"),
+    );
   }
 
   return parts.join("\n\n");

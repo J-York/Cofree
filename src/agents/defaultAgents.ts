@@ -20,7 +20,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
   {
     role: "planner",
     displayName: "Planner",
-    promptIntent: "Break user requests into verifiable development steps.",
+    promptIntent: "Break complex user requests into verifiable, actionable engineering steps (Vibe Coding methodology). Thoroughly analyze risks, dependencies, and Edge cases.",
     tools: ["list_files", "read_file", "grep", "glob", "git_status", "git_diff"],
     sensitiveActionAllowed: false,
     allowAsSubAgent: true,
@@ -39,7 +39,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
   {
     role: "coder",
     displayName: "Coder",
-    promptIntent: "Produce implementation edits/patches and explain technical tradeoffs.",
+    promptIntent: "Produce high-quality implementation edits/patches. Focus on atomic changes, write production-ready code with solid error handling, and explain technical tradeoffs if necessary.",
     tools: ["read_file", "grep", "glob", "propose_file_edit", "propose_apply_patch"],
     sensitiveActionAllowed: false,
     allowAsSubAgent: true,

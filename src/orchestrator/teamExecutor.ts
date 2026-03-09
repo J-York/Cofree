@@ -213,6 +213,7 @@ async function executeStage(
     settings: AppSettings;
     toolPermissions: ToolPermissions;
     workingMemory?: WorkingMemory;
+    focusedPaths?: string[];
     onStageProgress?: (stage: string, event: SubAgentProgressEvent) => void;
     signal?: AbortSignal;
   },
@@ -233,6 +234,7 @@ async function executeStage(
     params.workingMemory,
     (event) => params.onStageProgress?.(params.stage.stageLabel, event),
     params.signal,
+    params.focusedPaths,
   );
 }
 
@@ -243,10 +245,11 @@ export async function executeAgentTeam(params: {
   settings: AppSettings;
   toolPermissions: ToolPermissions;
   workingMemory?: WorkingMemory;
+  focusedPaths?: string[];
   onStageProgress?: (stage: string, event: SubAgentProgressEvent) => void;
   signal?: AbortSignal;
 }): Promise<TeamExecutionResult> {
-  const { team, taskDescription, workspacePath, settings, toolPermissions, workingMemory } = params;
+  const { team, taskDescription, workspacePath, settings, toolPermissions, workingMemory, focusedPaths } = params;
   const stageResults: Map<string, SubAgentResult> = new Map();
   const groups = groupStagesByExecutionOrder(team.pipeline);
 
@@ -270,6 +273,7 @@ export async function executeAgentTeam(params: {
           settings,
           toolPermissions,
           workingMemory,
+          focusedPaths,
           onStageProgress: params.onStageProgress,
           signal: params.signal,
         },
@@ -296,6 +300,7 @@ export async function executeAgentTeam(params: {
             settings,
             toolPermissions,
             workingMemory,
+            focusedPaths,
             onStageProgress: params.onStageProgress,
             signal: params.signal,
           },

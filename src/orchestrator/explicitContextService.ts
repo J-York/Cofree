@@ -1,5 +1,7 @@
 import type { AppSettings } from "../lib/settingsStore";
 import { globWorkspaceFiles, readWorkspaceFile } from "../lib/tauriBridge";
+import type { CofreeRcConfig } from "../lib/cofreerc";
+import { resolveMatchingContextRules } from "../lib/cofreerc";
 import {
   dedupeContextAttachments,
   type ChatContextAttachment,
@@ -10,6 +12,9 @@ const MAX_CONTEXT_ATTACHMENTS = 8;
 const MIN_ATTACHMENT_BUDGET_TOKENS = 800;
 const MAX_ATTACHMENT_BUDGET_TOKENS = 5000;
 const MAX_FOLDER_SAMPLE_FILES = 4;
+const MAX_RULE_CONTEXT_FILES = 6;
+const MIN_RULE_BUDGET_TOKENS = 400;
+const MAX_RULE_BUDGET_TOKENS = 2400;
 
 function truncateWithMarker(text: string, maxChars: number, marker: string): string {
   if (maxChars <= 0 || text.length <= maxChars) {
@@ -122,10 +127,107 @@ async function buildFolderSection(params: {
   return parts.join("\n\n");
 }
 
+export async function buildMatchedContextRuleNote(params: {
+  targetPaths: string[];
+  settings: AppSettings;
+  projectConfig?: CofreeRcConfig;
+  ignorePatterns?: string[] | null;
+  excludedPaths?: string[];
+  heading?: string;
+}): Promise<string> {
+  const workspacePath = params.settings.workspacePath.trim();
+  if (!workspacePath || !params.projectConfig?.contextRules?.length) {
+    return "";
+  }
+
+  const uniqueTargets = [...new Set(
+    params.targetPaths
+      .map((path) => path.trim().replace(/\\/g, "/").replace(/^\/+/, ""))
+      .filter(Boolean),
+  )];
+  if (uniqueTargets.length === 0) {
+    return "";
+  }
+
+  const matchingRules = resolveMatchingContextRules(params.projectConfig, uniqueTargets);
+  if (matchingRules.length === 0) {
+    return "";
+  }
+
+  const maxContextTokens =
+    params.settings.maxContextTokens > 0 ? params.settings.maxContextTokens : 128000;
+  const ruleBudgetTokens = Math.min(
+    MAX_RULE_BUDGET_TOKENS,
+    Math.max(MIN_RULE_BUDGET_TOKENS, Math.floor(maxContextTokens * 0.05)),
+  );
+  const perFileLineBudget = Math.max(24, Math.floor(params.settings.maxSnippetLines / 2));
+  const perFileCharBudget = Math.max(500, ruleBudgetTokens * 3);
+  const excludedPaths = new Set((params.excludedPaths ?? []).map((path) => path.trim().replace(/\\/g, "/")));
+  const sections: string[] = [params.heading ?? "[匹配的项目规则]"];
+  const failures: string[] = [];
+
+  sections.push(
+    ...matchingRules.map((rule) => {
+      const label = rule.id ? `${rule.id}` : "path-rule";
+      const pathHint = rule.paths?.length ? ` [paths: ${rule.paths.join(", ")}]` : "";
+      return `- ${label}${pathHint}: ${rule.instructions ?? "(无额外说明)"}`;
+    }),
+  );
+
+  const supplementalFiles = [...new Set(
+    matchingRules
+      .flatMap((rule) => rule.contextFiles ?? [])
+      .map((path) => path.trim().replace(/\\/g, "/").replace(/^\/+/, ""))
+      .filter((path) => path.length > 0 && !excludedPaths.has(path)),
+  )].slice(0, MAX_RULE_CONTEXT_FILES);
+
+  if (supplementalFiles.length > 0) {
+    const supplementalSections: string[] = ["[规则补充文件]"];
+    for (const relativePath of supplementalFiles) {
+      try {
+        supplementalSections.push(
+          await buildFileSection({
+            attachment: {
+              id: `rule-${relativePath}`,
+              kind: "file",
+              source: "mention",
+              relativePath,
+              displayName: relativePath,
+              addedAt: "",
+            },
+            workspacePath,
+            perAttachmentLineBudget: perFileLineBudget,
+            perAttachmentCharBudget: perFileCharBudget,
+            ignorePatterns: params.ignorePatterns,
+          }),
+        );
+      } catch (error) {
+        failures.push(`${relativePath}（${stringifyError(error)}）`);
+      }
+    }
+    sections.push(supplementalSections.join("\n\n"));
+  }
+
+  if (failures.length > 0) {
+    sections.push(["[未能附加的规则路径]", ...failures.map((line) => `- ${line}`)].join("\n"));
+  }
+
+  let note = sections.join("\n\n");
+  if (estimateTokensFromText(note) > ruleBudgetTokens) {
+    note = truncateWithMarker(
+      note,
+      ruleBudgetTokens * 4,
+      "\n\n... (命中的项目规则已按预算截断)",
+    );
+  }
+  return note;
+}
+
 export async function buildExplicitContextNote(params: {
   attachments: ChatContextAttachment[];
   settings: AppSettings;
   ignorePatterns?: string[] | null;
+  projectConfig?: CofreeRcConfig;
 }): Promise<string> {
   const { settings, ignorePatterns } = params;
   const workspacePath = settings.workspacePath.trim();
@@ -162,6 +264,21 @@ export async function buildExplicitContextNote(params: {
     "以下文件或目录由用户通过 @ 主动加入本轮上下文。优先参考它们；若片段被截断，请继续使用 read_file 读取所需区域。",
   ];
   const failures: string[] = [];
+  const matchingRuleTargets = attachments.flatMap((attachment) =>
+    attachment.kind === "folder"
+      ? [attachment.relativePath, `${attachment.relativePath}/**/*`]
+      : [attachment.relativePath],
+  );
+  const matchedRuleNote = await buildMatchedContextRuleNote({
+    targetPaths: matchingRuleTargets,
+    settings,
+    projectConfig: params.projectConfig,
+    ignorePatterns,
+    excludedPaths: attachments.map((attachment) => attachment.relativePath),
+  });
+  if (matchedRuleNote) {
+    sections.push(matchedRuleNote);
+  }
 
   for (const attachment of attachments) {
     try {

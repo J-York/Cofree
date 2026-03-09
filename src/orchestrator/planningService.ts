@@ -74,6 +74,7 @@ import { BUILTIN_TEAMS } from "../agents/agentTeam";
 import { executeAgentTeam } from "./teamExecutor";
 import type { ChatContextAttachment } from "../lib/contextAttachments";
 import {
+  collectRelevantFilePaths,
   createWorkingMemory,
   extractFileKnowledge,
   addDiscoveredFact,
@@ -83,6 +84,7 @@ import {
   serializeWorkingMemory,
   type WorkingMemory,
 } from "./workingMemory";
+import { buildMatchedContextRuleNote } from "./explicitContextService";
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
 const MAX_PARALLEL_SUB_AGENTS = 3;
@@ -208,6 +210,7 @@ const TASK_TYPE_TURN_LIMITS: Record<string, number> = {
 
 const MAX_CONSECUTIVE_READ_ONLY_TURNS = 8;
 const DEDUP_TURN_WINDOW = 10;
+const WORKING_MEMORY_NOTE_PREFIX = "[工作记忆刷新]";
 
 /**
  * Find the nearest line boundary before or at the given index.
@@ -257,6 +260,74 @@ function smartTruncate(
   }
 
   return content.slice(0, headEnd) + ellipsis + content.slice(tailStart);
+}
+
+function upsertWorkingMemoryContextMessage(params: {
+  messages: LiteLLMMessage[];
+  workingMemory: WorkingMemory;
+  tokenBudget: number;
+  query: string;
+  focusedPaths?: string[];
+}): void {
+  for (let index = params.messages.length - 1; index >= 0; index -= 1) {
+    const message = params.messages[index];
+    if (
+      message.role === "system"
+      && typeof message.content === "string"
+      && message.content.startsWith(WORKING_MEMORY_NOTE_PREFIX)
+    ) {
+      params.messages.splice(index, 1);
+    }
+  }
+
+  const memoryContext = serializeWorkingMemory(
+    params.workingMemory,
+    params.tokenBudget,
+    undefined,
+    {
+      query: params.query,
+      focusedPaths: params.focusedPaths,
+    },
+  );
+
+  if (!memoryContext.trim()) {
+    return;
+  }
+
+  params.messages.push({
+    role: "system",
+    content: `${WORKING_MEMORY_NOTE_PREFIX}\n${memoryContext}`,
+  });
+}
+
+function extractCandidatePathsFromTaskDescription(taskDescription: string): string[] {
+  const matches = taskDescription.match(/(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9_-]+)?/g) ?? [];
+  const normalized = matches
+    .map((path) => path.trim().replace(/\\/g, "/").replace(/^\/+/, ""))
+    .filter((path) => path.length > 0 && /[./]/.test(path));
+  return [...new Set(normalized)].slice(0, 12);
+}
+
+function normalizeFocusedPathList(paths: string[] | undefined): string[] {
+  return [...new Set(
+    (paths ?? [])
+      .map((path) => path.trim().replace(/\\/g, "/").replace(/^\/+/, ""))
+      .filter(Boolean),
+  )];
+}
+
+function collectSubAgentFocusedPaths(
+  taskDescription: string,
+  workingMemory: WorkingMemory | undefined,
+  role: SubAgentRole,
+  explicitFocusedPaths?: string[],
+): string[] {
+  const seededPaths = normalizeFocusedPathList(explicitFocusedPaths);
+  const fromTask = extractCandidatePathsFromTaskDescription(taskDescription);
+  const fromMemory = workingMemory
+    ? collectRelevantFilePaths(workingMemory, taskDescription, 8, role)
+    : [];
+  return [...new Set([...seededPaths, ...fromTask, ...fromMemory])].slice(0, 12);
 }
 
 interface ToolCallRecord {
@@ -2738,6 +2809,7 @@ export async function executeSubAgentTask(
   workingMemory?: WorkingMemory,
   onProgress?: (event: SubAgentProgressEvent) => void,
   signal?: AbortSignal,
+  focusedPaths?: string[],
 ): Promise<SubAgentResult> {
   const agentDef = DEFAULT_AGENTS.find(
     (agent) => agent.role === role && agent.allowAsSubAgent
@@ -2763,6 +2835,35 @@ export async function executeSubAgentTask(
   const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
   const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
   const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
+  const inferredFocusedPaths = collectSubAgentFocusedPaths(
+    taskDescription,
+    workingMemory,
+    role as SubAgentRole,
+    focusedPaths,
+  );
+  let matchedRuleContext = "";
+
+  if (workspacePath.trim()) {
+    try {
+      const projectConfig = await loadCofreeRc(workspacePath);
+      matchedRuleContext = await buildMatchedContextRuleNote({
+        targetPaths: inferredFocusedPaths,
+        settings: {
+          ...settings,
+          workspacePath,
+        },
+        projectConfig,
+        ignorePatterns:
+          projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+            ? projectConfig.ignorePatterns
+            : null,
+        excludedPaths: inferredFocusedPaths,
+        heading: "[命中的项目规则]",
+      });
+    } catch (error) {
+      console.warn("[SubAgent] Failed to load matched project rules", error);
+    }
+  }
 
   // Inject shared Working Memory context (at most 15% of token budget)
   const memoryContext = workingMemory
@@ -2770,6 +2871,10 @@ export async function executeSubAgentTask(
       workingMemory,
       Math.floor(promptBudgetTarget * 0.15),
       role as SubAgentRole,
+      {
+        query: taskDescription,
+        focusedPaths: inferredFocusedPaths,
+      },
     )
     : "";
 
@@ -2778,6 +2883,7 @@ export async function executeSubAgentTask(
     `你的专长：${agentDef.promptIntent}`,
     `当前工作区: ${workspacePath}`,
     agentDef.workflowTemplate ? `\n## 标准工作流\n${agentDef.workflowTemplate}` : "",
+    matchedRuleContext ? `\n${matchedRuleContext}` : "",
     memoryContext ? `\n## 已知上下文\n${memoryContext}` : "",
     "你正在执行一个被委派的子任务。请专注于完成任务并返回结果。",
     "完成任务后，请简洁地汇报结果。不要提出超出任务范围的额外建议。",
@@ -2920,6 +3026,12 @@ export async function executeSubAgentTask(
         undefined,
         [],
         agentDef.tools,
+        undefined,
+        workingMemory,
+        undefined,
+        signal,
+        turn,
+        inferredFocusedPaths,
       );
       const subToolDurationMs = performance.now() - subToolT0;
       const subToolMs = subToolDurationMs.toFixed(0);
@@ -3133,6 +3245,7 @@ async function executeToolCall(
   onSubAgentProgress?: (event: SubAgentProgressEvent) => void,
   signal?: AbortSignal,
   turn?: number,
+  focusedPaths?: string[],
 ): Promise<ToolExecutionResult> {
   const safeWorkspace = workspacePath.trim();
   if (!safeWorkspace) {
@@ -4102,6 +4215,7 @@ async function executeToolCall(
           settings,
           toolPermissions,
           workingMemory,
+          focusedPaths,
           onStageProgress: (stage, event) => {
             onSubAgentProgress?.({
               ...event,
@@ -4164,6 +4278,7 @@ async function executeToolCall(
           workingMemory,
           onSubAgentProgress,
           signal,
+          focusedPaths,
         );
         lastResult = subResult;
 
@@ -4369,6 +4484,7 @@ async function executeToolCallWithRetry(
   onSubAgentProgress?: (event: SubAgentProgressEvent) => void,
   signal?: AbortSignal,
   turn?: number,
+  focusedPaths?: string[],
 ): Promise<{
   result: ToolExecutionResult;
   trace: ToolExecutionTrace;
@@ -4407,6 +4523,7 @@ async function executeToolCallWithRetry(
       onSubAgentProgress,
       signal,
       turn,
+      focusedPaths,
     );
     const success = current.success !== false;
     const traceStatus: ToolExecutionStatus = success
@@ -4811,6 +4928,7 @@ async function runNativeToolCallingLoop(
   onSubAgentProgress?: (role: string, event: SubAgentProgressEvent) => void,
   onLoopCheckpoint?: RunPlanningSessionInput["onLoopCheckpoint"],
   onPlanStateUpdate?: RunPlanningSessionInput["onPlanStateUpdate"],
+  focusedPaths: string[] = [],
 ): Promise<{
   assistantReply: string;
   requestRecords: RequestRecord[];
@@ -4999,6 +5117,21 @@ async function runNativeToolCallingLoop(
       } catch (checkpointError) {
         console.warn(`[Loop] 增量检查点保存失败:`, checkpointError);
       }
+    }
+
+    if (turn > 0 && (
+      workingMemory.fileKnowledge.size > 0
+      || workingMemory.discoveredFacts.length > 0
+      || workingMemory.subAgentHistory.length > 0
+      || workingMemory.taskProgress.length > 0
+    )) {
+      upsertWorkingMemoryContextMessage({
+        messages,
+        workingMemory,
+        tokenBudget: Math.floor(promptBudgetTarget * 0.12),
+        query: prompt,
+        focusedPaths,
+      });
     }
 
     const estTokens = estimateTokensForMessages(messages);
@@ -5216,6 +5349,7 @@ async function runNativeToolCallingLoop(
         progressForCall,
         signal,
         turn,
+        focusedPaths,
       );
       const toolMs = (performance.now() - toolT0).toFixed(0);
 
@@ -6097,6 +6231,9 @@ export async function runPlanningSession(
 
   let initialInternalNote = input.internalSystemNote;
   let projectConfig: CofreeRcConfig = {};
+  const sessionFocusedPaths = normalizeFocusedPathList(
+    (input.contextAttachments ?? []).map((attachment) => attachment.relativePath),
+  );
   let initialPlanSeed: InitialPlanSeed = {
     ...normalizeTodoPlanState({
       steps: input.existingPlan?.steps?.length
@@ -6128,6 +6265,7 @@ export async function runPlanningSession(
         const explicitContext = await buildExplicitContextNote({
           attachments: input.contextAttachments ?? [],
           settings: input.settings,
+          projectConfig,
           ignorePatterns:
             projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
               ? projectConfig.ignorePatterns
@@ -6182,6 +6320,11 @@ export async function runPlanningSession(
             ? projectConfig.ignorePatterns
             : null,
           projectConfig.repoMap?.tokenBudget ?? repoMapBudget,
+          {
+            taskDescription: normalizedPrompt,
+            prioritizedPaths: sessionFocusedPaths,
+            maxFiles: projectConfig.repoMap?.maxFiles,
+          },
         );
         if (repoMap) {
           if (initialInternalNote) {
@@ -6288,6 +6431,7 @@ export async function runPlanningSession(
           plannerMemory,
           undefined,
           input.signal,
+          sessionFocusedPaths,
         );
 
         if (plannerResult.structuredOutput?.role === "planner") {
@@ -6321,6 +6465,7 @@ export async function runPlanningSession(
       input.onSubAgentProgress,
       input.onLoopCheckpoint,
       input.onPlanStateUpdate,
+      sessionFocusedPaths,
     );
 
     // Filter out internal tools from the final `assistantToolCalls` so that

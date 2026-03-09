@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("../lib/cofreerc", () => ({
     loadCofreeRc: vi.fn(async () => ({})),
     buildCofreeRcPromptFragment: vi.fn(() => ""),
+    resolveMatchingContextRules: vi.fn(() => []),
 }));
 
 vi.mock("./readOnlyWorkspaceService", () => ({
@@ -73,7 +74,11 @@ import { addWorkspaceApprovalRule } from "../lib/approvalRuleStore";
 import { postLiteLLMChatCompletions, type LiteLLMMessage } from "../lib/litellm";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { DEFAULT_SETTINGS, type AppSettings } from "../lib/settingsStore";
+import { createFileContextAttachment } from "../lib/contextAttachments";
+import { loadCofreeRc, resolveMatchingContextRules } from "../lib/cofreerc";
+import { generateRepoMap } from "./repoMapService";
 import {
+    executeSubAgentTask,
     planningServiceTestUtils,
     runPlanningSession,
     type ToolExecutionTrace,
@@ -137,6 +142,7 @@ describe("planningService approval-flow repair", () => {
             agentId: "agent-default",
             systemPrompt: "system prompt",
             enabledTools: ["propose_shell"],
+            modelRef: "gpt-5.4",
             toolPermissions: {
                 ...DEFAULT_SETTINGS.toolPermissions,
                 propose_shell: "auto",
@@ -144,8 +150,8 @@ describe("planningService approval-flow repair", () => {
             allowedSubAgents: [],
         } as any);
 
-        expect(prompt).toContain("Windows 实际通过 PowerShell 执行");
-        expect(prompt).toContain("不要重复 mkdir -p、rm -r、&&");
+        expect(prompt).toContain("宿主系统的 Shell 环境约束（Windows=PowerShell，Unix=sh）");
+        expect(prompt).toContain("Windows/PowerShell 下优先用 'Remove-Item -Recurse -Force <路径>'");
         expect(prompt).toContain("Remove-Item -Recurse -Force");
     });
 
@@ -211,6 +217,283 @@ describe("planningService approval-flow repair", () => {
             "On Windows prefer PowerShell syntax",
         );
         expect(planTool?.function.description).toContain("internal todo plan");
+    });
+
+    it("passes task description and focused paths into repo-map generation on first turn", async () => {
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-repomap",
+                choices: [
+                    {
+                        message: {
+                            role: "assistant",
+                            content: "done",
+                        },
+                    },
+                ],
+                usage: {
+                    prompt_tokens: 4,
+                    completion_tokens: 2,
+                },
+            }),
+        });
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            if (command === "list_files") {
+                return [];
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        await runPlanningSession({
+            prompt: "Improve repo map injection in planning service",
+            settings: createSettings(),
+            conversationHistory: [],
+            contextAttachments: [createFileContextAttachment("src/orchestrator/repoMapService.ts")],
+        });
+
+        expect(vi.mocked(generateRepoMap)).toHaveBeenCalledWith(
+            "d:/Code/cofree",
+            null,
+            expect.any(Number),
+            {
+                taskDescription: "Improve repo map injection in planning service",
+                prioritizedPaths: ["src/orchestrator/repoMapService.ts"],
+                maxFiles: undefined,
+            },
+        );
+    });
+
+    it("injects matching path-scoped rules into sub-agent prompts", async () => {
+        vi.mocked(loadCofreeRc).mockResolvedValue({
+            contextRules: [
+                {
+                    id: "auth-ui",
+                    paths: ["src/auth/**/*"],
+                    instructions: "Preserve auth validation flow.",
+                    contextFiles: ["docs/ARCHITECTURE.md"],
+                },
+            ],
+        });
+        vi.mocked(resolveMatchingContextRules).mockReturnValue([
+            {
+                id: "auth-ui",
+                paths: ["src/auth/**/*"],
+                instructions: "Preserve auth validation flow.",
+                contextFiles: ["docs/ARCHITECTURE.md"],
+            },
+        ]);
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-subagent-rule",
+                choices: [
+                    {
+                        message: {
+                            role: "assistant",
+                            content: "done",
+                        },
+                    },
+                ],
+                usage: {
+                    prompt_tokens: 4,
+                    completion_tokens: 2,
+                },
+            }),
+        });
+        vi.mocked(invoke).mockImplementation(async (command: string, args?: any) => {
+            if (command === "read_workspace_file" && args?.relativePath === "docs/ARCHITECTURE.md") {
+                return {
+                    content: "# Architecture\nAuth UI lives under src/auth.\n",
+                    total_lines: 10,
+                    start_line: 1,
+                    end_line: 10,
+                };
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        await executeSubAgentTask(
+            "coder",
+            "Update validation in src/auth/login.ts and keep auth UX unchanged.",
+            "d:/Code/cofree",
+            createSettings(),
+            DEFAULT_SETTINGS.toolPermissions,
+            undefined,
+            undefined,
+            undefined,
+        );
+
+        const firstRequestBody = vi.mocked(postLiteLLMChatCompletions).mock.calls[0]?.[1] as {
+            messages: Array<{ role: string; content: string }>;
+        };
+        const systemPrompt = firstRequestBody?.messages?.[0]?.content ?? "";
+
+        expect(systemPrompt).toContain("[命中的项目规则]");
+        expect(systemPrompt).toContain("auth-ui");
+        expect(systemPrompt).toContain("Preserve auth validation flow.");
+        expect(systemPrompt).toContain("docs/ARCHITECTURE.md");
+        expect(systemPrompt).toContain("Auth UI lives under src/auth.");
+    });
+
+    it("uses provided focused paths when sub-agent task text does not mention a file", async () => {
+        vi.mocked(loadCofreeRc).mockResolvedValue({
+            contextRules: [
+                {
+                    id: "auth-ui",
+                    paths: ["src/auth/**/*"],
+                    instructions: "Preserve auth validation flow.",
+                    contextFiles: ["docs/ARCHITECTURE.md"],
+                },
+            ],
+        });
+        vi.mocked(resolveMatchingContextRules).mockReturnValue([
+            {
+                id: "auth-ui",
+                paths: ["src/auth/**/*"],
+                instructions: "Preserve auth validation flow.",
+                contextFiles: ["docs/ARCHITECTURE.md"],
+            },
+        ]);
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-subagent-focused-paths",
+                choices: [
+                    {
+                        message: {
+                            role: "assistant",
+                            content: "done",
+                        },
+                    },
+                ],
+                usage: {
+                    prompt_tokens: 4,
+                    completion_tokens: 2,
+                },
+            }),
+        });
+        vi.mocked(invoke).mockImplementation(async (command: string, args?: any) => {
+            if (command === "read_workspace_file" && args?.relativePath === "docs/ARCHITECTURE.md") {
+                return {
+                    content: "# Architecture\nAuth UI lives under src/auth.\n",
+                    total_lines: 10,
+                    start_line: 1,
+                    end_line: 10,
+                };
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        await executeSubAgentTask(
+            "coder",
+            "Update the validation flow while keeping the current UX unchanged.",
+            "d:/Code/cofree",
+            createSettings(),
+            DEFAULT_SETTINGS.toolPermissions,
+            undefined,
+            undefined,
+            undefined,
+            ["src/auth/login.ts"],
+        );
+
+        const firstRequestBody = vi.mocked(postLiteLLMChatCompletions).mock.calls[0]?.[1] as {
+            messages: Array<{ role: string; content: string }>;
+        };
+        const systemPrompt = firstRequestBody?.messages?.[0]?.content ?? "";
+
+        expect(systemPrompt).toContain("[命中的项目规则]");
+        expect(systemPrompt).toContain("auth-ui");
+        expect(systemPrompt).toContain("docs/ARCHITECTURE.md");
+    });
+
+    it("propagates session focused paths into task-tool sub-agents", async () => {
+        vi.mocked(loadCofreeRc).mockResolvedValue({
+            contextRules: [
+                {
+                    id: "auth-ui",
+                    paths: ["src/auth/**/*"],
+                    instructions: "Preserve auth validation flow.",
+                    contextFiles: ["docs/ARCHITECTURE.md"],
+                },
+            ],
+        });
+        vi.mocked(resolveMatchingContextRules).mockReturnValue([
+            {
+                id: "auth-ui",
+                paths: ["src/auth/**/*"],
+                instructions: "Preserve auth validation flow.",
+                contextFiles: ["docs/ARCHITECTURE.md"],
+            },
+        ]);
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-task-focused-paths",
+                choices: [
+                    {
+                        message: {
+                            role: "assistant",
+                            content: "done",
+                        },
+                    },
+                ],
+                usage: {
+                    prompt_tokens: 4,
+                    completion_tokens: 2,
+                },
+            }),
+        });
+        vi.mocked(invoke).mockImplementation(async (command: string, args?: any) => {
+            if (command === "read_workspace_file" && args?.relativePath === "docs/ARCHITECTURE.md") {
+                return {
+                    content: "# Architecture\nAuth UI lives under src/auth.\n",
+                    total_lines: 10,
+                    start_line: 1,
+                    end_line: 10,
+                };
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        await planningServiceTestUtils.executeToolCall(
+            {
+                id: "tool-task-1",
+                type: "function",
+                function: {
+                    name: "task",
+                    arguments: JSON.stringify({
+                        role: "coder",
+                        description: "Refine the validation flow while preserving existing UX.",
+                    }),
+                },
+            },
+            "d:/Code/cofree",
+            DEFAULT_SETTINGS.toolPermissions,
+            createSettings(),
+            undefined,
+            ["coder" as any],
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            ["src/auth/login.ts"],
+        );
+
+        const firstRequestBody = vi.mocked(postLiteLLMChatCompletions).mock.calls[0]?.[1] as {
+            messages: Array<{ role: string; content: string }>;
+        };
+        const systemPrompt = firstRequestBody?.messages?.[0]?.content ?? "";
+
+        expect(systemPrompt).toContain("[命中的项目规则]");
+        expect(systemPrompt).toContain("auth-ui");
+        expect(systemPrompt).toContain("docs/ARCHITECTURE.md");
     });
 
     it("updates todo plan state through the internal update_plan tool", async () => {
@@ -568,6 +851,7 @@ describe("planningService approval-flow repair", () => {
                 agentId: "agent-default",
                 systemPrompt: "system prompt",
                 enabledTools: ["read_file", "grep"],
+                modelRef: "gpt-5.4",
                 toolPermissions: DEFAULT_SETTINGS.toolPermissions,
                 allowedSubAgents: [],
             } as any,

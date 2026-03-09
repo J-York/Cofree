@@ -75,6 +75,11 @@ export interface WorkingMemorySnapshot {
   maxTokenBudget: number;
 }
 
+export interface WorkingMemoryQueryOptions {
+  query?: string;
+  focusedPaths?: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -83,6 +88,19 @@ const MAX_DISCOVERED_FACTS = 50;
 const MAX_FILE_SUMMARY_CHARS = 200;
 const MAX_SUBAGENT_HISTORY = 20;
 const MAX_TASK_PROGRESS_ENTRIES = 40;
+const MAX_RETRIEVED_FILES = 12;
+const MAX_RETRIEVED_FACTS = 10;
+const MAX_RETRIEVED_HISTORY = 8;
+const MAX_RETRIEVED_FAILURES = 5;
+const QUERY_TERM_LIMIT = 10;
+const QUERY_STOPWORDS = new Set([
+  "add", "and", "bug", "build", "change", "code", "create", "current",
+  "debug", "feature", "file", "files", "fix", "for", "from", "help",
+  "implement", "improve", "issue", "make", "project", "refactor", "review",
+  "run", "test", "tests", "the", "this", "update", "with", "开始", "实现",
+  "修改", "优化", "当前", "代码", "文件", "项目", "问题", "测试", "检查",
+  "功能", "需要", "这个", "那个", "一下", "进行", "继续",
+]);
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -373,10 +391,13 @@ export function serializeWorkingMemory(
   memory: WorkingMemory,
   tokenBudget: number,
   forRole?: SubAgentRole,
+  queryOptions?: WorkingMemoryQueryOptions,
 ): string {
   if (tokenBudget <= 0) return "";
 
   const sections: Array<{ priority: number; label: string; content: string }> = [];
+  const queryTerms = extractQueryTerms(queryOptions?.query);
+  const focusedPaths = normalizeFocusedPaths(queryOptions?.focusedPaths);
 
   // 1. Project context (highest priority)
   if (memory.projectContext) {
@@ -390,23 +411,22 @@ export function serializeWorkingMemory(
   // 2. High-confidence facts
   const highFacts = memory.discoveredFacts.filter((f) => f.confidence === "high");
   if (highFacts.length > 0) {
+    const rankedFacts = rankDiscoveredFacts(highFacts, queryTerms, focusedPaths);
     sections.push({
       priority: 2,
       label: "已确认事实",
-      content: highFacts.map((f) => `- [${f.category}] ${f.content}`).join("\n"),
+      content: rankedFacts
+        .slice(0, MAX_RETRIEVED_FACTS)
+        .map((f) => `- [${f.category}] ${f.content}`)
+        .join("\n"),
     });
   }
 
   // 3. File knowledge (sorted by recency first, then by relevance to role)
   const fileEntries = [...memory.fileKnowledge.values()];
   if (fileEntries.length > 0) {
-    // Primary sort: most recently read first (most relevant to current context)
-    // Secondary sort: by role relevance
-    const sorted = sortFilesByRole(
-      [...fileEntries].sort((a, b) => b.lastReadAt.localeCompare(a.lastReadAt)),
-      forRole,
-    );
-    const fileLines = sorted.slice(0, 15).map((fk) => {
+    const sorted = rankFileKnowledge(fileEntries, forRole, queryTerms, focusedPaths);
+    const fileLines = sorted.slice(0, MAX_RETRIEVED_FILES).map((fk) => {
       const lang = fk.language ? ` (${fk.language})` : "";
       const turnInfo = fk.lastReadTurn > 0 ? `, turn ${fk.lastReadTurn}` : "";
       return `- ${fk.relativePath}${lang}: ${fk.summary} [${fk.totalLines} lines${turnInfo}]`;
@@ -420,10 +440,10 @@ export function serializeWorkingMemory(
 
   // 3.5. Failed operations context (helps LLM avoid repeating mistakes)
   const recentFailures = memory.taskProgress
-    .filter((e) => e.status === "failed")
-    .slice(-5);
+    .filter((e) => e.status === "failed");
   if (recentFailures.length > 0) {
-    const failureLines = recentFailures.map((e) => {
+    const rankedFailures = rankTaskProgressEntries(recentFailures, queryTerms, focusedPaths);
+    const failureLines = rankedFailures.slice(0, MAX_RETRIEVED_FAILURES).map((e) => {
       const target = e.targetFile ? ` on ${e.targetFile}` : "";
       const hint = e.errorHint ? ` — ${e.errorHint}` : "";
       return `- ${e.toolName}${target}: ${e.description}${hint}`;
@@ -437,7 +457,9 @@ export function serializeWorkingMemory(
 
   // 4. Sub-agent execution history
   if (memory.subAgentHistory.length > 0) {
-    const historyLines = memory.subAgentHistory.map((h) => {
+    const historyLines = rankSubAgentHistory(memory.subAgentHistory, queryTerms, focusedPaths)
+      .slice(0, MAX_RETRIEVED_HISTORY)
+      .map((h) => {
       const findings = h.keyFindings.length > 0 ? ` | findings: ${h.keyFindings.join(", ")}` : "";
       return `- [${h.role}] ${h.taskDescription.slice(0, 80)}${findings} → ${h.proposedActionCount} actions`;
     });
@@ -451,10 +473,14 @@ export function serializeWorkingMemory(
   // 5. Medium/low confidence facts (lowest priority)
   const otherFacts = memory.discoveredFacts.filter((f) => f.confidence !== "high");
   if (otherFacts.length > 0) {
+    const rankedFacts = rankDiscoveredFacts(otherFacts, queryTerms, focusedPaths);
     sections.push({
       priority: 5,
       label: "其他发现",
-      content: otherFacts.map((f) => `- [${f.category}/${f.confidence}] ${f.content}`).join("\n"),
+      content: rankedFacts
+        .slice(0, MAX_RETRIEVED_FACTS)
+        .map((f) => `- [${f.category}/${f.confidence}] ${f.content}`)
+        .join("\n"),
     });
   }
 
@@ -487,6 +513,30 @@ export function serializeWorkingMemory(
   return parts.join("\n\n");
 }
 
+export function collectRelevantFilePaths(
+  memory: WorkingMemory,
+  query: string,
+  limit = 8,
+  forRole?: SubAgentRole,
+): string[] {
+  if (limit <= 0 || memory.fileKnowledge.size === 0) {
+    return [];
+  }
+
+  const queryTerms = extractQueryTerms(query);
+  const ranked = rankFileKnowledge(
+    [...memory.fileKnowledge.values()],
+    forRole,
+    queryTerms,
+    [],
+  );
+
+  return ranked
+    .slice(0, limit)
+    .map((entry) => entry.relativePath)
+    .filter(Boolean);
+}
+
 function sortFilesByRole(files: FileKnowledge[], role?: SubAgentRole): FileKnowledge[] {
   if (!role) return files;
 
@@ -503,6 +553,199 @@ function sortFilesByRole(files: FileKnowledge[], role?: SubAgentRole): FileKnowl
     }
     return 0;
   });
+}
+
+function normalizePath(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+}
+
+function normalizeFocusedPaths(paths: string[] | undefined): string[] {
+  return (paths ?? []).map(normalizePath).filter(Boolean).slice(0, 20);
+}
+
+function extractQueryTerms(query: string | undefined): string[] {
+  if (!query) {
+    return [];
+  }
+
+  const tokens = query.toLowerCase().match(/[a-z][a-z0-9._-]{2,}|[\u4e00-\u9fff]{2,}/g) ?? [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const token of tokens) {
+    if (QUERY_STOPWORDS.has(token) || seen.has(token)) {
+      continue;
+    }
+    seen.add(token);
+    result.push(token);
+    if (result.length >= QUERY_TERM_LIMIT) {
+      break;
+    }
+  }
+
+  return result;
+}
+
+function computeKeywordScore(text: string, queryTerms: string[]): number {
+  if (!text || queryTerms.length === 0) {
+    return 0;
+  }
+
+  const lower = text.toLowerCase();
+  let score = 0;
+  for (const term of queryTerms) {
+    if (lower.includes(term)) {
+      score += 5;
+    }
+  }
+  return score;
+}
+
+function computeFocusScore(path: string | undefined, focusedPaths: string[]): number {
+  if (!path || focusedPaths.length === 0) {
+    return 0;
+  }
+
+  const normalizedPath = normalizePath(path);
+  let score = 0;
+  for (const focusPath of focusedPaths) {
+    if (normalizedPath === focusPath) {
+      score = Math.max(score, 25);
+      continue;
+    }
+    if (normalizedPath.startsWith(`${focusPath}/`) || focusPath.startsWith(`${normalizedPath}/`)) {
+      score = Math.max(score, 15);
+      continue;
+    }
+    if (normalizedPath.includes(focusPath) || focusPath.includes(normalizedPath)) {
+      score = Math.max(score, 10);
+    }
+  }
+  return score;
+}
+
+function rankFileKnowledge(
+  files: FileKnowledge[],
+  role: SubAgentRole | undefined,
+  queryTerms: string[],
+  focusedPaths: string[],
+): FileKnowledge[] {
+  return [...files].sort((left, right) => {
+    const leftScore = scoreFileKnowledge(left, role, queryTerms, focusedPaths);
+    const rightScore = scoreFileKnowledge(right, role, queryTerms, focusedPaths);
+    if (rightScore !== leftScore) {
+      return rightScore - leftScore;
+    }
+    return right.lastReadAt.localeCompare(left.lastReadAt);
+  });
+}
+
+function scoreFileKnowledge(
+  file: FileKnowledge,
+  role: SubAgentRole | undefined,
+  queryTerms: string[],
+  focusedPaths: string[],
+): number {
+  let score = 0;
+  score += computeFocusScore(file.relativePath, focusedPaths);
+  score += computeKeywordScore(
+    `${file.relativePath} ${file.summary} ${file.language ?? ""}`,
+    queryTerms,
+  );
+  score += Math.min(file.lastReadTurn ?? 0, 10);
+
+  if (role === "coder" && (file.readByAgent === "main" || file.readByAgent === "planner")) {
+    score += 20;
+  }
+  if (role === "coder" && file.readByAgent === "coder") {
+    score -= 4;
+  }
+  if (role === "tester" && file.readByAgent !== "tester") {
+    score += 2;
+  }
+  return score;
+}
+
+function rankDiscoveredFacts(
+  facts: DiscoveredFact[],
+  queryTerms: string[],
+  focusedPaths: string[],
+): DiscoveredFact[] {
+  return [...facts].sort((left, right) => {
+    const leftScore = scoreDiscoveredFact(left, queryTerms, focusedPaths);
+    const rightScore = scoreDiscoveredFact(right, queryTerms, focusedPaths);
+    if (rightScore !== leftScore) {
+      return rightScore - leftScore;
+    }
+    return right.createdAt.localeCompare(left.createdAt);
+  });
+}
+
+function scoreDiscoveredFact(
+  fact: DiscoveredFact,
+  queryTerms: string[],
+  focusedPaths: string[],
+): number {
+  let score = computeKeywordScore(`${fact.category} ${fact.content} ${fact.source}`, queryTerms);
+  score += computeFocusScore(fact.source, focusedPaths);
+  if (fact.confidence === "high") score += 4;
+  if (fact.confidence === "medium") score += 2;
+  return score;
+}
+
+function rankTaskProgressEntries(
+  entries: TaskProgressEntry[],
+  queryTerms: string[],
+  focusedPaths: string[],
+): TaskProgressEntry[] {
+  return [...entries].sort((left, right) => {
+    const leftScore = scoreTaskProgressEntry(left, queryTerms, focusedPaths);
+    const rightScore = scoreTaskProgressEntry(right, queryTerms, focusedPaths);
+    if (rightScore !== leftScore) {
+      return rightScore - leftScore;
+    }
+    return right.timestamp.localeCompare(left.timestamp);
+  });
+}
+
+function scoreTaskProgressEntry(
+  entry: TaskProgressEntry,
+  queryTerms: string[],
+  focusedPaths: string[],
+): number {
+  let score = computeKeywordScore(
+    `${entry.description} ${entry.toolName} ${entry.errorHint ?? ""}`,
+    queryTerms,
+  );
+  score += computeFocusScore(entry.targetFile, focusedPaths);
+  if (entry.status === "failed") {
+    score += 4;
+  }
+  return score;
+}
+
+function rankSubAgentHistory(
+  history: SubAgentExecRecord[],
+  queryTerms: string[],
+  focusedPaths: string[],
+): SubAgentExecRecord[] {
+  return [...history].sort((left, right) => {
+    const leftScore = scoreSubAgentRecord(left, queryTerms, focusedPaths);
+    const rightScore = scoreSubAgentRecord(right, queryTerms, focusedPaths);
+    if (rightScore !== leftScore) {
+      return rightScore - leftScore;
+    }
+    return right.completedAt.localeCompare(left.completedAt);
+  });
+}
+
+function scoreSubAgentRecord(
+  record: SubAgentExecRecord,
+  queryTerms: string[],
+  focusedPaths: string[],
+): number {
+  const corpus = `${record.role} ${record.taskDescription} ${record.replySummary} ${record.keyFindings.join(" ")}`;
+  return computeKeywordScore(corpus, queryTerms) + computeFocusScore(corpus, focusedPaths);
 }
 
 function truncateToTokenBudget(text: string, budget: number): string | null {
