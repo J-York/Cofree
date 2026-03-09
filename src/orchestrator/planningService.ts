@@ -1671,31 +1671,49 @@ function normalizeConversationHistory(
     return [];
   }
 
-  return conversationHistory
-    .filter(
-      (message) =>
-        message.content ||
-        message.role === "tool" ||
-        (message.role === "assistant" &&
-          message.tool_calls &&
-          message.tool_calls.length > 0)
-    )
-    .map((message) => {
-      const m: LiteLLMMessage = {
-        role: message.role as any,
-        content: message.content.trim(),
-      };
-      if (message.tool_calls) {
-        m.tool_calls = message.tool_calls;
+  const filtered = conversationHistory.filter(
+    (message) =>
+      message.content ||
+      message.role === "tool" ||
+      (message.role === "assistant" &&
+        message.tool_calls &&
+        message.tool_calls.length > 0)
+  );
+
+  // Collect all tool_call_ids that have matching tool-role responses so we can
+  // strip orphaned tool_calls from assistant messages.  The OpenAI API rejects
+  // requests where an assistant message contains tool_calls without a
+  // corresponding tool-role message (error: "No tool output found for function
+  // call …").  This happens when the orchestrator loop's internal tool results
+  // are not persisted to the UI message list (they live only inside the loop).
+  const answeredToolCallIds = new Set(
+    filtered
+      .filter((m) => m.role === "tool" && m.tool_call_id)
+      .map((m) => m.tool_call_id as string),
+  );
+
+  return filtered.map((message) => {
+    const m: LiteLLMMessage = {
+      role: message.role as any,
+      content: message.content.trim(),
+    };
+    if (message.tool_calls) {
+      // Only keep tool_calls whose results are present in the history.
+      const validCalls = message.tool_calls.filter(
+        (tc) => answeredToolCallIds.has(tc.id),
+      );
+      if (validCalls.length > 0) {
+        m.tool_calls = validCalls;
       }
-      if (message.role === "tool" && message.tool_call_id) {
-        m.tool_call_id = message.tool_call_id;
-      }
-      if (message.role === "tool" && message.name) {
-        m.name = message.name;
-      }
-      return m;
-    });
+    }
+    if (message.role === "tool" && message.tool_call_id) {
+      m.tool_call_id = message.tool_call_id;
+    }
+    if (message.role === "tool" && message.name) {
+      m.name = message.name;
+    }
+    return m;
+  });
 }
 
 function inputLengthOf(messages: LiteLLMMessage[]): number {

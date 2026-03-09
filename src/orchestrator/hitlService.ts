@@ -486,17 +486,102 @@ export async function approveAllPendingActions(
   let batchFailed = false;
   const appliedPatchIds: string[] = [];
 
-  // Apply patch actions first (they form the atomic unit)
-  for (const action of patchActions) {
-    currentPlan = await approveAction(currentPlan, action.id, workspacePath);
-    const updatedAction = currentPlan.proposedActions.find(
-      (a) => a.id === action.id
-    );
-    if (updatedAction?.executionResult?.success) {
-      appliedPatchIds.push(action.id);
-    } else {
+  if (treatAsAtomicBatch) {
+    // Combine all patches into a single git-apply call so that sequential
+    // patches targeting the same file don't conflict with each other.
+    const combinedPatch = patchActions.map((a) => a.payload.patch).join("\n");
+
+    const preflight = await invoke<PatchApplyResult>("check_workspace_patch", {
+      workspacePath,
+      patch: combinedPatch,
+    });
+
+    if (!preflight.success) {
       batchFailed = true;
-      break;
+      const failMsg = `Patch 预检失败: ${preflight.message}`;
+      currentPlan = {
+        ...currentPlan,
+        proposedActions: currentPlan.proposedActions.map((a) => {
+          if (a.type !== "apply_patch") return a;
+          if (!patchActions.find((p) => p.id === a.id)) return a;
+          return {
+            ...a,
+            fingerprint: ensureFingerprint(a),
+            status: "failed" as const,
+            executed: false,
+            executionResult: createExecutionResult(false, failMsg, {
+              files: preflight.files,
+            }),
+          };
+        }),
+      };
+    } else {
+      const applyResult = await invoke<PatchApplyResult>(
+        "apply_workspace_patch",
+        { workspacePath, patch: combinedPatch },
+      );
+
+      if (!applyResult.success) {
+        batchFailed = true;
+        currentPlan = {
+          ...currentPlan,
+          proposedActions: currentPlan.proposedActions.map((a) => {
+            if (a.type !== "apply_patch") return a;
+            if (!patchActions.find((p) => p.id === a.id)) return a;
+            return {
+              ...a,
+              fingerprint: ensureFingerprint(a),
+              status: "failed" as const,
+              executed: false,
+              executionResult: createExecutionResult(
+                false,
+                applyResult.message,
+                { files: applyResult.files },
+              ),
+            };
+          }),
+        };
+      } else {
+        // All patches applied successfully — mark each action as completed
+        const allFiles = applyResult.files;
+        currentPlan = {
+          ...currentPlan,
+          proposedActions: currentPlan.proposedActions.map((a) => {
+            if (a.type !== "apply_patch") return a;
+            if (!patchActions.find((p) => p.id === a.id)) return a;
+            appliedPatchIds.push(a.id);
+            return {
+              ...a,
+              fingerprint: ensureFingerprint(a),
+              status: "completed" as const,
+              executed: true,
+              executionResult: createExecutionResult(
+                true,
+                `Patch 已应用（${allFiles.length} files）`,
+                {
+                  files: allFiles,
+                  snapshotId: batchSnapshotId,
+                  snapshotFiles: batchSnapshotFiles,
+                },
+              ),
+            };
+          }),
+        };
+      }
+    }
+  } else {
+    // Non-atomic: apply patches one-by-one (single patch or no group)
+    for (const action of patchActions) {
+      currentPlan = await approveAction(currentPlan, action.id, workspacePath);
+      const updatedAction = currentPlan.proposedActions.find(
+        (a) => a.id === action.id
+      );
+      if (updatedAction?.executionResult?.success) {
+        appliedPatchIds.push(action.id);
+      } else {
+        batchFailed = true;
+        break;
+      }
     }
   }
 
