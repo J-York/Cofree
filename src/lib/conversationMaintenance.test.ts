@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getWorkspaceApprovalRuleStorageKey } from "./approvalRuleStore";
 import {
   clearAllConversations,
   clearWorkspaceConversations,
@@ -83,9 +84,11 @@ describe("conversationMaintenance", () => {
     window.localStorage.setItem(workspaceA.listKey, "list-a");
     window.localStorage.setItem(workspaceA.activeKey, "conv-a");
     window.localStorage.setItem(workspaceA.conversationKey("conv-a"), "payload-a");
+    window.localStorage.setItem(getWorkspaceApprovalRuleStorageKey("/repo/a"), '{"rules":[{"kind":"shell_command_prefix","commandTokens":["git"]}]}');
     window.localStorage.setItem(workspaceB.listKey, "list-b");
     window.localStorage.setItem(workspaceB.activeKey, "conv-b");
     window.localStorage.setItem(workspaceB.conversationKey("conv-b"), "payload-b");
+    window.localStorage.setItem(getWorkspaceApprovalRuleStorageKey("/repo/b"), '{"rules":[{"kind":"shell_command_prefix","commandTokens":["npm"]}]}');
     window.localStorage.setItem("unrelated", "keep");
 
     clearWorkspaceConversations("/repo/a");
@@ -93,8 +96,10 @@ describe("conversationMaintenance", () => {
     expect(window.localStorage.getItem(workspaceA.listKey)).toBeNull();
     expect(window.localStorage.getItem(workspaceA.activeKey)).toBeNull();
     expect(window.localStorage.getItem(workspaceA.conversationKey("conv-a"))).toBeNull();
+    expect(window.localStorage.getItem(getWorkspaceApprovalRuleStorageKey("/repo/a"))).toBeNull();
     expect(window.localStorage.getItem(workspaceB.listKey)).toBe("list-b");
     expect(window.localStorage.getItem(workspaceB.conversationKey("conv-b"))).toBe("payload-b");
+    expect(window.localStorage.getItem(getWorkspaceApprovalRuleStorageKey("/repo/b"))).not.toBeNull();
     expect(window.localStorage.getItem("unrelated")).toBe("keep");
 
     const dispatchEvent = vi.mocked(window.dispatchEvent);
@@ -111,6 +116,8 @@ describe("conversationMaintenance", () => {
     window.localStorage.setItem(workspaceA.listKey, "list-a");
     window.localStorage.setItem(workspaceA.conversationKey("conv-a"), "payload-a");
     window.localStorage.setItem(workspaceB.activeKey, "conv-b");
+    window.localStorage.setItem(getWorkspaceApprovalRuleStorageKey("/repo/a"), '{"rules":[{"kind":"shell_command_prefix","commandTokens":["git"]}]}');
+    window.localStorage.setItem(getWorkspaceApprovalRuleStorageKey("/repo/b"), '{"rules":[{"kind":"shell_command_prefix","commandTokens":["npm"]}]}');
     window.localStorage.setItem(`${CONVERSATIONS_STORAGE_KEY}.legacy`, "legacy");
     window.localStorage.setItem("unrelated", "keep");
 
@@ -119,6 +126,8 @@ describe("conversationMaintenance", () => {
     expect(window.localStorage.getItem(workspaceA.listKey)).toBeNull();
     expect(window.localStorage.getItem(workspaceA.conversationKey("conv-a"))).toBeNull();
     expect(window.localStorage.getItem(workspaceB.activeKey)).toBeNull();
+    expect(window.localStorage.getItem(getWorkspaceApprovalRuleStorageKey("/repo/a"))).toBeNull();
+    expect(window.localStorage.getItem(getWorkspaceApprovalRuleStorageKey("/repo/b"))).toBeNull();
     expect(window.localStorage.getItem(`${CONVERSATIONS_STORAGE_KEY}.legacy`)).toBeNull();
     expect(window.localStorage.getItem("unrelated")).toBe("keep");
 

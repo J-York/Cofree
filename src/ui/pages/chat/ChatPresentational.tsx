@@ -10,6 +10,10 @@ import {
   canReviewAction,
 } from "../../utils/chatUtils";
 import { updateActionPayload } from "../../../orchestrator/hitlService";
+import {
+  buildApprovalRuleOptions,
+  type ApprovalRuleOption,
+} from "../../../lib/approvalRuleStore";
 import type { ChatContextAttachment } from "../../../lib/contextAttachments";
 import type { ToolExecutionTrace } from "../../../orchestrator/planningService";
 import type {
@@ -482,6 +486,7 @@ function PlanActionCard({
     messageId: string,
     actionId: string,
     plan: OrchestrationPlan,
+    rememberOption?: ApprovalRuleOption,
   ) => Promise<void>;
   onRetry: (
     messageId: string,
@@ -491,6 +496,12 @@ function PlanActionCard({
   onReject: (messageId: string, actionId: string) => void;
   onComment: (messageId: string, actionId: string) => void;
 }) {
+  const approvalOptions = buildApprovalRuleOptions(action);
+  const [rememberOptionKey, setRememberOptionKey] = useState("");
+  const selectedRememberOption = approvalOptions.find(
+    (option) => option.key === rememberOptionKey,
+  );
+
   return (
     <li className="action-item">
       <div className="action-header">
@@ -522,14 +533,35 @@ function PlanActionCard({
       )}
 
       <div className="action-footer">
+        {canApproveAction(action) && approvalOptions.length > 0 && (
+          <select
+            className="select action-approval-select"
+            disabled={Boolean(executingActionId)}
+            onChange={(event) => setRememberOptionKey(event.target.value)}
+            value={rememberOptionKey}
+          >
+            <option value="">仅本次批准</option>
+            {approvalOptions.map((option) => (
+              <option key={option.key} value={option.key}>
+                当前工作区始终允许：{option.label}
+              </option>
+            ))}
+          </select>
+        )}
         {canApproveAction(action) && (
           <button
             className="btn btn-primary btn-sm"
             disabled={Boolean(executingActionId)}
-            onClick={() => void onApprove(messageId, action.id, plan)}
+            onClick={() =>
+              void onApprove(messageId, action.id, plan, selectedRememberOption)
+            }
             type="button"
           >
-            {executingActionId === action.id ? "执行中…" : "✓ 批准"}
+            {executingActionId === action.id
+              ? "执行中…"
+              : selectedRememberOption
+                ? "✓ 批准并记住"
+                : "✓ 批准"}
           </button>
         )}
         {canRetryAction(action) && (
@@ -590,6 +622,7 @@ export function InlinePlan({
     messageId: string,
     actionId: string,
     plan: OrchestrationPlan,
+    rememberOption?: ApprovalRuleOption,
   ) => Promise<void>;
   onRetry: (
     messageId: string,

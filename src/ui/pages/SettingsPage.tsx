@@ -917,7 +917,7 @@ export function SettingsPage({
                     <div>
                       <h3 className="settings-card-title">清空历史</h3>
                       <p className="settings-card-desc">
-                        可按范围删除对话记录。当前工作区清理只影响本工作区；全局清理会删除所有工作区记录。
+                        可按范围删除对话记录，以及你在审批时保存的本地信任规则。当前工作区清理只影响本工作区；全局清理会删除所有工作区记录。
                       </p>
                     </div>
                   </div>
@@ -964,8 +964,8 @@ export function SettingsPage({
                       type="button"
                     >
                       {clearScope === "workspace"
-                        ? "清空当前工作区对话记录"
-                        : "清空所有工作区对话记录"}
+                        ? "清空当前工作区数据"
+                        : "清空所有工作区数据"}
                     </button>
                   )}
                 </div>

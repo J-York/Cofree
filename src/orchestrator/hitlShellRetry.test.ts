@@ -80,6 +80,34 @@ describe("HITL shell retry flow", () => {
         expect(nextPlan.steps[0].note).toContain("meaningful stderr");
     });
 
+    it("records remembered workspace-rule approvals in execution metadata", async () => {
+        vi.mocked(invoke).mockResolvedValue({
+            success: true,
+            command: "npm test",
+            timed_out: false,
+            status: 0,
+            stdout: "passed",
+            stderr: "",
+        });
+
+        const nextPlan = await approveAction(
+            createShellPlan(),
+            "shell-1",
+            "workspace",
+            {
+                approvalMode: "remember_workspace_rule",
+                approvalRuleLabel: "npm xxx",
+                approvalRuleKind: "shell_command_prefix",
+            },
+        );
+
+        expect(nextPlan.proposedActions[0]?.executionResult?.metadata).toMatchObject({
+            approvalMode: "remember_workspace_rule",
+            approvalRuleLabel: "npm xxx",
+            approvalRuleKind: "shell_command_prefix",
+        });
+    });
+
     it("creates a fresh pending shell action identity for retry", () => {
         const failedPlan: OrchestrationPlan = {
             ...createShellPlan(),

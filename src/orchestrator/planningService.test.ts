@@ -69,6 +69,7 @@ vi.mock("../lib/litellm", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { addWorkspaceApprovalRule } from "../lib/approvalRuleStore";
 import { postLiteLLMChatCompletions, type LiteLLMMessage } from "../lib/litellm";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { DEFAULT_SETTINGS, type AppSettings } from "../lib/settingsStore";
@@ -80,14 +81,42 @@ import {
 import { clearOldToolUses } from "./contextBudget";
 
 function createSettings(): AppSettings {
-    return {
+  return {
         ...DEFAULT_SETTINGS,
         apiKey: "",
         allowCloudModels: true,
         workspacePath: "d:/Code/cofree",
         provider: "Test Vendor",
         model: "test-model",
-    };
+  };
+}
+
+class MemoryStorage implements Storage {
+  private data = new Map<string, string>();
+
+  get length(): number {
+    return this.data.size;
+  }
+
+  clear(): void {
+    this.data.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.data.get(key) ?? null;
+  }
+
+  key(index: number): string | null {
+    return Array.from(this.data.keys())[index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.data.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.data.set(key, value);
+  }
 }
 
 describe("planningService approval-flow repair", () => {
@@ -284,6 +313,64 @@ describe("planningService approval-flow repair", () => {
         expect(payload).not.toHaveProperty("ok");
         expect(payload).not.toHaveProperty("auto_executed");
         expect(typeof payload.action_id).toBe("string");
+    });
+
+    it("auto-executes shell proposals when a workspace approval rule matches", async () => {
+        vi.stubGlobal("window", { localStorage: new MemoryStorage() });
+        addWorkspaceApprovalRule("d:/Code/cofree", {
+            kind: "shell_command_prefix",
+            commandTokens: ["git", "add"],
+        });
+        vi.mocked(invoke).mockImplementation(async (command: string, args?: any) => {
+            if (command === "run_shell_command") {
+                expect(args).toMatchObject({
+                    workspacePath: "d:/Code/cofree",
+                    shell: "git add src/app.ts",
+                    timeoutMs: 120000,
+                });
+                return {
+                    success: true,
+                    command: "git add src/app.ts",
+                    timed_out: false,
+                    status: 0,
+                    stdout: "ok",
+                    stderr: "",
+                };
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const result = await planningServiceTestUtils.executeToolCall(
+            {
+                id: "tool-auto-rule",
+                type: "function",
+                function: {
+                    name: "propose_shell",
+                    arguments: JSON.stringify({
+                        shell: "git add src/app.ts",
+                    }),
+                },
+            },
+            "d:/Code/cofree",
+            {
+                ...DEFAULT_SETTINGS.toolPermissions,
+                propose_shell: "ask",
+            },
+        );
+
+        const payload = JSON.parse(result.content) as Record<string, unknown>;
+
+        expect(result.success).toBe(true);
+        expect(result.proposedAction).toBeUndefined();
+        expect(payload).toMatchObject({
+            ok: true,
+            action_type: "shell",
+            auto_executed: true,
+            approval_source: "workspace_rule",
+            approval_rule_matched: true,
+            approval_rule_kind: "shell_command_prefix",
+            approval_rule_label: "git add xxx",
+        });
     });
 
     it("drops a pending shell approval when the fingerprint is blocked", () => {

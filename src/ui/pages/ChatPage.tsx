@@ -21,6 +21,10 @@ import {
 import { migrateGlobalToWorkspace } from "../../lib/conversationMaintenance";
 import { loadCofreeRc } from "../../lib/cofreerc";
 import {
+  addWorkspaceApprovalRule,
+  type ApprovalRuleOption,
+} from "../../lib/approvalRuleStore";
+import {
   dedupeContextAttachments,
   type ChatContextAttachment,
 } from "../../lib/contextAttachments";
@@ -1151,7 +1155,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   const handleApproveAction = async (
     messageId: string,
     actionId: string,
-    plan: OrchestrationPlan
+    plan: OrchestrationPlan,
+    rememberOption?: ApprovalRuleOption,
   ): Promise<void> => {
     if (executingActionId) return;
     setExecutingActionId(actionId);
@@ -1159,13 +1164,40 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     const runningPlan = markActionRunning(plan, actionId);
     handlePlanUpdate(messageId, () => runningPlan);
     try {
+      let rememberMessage = "";
+      let approvalContext:
+        | {
+          approvalMode: "remember_workspace_rule";
+          approvalRuleLabel: string;
+          approvalRuleKind: string;
+        }
+        | undefined;
+      if (rememberOption) {
+        try {
+          const { added } = addWorkspaceApprovalRule(
+            settings.workspacePath,
+            rememberOption.rule,
+          );
+          rememberMessage = added
+            ? `，并已在当前工作区记住“${rememberOption.label}”`
+            : `；当前工作区规则“${rememberOption.label}”已存在`;
+          approvalContext = {
+            approvalMode: "remember_workspace_rule",
+            approvalRuleLabel: rememberOption.label,
+            approvalRuleKind: rememberOption.rule.kind,
+          };
+        } catch (error) {
+          rememberMessage = `；规则保存失败：${error instanceof Error ? error.message : "未知错误"}`;
+        }
+      }
       const nextPlan = await approveAction(
         runningPlan,
         actionId,
-        settings.workspacePath
+        settings.workspacePath,
+        approvalContext,
       );
       handlePlanUpdate(messageId, () => nextPlan);
-      setSessionNote(`动作 ${actionId} 已执行 · 状态：${nextPlan.state}`);
+      setSessionNote(`动作 ${actionId} 已执行${rememberMessage} · 状态：${nextPlan.state}`);
       continueAfterHitlIfNeeded(messageId, nextPlan);
     } catch (error) {
       const reason =

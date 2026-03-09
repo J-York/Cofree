@@ -48,6 +48,12 @@ interface CommandExecutionResult {
   stderr: string;
 }
 
+export interface ManualApprovalContext {
+  approvalMode?: "manual" | "remember_workspace_rule";
+  approvalRuleLabel?: string;
+  approvalRuleKind?: string;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -585,7 +591,8 @@ export async function approveAllPendingActions(
 export async function approveAction(
   plan: OrchestrationPlan,
   actionId: string,
-  workspacePath: string
+  workspacePath: string,
+  approvalContext?: ManualApprovalContext,
 ): Promise<OrchestrationPlan> {
   const action = plan.proposedActions.find((entry) => entry.id === actionId);
   if (!action) {
@@ -678,6 +685,9 @@ export async function approveAction(
     metadata: {
       ...(result.metadata ?? {}),
       executor,
+      approvalMode: approvalContext?.approvalMode ?? "manual",
+      approvalRuleLabel: approvalContext?.approvalRuleLabel ?? null,
+      approvalRuleKind: approvalContext?.approvalRuleKind ?? null,
     },
   };
 

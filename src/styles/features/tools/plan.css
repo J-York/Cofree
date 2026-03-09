@@ -240,3 +240,8 @@
   padding-top: 8px;
   border-top: 1px solid var(--border-1);
 }
+
+.action-approval-select {
+  min-width: 220px;
+  max-width: 320px;
+}

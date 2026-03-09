@@ -7,6 +7,9 @@
 
 import { normalizeChatMessages, type ChatMessageRecord } from "./chatHistoryStore";
 import type { ConversationAgentBinding } from "../agents/types";
+import { workspaceHash } from "./workspaceStorage";
+
+export { workspaceHash } from "./workspaceStorage";
 
 export const CONVERSATIONS_STORAGE_KEY = "cofree.conversations.v1";
 export const ACTIVE_CONVERSATION_KEY = "cofree.activeConversation.v1";
@@ -36,19 +39,6 @@ interface WorkspaceStorageKeys {
   workspacePrefix: string;
   listKey: string;
   activeKey: string;
-}
-
-/**
- * djb2 hash of a string, returned as a short base36 string.
- * Falls back to "default" if path is empty/undefined.
- */
-export function workspaceHash(workspacePath: string): string {
-  if (!workspacePath) return "default";
-  let hash = 5381;
-  for (let i = 0; i < workspacePath.length; i++) {
-    hash = ((hash << 5) + hash + workspacePath.charCodeAt(i)) >>> 0;
-  }
-  return hash.toString(36);
 }
 
 function isBrowserStorageAvailable(): boolean {

@@ -1,5 +1,9 @@
 import type { ModelSelection } from "./modelSelection";
 import {
+  APPROVAL_RULE_STORAGE_KEY_PREFIX,
+  getWorkspaceApprovalRuleStorageKey,
+} from "./approvalRuleStore";
+import {
   ACTIVE_CONVERSATION_KEY,
   CONVERSATIONS_STORAGE_KEY,
   type ConversationMetadata,
@@ -74,6 +78,15 @@ function collectWorkspaceConversationKeys(workspacePath: string): string[] {
   return keysToRemove;
 }
 
+function collectWorkspaceApprovalRuleKeys(workspacePath: string): string[] {
+  if (!isBrowserStorageAvailable()) {
+    return [];
+  }
+
+  const storageKey = getWorkspaceApprovalRuleStorageKey(workspacePath);
+  return window.localStorage.getItem(storageKey) === null ? [] : [storageKey];
+}
+
 function collectAllConversationKeys(): string[] {
   if (!isBrowserStorageAvailable()) {
     return [];
@@ -87,6 +100,23 @@ function collectAllConversationKeys(): string[] {
       key &&
       (key.startsWith(CONVERSATIONS_STORAGE_KEY) || key.startsWith(ACTIVE_CONVERSATION_KEY))
     ) {
+      keysToRemove.push(key);
+    }
+  }
+
+  return keysToRemove;
+}
+
+function collectAllApprovalRuleKeys(): string[] {
+  if (!isBrowserStorageAvailable()) {
+    return [];
+  }
+
+  const keysToRemove: string[] = [];
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (key && key.startsWith(APPROVAL_RULE_STORAGE_KEY_PREFIX)) {
       keysToRemove.push(key);
     }
   }
@@ -118,7 +148,10 @@ export function clearWorkspaceConversations(workspacePath: string): void {
   }
 
   try {
-    const keysToRemove = collectWorkspaceConversationKeys(workspacePath);
+    const keysToRemove = [
+      ...collectWorkspaceConversationKeys(workspacePath),
+      ...collectWorkspaceApprovalRuleKeys(workspacePath),
+    ];
     removeStorageKeys(keysToRemove);
     emitConversationStoreEvent({ type: "workspace-cleared", workspacePath });
 
@@ -138,7 +171,10 @@ export function clearAllConversations(): void {
   }
 
   try {
-    const keysToRemove = collectAllConversationKeys();
+    const keysToRemove = [
+      ...collectAllConversationKeys(),
+      ...collectAllApprovalRuleKeys(),
+    ];
     removeStorageKeys(keysToRemove);
     emitConversationStoreEvent({ type: "all-cleared" });
 

@@ -26,6 +26,11 @@ import {
   type AppSettings,
   type ToolPermissions,
 } from "../lib/settingsStore";
+import {
+  describeApprovalRule,
+  findMatchingApprovalRule,
+  type ApprovalRule,
+} from "../lib/approvalRuleStore";
 import type {
   ActionProposal,
   OrchestrationPlan,
@@ -2082,6 +2087,117 @@ function resultPreview(content: string): string {
   return content.slice(0, MAX_TOOL_RESULT_PREVIEW);
 }
 
+function buildAutoApprovalMeta(
+  source: "tool_permission" | "workspace_rule" | null,
+  matchedRule?: ApprovalRule | null,
+): Record<string, unknown> {
+  if (!source) {
+    return {};
+  }
+
+  return {
+    approval_source: source,
+    approval_rule_matched: source === "workspace_rule",
+    approval_rule_kind:
+      source === "workspace_rule" ? matchedRule?.kind ?? null : null,
+    approval_rule_label:
+      source === "workspace_rule" && matchedRule
+        ? describeApprovalRule(matchedRule)
+        : null,
+  };
+}
+
+async function autoExecutePatchProposal(params: {
+  workspacePath: string;
+  patch: string;
+  responseMeta?: Record<string, unknown>;
+  autoApprovalMeta?: Record<string, unknown>;
+}): Promise<ToolExecutionResult> {
+  const snapshot = await invoke<{
+    success: boolean;
+    snapshot_id: string;
+    files: string[];
+  }>("create_workspace_snapshot", {
+    workspacePath: params.workspacePath,
+    patch: params.patch,
+  });
+  const applyResult = await invoke<PatchApplyResult>(
+    "apply_workspace_patch",
+    { workspacePath: params.workspacePath, patch: params.patch }
+  );
+  if (!applyResult.success && snapshot.success) {
+    await invoke<PatchApplyResult>("restore_workspace_snapshot", {
+      workspacePath: params.workspacePath,
+      snapshotId: snapshot.snapshot_id,
+    });
+  }
+
+  const responsePayload: Record<string, unknown> = {
+    ok: applyResult.success,
+    action_type: "apply_patch",
+    auto_executed: true,
+    patch_length: params.patch.length,
+    files: applyResult.files,
+    message: applyResult.message,
+    ...(params.responseMeta ?? {}),
+    ...(params.autoApprovalMeta ?? {}),
+  };
+  if (applyResult.success) {
+    const diagnostics = await fetchPostPatchDiagnostics(
+      params.workspacePath,
+      applyResult.files
+    );
+    if (diagnostics.hasDiagnostics) {
+      responsePayload.diagnostics = diagnostics.summary;
+    }
+  }
+
+  return {
+    content: JSON.stringify(responsePayload),
+    success: applyResult.success,
+    errorCategory: applyResult.success ? undefined : "validation",
+    errorMessage: applyResult.success ? undefined : applyResult.message,
+  };
+}
+
+async function autoExecuteShellProposal(params: {
+  workspacePath: string;
+  shell: string;
+  timeoutMs: number;
+  autoApprovalMeta?: Record<string, unknown>;
+}): Promise<ToolExecutionResult> {
+  const cmdResult = await invoke<{
+    success: boolean;
+    command: string;
+    timed_out: boolean;
+    status: number;
+    stdout: string;
+    stderr: string;
+  }>("run_shell_command", {
+    workspacePath: params.workspacePath,
+    shell: params.shell,
+    timeoutMs: params.timeoutMs,
+  });
+  return {
+    content: JSON.stringify({
+      ok: cmdResult.success,
+      action_type: "shell",
+      auto_executed: true,
+      shell: params.shell,
+      stdout: cmdResult.stdout,
+      stderr: cmdResult.stderr,
+      exit_code: cmdResult.status,
+      timed_out: cmdResult.timed_out,
+      ...(params.autoApprovalMeta ?? {}),
+    }),
+    success: cmdResult.success,
+    errorCategory: cmdResult.success ? undefined : "validation",
+    errorMessage: cmdResult.success
+      ? undefined
+      : `命令执行失败 (exit ${cmdResult.status})`,
+  };
+}
+
 function parseJsonObject(value: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(value);
@@ -3114,50 +3230,6 @@ async function executeToolCall(
           errorMessage: message,
         };
       }
-      if (toolPermissions.propose_apply_patch === "auto") {
-        const snapshot = await invoke<{
-          success: boolean;
-          snapshot_id: string;
-          files: string[];
-        }>("create_workspace_snapshot", {
-          workspacePath: safeWorkspace,
-          patch,
-        });
-        const applyResult = await invoke<PatchApplyResult>(
-          "apply_workspace_patch",
-          { workspacePath: safeWorkspace, patch }
-        );
-        if (!applyResult.success && snapshot.success) {
-          await invoke<PatchApplyResult>("restore_workspace_snapshot", {
-            workspacePath: safeWorkspace,
-            snapshotId: snapshot.snapshot_id,
-          });
-        }
-        const responsePayload: Record<string, unknown> = {
-          ok: applyResult.success,
-          action_type: "apply_patch",
-          auto_executed: true,
-          patch_length: patch.length,
-          files: applyResult.files,
-          message: applyResult.message,
-        };
-        if (applyResult.success) {
-          const diagnostics = await fetchPostPatchDiagnostics(
-            safeWorkspace,
-            applyResult.files
-          );
-          if (diagnostics.hasDiagnostics) {
-            responsePayload.diagnostics = diagnostics.summary;
-          }
-        }
-        return {
-          content: JSON.stringify(responsePayload),
-          success: applyResult.success,
-          errorCategory: applyResult.success ? undefined : "validation",
-          errorMessage: applyResult.success ? undefined : applyResult.message,
-        };
-      }
-
       const actionBase: ActionProposal = {
         id: createActionId("gate-a-apply-patch"),
         toolCallId: call.id,
@@ -3179,6 +3251,20 @@ async function executeToolCall(
         ...actionBase,
         fingerprint: actionFingerprint(actionBase),
       };
+      const matchedRule = findMatchingApprovalRule(safeWorkspace, action);
+      const autoApprovalSource =
+        toolPermissions.propose_apply_patch === "auto"
+          ? "tool_permission"
+          : matchedRule
+            ? "workspace_rule"
+            : null;
+      if (autoApprovalSource) {
+        return autoExecutePatchProposal({
+          workspacePath: safeWorkspace,
+          patch,
+          autoApprovalMeta: buildAutoApprovalMeta(autoApprovalSource, matchedRule),
+        });
+      }
       return {
         content: JSON.stringify({
           ok: true,
@@ -3544,51 +3630,6 @@ async function executeToolCall(
         };
       }
 
-      if (toolPermissions.propose_file_edit === "auto") {
-        const snapshot = await invoke<{
-          success: boolean;
-          snapshot_id: string;
-          files: string[];
-        }>("create_workspace_snapshot", {
-          workspacePath: safeWorkspace,
-          patch,
-        });
-        const applyResult = await invoke<PatchApplyResult>(
-          "apply_workspace_patch",
-          { workspacePath: safeWorkspace, patch }
-        );
-        if (!applyResult.success && snapshot.success) {
-          await invoke<PatchApplyResult>("restore_workspace_snapshot", {
-            workspacePath: safeWorkspace,
-            snapshotId: snapshot.snapshot_id,
-          });
-        }
-        const responsePayload: Record<string, unknown> = {
-          ok: applyResult.success,
-          action_type: "apply_patch",
-          auto_executed: true,
-          patch_length: patch.length,
-          files: applyResult.files,
-          message: applyResult.message,
-          ...responseMeta,
-        };
-        if (applyResult.success) {
-          const diagnostics = await fetchPostPatchDiagnostics(
-            safeWorkspace,
-            applyResult.files
-          );
-          if (diagnostics.hasDiagnostics) {
-            responsePayload.diagnostics = diagnostics.summary;
-          }
-        }
-        return {
-          content: JSON.stringify(responsePayload),
-          success: applyResult.success,
-          errorCategory: applyResult.success ? undefined : "validation",
-          errorMessage: applyResult.success ? undefined : applyResult.message,
-        };
-      }
-
       const action: ActionProposal = {
         id: createActionId("gate-a-apply-patch"),
         toolCallId: call.id,
@@ -3607,6 +3648,21 @@ async function executeToolCall(
         },
       };
       action.fingerprint = actionFingerprint(action);
+      const matchedRule = findMatchingApprovalRule(safeWorkspace, action);
+      const autoApprovalSource =
+        toolPermissions.propose_file_edit === "auto"
+          ? "tool_permission"
+          : matchedRule
+            ? "workspace_rule"
+            : null;
+      if (autoApprovalSource) {
+        return autoExecutePatchProposal({
+          workspacePath: safeWorkspace,
+          patch,
+          responseMeta,
+          autoApprovalMeta: buildAutoApprovalMeta(autoApprovalSource, matchedRule),
+        });
+      }
       return {
         content: JSON.stringify({
           ok: true,
@@ -3645,38 +3701,6 @@ async function executeToolCall(
           errorMessage: message,
         };
       }
-      if (toolPermissions.propose_shell === "auto") {
-        const cmdResult = await invoke<{
-          success: boolean;
-          command: string;
-          timed_out: boolean;
-          status: number;
-          stdout: string;
-          stderr: string;
-        }>("run_shell_command", {
-          workspacePath: safeWorkspace,
-          shell,
-          timeoutMs: timeout,
-        });
-        return {
-          content: JSON.stringify({
-            ok: cmdResult.success,
-            action_type: "shell",
-            auto_executed: true,
-            shell,
-            stdout: cmdResult.stdout,
-            stderr: cmdResult.stderr,
-            exit_code: cmdResult.status,
-            timed_out: cmdResult.timed_out,
-          }),
-          success: cmdResult.success,
-          errorCategory: cmdResult.success ? undefined : "validation",
-          errorMessage: cmdResult.success
-            ? undefined
-            : `命令执行失败 (exit ${cmdResult.status})`,
-        };
-      }
-
       const action: ActionProposal = {
         id: createActionId("gate-shell"),
         toolCallId: call.id,
@@ -3693,6 +3717,21 @@ async function executeToolCall(
         },
       };
       action.fingerprint = actionFingerprint(action);
+      const matchedRule = findMatchingApprovalRule(safeWorkspace, action);
+      const autoApprovalSource =
+        toolPermissions.propose_shell === "auto"
+          ? "tool_permission"
+          : matchedRule
+            ? "workspace_rule"
+            : null;
+      if (autoApprovalSource) {
+        return autoExecuteShellProposal({
+          workspacePath: safeWorkspace,
+          shell,
+          timeoutMs: timeout,
+          autoApprovalMeta: buildAutoApprovalMeta(autoApprovalSource, matchedRule),
+        });
+      }
       return {
         content: JSON.stringify({
           action_type: "shell",
