@@ -91,6 +91,7 @@ export interface AppSettings {
   liteLLMBaseUrl: string;
   provider?: string;
   model: string;
+  debugMode: boolean;
   allowCloudModels: boolean;
   maxSnippetLines: 200 | 500 | 2000;
   maxContextTokens: number;
@@ -217,6 +218,7 @@ function createInitialSettings(): AppSettings {
     liteLLMBaseUrl: defaults.vendor.baseUrl,
     provider: defaults.vendor.name,
     model: defaults.model.name,
+    debugMode: false,
     allowCloudModels: true,
     maxSnippetLines: 500,
     maxContextTokens: 128000,
@@ -837,6 +839,7 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
     ...DEFAULT_SETTINGS,
     ...parsed,
     apiKey: "",
+    debugMode: parsed.debugMode === true,
     workspacePath: normalizedWorkspacePath,
     recentWorkspaces: normalizedRecentWorkspaces,
     activeVendorId:

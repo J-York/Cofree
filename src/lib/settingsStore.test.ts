@@ -103,6 +103,17 @@ describe("settingsStore managed model thinking", () => {
     });
   });
 
+  it("persists debug mode when saved and reloaded", () => {
+    saveSettings({
+      ...DEFAULT_SETTINGS,
+      debugMode: true,
+    });
+
+    const loaded = loadSettings();
+
+    expect(loaded.debugMode).toBe(true);
+  });
+
   it("loads recent workspaces with the active workspace pinned first", () => {
     window.localStorage.setItem(
       SETTINGS_STORAGE_KEY_V3,

@@ -1517,7 +1517,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                           role={message.role}
                         />
                       </div>
-                      {message.role === "assistant" && (
+                      {message.role === "assistant" && settings.debugMode && (
                         <AssistantToolCalls toolCalls={message.tool_calls} />
                       )}
                       {message.role === "assistant" &&

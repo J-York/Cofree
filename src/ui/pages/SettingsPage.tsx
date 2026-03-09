@@ -891,6 +891,30 @@ export function SettingsPage({
                 <div className="settings-card">
                   <div className="settings-card-header">
                     <div>
+                      <h3 className="settings-card-title">调试视图</h3>
+                      <p className="settings-card-desc">
+                        控制聊天页是否显示模型原始工具请求等调试信息。
+                      </p>
+                    </div>
+                  </div>
+                  <label className="field-checkbox">
+                    <input
+                      checked={draft.debugMode}
+                      onChange={(e) =>
+                        setDraft((current) => ({
+                          ...current,
+                          debugMode: e.target.checked,
+                        }))
+                      }
+                      type="checkbox"
+                    />
+                    <span>启用调试模式</span>
+                  </label>
+                </div>
+
+                <div className="settings-card">
+                  <div className="settings-card-header">
+                    <div>
                       <h3 className="settings-card-title">清空历史</h3>
                       <p className="settings-card-desc">
                         可按范围删除对话记录。当前工作区清理只影响本工作区；全局清理会删除所有工作区记录。
