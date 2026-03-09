@@ -1387,6 +1387,11 @@ export interface RunPlanningSessionInput {
     toolTrace: ToolExecutionTrace[];
     assistantReply: string;
   }) => void;
+  /** Called when the plan state (todo list) or proposed actions list changes during the tool loop. */
+  onPlanStateUpdate?: (
+    planState: TodoPlanState,
+    proposedActions: ActionProposal[]
+  ) => void;
 }
 
 export interface PlanningSessionResult {
@@ -2929,7 +2934,7 @@ async function executeToolCall(
       if (!startLine && !endLine && workingMemory && turn !== undefined) {
         const existing = workingMemory.fileKnowledge.get(relativePath);
         if (existing && existing.lastReadTurn !== undefined
-            && (turn - existing.lastReadTurn) < DEDUP_TURN_WINDOW) {
+          && (turn - existing.lastReadTurn) < DEDUP_TURN_WINDOW) {
           return {
             success: true,
             content: JSON.stringify({
@@ -4457,6 +4462,7 @@ async function runNativeToolCallingLoop(
   onContextUpdate?: (estimatedTokens: number) => void,
   onSubAgentProgress?: (role: string, event: SubAgentProgressEvent) => void,
   onLoopCheckpoint?: RunPlanningSessionInput["onLoopCheckpoint"],
+  onPlanStateUpdate?: RunPlanningSessionInput["onPlanStateUpdate"],
 ): Promise<{
   assistantReply: string;
   requestRecords: RequestRecord[];
@@ -4829,9 +4835,9 @@ async function runNativeToolCallingLoop(
 
     // Helper: execute a single tool call and collect results
     const executeSingleToolCall = async (toolCall: ToolCallRecord) => {
-        onToolCallEvent?.({
-          type: "start",
-          callId: toolCall.id,
+      onToolCallEvent?.({
+        type: "start",
+        callId: toolCall.id,
         toolName: toolCall.function.name,
         argsPreview: summarizeToolArgs(toolCall.function.name, toolCall.function.arguments),
       });
@@ -5026,9 +5032,16 @@ async function runNativeToolCallingLoop(
     const otherCalls = completion.toolCalls.filter((tc) => tc.function.name !== "task");
 
     // Execute non-task tools serially (they may have ordering dependencies)
+    let planMutatedThisTurn = false;
     for (const toolCall of otherCalls) {
       const { toolResult, trace } = await executeSingleToolCall(toolCall);
       processToolResult(toolCall, toolResult, trace);
+      if (
+        toolCall.function.name === "update_plan" ||
+        toolCall.function.name.startsWith("propose_")
+      ) {
+        planMutatedThisTurn = true;
+      }
     }
 
     // Execute task calls in parallel (with concurrency limit)
@@ -5042,6 +5055,9 @@ async function runNativeToolCallingLoop(
         if (settled.status === "fulfilled") {
           const { toolCall, toolResult, trace } = settled.value;
           processToolResult(toolCall, toolResult, trace);
+          if (toolResult.proposedAction) {
+            planMutatedThisTurn = true;
+          }
         } else {
           console.error(`[Orchestrator] 并行 Sub-Agent 执行异常:`, settled.reason);
         }
@@ -5049,6 +5065,18 @@ async function runNativeToolCallingLoop(
     } else if (taskCalls.length === 1) {
       const { toolCall, toolResult, trace } = await executeSingleToolCall(taskCalls[0]);
       processToolResult(toolCall, toolResult, trace);
+      if (toolResult.proposedAction) {
+        planMutatedThisTurn = true;
+      }
+    }
+
+    if (planMutatedThisTurn && onPlanStateUpdate) {
+      try {
+        const clonedActions = JSON.parse(JSON.stringify(proposedActions));
+        onPlanStateUpdate(clonePlanState(planState), clonedActions);
+      } catch (err) {
+        console.warn(`[Loop] onPlanStateUpdate failed:`, err);
+      }
     }
 
     // Notify caller of updated context size after all tool results are added
@@ -5479,7 +5507,7 @@ function buildProposedActions(
   return uniqueActions;
 }
 
-function initializePlan(
+export function initializePlan(
   prompt: string,
   settings: AppSettings,
   proposedActions: ActionProposal[],
@@ -5944,7 +5972,11 @@ export async function runPlanningSession(
       input.onContextUpdate,
       input.onSubAgentProgress,
       input.onLoopCheckpoint,
+      input.onPlanStateUpdate,
     );
+
+    // Filter out internal tools from the final `assistantToolCalls` so that
+    // the UI message object only contains user-facing proposed actions.
     for (const record of loopResult.requestRecords) {
       recordLLMAudit({
         requestId: record.requestId,

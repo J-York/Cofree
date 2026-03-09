@@ -70,6 +70,7 @@ import {
 } from "../../orchestrator/hitlContinuationController";
 import {
   runPlanningSession,
+  initializePlan,
   type ToolExecutionTrace,
   type ToolCallEvent,
 } from "../../orchestrator/planningService";
@@ -961,6 +962,24 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             }
             return [...prev, { role, lastEvent: event, updatedAt: Date.now() }];
           });
+        },
+        onPlanStateUpdate: (planState, proposedActions) => {
+          guardedSetMessages((prev) =>
+            prev.map((m) => {
+              if (m.id === assistantMessageId) {
+                return {
+                  ...m,
+                  plan: initializePlan(
+                    promptText,
+                    executionSettings,
+                    proposedActions,
+                    planState
+                  ),
+                };
+              }
+              return m;
+            })
+          );
         },
       });
 
