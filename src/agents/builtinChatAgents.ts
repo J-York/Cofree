@@ -45,7 +45,7 @@ export const BUILTIN_CHAT_AGENTS: ChatAgentDefinition[] = [
     ].join("\n"),
     toolPolicy: {
       enabledTools: [
-        "list_files", "read_file", "grep", "glob",
+        "list_files", "read_file", "batch_read_files", "grep", "glob",
         "git_status", "git_diff", "diagnostics",
       ],
     },
@@ -68,7 +68,7 @@ export const BUILTIN_CHAT_AGENTS: ChatAgentDefinition[] = [
     ].join("\n"),
     toolPolicy: {
       enabledTools: [
-        "list_files", "read_file", "grep", "glob",
+        "list_files", "read_file", "batch_read_files", "grep", "glob",
         "git_status", "git_diff", "diagnostics", "fetch",
       ],
     },
@@ -90,7 +90,7 @@ export const BUILTIN_CHAT_AGENTS: ChatAgentDefinition[] = [
     ].join("\n"),
     toolPolicy: {
       enabledTools: [
-        "list_files", "read_file", "grep", "glob",
+        "list_files", "read_file", "batch_read_files", "grep", "glob",
         "git_status", "git_diff", "diagnostics", "propose_shell",
       ],
     },

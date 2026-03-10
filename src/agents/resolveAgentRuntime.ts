@@ -21,7 +21,7 @@ import { getChatAgentFromSettings } from "./builtinChatAgents";
 import type { ModelSelection } from "../lib/modelSelection";
 
 const ALL_TOOL_NAMES = [
-  "list_files", "read_file", "grep", "glob",
+  "list_files", "read_file", "batch_read_files", "grep", "glob",
   "git_status", "git_diff",
   "propose_file_edit", "propose_apply_patch", "propose_shell",
   "diagnostics", "fetch", "ask_user", "task",

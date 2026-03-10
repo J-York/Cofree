@@ -95,7 +95,7 @@ import {
 } from "./askUserService";
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
-const MAX_PARALLEL_SUB_AGENTS = 3;
+const MAX_PARALLEL_SUB_AGENTS = 5;
 const MAX_LIST_ENTRIES = 120;
 const MAX_FILE_PREVIEW_CHARS = 15000;
 const MAX_TOOL_RESULT_PREVIEW = 400;
@@ -753,6 +753,55 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
             type: "number",
             minimum: 1,
             description: "1-based end line (inclusive) for partial read. Must be used together with start_line.",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "batch_read_files",
+      description:
+        "Read multiple files in a single call. This is more efficient than calling read_file multiple times.\n\n" +
+        "Each entry in the 'paths' array specifies a workspace-relative file path, with optional start_line/end_line for partial reads.\n\n" +
+        "Returns an array of results in the same order as the input paths. Each result contains the file content (or an error if the file cannot be read).\n\n" +
+        "Use this when you need to read 2 or more files — it reduces round-trips and speeds up your workflow.\n\n" +
+        "Examples:\n" +
+        "- batch_read_files(paths=[{path:'src/app.ts'}, {path:'src/index.ts'}]) — read two full files\n" +
+        "- batch_read_files(paths=[{path:'src/a.ts', start_line:1, end_line:50}, {path:'src/b.ts'}]) — mixed partial and full reads",
+      parameters: {
+        type: "object",
+        required: ["paths"],
+        additionalProperties: false,
+        properties: {
+          paths: {
+            type: "array",
+            minItems: 1,
+            maxItems: 20,
+            description: "Array of file read specifications.",
+            items: {
+              type: "object",
+              required: ["path"],
+              additionalProperties: false,
+              properties: {
+                path: {
+                  type: "string",
+                  minLength: 1,
+                  description: "Workspace-relative file path.",
+                },
+                start_line: {
+                  type: "number",
+                  minimum: 1,
+                  description: "Optional 1-based start line for partial read.",
+                },
+                end_line: {
+                  type: "number",
+                  minimum: 1,
+                  description: "Optional 1-based end line (inclusive) for partial read.",
+                },
+              },
+            },
           },
         },
       },
@@ -3124,36 +3173,28 @@ export async function executeSubAgentTask(
     let subTurnHasToolNotFound = false;
     let subTurnSuccessCount = 0;
     let subTurnFailureCount = 0;
-    for (const toolCall of completion.toolCalls) {
-      onProgress?.({ kind: "tool_start", toolName: toolCall.function.name, turn, maxTurns });
-      const subToolT0 = performance.now();
-      const { result: toolResult, trace } = await executeToolCallWithRetry(
-        toolCall,
-        workspacePath,
-        toolPermissions,
-        settings,
-        undefined,
-        [],
-        agentDef.tools,
-        undefined,
-        workingMemory,
-        undefined,
-        signal,
-        turn,
-        inferredFocusedPaths,
-      );
-      const subToolDurationMs = performance.now() - subToolT0;
-      const subToolMs = subToolDurationMs.toFixed(0);
-      onProgress?.({
-        kind: "tool_complete",
-        toolName: toolCall.function.name,
-        success: toolResult.success !== false,
-        durationMs: Math.round(subToolDurationMs),
-      });
-      console.log(
-        `[SubAgent][Tool] ${toolCall.function.name} → ${trace.status} | ${subToolMs}ms` +
-        (trace.status === "failed" ? ` | ${trace.errorMessage}` : "")
-      );
+
+    // --- Sub-Agent parallel tool execution ---
+    // Read-only tools are safe to run in parallel; mutation tools must be serial.
+    const SUB_AGENT_PARALLEL_SAFE = new Set([
+      "read_file", "batch_read_files", "grep", "glob", "list_files",
+      "git_status", "git_diff", "diagnostics",
+    ]);
+    const MAX_SUB_AGENT_PARALLEL_READS = 8;
+
+    const subReadOnlyCalls = completion.toolCalls.filter(
+      (tc) => SUB_AGENT_PARALLEL_SAFE.has(tc.function.name),
+    );
+    const subMutationCalls = completion.toolCalls.filter(
+      (tc) => !SUB_AGENT_PARALLEL_SAFE.has(tc.function.name),
+    );
+
+    // Helper to process a single sub-agent tool result
+    const processSubToolResult = (
+      toolCall: ToolCallRecord,
+      toolResult: ToolExecutionResult,
+      trace: ToolExecutionTrace,
+    ) => {
       toolTrace.push(trace);
 
       if (toolResult.success === false) {
@@ -3200,6 +3241,66 @@ export async function executeSubAgentTask(
           toolResult.content
         ),
       });
+    };
+
+    // Helper to execute & report a single sub-agent tool call
+    const executeSubTool = async (toolCall: ToolCallRecord) => {
+      onProgress?.({ kind: "tool_start", toolName: toolCall.function.name, turn, maxTurns });
+      const subToolT0 = performance.now();
+      const { result: toolResult, trace } = await executeToolCallWithRetry(
+        toolCall,
+        workspacePath,
+        toolPermissions,
+        settings,
+        undefined,
+        [],
+        agentDef.tools,
+        undefined,
+        workingMemory,
+        undefined,
+        signal,
+        turn,
+        inferredFocusedPaths,
+      );
+      const subToolDurationMs = performance.now() - subToolT0;
+      const subToolMs = subToolDurationMs.toFixed(0);
+      onProgress?.({
+        kind: "tool_complete",
+        toolName: toolCall.function.name,
+        success: toolResult.success !== false,
+        durationMs: Math.round(subToolDurationMs),
+      });
+      console.log(
+        `[SubAgent][Tool] ${toolCall.function.name} → ${trace.status} | ${subToolMs}ms` +
+        (trace.status === "failed" ? ` | ${trace.errorMessage}` : "")
+      );
+      return { toolCall, toolResult, trace };
+    };
+
+    // 1. Execute read-only tools in parallel
+    if (subReadOnlyCalls.length > 1) {
+      console.log(`[SubAgent] 并行执行 ${subReadOnlyCalls.length} 个只读工具调用`);
+      const readResults = await runWithConcurrencyLimit(
+        subReadOnlyCalls.map((tc) => () => executeSubTool(tc)),
+        MAX_SUB_AGENT_PARALLEL_READS,
+      );
+      for (const settled of readResults) {
+        if (settled.status === "fulfilled") {
+          const { toolCall, toolResult, trace } = settled.value;
+          processSubToolResult(toolCall, toolResult, trace);
+        } else {
+          console.error(`[SubAgent] 并行只读工具执行异常:`, settled.reason);
+        }
+      }
+    } else if (subReadOnlyCalls.length === 1) {
+      const { toolCall, toolResult, trace } = await executeSubTool(subReadOnlyCalls[0]);
+      processSubToolResult(toolCall, toolResult, trace);
+    }
+
+    // 2. Execute mutation tools serially (ordering dependencies)
+    for (const tc of subMutationCalls) {
+      const { toolCall, toolResult, trace } = await executeSubTool(tc);
+      processSubToolResult(toolCall, toolResult, trace);
     }
 
     // --- Circuit breaker: tool_not_found ---
@@ -3491,6 +3592,111 @@ async function executeToolCall(
                 `推荐：先用 read_file 的 start_line/end_line 读取目标区域的精确内容，再用 propose_file_edit 的 start_line/end_line 行范围方式编辑。`,
             }
             : {}),
+        }),
+        success: true,
+      };
+    }
+
+    if (call.function.name === "batch_read_files") {
+      const paths = args.paths as Array<{
+        path: string;
+        start_line?: number;
+        end_line?: number;
+      }> | undefined;
+      if (!paths || !Array.isArray(paths) || paths.length === 0) {
+        return {
+          content: JSON.stringify({ error: "paths 数组不能为空" }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: "paths 数组不能为空",
+        };
+      }
+      if (paths.length > 20) {
+        return {
+          content: JSON.stringify({ error: "paths 数组最多包含 20 个文件" }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: "paths 数组最多包含 20 个文件",
+        };
+      }
+
+      const ignorePatterns =
+        projectConfig?.ignorePatterns && projectConfig.ignorePatterns.length > 0
+          ? projectConfig.ignorePatterns
+          : null;
+
+      // Per-file budget: share MAX_FILE_PREVIEW_CHARS across all files
+      const perFileChars = Math.max(
+        2000,
+        Math.floor(MAX_FILE_PREVIEW_CHARS / paths.length),
+      );
+
+      const readTasks = paths.map(async (entry) => {
+        const relativePath = normalizeRelativePath(entry.path);
+        if (!relativePath) {
+          return { relative_path: entry.path, error: "path 不能为空" };
+        }
+        const startLine = normalizeOptionalPositiveInt(entry.start_line);
+        const endLine = normalizeOptionalPositiveInt(entry.end_line);
+
+        // Dedup check for full-file reads
+        if (!startLine && !endLine && workingMemory && turn !== undefined) {
+          const existing = workingMemory.fileKnowledge.get(relativePath);
+          if (
+            existing &&
+            existing.lastReadTurn !== undefined &&
+            turn - existing.lastReadTurn < DEDUP_TURN_WINDOW
+          ) {
+            return {
+              relative_path: relativePath,
+              status: "cached",
+              cached_summary: existing.summary,
+              total_lines: existing.totalLines,
+            };
+          }
+        }
+
+        try {
+          const result = await invoke<{
+            content: string;
+            total_lines: number;
+            start_line: number;
+            end_line: number;
+          }>("read_workspace_file", {
+            workspacePath: safeWorkspace,
+            relativePath,
+            startLine,
+            endLine,
+            ignorePatterns,
+          });
+
+          const lines = result.content.split("\n");
+          if (lines.length > 0 && lines[lines.length - 1] === "") {
+            lines.pop();
+          }
+          const numbered = lines
+            .map((line, i) => `${result.start_line + i}│${line}`)
+            .join("\n");
+          const trimmed = smartTruncate(numbered, perFileChars);
+          return {
+            relative_path: relativePath,
+            total_lines: result.total_lines,
+            showing_lines: `${result.start_line}-${result.end_line}`,
+            content_preview: trimmed,
+            truncated: numbered.length > perFileChars,
+          };
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { relative_path: relativePath, error: msg };
+        }
+      });
+
+      const results = await Promise.all(readTasks);
+      return {
+        content: JSON.stringify({
+          ok: true,
+          file_count: results.length,
+          results,
         }),
         success: true,
       };
@@ -5723,11 +5929,11 @@ async function runNativeToolCallingLoop(
     // serially to preserve ordering dependencies.
     // Task (sub-agent) calls have their own parallel execution path.
     const PARALLEL_SAFE_TOOL_NAMES = new Set([
-      "read_file", "grep", "glob", "list_files",
+      "read_file", "batch_read_files", "grep", "glob", "list_files",
       "git_status", "git_diff", "diagnostics",
       "web_search", "web_fetch",
     ]);
-    const MAX_PARALLEL_READ_TOOLS = 5;
+    const MAX_PARALLEL_READ_TOOLS = 8;
 
     const taskCalls = completion.toolCalls.filter((tc) => tc.function.name === "task");
     const readOnlyCalls = completion.toolCalls.filter(
