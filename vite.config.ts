@@ -23,6 +23,10 @@ export default defineConfig(() => ({
     strictPort: true
   },
   envPrefix: ["VITE_", "TAURI_"],
+  test: {
+    globals: true,
+    environment: "jsdom",
+  },
   build: {
     target: ["es2020", "chrome105", "safari13"],
     minify: process.env.TAURI_DEBUG ? false : "esbuild",
