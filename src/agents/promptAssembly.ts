@@ -262,8 +262,6 @@ const RULES_BY_TASK_TYPE: Record<TaskType, RuleCategory[]> = {
 // Backward-compatible: full rules string (all categories)
 // ---------------------------------------------------------------------------
 
-const BASE_WORKFLOW_RULES = Object.values(RULE_CATEGORIES).join("\n\n");
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
