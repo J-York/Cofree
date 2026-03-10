@@ -5,11 +5,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { generateRepoMap } from "./repoMapService";
+import { generateRepoMap, clearRepoMapCaches } from "./repoMapService";
 
 describe("repoMapService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearRepoMapCaches();
   });
 
   it("prioritizes task-relevant and focused files before generic large files", async () => {

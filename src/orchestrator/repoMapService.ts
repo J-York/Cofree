@@ -50,7 +50,19 @@ interface RankedFileStructure extends FileStructure {
 // Cache: reuse repo-map across turns within same workspace, 10-minute TTL
 // ---------------------------------------------------------------------------
 
-const repoMapCache = new SummaryCache({ ttlMs: 10 * 60 * 1000, maxEntries: 20 });
+let repoMapCache = new SummaryCache({ ttlMs: 10 * 60 * 1000, maxEntries: 20 });
+
+// Layer-1 cache: raw Rust scan results keyed by workspacePath (expensive I/O)
+const scanResultCache = new Map<string, { result: WorkspaceStructureResult; cachedAt: number }>();
+const SCAN_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Clear all repo-map caches. Exported for test isolation.
+ */
+export function clearRepoMapCaches(): void {
+  repoMapCache = new SummaryCache({ ttlMs: 10 * 60 * 1000, maxEntries: 20 });
+  scanResultCache.clear();
+}
 
 const TASK_KEYWORD_LIMIT = 10;
 const DEFAULT_MAX_FILES = 80;
@@ -109,6 +121,7 @@ export async function generateRepoMap(
   if (!workspacePath.trim() || tokenBudget <= 0) return "";
 
   const normalizedOptions = normalizeRepoMapOptions(options);
+  // Layer-2 cache key: formatted output (includes task-specific params)
   const cacheKey = [
     "repomap",
     workspacePath,
@@ -121,13 +134,23 @@ export async function generateRepoMap(
   if (cached !== null) return cached;
 
   try {
-    const result = await invoke<WorkspaceStructureResult>(
-      "scan_workspace_structure",
-      {
-        workspacePath,
-        ignorePatterns: ignorePatterns ?? null,
-      },
-    );
+    // Layer-1: reuse expensive Rust scan across different queries
+    const scanKey = workspacePath;
+    const now = Date.now();
+    let result: WorkspaceStructureResult;
+    const cachedScan = scanResultCache.get(scanKey);
+    if (cachedScan && now - cachedScan.cachedAt < SCAN_CACHE_TTL_MS) {
+      result = cachedScan.result;
+    } else {
+      result = await invoke<WorkspaceStructureResult>(
+        "scan_workspace_structure",
+        {
+          workspacePath,
+          ignorePatterns: ignorePatterns ?? null,
+        },
+      );
+      scanResultCache.set(scanKey, { result, cachedAt: now });
+    }
 
     if (!result.files || result.files.length === 0) {
       repoMapCache.set(cacheKey, "");
@@ -344,8 +367,8 @@ function rankFiles(
 /**
  * Group files by directory for tree-like display.
  */
-function groupFilesByDirectory(files: FileStructure[]): Map<string, FileStructure[]> {
-  const dirMap = new Map<string, FileStructure[]>();
+function groupFilesByDirectory<T extends FileStructure>(files: T[]): Map<string, T[]> {
+  const dirMap = new Map<string, T[]>();
   for (const file of files) {
     const lastSlash = file.path.lastIndexOf("/");
     const dir = lastSlash > 0 ? file.path.slice(0, lastSlash) : ".";
@@ -430,25 +453,31 @@ function formatRepoMap(
   );
 
   // Check if within budget
-  const currentTokens = estimateTokensFromText(text);
-  if (currentTokens <= tokenBudget) {
+  if (estimateTokensFromText(text) <= tokenBudget) {
     return text;
   }
 
-  while (rankedFiles.length > 1) {
-    rankedFiles = rankedFiles.slice(0, -1);
+  // Binary search for the maximum number of files that fits within budget
+  let lo = 1;
+  let hi = rankedFiles.length - 1;
+  let bestText = "";
 
-    text = buildRepoMapText(
-      rankedFiles,
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = buildRepoMapText(
+      rankedFiles.slice(0, mid),
       result.truncated,
       result.scanned_count,
       result.total_files,
       options,
     );
-    if (estimateTokensFromText(text) <= tokenBudget) {
-      return text;
+    if (estimateTokensFromText(candidate) <= tokenBudget) {
+      bestText = candidate;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
     }
   }
 
-  return "";
+  return bestText;
 }

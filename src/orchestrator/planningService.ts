@@ -211,6 +211,11 @@ const TASK_TYPE_TURN_LIMITS: Record<string, number> = {
 const MAX_CONSECUTIVE_READ_ONLY_TURNS = 8;
 const DEDUP_TURN_WINDOW = 10;
 const WORKING_MEMORY_NOTE_PREFIX = "[工作记忆刷新]";
+const WORKING_MEMORY_REFRESH_INTERVAL = 3;
+
+function computeWorkingMemoryFingerprint(wm: WorkingMemory): string {
+  return `${wm.fileKnowledge.size}:${wm.discoveredFacts.length}:${wm.subAgentHistory.length}:${wm.taskProgress.length}`;
+}
 
 /**
  * Find the nearest line boundary before or at the given index.
@@ -2810,6 +2815,7 @@ export async function executeSubAgentTask(
   onProgress?: (event: SubAgentProgressEvent) => void,
   signal?: AbortSignal,
   focusedPaths?: string[],
+  existingProjectConfig?: CofreeRcConfig,
 ): Promise<SubAgentResult> {
   const agentDef = DEFAULT_AGENTS.find(
     (agent) => agent.role === role && agent.allowAsSubAgent
@@ -2845,7 +2851,7 @@ export async function executeSubAgentTask(
 
   if (workspacePath.trim()) {
     try {
-      const projectConfig = await loadCofreeRc(workspacePath);
+      const projectConfig = existingProjectConfig ?? await loadCofreeRc(workspacePath);
       matchedRuleContext = await buildMatchedContextRuleNote({
         targetPaths: inferredFocusedPaths,
         settings: {
@@ -4279,6 +4285,7 @@ async function executeToolCall(
           onSubAgentProgress,
           signal,
           focusedPaths,
+          projectConfig,
         );
         lastResult = subResult;
 
@@ -5020,6 +5027,7 @@ async function runNativeToolCallingLoop(
   const MAX_SAME_FILE_EDIT_FAILURES = 4;
   let consecutiveReadOnlyTurns = 0;
   let toolChoiceOverride: "auto" | "none" | undefined = undefined;
+  let lastWorkingMemoryFingerprint = "";
 
   // --- Context window management ---
   const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
@@ -5119,19 +5127,22 @@ async function runNativeToolCallingLoop(
       }
     }
 
-    if (turn > 0 && (
-      workingMemory.fileKnowledge.size > 0
-      || workingMemory.discoveredFacts.length > 0
-      || workingMemory.subAgentHistory.length > 0
-      || workingMemory.taskProgress.length > 0
-    )) {
-      upsertWorkingMemoryContextMessage({
-        messages,
-        workingMemory,
-        tokenBudget: Math.floor(promptBudgetTarget * 0.12),
-        query: prompt,
-        focusedPaths,
-      });
+    if (turn > 0) {
+      const currentFingerprint = computeWorkingMemoryFingerprint(workingMemory);
+      const hasMemoryContent = currentFingerprint !== "0:0:0:0";
+      const memoryChanged = hasMemoryContent && currentFingerprint !== lastWorkingMemoryFingerprint;
+      const isRefreshTurn = turn % WORKING_MEMORY_REFRESH_INTERVAL === 0;
+
+      if (hasMemoryContent && (memoryChanged || isRefreshTurn)) {
+        upsertWorkingMemoryContextMessage({
+          messages,
+          workingMemory,
+          tokenBudget: Math.floor(promptBudgetTarget * 0.12),
+          query: prompt,
+          focusedPaths,
+        });
+        lastWorkingMemoryFingerprint = currentFingerprint;
+      }
     }
 
     const estTokens = estimateTokensForMessages(messages);
@@ -6432,6 +6443,7 @@ export async function runPlanningSession(
           undefined,
           input.signal,
           sessionFocusedPaths,
+          projectConfig,
         );
 
         if (plannerResult.structuredOutput?.role === "planner") {

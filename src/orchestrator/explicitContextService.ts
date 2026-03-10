@@ -183,26 +183,30 @@ export async function buildMatchedContextRuleNote(params: {
 
   if (supplementalFiles.length > 0) {
     const supplementalSections: string[] = ["[规则补充文件]"];
-    for (const relativePath of supplementalFiles) {
-      try {
-        supplementalSections.push(
-          await buildFileSection({
-            attachment: {
-              id: `rule-${relativePath}`,
-              kind: "file",
-              source: "mention",
-              relativePath,
-              displayName: relativePath,
-              addedAt: "",
-            },
-            workspacePath,
-            perAttachmentLineBudget: perFileLineBudget,
-            perAttachmentCharBudget: perFileCharBudget,
-            ignorePatterns: params.ignorePatterns,
-          }),
-        );
-      } catch (error) {
-        failures.push(`${relativePath}（${stringifyError(error)}）`);
+    const fileResults = await Promise.allSettled(
+      supplementalFiles.map((relativePath) =>
+        buildFileSection({
+          attachment: {
+            id: `rule-${relativePath}`,
+            kind: "file",
+            source: "mention",
+            relativePath,
+            displayName: relativePath,
+            addedAt: "",
+          },
+          workspacePath,
+          perAttachmentLineBudget: perFileLineBudget,
+          perAttachmentCharBudget: perFileCharBudget,
+          ignorePatterns: params.ignorePatterns,
+        }).then((content) => ({ relativePath, content })),
+      ),
+    );
+    for (const result of fileResults) {
+      if (result.status === "fulfilled") {
+        supplementalSections.push(result.value.content);
+      } else {
+        const idx = fileResults.indexOf(result);
+        failures.push(`${supplementalFiles[idx]}（${stringifyError(result.reason)}）`);
       }
     }
     sections.push(supplementalSections.join("\n\n"));

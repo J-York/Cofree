@@ -411,21 +411,42 @@ export function serializeWorkingMemory(
   // 2. High-confidence facts
   const highFacts = memory.discoveredFacts.filter((f) => f.confidence === "high");
   if (highFacts.length > 0) {
-    const rankedFacts = rankDiscoveredFacts(highFacts, queryTerms, focusedPaths);
+    const ranked = rankByRelevance({
+      items: highFacts,
+      getTimestamp: (f) => f.createdAt,
+      getFocusPath: (f) => f.source,
+      getBonusScore: (f) => f.confidence === "high" ? 4 : 2,
+      queryTerms,
+      focusedPaths,
+    });
     sections.push({
       priority: 2,
       label: "已确认事实",
-      content: rankedFacts
+      content: ranked
         .slice(0, MAX_RETRIEVED_FACTS)
         .map((f) => `- [${f.category}] ${f.content}`)
         .join("\n"),
     });
   }
 
-  // 3. File knowledge (sorted by recency first, then by relevance to role)
+  // 3. File knowledge (sorted by recency, with role-based bonus)
   const fileEntries = [...memory.fileKnowledge.values()];
   if (fileEntries.length > 0) {
-    const sorted = rankFileKnowledge(fileEntries, forRole, queryTerms, focusedPaths);
+    const sorted = rankByRelevance({
+      items: fileEntries,
+      getTimestamp: (f) => f.lastReadAt,
+      getFocusPath: (f) => f.relativePath,
+      getSearchCorpus: (f) => `${f.relativePath} ${f.summary} ${f.language ?? ""}`,
+      getBonusScore: (f) => {
+        let bonus = Math.min(f.lastReadTurn ?? 0, 10);
+        if (forRole === "coder" && (f.readByAgent === "main" || f.readByAgent === "planner")) bonus += 20;
+        if (forRole === "coder" && f.readByAgent === "coder") bonus -= 4;
+        if (forRole === "tester" && f.readByAgent !== "tester") bonus += 2;
+        return bonus;
+      },
+      queryTerms,
+      focusedPaths,
+    });
     const fileLines = sorted.slice(0, MAX_RETRIEVED_FILES).map((fk) => {
       const lang = fk.language ? ` (${fk.language})` : "";
       const turnInfo = fk.lastReadTurn > 0 ? `, turn ${fk.lastReadTurn}` : "";
@@ -439,11 +460,17 @@ export function serializeWorkingMemory(
   }
 
   // 3.5. Failed operations context (helps LLM avoid repeating mistakes)
-  const recentFailures = memory.taskProgress
-    .filter((e) => e.status === "failed");
+  const recentFailures = memory.taskProgress.filter((e) => e.status === "failed");
   if (recentFailures.length > 0) {
-    const rankedFailures = rankTaskProgressEntries(recentFailures, queryTerms, focusedPaths);
-    const failureLines = rankedFailures.slice(0, MAX_RETRIEVED_FAILURES).map((e) => {
+    const ranked = rankByRelevance({
+      items: recentFailures,
+      getTimestamp: (e) => e.timestamp,
+      getFocusPath: (e) => e.targetFile,
+      getBonusScore: (e) => e.status === "failed" ? 4 : 0,
+      queryTerms,
+      focusedPaths,
+    });
+    const failureLines = ranked.slice(0, MAX_RETRIEVED_FAILURES).map((e) => {
       const target = e.targetFile ? ` on ${e.targetFile}` : "";
       const hint = e.errorHint ? ` — ${e.errorHint}` : "";
       return `- ${e.toolName}${target}: ${e.description}${hint}`;
@@ -457,9 +484,14 @@ export function serializeWorkingMemory(
 
   // 4. Sub-agent execution history
   if (memory.subAgentHistory.length > 0) {
-    const historyLines = rankSubAgentHistory(memory.subAgentHistory, queryTerms, focusedPaths)
-      .slice(0, MAX_RETRIEVED_HISTORY)
-      .map((h) => {
+    const ranked = rankByRelevance({
+      items: memory.subAgentHistory,
+      getTimestamp: (h) => h.completedAt,
+      getSearchCorpus: (h) => `${h.role} ${h.taskDescription} ${h.keyFindings.join(" ")}`,
+      queryTerms,
+      focusedPaths,
+    });
+    const historyLines = ranked.slice(0, MAX_RETRIEVED_HISTORY).map((h) => {
       const findings = h.keyFindings.length > 0 ? ` | findings: ${h.keyFindings.join(", ")}` : "";
       return `- [${h.role}] ${h.taskDescription.slice(0, 80)}${findings} → ${h.proposedActionCount} actions`;
     });
@@ -473,11 +505,18 @@ export function serializeWorkingMemory(
   // 5. Medium/low confidence facts (lowest priority)
   const otherFacts = memory.discoveredFacts.filter((f) => f.confidence !== "high");
   if (otherFacts.length > 0) {
-    const rankedFacts = rankDiscoveredFacts(otherFacts, queryTerms, focusedPaths);
+    const ranked = rankByRelevance({
+      items: otherFacts,
+      getTimestamp: (f) => f.createdAt,
+      getFocusPath: (f) => f.source,
+      getBonusScore: (f) => f.confidence === "medium" ? 2 : 0,
+      queryTerms,
+      focusedPaths,
+    });
     sections.push({
       priority: 5,
       label: "其他发现",
-      content: rankedFacts
+      content: ranked
         .slice(0, MAX_RETRIEVED_FACTS)
         .map((f) => `- [${f.category}/${f.confidence}] ${f.content}`)
         .join("\n"),
@@ -524,35 +563,24 @@ export function collectRelevantFilePaths(
   }
 
   const queryTerms = extractQueryTerms(query);
-  const ranked = rankFileKnowledge(
-    [...memory.fileKnowledge.values()],
-    forRole,
+  const ranked = rankByRelevance({
+    items: [...memory.fileKnowledge.values()],
+    getTimestamp: (f) => f.lastReadAt,
+    getFocusPath: (f) => f.relativePath,
+    getSearchCorpus: (f) => `${f.relativePath} ${f.summary}`,
+    getBonusScore: (f) => {
+      let bonus = Math.min(f.lastReadTurn ?? 0, 10);
+      if (forRole === "coder" && (f.readByAgent === "main" || f.readByAgent === "planner")) bonus += 20;
+      return bonus;
+    },
     queryTerms,
-    [],
-  );
+    focusedPaths: [],
+  });
 
   return ranked
     .slice(0, limit)
     .map((entry) => entry.relativePath)
     .filter(Boolean);
-}
-
-function sortFilesByRole(files: FileKnowledge[], role?: SubAgentRole): FileKnowledge[] {
-  if (!role) return files;
-
-  return [...files].sort((a, b) => {
-    // Coder: prioritize files read by main or planner (already analyzed)
-    if (role === "coder") {
-      const aScore = a.readByAgent === "main" || a.readByAgent === "planner" ? 0 : 1;
-      const bScore = b.readByAgent === "main" || b.readByAgent === "planner" ? 0 : 1;
-      return aScore - bScore;
-    }
-    // Tester: prioritize recently read files
-    if (role === "tester") {
-      return b.lastReadAt.localeCompare(a.lastReadAt);
-    }
-    return 0;
-  });
 }
 
 function normalizePath(value: string): string {
@@ -624,128 +652,43 @@ function computeFocusScore(path: string | undefined, focusedPaths: string[]): nu
   return score;
 }
 
-function rankFileKnowledge(
-  files: FileKnowledge[],
-  role: SubAgentRole | undefined,
-  queryTerms: string[],
-  focusedPaths: string[],
-): FileKnowledge[] {
-  return [...files].sort((left, right) => {
-    const leftScore = scoreFileKnowledge(left, role, queryTerms, focusedPaths);
-    const rightScore = scoreFileKnowledge(right, role, queryTerms, focusedPaths);
-    if (rightScore !== leftScore) {
-      return rightScore - leftScore;
+/**
+ * Generic recency-primary ranking. Sorts items by focus score (if any),
+ * then by recency timestamp (descending). Keyword matching is kept as a
+ * lightweight tiebreaker only — this avoids the O(terms × items × textLen)
+ * cost of the previous per-item keyword scan on every serialization call.
+ */
+function rankByRelevance<T>(params: {
+  items: T[];
+  getTimestamp: (item: T) => string;
+  getSearchCorpus?: (item: T) => string;
+  getFocusPath?: (item: T) => string | undefined;
+  getBonusScore?: (item: T) => number;
+  queryTerms: string[];
+  focusedPaths: string[];
+}): T[] {
+  const { items, getTimestamp, getSearchCorpus, getFocusPath, getBonusScore, queryTerms, focusedPaths } = params;
+  return [...items].sort((left, right) => {
+    const leftFocus = getFocusPath ? computeFocusScore(getFocusPath(left), focusedPaths) : 0;
+    const rightFocus = getFocusPath ? computeFocusScore(getFocusPath(right), focusedPaths) : 0;
+    if (leftFocus !== rightFocus) return rightFocus - leftFocus;
+
+    const leftBonus = getBonusScore ? getBonusScore(left) : 0;
+    const rightBonus = getBonusScore ? getBonusScore(right) : 0;
+    if (leftBonus !== rightBonus) return rightBonus - leftBonus;
+
+    // Recency as primary sort for items with equal focus/bonus
+    const timeDiff = getTimestamp(right).localeCompare(getTimestamp(left));
+    if (timeDiff !== 0) return timeDiff;
+
+    // Keyword match as final tiebreaker only
+    if (queryTerms.length > 0 && getSearchCorpus) {
+      const leftKw = computeKeywordScore(getSearchCorpus(left), queryTerms);
+      const rightKw = computeKeywordScore(getSearchCorpus(right), queryTerms);
+      return rightKw - leftKw;
     }
-    return right.lastReadAt.localeCompare(left.lastReadAt);
+    return 0;
   });
-}
-
-function scoreFileKnowledge(
-  file: FileKnowledge,
-  role: SubAgentRole | undefined,
-  queryTerms: string[],
-  focusedPaths: string[],
-): number {
-  let score = 0;
-  score += computeFocusScore(file.relativePath, focusedPaths);
-  score += computeKeywordScore(
-    `${file.relativePath} ${file.summary} ${file.language ?? ""}`,
-    queryTerms,
-  );
-  score += Math.min(file.lastReadTurn ?? 0, 10);
-
-  if (role === "coder" && (file.readByAgent === "main" || file.readByAgent === "planner")) {
-    score += 20;
-  }
-  if (role === "coder" && file.readByAgent === "coder") {
-    score -= 4;
-  }
-  if (role === "tester" && file.readByAgent !== "tester") {
-    score += 2;
-  }
-  return score;
-}
-
-function rankDiscoveredFacts(
-  facts: DiscoveredFact[],
-  queryTerms: string[],
-  focusedPaths: string[],
-): DiscoveredFact[] {
-  return [...facts].sort((left, right) => {
-    const leftScore = scoreDiscoveredFact(left, queryTerms, focusedPaths);
-    const rightScore = scoreDiscoveredFact(right, queryTerms, focusedPaths);
-    if (rightScore !== leftScore) {
-      return rightScore - leftScore;
-    }
-    return right.createdAt.localeCompare(left.createdAt);
-  });
-}
-
-function scoreDiscoveredFact(
-  fact: DiscoveredFact,
-  queryTerms: string[],
-  focusedPaths: string[],
-): number {
-  let score = computeKeywordScore(`${fact.category} ${fact.content} ${fact.source}`, queryTerms);
-  score += computeFocusScore(fact.source, focusedPaths);
-  if (fact.confidence === "high") score += 4;
-  if (fact.confidence === "medium") score += 2;
-  return score;
-}
-
-function rankTaskProgressEntries(
-  entries: TaskProgressEntry[],
-  queryTerms: string[],
-  focusedPaths: string[],
-): TaskProgressEntry[] {
-  return [...entries].sort((left, right) => {
-    const leftScore = scoreTaskProgressEntry(left, queryTerms, focusedPaths);
-    const rightScore = scoreTaskProgressEntry(right, queryTerms, focusedPaths);
-    if (rightScore !== leftScore) {
-      return rightScore - leftScore;
-    }
-    return right.timestamp.localeCompare(left.timestamp);
-  });
-}
-
-function scoreTaskProgressEntry(
-  entry: TaskProgressEntry,
-  queryTerms: string[],
-  focusedPaths: string[],
-): number {
-  let score = computeKeywordScore(
-    `${entry.description} ${entry.toolName} ${entry.errorHint ?? ""}`,
-    queryTerms,
-  );
-  score += computeFocusScore(entry.targetFile, focusedPaths);
-  if (entry.status === "failed") {
-    score += 4;
-  }
-  return score;
-}
-
-function rankSubAgentHistory(
-  history: SubAgentExecRecord[],
-  queryTerms: string[],
-  focusedPaths: string[],
-): SubAgentExecRecord[] {
-  return [...history].sort((left, right) => {
-    const leftScore = scoreSubAgentRecord(left, queryTerms, focusedPaths);
-    const rightScore = scoreSubAgentRecord(right, queryTerms, focusedPaths);
-    if (rightScore !== leftScore) {
-      return rightScore - leftScore;
-    }
-    return right.completedAt.localeCompare(left.completedAt);
-  });
-}
-
-function scoreSubAgentRecord(
-  record: SubAgentExecRecord,
-  queryTerms: string[],
-  focusedPaths: string[],
-): number {
-  const corpus = `${record.role} ${record.taskDescription} ${record.replySummary} ${record.keyFindings.join(" ")}`;
-  return computeKeywordScore(corpus, queryTerms) + computeFocusScore(corpus, focusedPaths);
 }
 
 function truncateToTokenBudget(text: string, budget: number): string | null {

@@ -183,7 +183,7 @@ const FAMILY_OVERRIDES: Partial<Record<ModelFamily, Partial<ModelCapabilities>>>
     supportsParallelToolCalls: true,
     supportsStructuredOutput: true,
     recommendedTemperature: 0,
-    contextWindowSize: 1047576,
+    contextWindowSize: 1048576,
     needsStepByStepGuidance: false,
     proneToToolHallucination: false,
     benefitsFromFewShot: false,
