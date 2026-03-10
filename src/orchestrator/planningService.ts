@@ -2691,6 +2691,9 @@ async function autoExecutePatchProposal(params: {
     ...(params.autoApprovalMeta ?? {}),
   };
   if (applyResult.success) {
+    // Invalidate cache for affected files
+    globalToolCache.invalidate("file_change", applyResult.files);
+
     const diagnostics = await fetchPostPatchDiagnostics(
       params.workspacePath,
       applyResult.files
@@ -2726,6 +2729,12 @@ async function autoExecuteShellProposal(params: {
     shell: params.shell,
     timeoutMs: params.timeoutMs,
   });
+
+  // Invalidate cache for git operations
+  if (cmdResult.success && params.shell.trim().startsWith("git ")) {
+    globalToolCache.invalidate("git_operation");
+  }
+
   return {
     content: JSON.stringify({
       ok: cmdResult.success,
@@ -3667,11 +3676,23 @@ async function executeToolCall(
       }>("git_status_workspace", {
         workspacePath: safeWorkspace,
       });
+
+      const resultContent = JSON.stringify({
+        ok: true,
+        ...status,
+      });
+
+      // Store in cache
+      if (perfConfig.enableToolCache) {
+        globalToolCache.set(toolName, args, resultContent);
+      }
+
+      // Track metrics
+      const executionTime = Date.now() - toolExecutionStart;
+      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
+
       return {
-        content: JSON.stringify({
-          ok: true,
-          ...status,
-        }),
+        content: resultContent,
         success: true,
       };
     }
@@ -3682,13 +3703,25 @@ async function executeToolCall(
         workspacePath: safeWorkspace,
         filePath: filePath || null,
       });
+
+      const resultContent = JSON.stringify({
+        ok: true,
+        file_path: filePath || null,
+        diff_preview: smartTruncate(diff, MAX_FILE_PREVIEW_CHARS),
+        truncated: diff.length > MAX_FILE_PREVIEW_CHARS,
+      });
+
+      // Store in cache
+      if (perfConfig.enableToolCache) {
+        globalToolCache.set(toolName, args, resultContent);
+      }
+
+      // Track metrics
+      const executionTime = Date.now() - toolExecutionStart;
+      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
+
       return {
-        content: JSON.stringify({
-          ok: true,
-          file_path: filePath || null,
-          diff_preview: smartTruncate(diff, MAX_FILE_PREVIEW_CHARS),
-          truncated: diff.length > MAX_FILE_PREVIEW_CHARS,
-        }),
+        content: resultContent,
         success: true,
       };
     }
@@ -3725,15 +3758,28 @@ async function executeToolCall(
         .slice(0, 30)
         .map((m) => `${m.file}:${m.line}│${m.content}`)
         .join("\n");
+
+      const resultContent = JSON.stringify({
+        ok: true,
+        pattern,
+        include_glob: includeGlob,
+        match_count: matchCount,
+        truncated: result.truncated,
+        matches_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
+      });
+
+      // Store in cache
+      if (perfConfig.enableToolCache) {
+        const dependencies = extractFileDependencies(toolName, args);
+        globalToolCache.set(toolName, args, resultContent, dependencies);
+      }
+
+      // Track metrics
+      const executionTime = Date.now() - toolExecutionStart;
+      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
+
       return {
-        content: JSON.stringify({
-          ok: true,
-          pattern,
-          include_glob: includeGlob,
-          match_count: matchCount,
-          truncated: result.truncated,
-          matches_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
-        }),
+        content: resultContent,
         success: true,
       };
     }
@@ -3766,13 +3812,26 @@ async function executeToolCall(
         .slice(0, 60)
         .map((e) => `${e.path} (${e.size}B)`)
         .join("\n");
+
+      const resultContent = JSON.stringify({
+        ok: true,
+        pattern,
+        file_count: entries.length,
+        files_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
+      });
+
+      // Store in cache
+      if (perfConfig.enableToolCache) {
+        const dependencies = extractFileDependencies(toolName, args);
+        globalToolCache.set(toolName, args, resultContent, dependencies);
+      }
+
+      // Track metrics
+      const executionTime = Date.now() - toolExecutionStart;
+      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
+
       return {
-        content: JSON.stringify({
-          ok: true,
-          pattern,
-          file_count: entries.length,
-          files_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
-        }),
+        content: resultContent,
         success: true,
       };
     }
