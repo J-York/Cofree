@@ -56,14 +56,20 @@ export async function advanceAfterHitl(params: {
   memoryBySession.set(sessionId, decision.memory);
 
   // Persist the latest decision memory along with plan/tool trace so reloads can continue safely.
-  await saveWorkflowCheckpoint(
-    sessionId,
-    messageId,
-    params.plan,
-    params.toolTrace ?? [],
-    decision.memory
-  );
+  try {
+    await saveWorkflowCheckpoint(
+      sessionId,
+      messageId,
+      params.plan,
+      params.toolTrace ?? [],
+      decision.memory
+    );
+  } catch (error) {
+    console.warn(
+      "[HITL] Failed to persist continuation checkpoint",
+      error,
+    );
+  }
 
   return decision;
 }
-

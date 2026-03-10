@@ -6,6 +6,7 @@ import { ShellResultDisplay } from "../../components/ShellResultDisplay";
 import {
   actionStatusBadgeClass,
   canApproveAction,
+  canCancelAction,
   canRetryAction,
   canReviewAction,
 } from "../../utils/chatUtils";
@@ -398,7 +399,7 @@ function ActionPayloadFields({
               exitCode={Number(meta?.status ?? -1)}
               stdout={String(meta?.stdout ?? "")}
               stderr={String(meta?.stderr ?? "")}
-              timedOut={Boolean(meta?.timed_out)}
+              timedOut={Boolean(meta?.timedOut ?? meta?.timed_out)}
             />
           </div>
         )}
@@ -482,11 +483,14 @@ function PlanActionCard({
   onRetry,
   onReject,
   onComment,
+  onCancel,
+  activeShellActionIds,
 }: {
   action: ActionProposal;
   plan: OrchestrationPlan;
   messageId: string;
   executingActionId: string;
+  activeShellActionIds: string[];
   onPlanUpdate: (
     messageId: string,
     updater: (p: OrchestrationPlan) => OrchestrationPlan,
@@ -504,12 +508,15 @@ function PlanActionCard({
   ) => Promise<void>;
   onReject: (messageId: string, actionId: string) => void;
   onComment: (messageId: string, actionId: string) => void;
+  onCancel: (messageId: string, actionId: string) => Promise<void>;
 }) {
   const approvalOptions = buildApprovalRuleOptions(action);
   const [rememberOptionKey, setRememberOptionKey] = useState("");
   const selectedRememberOption = approvalOptions.find(
     (option) => option.key === rememberOptionKey,
   );
+  const hasActiveShellJob = activeShellActionIds.includes(action.id);
+  const isCancelling = executingActionId === `cancel:${action.id}`;
 
   return (
     <li className="action-item">
@@ -532,7 +539,9 @@ function PlanActionCard({
       {action.executionResult && (
         <p
           className={
-            action.executionResult.success
+            action.status === "running"
+              ? "status-note"
+              : action.executionResult.success
               ? "status-success"
               : "status-error"
           }
@@ -583,6 +592,16 @@ function PlanActionCard({
             {executingActionId === action.id ? "重试中…" : "↻ 重试命令"}
           </button>
         )}
+        {canCancelAction(action, hasActiveShellJob) && (
+          <button
+            className="btn btn-ghost btn-sm"
+            disabled={Boolean(executingActionId)}
+            onClick={() => void onCancel(messageId, action.id)}
+            type="button"
+          >
+            {isCancelling ? "取消中…" : "■ 取消命令"}
+          </button>
+        )}
         <button
           className="btn btn-ghost btn-sm"
           disabled={
@@ -617,12 +636,15 @@ export function InlinePlan({
   onRetry,
   onReject,
   onComment,
+  onCancel,
   onApproveAll,
   onRejectAll,
+  activeShellActionIds,
 }: {
   plan: OrchestrationPlan;
   messageId: string;
   executingActionId: string;
+  activeShellActionIds: string[];
   onPlanUpdate: (
     messageId: string,
     updater: (p: OrchestrationPlan) => OrchestrationPlan,
@@ -640,6 +662,7 @@ export function InlinePlan({
   ) => Promise<void>;
   onReject: (messageId: string, actionId: string) => void;
   onComment: (messageId: string, actionId: string) => void;
+  onCancel: (messageId: string, actionId: string) => Promise<void>;
   onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
   onRejectAll: (messageId: string) => void;
 }) {
@@ -836,6 +859,8 @@ export function InlinePlan({
                           onRetry={onRetry}
                           onReject={onReject}
                           onComment={onComment}
+                          onCancel={onCancel}
+                          activeShellActionIds={activeShellActionIds}
                         />
                       ))}
                     </ul>
@@ -933,6 +958,8 @@ export function InlinePlan({
                     onRetry={onRetry}
                     onReject={onReject}
                     onComment={onComment}
+                    onCancel={onCancel}
+                    activeShellActionIds={activeShellActionIds}
                   />
                 ))}
               </ul>

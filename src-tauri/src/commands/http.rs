@@ -68,11 +68,13 @@ pub fn apply_protocol_headers(
 
 pub fn build_reqwest_client_with_proxy(
     proxy: Option<ProxySettings>,
-    timeout_secs: u64,
+    timeout_secs: Option<u64>,
 ) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .connect_timeout(Duration::from_secs(10));
+    let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
+
+    if let Some(timeout_secs) = timeout_secs {
+        builder = builder.timeout(Duration::from_secs(timeout_secs));
+    }
 
     if let Some(proxy_cfg) = proxy {
         let mode = proxy_cfg.mode.trim().to_lowercase();
@@ -131,7 +133,7 @@ pub async fn fetch_url(
     let max_bytes = max_size
         .unwrap_or(config::FETCH_DEFAULT_MAX_BYTES)
         .min(config::FETCH_DEFAULT_MAX_BYTES);
-    let client = build_reqwest_client_with_proxy(proxy, 30)?;
+    let client = build_reqwest_client_with_proxy(proxy, Some(30))?;
     let response = client
         .get(url_trimmed)
         .header(ACCEPT, "text/html,application/json,text/plain,*/*")

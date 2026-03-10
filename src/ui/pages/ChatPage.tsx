@@ -1,4 +1,5 @@
 import { type ReactElement, useEffect, useRef, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   clearChatHistory,
   loadChatHistory,
@@ -30,13 +31,17 @@ import {
 } from "../../lib/contextAttachments";
 import { ConversationSidebar } from "../components/ConversationSidebar";
 import { IconTrash } from "../components/Icons";
-import { getActiveManagedModel, isActiveModelLocal } from "../../lib/settingsStore";
+import { getActiveManagedModel, isActiveModelLocal, resolveManagedModelSelection } from "../../lib/settingsStore";
 import type { AppSettings } from "../../lib/settingsStore";
 import {
+  cancelShellCommand,
   gitStatusWorkspace,
   globWorkspaceFiles,
   listWorkspaceFiles,
+  saveFileDialog,
+  startShellCommand,
 } from "../../lib/tauriBridge";
+import type { ShellCommandEvent } from "../../lib/tauriTypes";
 import type { ChatAgentDefinition } from "../../agents/types";
 import {
   classifyError,
@@ -48,16 +53,24 @@ import { AskUserDialog } from "../components/AskUserDialog";
 import type { AskUserRequest } from "../../orchestrator/askUserService";
 import { submitUserResponse, cancelPendingRequest } from "../../orchestrator/askUserService";
 import {
+  readLLMAuditRecords,
+  readSensitiveActionAuditRecords,
+} from "../../lib/auditLog";
+import {
   formatTime,
 } from "../utils/chatUtils";
 import {
   approveAction,
   approveAllPendingActions,
+  appendRunningShellOutput,
   commentAction,
+  completeRunningShellAction,
   markActionRunning,
+  markShellActionRunning,
   rejectAction,
   rejectAllPendingActions,
   retryFailedShellAction,
+  type ManualApprovalContext,
 } from "../../orchestrator/hitlService";
 import {
   getChatSessionId,
@@ -74,7 +87,6 @@ import {
 import {
   runPlanningSession,
   initializePlan,
-  type ToolExecutionTrace,
   type ToolCallEvent,
 } from "../../orchestrator/planningService";
 import type {
@@ -86,6 +98,7 @@ import {
   createMessageId,
   buildToolCallsFromPlan,
   toConversationHistory,
+  type ConversationHistoryMessage,
 } from "./chat/helpers";
 import {
   createBackgroundStreamState,
@@ -131,6 +144,12 @@ import {
   type MentionSuggestion,
 } from "./chat/mentions";
 import type { BackgroundStreamState, LiveToolCall, SubAgentStatusItem } from "./chat/types";
+import {
+  buildConversationDebugExport,
+  buildConversationDebugExportFileName,
+  resolveConversationDebugKey,
+  type ConversationDebugEntry,
+} from "./chat/debugExport";
 
 interface ChatPageProps {
   settings: AppSettings;
@@ -140,9 +159,123 @@ interface ChatPageProps {
   onToggleSidebar?: () => void;
 }
 
+interface RunningShellJobMeta {
+  messageId: string;
+  actionId: string;
+  workspacePath: string;
+  approvalContext?: ManualApprovalContext;
+}
+
+interface PendingShellQueue {
+  messageId: string;
+  actionIds: string[];
+}
+
+interface ShellOutputBuffer {
+  command: string;
+  stdout: string;
+  stderr: string;
+  timerId: ReturnType<typeof setTimeout> | null;
+}
+
+const DEBUG_LOG_MAX_CONTENT_CHARS = 2000;
+const DEBUG_LOG_HISTORY_LIMIT = 18;
+const DEBUG_EXPORT_HISTORY_LIMIT = 200;
+
+function truncateDebugLogText(text: string, maxChars = DEBUG_LOG_MAX_CONTENT_CHARS): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} chars]`;
+}
+
+function isLlmResponseFailureCategory(category: CategorizedError["category"]): boolean {
+  return (
+    category === "llm_failure" ||
+    category === "network_timeout" ||
+    category === "auth_error"
+  );
+}
+
+function summarizeConversationHistoryForDebug(
+  history: ConversationHistoryMessage[],
+): Array<Record<string, unknown>> {
+  const recent = history.slice(-DEBUG_LOG_HISTORY_LIMIT);
+  const baseIndex = history.length - recent.length;
+  return recent.map((message, index) => ({
+    index: baseIndex + index + 1,
+    role: message.role,
+    name: message.name ?? null,
+    tool_call_id: message.tool_call_id ?? null,
+    tool_calls:
+      message.tool_calls?.map((toolCall) => ({
+        id: toolCall.id,
+        name: toolCall.function.name,
+      })) ?? [],
+    content_preview: truncateDebugLogText(message.content, 1200),
+  }));
+}
+
+function buildFailedLlmRequestLog(params: {
+  prompt: string;
+  conversationHistory: ConversationHistoryMessage[];
+  contextAttachments: ChatContextAttachment[];
+  executionSettings: AppSettings;
+  activeAgentId: string;
+  boundAgentId?: string;
+  sessionId: string;
+  conversationId: string | null;
+  startedAt: string;
+  isContinuation: boolean;
+  phase?: string;
+  error: CategorizedError;
+}): string {
+  const payload = {
+    generatedAt: new Date().toISOString(),
+    startedAt: params.startedAt,
+    session: {
+      sessionId: params.sessionId,
+      conversationId: params.conversationId,
+      workspacePath: params.executionSettings.workspacePath,
+      isContinuation: params.isContinuation,
+      phase: params.phase ?? "default",
+    },
+    agent: {
+      activeAgentId: params.activeAgentId,
+      boundAgentId: params.boundAgentId ?? null,
+    },
+    model: {
+      provider: params.executionSettings.provider ?? null,
+      model: params.executionSettings.model,
+      baseUrl: params.executionSettings.liteLLMBaseUrl,
+      vendorId: params.executionSettings.activeVendorId,
+      modelId: params.executionSettings.activeModelId,
+    },
+    request: {
+      prompt: truncateDebugLogText(params.prompt),
+      contextAttachments: params.contextAttachments.map((attachment) => ({
+        id: attachment.id,
+        kind: attachment.kind,
+        relativePath: attachment.relativePath,
+      })),
+      historyMessageCount: params.conversationHistory.length,
+      historyPreview: summarizeConversationHistoryForDebug(
+        params.conversationHistory,
+      ),
+    },
+    error: {
+      category: params.error.category,
+      title: params.error.title,
+      message: params.error.message,
+      guidance: params.error.guidance,
+      rawError: params.error.rawError ?? null,
+    },
+  };
+
+  return JSON.stringify(payload, null, 2);
+}
+
 /* ── Main ChatPage ────────────────────────────────────────── */
 export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, onToggleSidebar }: ChatPageProps): ReactElement {
-  const { actions: session } = useSession();
+  const { actions: session, state: sessionState } = useSession();
 
   const wsPath = settings.workspacePath;
 
@@ -194,6 +327,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   );
   const [categorizedError, setCategorizedError] =
     useState<CategorizedError | null>(null);
+  const [failedLlmRequestLog, setFailedLlmRequestLog] = useState<string | null>(null);
+  const [isExportingDebugBundle, setIsExportingDebugBundle] = useState(false);
   const [sessionNote, setSessionNote] = useState<string>(
     currentConversation?.messages.length ? "已恢复历史会话" : ""
   );
@@ -231,6 +366,19 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   const backgroundStreamsRef = useRef(new Map<string, BackgroundStreamState>());
   const abortControllersRef = useRef(new Map<string, AbortController>());
   const skipNextTimestampRef = useRef(true);
+  const runningShellJobsRef = useRef(new Map<string, RunningShellJobMeta>());
+  const pendingShellQueuesRef = useRef(new Map<string, PendingShellQueue>());
+  const shellOutputBuffersRef = useRef(new Map<string, ShellOutputBuffer>());
+
+  // Refs to keep the latest versions of callbacks used inside the shell-command-event
+  // useEffect (which has an empty dependency array). Without these refs the listener
+  // captures stale closures from the initial render, causing continuation after HITL
+  // approval to silently fail because runChatCycle sees outdated state.
+  const handlePlanUpdateRef = useRef<typeof handlePlanUpdate>(null!);
+  const flushShellOutputBufferRef = useRef<(jobId: string) => void>(null!);
+  const continueAfterHitlIfNeededRef = useRef<typeof continueAfterHitlIfNeeded>(null!);
+  const startShellJobForActionRef = useRef<typeof startShellJobForAction>(null!);
+  const conversationDebugEntriesRef = useRef(new Map<string, ConversationDebugEntry[]>());
 
   const activeManagedModel = getActiveManagedModel(settings);
   const activeModelLabel = activeManagedModel?.name || settings.model;
@@ -238,6 +386,149 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     !settings.allowCloudModels && !isActiveModelLocal(settings);
   const noWorkspaceSelected = !settings.workspacePath;
   const chatBlocked = localOnlyBlocked || noWorkspaceSelected;
+
+  const handleCopyFailedRequestLog = async (): Promise<void> => {
+    if (!failedLlmRequestLog) {
+      return;
+    }
+    try {
+      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+        throw new Error("当前环境不支持剪贴板写入");
+      }
+      await navigator.clipboard.writeText(failedLlmRequestLog);
+      setSessionNote("已复制本次请求日志到剪贴板");
+    } catch (error) {
+      setSessionNote(
+        `复制日志失败：${error instanceof Error ? error.message : "未知错误"}`
+      );
+    }
+  };
+
+  const handleDownloadConversationDebugBundle = async (): Promise<void> => {
+    if (!settings.debugMode || isExportingDebugBundle) {
+      return;
+    }
+
+    const conversationId = currentConversation?.id ?? activeConversationId;
+    if (!conversationId && messagesRef.current.length === 0) {
+      setSessionNote("当前没有可导出的对话日志");
+      return;
+    }
+
+    setIsExportingDebugBundle(true);
+    setSessionNote("正在导出调试日志…");
+    const exportedAt = new Date().toISOString();
+    const chatSessionId = getChatSessionId();
+    const conversationSnapshot = currentConversation
+      ? {
+        ...currentConversation,
+        messages: messagesRef.current,
+        updatedAt: exportedAt,
+        lastTokenCount: liveContextTokens ?? currentConversation.lastTokenCount ?? null,
+      }
+      : null;
+
+    let checkpointRecovery = null;
+    let checkpointError: string | null = null;
+    try {
+      checkpointRecovery = await loadLatestWorkflowCheckpoint(chatSessionId);
+    } catch (error) {
+      checkpointError = error instanceof Error ? error.message : "未知错误";
+    }
+
+    try {
+      const bundle = buildConversationDebugExport({
+        exportedAt,
+        chatSessionId,
+        activeConversationId,
+        conversation: conversationSnapshot,
+        messages: messagesRef.current,
+        activeAgent,
+        activeModelLabel,
+        settings,
+        sessionState,
+        categorizedError,
+        failedLlmRequestLog,
+        sessionNote,
+        isStreaming,
+        executingActionId,
+        liveContextTokens,
+        liveToolCalls,
+        subAgentStatus,
+        debugEntries:
+          conversationDebugEntriesRef.current.get(
+            resolveConversationDebugKey(conversationSnapshot?.id ?? activeConversationId),
+          ) ?? [],
+        llmAuditRecords: readLLMAuditRecords(),
+        actionAuditRecords: readSensitiveActionAuditRecords(),
+        checkpointRecovery,
+        checkpointError,
+      });
+      const path = await saveFileDialog(
+        buildConversationDebugExportFileName({
+          conversation: conversationSnapshot,
+          activeConversationId,
+          exportedAt,
+        }),
+        JSON.stringify(bundle, null, 2),
+      );
+      setSessionNote(`已导出调试日志：${path}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "未知错误";
+      if (message.includes("用户取消了保存")) {
+        setSessionNote("已取消导出调试日志");
+      } else {
+        setSessionNote(`导出调试日志失败：${message}`);
+      }
+    } finally {
+      setIsExportingDebugBundle(false);
+    }
+  };
+
+  const appendConversationDebugEntry = (
+    conversationId: string | null | undefined,
+    entry: ConversationDebugEntry,
+  ): void => {
+    const key = resolveConversationDebugKey(
+      conversationId ?? activeConversationIdRef.current,
+    );
+    const existing = conversationDebugEntriesRef.current.get(key) ?? [];
+    conversationDebugEntriesRef.current.set(
+      key,
+      [...existing, entry].slice(-DEBUG_EXPORT_HISTORY_LIMIT),
+    );
+  };
+
+  const appendAssistantStatusMessage = (content: string): void => {
+    const normalized = content.trim();
+    if (!normalized) {
+      return;
+    }
+
+    const message: ChatMessageRecord = {
+      id: createMessageId("assistant"),
+      role: "assistant",
+      content: normalized,
+      createdAt: new Date().toISOString(),
+      plan: null,
+      agentId: activeAgent.id,
+    };
+
+    setMessages((prev) => {
+      const lastMessage = prev[prev.length - 1];
+      if (
+        lastMessage?.role === "assistant" &&
+        lastMessage.content.trim() === normalized &&
+        lastMessage.plan === null
+      ) {
+        messagesRef.current = prev;
+        return prev;
+      }
+      const next = [...prev, message];
+      messagesRef.current = next;
+      return next;
+    });
+  };
 
   useEffect(() => {
     activeConversationIdRef.current = activeConversationId;
@@ -409,6 +700,33 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     }
   }, [messages, currentConversation?.id]);
 
+  // Sync agentBinding when the user switches the global model via TitleBar
+  useEffect(() => {
+    if (!currentConversation?.agentBinding) return;
+    const { vendorId, modelId } = currentConversation.agentBinding;
+    if (vendorId === settings.activeVendorId && modelId === settings.activeModelId) return;
+
+    const resolved = resolveManagedModelSelection(settings, {
+      vendorId: settings.activeVendorId,
+      modelId: settings.activeModelId,
+    });
+    if (!resolved) return;
+
+    const updatedBinding = {
+      ...currentConversation.agentBinding,
+      vendorId: resolved.vendor.id,
+      modelId: resolved.managedModel.id,
+      vendorNameSnapshot: resolved.vendor.name,
+      modelNameSnapshot: resolved.managedModel.name,
+    };
+    const updatedConversation: Conversation = {
+      ...currentConversation,
+      agentBinding: updatedBinding,
+    };
+    setCurrentConversation(updatedConversation);
+    saveConversation(wsPath, updatedConversation);
+  }, [settings.activeModelId, settings.activeVendorId]);
+
   // React to workspace path changes: migrate, reload conversations
   const prevWsPathRef = useRef(wsPath);
   useEffect(() => {
@@ -458,6 +776,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
     // Reset session state
     resetChatSessionState();
+    session.resetSession();
     setPrompt("");
     setComposerAttachments([]);
     clearMentionUi();
@@ -719,6 +1038,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       .then((decision) => {
         if (decision.kind === "stop") {
           setSessionNote(decision.reason);
+          appendAssistantStatusMessage(`自动续跑已停止：${decision.reason}`);
           return;
         }
 
@@ -742,13 +1062,20 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         });
 
         setTimeout(
-          () =>
+          () => {
             void runChatCycle(decision.prompt, {
               visibleUserMessage: false,
               isContinuation: true,
               internalSystemNote: decision.internalSystemNote,
               existingPlan: plan,
-            }),
+            }).catch((error) => {
+              const message =
+                error instanceof Error ? error.message : "未知错误";
+              setCategorizedError(classifyError(error));
+              setSessionNote(`自动续跑失败：${message}`);
+              appendAssistantStatusMessage(`自动续跑失败：${message}`);
+            });
+          },
           100
         );
       })
@@ -756,8 +1083,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         setSessionNote(
           `续跑状态机失败：${err instanceof Error ? err.message : "未知错误"}`
         );
+        appendAssistantStatusMessage(
+          `续跑状态机失败：${err instanceof Error ? err.message : "未知错误"}`,
+        );
       });
   };
+  continueAfterHitlIfNeededRef.current = continueAfterHitlIfNeeded;
 
   const runChatCycle = async (
     promptText: string,
@@ -799,6 +1130,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     const conversationHistory = toConversationHistory(messagesRef.current);
     const assistantMessageId = createMessageId("assistant");
     const now = new Date().toISOString();
+    const chatSessionId = getChatSessionId();
+    const debugRequestId = `chatreq-${Date.now()}-${Math.random()
+      .toString(16)
+      .slice(2, 8)}`;
     const assistantMsg: ChatMessageRecord = {
       id: assistantMessageId,
       role: "assistant",
@@ -901,11 +1236,48 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
     setIsStreaming(true);
     setCategorizedError(null);
+    setFailedLlmRequestLog(null);
     setSessionNote("正在回复…");
     setLiveToolCalls([]);
     setLiveContextTokens(null);
     guardedSetSubAgentStatus(() => []);
     session.setWorkflowPhase("planning");
+    if (settings.debugMode) {
+      appendConversationDebugEntry(streamConvId, {
+        id: `${debugRequestId}:started`,
+        type: "llm_request_started",
+        timestamp: now,
+        requestId: debugRequestId,
+        data: {
+          prompt: truncateDebugLogText(promptText),
+          visibleUserMessage,
+          contextAttachments: contextAttachments.map((attachment) => ({
+            id: attachment.id,
+            kind: attachment.kind,
+            relativePath: attachment.relativePath,
+            source: attachment.source,
+          })),
+          historyMessageCount: conversationHistory.length,
+          historyPreview: summarizeConversationHistoryForDebug(conversationHistory),
+          sessionId: chatSessionId,
+          conversationId: streamConvId,
+          activeAgentId: activeAgent.id,
+          boundAgentId: convBinding?.agentId ?? null,
+          phase: options.phase ?? "default",
+          isContinuation: options.isContinuation === true,
+          existingPlanState: options.existingPlan?.state ?? null,
+          existingPlanActionCount: options.existingPlan?.proposedActions.length ?? 0,
+          executionSettings: {
+            provider: executionSettings.provider ?? null,
+            model: executionSettings.model,
+            baseUrl: executionSettings.liteLLMBaseUrl,
+            activeVendorId: executionSettings.activeVendorId,
+            activeModelId: executionSettings.activeModelId,
+            workspacePath: executionSettings.workspacePath,
+          },
+        },
+      });
+    }
 
     try {
       const result = await runPlanningSession({
@@ -943,15 +1315,36 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         },
         onToolCallEvent: (event: ToolCallEvent) => {
           if (event.type === "start") {
-            guardedSetToolCalls((prev) => [
-              ...prev,
-              {
-                callId: event.callId,
-                toolName: event.toolName,
-                argsPreview: event.argsPreview,
-                status: "running",
-              },
-            ]);
+            guardedSetToolCalls((prev) => {
+              const existing = prev.find((call) => call.callId === event.callId);
+              const nextArgsPreview =
+                event.argsPreview && event.argsPreview.trim()
+                  ? event.argsPreview
+                  : existing?.argsPreview;
+
+              if (existing) {
+                return prev.map((call) =>
+                  call.callId === event.callId
+                    ? {
+                      ...call,
+                      toolName: event.toolName,
+                      argsPreview: nextArgsPreview,
+                      status: "running",
+                    }
+                    : call
+                );
+              }
+
+              return [
+                ...prev,
+                {
+                  callId: event.callId,
+                  toolName: event.toolName,
+                  argsPreview: nextArgsPreview,
+                  status: "running",
+                },
+              ];
+            });
           } else {
             guardedSetToolCalls((prev) =>
               prev.map((call) =>
@@ -1000,7 +1393,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             })
           );
         },
-        sessionId: getChatSessionId(),
+        sessionId: chatSessionId,
         onAskUserRequest: (request: AskUserRequest) => {
           setAskUserRequest(request);
         },
@@ -1031,13 +1424,42 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       session.updatePlan(result.assistantReply);
       session.appendToolTraces(result.toolTrace ?? []);
       session.appendRequestSummary({
-        requestId: `chat-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        requestId: debugRequestId,
         model: activeModelLabel,
         timestamp: new Date().toISOString(),
         inputTokens: result.tokenUsage.inputTokens,
         outputTokens: result.tokenUsage.outputTokens,
         durationMs: Date.now() - new Date(now).getTime(),
       });
+      if (settings.debugMode) {
+        appendConversationDebugEntry(streamConvId, {
+          id: `${debugRequestId}:completed`,
+          type: "llm_request_completed",
+          timestamp: new Date().toISOString(),
+          requestId: debugRequestId,
+          data: {
+            durationMs: Date.now() - new Date(now).getTime(),
+            assistantReplyPreview: truncateDebugLogText(
+              result.assistantReply,
+              2400,
+            ),
+            tokenUsage: result.tokenUsage,
+            planState: result.plan.state,
+            planStepCount: result.plan.steps.length,
+            proposedActions: result.plan.proposedActions.map((action) => ({
+              id: action.id,
+              type: action.type,
+              status: action.status,
+              description: action.description,
+              toolName: action.toolName ?? null,
+              fingerprint: action.fingerprint ?? null,
+            })),
+            toolTrace: result.toolTrace ?? [],
+            assistantToolCalls:
+              result.assistantToolCalls ?? buildToolCallsFromPlan(result.plan),
+          },
+        });
+      }
       guardedSetTokens(result.tokenUsage.inputTokens + result.tokenUsage.outputTokens);
       session.setWorkflowPhase(
         result.plan.state === "human_review"
@@ -1050,11 +1472,11 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       );
 
       void saveWorkflowCheckpoint(
-        getChatSessionId(),
+        chatSessionId,
         assistantMessageId,
         result.plan,
         result.toolTrace,
-        getHitlContinuationMemory(getChatSessionId())
+        getHitlContinuationMemory(chatSessionId)
       ).catch((err) =>
         guardedSetNote(
           `审批点未保存：${err instanceof Error ? err.message : "未知错误"}`
@@ -1072,6 +1494,17 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       );
     } catch (error) {
       if (controller.signal.aborted) {
+        if (settings.debugMode) {
+          appendConversationDebugEntry(streamConvId, {
+            id: `${debugRequestId}:cancelled`,
+            type: "llm_request_cancelled",
+            timestamp: new Date().toISOString(),
+            requestId: debugRequestId,
+            data: {
+              durationMs: Date.now() - new Date(now).getTime(),
+            },
+          });
+        }
         guardedSetMessages((prev) =>
           prev.filter(
             (m) => m.id !== assistantMessageId || m.content.trim() !== ""
@@ -1080,7 +1513,49 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         guardedSetNote("已取消");
         return;
       }
-      guardedSetError(classifyError(error));
+      const classifiedError = classifyError(error);
+      guardedSetError(classifiedError);
+      let debugLog: string | null = null;
+      if (isActive()) {
+        if (settings.debugMode && isLlmResponseFailureCategory(classifiedError.category)) {
+          debugLog = buildFailedLlmRequestLog({
+            prompt: promptText,
+            conversationHistory,
+            contextAttachments,
+            executionSettings,
+            activeAgentId: activeAgent.id,
+            boundAgentId: convBinding?.agentId,
+            sessionId: chatSessionId,
+            conversationId: streamConvId,
+            startedAt: now,
+            isContinuation: options.isContinuation === true,
+            phase: options.phase,
+            error: classifiedError,
+          });
+          setFailedLlmRequestLog(debugLog);
+        } else {
+          setFailedLlmRequestLog(null);
+        }
+      }
+      if (settings.debugMode) {
+        appendConversationDebugEntry(streamConvId, {
+          id: `${debugRequestId}:failed`,
+          type: "llm_request_failed",
+          timestamp: new Date().toISOString(),
+          requestId: debugRequestId,
+          data: {
+            durationMs: Date.now() - new Date(now).getTime(),
+            error: {
+              category: classifiedError.category,
+              title: classifiedError.title,
+              message: classifiedError.message,
+              guidance: classifiedError.guidance,
+              rawError: classifiedError.rawError ?? null,
+            },
+            failedRequestLog: debugLog,
+          },
+        });
+      }
       guardedSetMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
       guardedSetNote("回复失败");
     } finally {
@@ -1165,21 +1640,27 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
   const handlePlanUpdate = (
     messageId: string,
-    updater: (plan: OrchestrationPlan) => OrchestrationPlan
+    updater: (plan: OrchestrationPlan) => OrchestrationPlan,
+    options?: { persist?: boolean },
   ): void => {
-    let updatedPlan: OrchestrationPlan | null = null;
-    let currentTrace: ToolExecutionTrace[] = [];
+    const targetMessage = messagesRef.current.find((m) => m.id === messageId);
+    if (!targetMessage || !targetMessage.plan) return;
+
+    // Execute updater synchronously so callers can capture local variable side-effects
+    const updatedPlan = updater(targetMessage.plan);
+    const currentTrace = targetMessage.toolTrace ?? [];
+
     setMessages((prev) => {
       const next = prev.map((m) => {
         if (m.id !== messageId || !m.plan) return m;
-        updatedPlan = updater(m.plan);
-        currentTrace = m.toolTrace ?? [];
-        return { ...m, plan: updatedPlan };
+        // Re-apply updater functionally for React state consistency
+        return { ...m, plan: updater(m.plan) };
       });
       messagesRef.current = next;
       return next;
     });
-    if (updatedPlan) {
+
+    if (options?.persist !== false) {
       void saveWorkflowCheckpoint(
         getChatSessionId(),
         messageId,
@@ -1194,6 +1675,268 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     }
   };
 
+  handlePlanUpdateRef.current = handlePlanUpdate;
+
+  const markShellActionsFailed = (
+    plan: OrchestrationPlan,
+    actionIds: string[],
+    reason: string,
+  ): OrchestrationPlan => actionIds.reduce(
+    (currentPlan, actionId) => markActionExecutionError(currentPlan, actionId, reason),
+    plan,
+  );
+
+  const startShellJobForAction = async (params: {
+    messageId: string;
+    actionId: string;
+    plan: OrchestrationPlan;
+    approvalContext?: ManualApprovalContext;
+  }): Promise<void> => {
+    const action = params.plan.proposedActions.find(
+      (candidate) => candidate.id === params.actionId,
+    );
+    if (!action || action.type !== "shell") {
+      throw new Error("找不到待执行的 shell 动作。");
+    }
+
+    const started = await startShellCommand({
+      workspacePath: settings.workspacePath,
+      shell: action.payload.shell,
+      timeoutMs: action.payload.timeoutMs,
+    });
+    runningShellJobsRef.current.set(started.job_id, {
+      messageId: params.messageId,
+      actionId: params.actionId,
+      workspacePath: settings.workspacePath,
+      approvalContext: params.approvalContext,
+    });
+  };
+
+  startShellJobForActionRef.current = startShellJobForAction;
+
+  const flushShellOutputBuffer = (jobId: string): void => {
+    const job = runningShellJobsRef.current.get(jobId);
+    const buffer = shellOutputBuffersRef.current.get(jobId);
+    if (!job || !buffer) {
+      return;
+    }
+
+    if (buffer.timerId !== null) {
+      clearTimeout(buffer.timerId);
+      buffer.timerId = null;
+    }
+
+    if (!buffer.stdout && !buffer.stderr) {
+      return;
+    }
+
+    const stdoutChunk = buffer.stdout;
+    const stderrChunk = buffer.stderr;
+    buffer.stdout = "";
+    buffer.stderr = "";
+
+    handlePlanUpdate(
+      job.messageId,
+      (plan) => {
+        let nextPlan = plan;
+        if (stdoutChunk) {
+          nextPlan = appendRunningShellOutput(nextPlan, job.actionId, {
+            command: buffer.command,
+            stream: "stdout",
+            chunk: stdoutChunk,
+          });
+        }
+        if (stderrChunk) {
+          nextPlan = appendRunningShellOutput(nextPlan, job.actionId, {
+            command: buffer.command,
+            stream: "stderr",
+            chunk: stderrChunk,
+          });
+        }
+        return nextPlan;
+      },
+      { persist: false },
+    );
+  };
+
+  flushShellOutputBufferRef.current = flushShellOutputBuffer;
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let disposed = false;
+
+    void listen<ShellCommandEvent>("shell-command-event", (event) => {
+      if (disposed) {
+        return;
+      }
+
+      const payload = event.payload;
+      const runningJob = runningShellJobsRef.current.get(payload.job_id);
+      if (!runningJob) {
+        return;
+      }
+
+      if (
+        payload.event_type === "output" &&
+        payload.chunk &&
+        (payload.stream === "stdout" || payload.stream === "stderr")
+      ) {
+        const existing =
+          shellOutputBuffersRef.current.get(payload.job_id) ?? {
+            command: payload.command,
+            stdout: "",
+            stderr: "",
+            timerId: null,
+          };
+
+        existing.command = payload.command || existing.command;
+        if (payload.stream === "stdout") {
+          existing.stdout += payload.chunk;
+        } else {
+          existing.stderr += payload.chunk;
+        }
+        if (existing.timerId === null) {
+          existing.timerId = setTimeout(() => {
+            flushShellOutputBufferRef.current(payload.job_id);
+          }, 120);
+        }
+        shellOutputBuffersRef.current.set(payload.job_id, existing);
+        return;
+      }
+
+      if (payload.event_type !== "completed") {
+        return;
+      }
+
+      flushShellOutputBufferRef.current(payload.job_id);
+      shellOutputBuffersRef.current.delete(payload.job_id);
+      runningShellJobsRef.current.delete(payload.job_id);
+
+      let nextPlan: OrchestrationPlan | null = null;
+      handlePlanUpdateRef.current(runningJob.messageId, (plan) => {
+        nextPlan = completeRunningShellAction(
+          plan,
+          runningJob.actionId,
+          runningJob.workspacePath,
+          {
+            success: Boolean(payload.success),
+            command: payload.command,
+            timed_out: Boolean(payload.timed_out),
+            status: Number(payload.status ?? -1),
+            stdout: String(payload.stdout ?? ""),
+            stderr: String(payload.stderr ?? ""),
+            cancelled: Boolean(payload.cancelled),
+          },
+          runningJob.approvalContext,
+        );
+        return nextPlan;
+      });
+
+      if (!nextPlan) {
+        return;
+      }
+
+      const resolvedPlan = nextPlan as OrchestrationPlan;
+      const pendingQueue = pendingShellQueuesRef.current.get(runningJob.messageId);
+      const currentSucceeded = Boolean(payload.success) && !Boolean(payload.cancelled);
+
+      if (pendingQueue && pendingQueue.actionIds.length > 0) {
+        void (async () => {
+          if (!currentSucceeded) {
+            pendingShellQueuesRef.current.delete(runningJob.messageId);
+            const queueStopReason = payload.cancelled
+              ? "未执行：前序命令已取消"
+              : "未执行：前序命令失败";
+            const failedQueuedPlan = markShellActionsFailed(
+              resolvedPlan,
+              pendingQueue.actionIds,
+              queueStopReason,
+            );
+            handlePlanUpdateRef.current(runningJob.messageId, () => failedQueuedPlan);
+            setSessionNote(
+              `动作 ${runningJob.actionId} 已停止，剩余 ${pendingQueue.actionIds.length} 个命令未继续执行`,
+            );
+            continueAfterHitlIfNeededRef.current(runningJob.messageId, failedQueuedPlan);
+          } else {
+            const [nextActionId, ...restActionIds] = pendingQueue.actionIds;
+            if (!nextActionId) {
+              pendingShellQueuesRef.current.delete(runningJob.messageId);
+              setSessionNote(
+                `动作 ${runningJob.actionId} 已执行 · 状态：${resolvedPlan.state}`,
+              );
+              continueAfterHitlIfNeededRef.current(runningJob.messageId, resolvedPlan);
+              return;
+            }
+
+            if (restActionIds.length > 0) {
+              pendingShellQueuesRef.current.set(runningJob.messageId, {
+                messageId: runningJob.messageId,
+                actionIds: restActionIds,
+              });
+            } else {
+              pendingShellQueuesRef.current.delete(runningJob.messageId);
+            }
+
+            const queuedPlan = markShellActionRunning(
+              resolvedPlan,
+              nextActionId,
+              { message: "命令启动中…" },
+            );
+            handlePlanUpdateRef.current(runningJob.messageId, () => queuedPlan);
+            try {
+              await startShellJobForActionRef.current({
+                messageId: runningJob.messageId,
+                actionId: nextActionId,
+                plan: queuedPlan,
+              });
+              setSessionNote(
+                `动作 ${runningJob.actionId} 已完成，正在执行下一个命令 (${nextActionId})`,
+              );
+            } catch (error) {
+              const reason =
+                error instanceof Error
+                  ? error.message
+                  : String(error || "命令启动失败");
+              let failedPlan = markActionExecutionError(queuedPlan, nextActionId, reason);
+              if (restActionIds.length > 0) {
+                failedPlan = markShellActionsFailed(
+                  failedPlan,
+                  restActionIds,
+                  `未执行：前序命令启动失败：${reason}`,
+                );
+              }
+              pendingShellQueuesRef.current.delete(runningJob.messageId);
+              handlePlanUpdateRef.current(runningJob.messageId, () => failedPlan);
+              setCategorizedError(classifyError(error));
+              continueAfterHitlIfNeededRef.current(runningJob.messageId, failedPlan);
+            }
+          }
+        })();
+        return;
+      }
+
+      setSessionNote(
+        `动作 ${runningJob.actionId} 已执行 · 状态：${resolvedPlan.state}`,
+      );
+      continueAfterHitlIfNeededRef.current(runningJob.messageId, resolvedPlan);
+    }).then((dispose) => {
+      unlisten = dispose;
+    });
+
+    return () => {
+      disposed = true;
+      for (const buffer of shellOutputBuffersRef.current.values()) {
+        if (buffer.timerId !== null) {
+          clearTimeout(buffer.timerId);
+        }
+      }
+      shellOutputBuffersRef.current.clear();
+      runningShellJobsRef.current.clear();
+      pendingShellQueuesRef.current.clear();
+      unlisten?.();
+    };
+  }, []);
+
   const handleApproveAction = async (
     messageId: string,
     actionId: string,
@@ -1203,17 +1946,15 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     if (executingActionId) return;
     setExecutingActionId(actionId);
     setCategorizedError(null);
-    const runningPlan = markActionRunning(plan, actionId);
+    const targetAction = plan.proposedActions.find((action) => action.id === actionId);
+    const runningPlan =
+      targetAction?.type === "shell"
+        ? markShellActionRunning(plan, actionId, { message: "命令启动中…" })
+        : markActionRunning(plan, actionId);
     handlePlanUpdate(messageId, () => runningPlan);
     try {
       let rememberMessage = "";
-      let approvalContext:
-        | {
-          approvalMode: "remember_workspace_rule";
-          approvalRuleLabel: string;
-          approvalRuleKind: string;
-        }
-        | undefined;
+      let approvalContext: ManualApprovalContext | undefined;
       if (rememberOption) {
         try {
           const { added } = addWorkspaceApprovalRule(
@@ -1232,6 +1973,19 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           rememberMessage = `；规则保存失败：${error instanceof Error ? error.message : "未知错误"}`;
         }
       }
+      const runningAction = runningPlan.proposedActions.find(
+        (action) => action.id === actionId,
+      );
+      if (runningAction?.type === "shell") {
+        await startShellJobForAction({
+          messageId,
+          actionId,
+          plan: runningPlan,
+          approvalContext,
+        });
+        setSessionNote(`动作 ${actionId} 已启动${rememberMessage} · 命令执行中…`);
+        return;
+      }
       const nextPlan = await approveAction(
         runningPlan,
         actionId,
@@ -1246,7 +2000,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         error instanceof Error
           ? error.message
           : String(error || "动作执行失败");
-      const errorPlan = markActionExecutionError(plan, actionId, reason);
+      const errorPlan = markActionExecutionError(runningPlan, actionId, reason);
       handlePlanUpdate(messageId, () => errorPlan);
       setCategorizedError(classifyError(error));
       continueAfterHitlIfNeeded(messageId, errorPlan);
@@ -1316,14 +2070,128 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     plan: OrchestrationPlan
   ): Promise<void> => {
     if (executingActionId) return;
+    const pendingActions = plan.proposedActions.filter(
+      (action) => action.status === "pending",
+    );
+    if (pendingActions.length === 1 && pendingActions[0]?.type === "shell") {
+      await handleApproveAction(messageId, pendingActions[0].id, plan);
+      return;
+    }
     setExecutingActionId("batch-approve");
     setCategorizedError(null);
+    let nextPlan = plan;
+    const pendingPatchIds = pendingActions
+      .filter((action) => action.type === "apply_patch")
+      .map((action) => action.id);
+    const pendingShellIds = pendingActions
+      .filter((action) => action.type === "shell")
+      .map((action) => action.id);
     try {
-      const nextPlan = await approveAllPendingActions(
-        plan,
-        settings.workspacePath
-      );
-      handlePlanUpdate(messageId, () => nextPlan);
+      if (pendingShellIds.length > 0) {
+        nextPlan = pendingShellIds.reduce(
+          (currentPlan, actionId, index) =>
+            markShellActionRunning(currentPlan, actionId, {
+              message:
+                pendingPatchIds.length > 0
+                  ? "等待前置变更完成…"
+                  : index === 0
+                    ? "命令启动中…"
+                    : "命令排队中…",
+              metadata: { queued: index > 0 || pendingPatchIds.length > 0 },
+            }),
+          nextPlan,
+        );
+        handlePlanUpdate(messageId, () => nextPlan);
+      }
+
+      if (pendingPatchIds.length > 0) {
+        nextPlan = await approveAllPendingActions(
+          nextPlan,
+          settings.workspacePath,
+        );
+        handlePlanUpdate(messageId, () => nextPlan);
+        const patchFailed = nextPlan.proposedActions.some(
+          (action) =>
+            pendingPatchIds.includes(action.id) &&
+            action.status === "failed",
+        );
+        if (patchFailed && pendingShellIds.length > 0) {
+          nextPlan = markShellActionsFailed(
+            nextPlan,
+            pendingShellIds,
+            "未执行：前序补丁失败",
+          );
+          handlePlanUpdate(messageId, () => nextPlan);
+          setSessionNote("批量补丁失败，后续命令未执行");
+          continueAfterHitlIfNeeded(messageId, nextPlan);
+          return;
+        }
+      }
+
+      if (pendingShellIds.length > 0) {
+        const [firstShellId, ...queuedShellIds] = pendingShellIds;
+        if (!firstShellId) {
+          return;
+        }
+        nextPlan = markShellActionRunning(nextPlan, firstShellId, {
+          message: "命令启动中…",
+          metadata: { queued: false },
+        });
+        handlePlanUpdate(messageId, () => nextPlan);
+        if (queuedShellIds.length > 0) {
+          pendingShellQueuesRef.current.set(messageId, {
+            messageId,
+            actionIds: queuedShellIds,
+          });
+          nextPlan = queuedShellIds.reduce(
+            (currentPlan, actionId) =>
+              markShellActionRunning(currentPlan, actionId, {
+                message: "命令排队中…",
+                metadata: { queued: true },
+              }),
+            nextPlan,
+          );
+          handlePlanUpdate(messageId, () => nextPlan);
+        } else {
+          pendingShellQueuesRef.current.delete(messageId);
+        }
+
+        try {
+          await startShellJobForAction({
+            messageId,
+            actionId: firstShellId,
+            plan: nextPlan,
+          });
+          const patchCompletedCount = nextPlan.proposedActions.filter(
+            (action) =>
+              pendingPatchIds.includes(action.id) &&
+              action.status === "completed",
+          ).length;
+          setSessionNote(
+            `已批准批量动作：${patchCompletedCount} 个补丁已执行，${pendingShellIds.length} 个命令已进入执行队列`,
+          );
+          return;
+        } catch (error) {
+          const reason =
+            error instanceof Error
+              ? error.message
+              : String(error || "命令启动失败");
+          nextPlan = markActionExecutionError(nextPlan, firstShellId, reason);
+          if (queuedShellIds.length > 0) {
+            nextPlan = markShellActionsFailed(
+              nextPlan,
+              queuedShellIds,
+              `未执行：前序命令启动失败：${reason}`,
+            );
+          }
+          pendingShellQueuesRef.current.delete(messageId);
+          handlePlanUpdate(messageId, () => nextPlan);
+          setCategorizedError(classifyError(error));
+          continueAfterHitlIfNeeded(messageId, nextPlan);
+          return;
+        }
+      }
+
       const completedCount = nextPlan.proposedActions.filter(
         (a) => a.status === "completed"
       ).length;
@@ -1331,6 +2199,45 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         `已批量执行 ${completedCount} 个动作 · 状态：${nextPlan.state}`
       );
       continueAfterHitlIfNeeded(messageId, nextPlan);
+    } catch (error) {
+      if (pendingShellIds.length > 0) {
+        pendingShellQueuesRef.current.delete(messageId);
+        nextPlan = markShellActionsFailed(
+          nextPlan,
+          pendingShellIds.filter((actionId) =>
+            nextPlan.proposedActions.some(
+              (action) =>
+                action.id === actionId &&
+                (action.status === "pending" || action.status === "running"),
+            ),
+          ),
+          error instanceof Error ? error.message : "批量执行失败",
+        );
+        handlePlanUpdate(messageId, () => nextPlan);
+      }
+      setCategorizedError(classifyError(error));
+    } finally {
+      setExecutingActionId("");
+    }
+  };
+
+  const handleCancelAction = async (
+    messageId: string,
+    actionId: string,
+  ): Promise<void> => {
+    const runningEntry = Array.from(runningShellJobsRef.current.entries()).find(
+      ([, meta]) => meta.messageId === messageId && meta.actionId === actionId,
+    );
+    if (!runningEntry) {
+      return;
+    }
+
+    setExecutingActionId(`cancel:${actionId}`);
+    setCategorizedError(null);
+    try {
+      const [jobId] = runningEntry;
+      const cancelled = await cancelShellCommand(jobId);
+      setSessionNote(cancelled ? `已发送取消请求：${actionId}` : `命令已结束：${actionId}`);
     } catch (error) {
       setCategorizedError(classifyError(error));
     } finally {
@@ -1367,6 +2274,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     if (!currentConversation) return;
 
     resetChatSessionState();
+    session.resetSession();
+    conversationDebugEntriesRef.current.delete(
+      resolveConversationDebugKey(currentConversation.id),
+    );
 
     const clearedConversation = createClearedConversation(currentConversation);
     saveConversation(wsPath, clearedConversation);
@@ -1415,6 +2326,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     clearMentionUi();
 
     resetChatSessionState();
+    session.resetSession();
   };
 
   const handleSelectConversation = (conversationId: string): void => {
@@ -1437,6 +2349,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     clearMentionUi();
 
     resetChatSessionState();
+    session.resetSession();
   };
 
   const handleDeleteConversation = (conversationId: string): void => {
@@ -1448,6 +2361,9 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     abortControllersRef.current.get(conversationId)?.abort();
     abortControllersRef.current.delete(conversationId);
     backgroundStreamsRef.current.delete(conversationId);
+    conversationDebugEntriesRef.current.delete(
+      resolveConversationDebugKey(conversationId),
+    );
 
     const wasActiveConversation = conversationId === activeConversationId;
 
@@ -1469,6 +2385,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           clearMentionUi();
 
           resetChatSessionState();
+          session.resetSession();
         }
       } else {
         handleNewConversation();
@@ -1606,18 +2523,29 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                       {message.plan &&
                         (message.plan.proposedActions.length > 0 ||
                           message.plan.steps.length > 0) && (
-                          <InlinePlan
-                            plan={message.plan}
-                            messageId={message.id}
-                            executingActionId={executingActionId}
-                            onPlanUpdate={handlePlanUpdate}
-                            onApprove={handleApproveAction}
-                            onRetry={handleRetryAction}
-                            onReject={handleRejectAction}
-                            onComment={handleCommentAction}
-                            onApproveAll={handleApproveAllActions}
-                            onRejectAll={handleRejectAllActions}
-                          />
+                          (() => {
+                            const activeShellActionIds = Array.from(
+                              runningShellJobsRef.current.values(),
+                            )
+                              .filter((meta) => meta.messageId === message.id)
+                              .map((meta) => meta.actionId);
+                            return (
+                              <InlinePlan
+                                plan={message.plan}
+                                messageId={message.id}
+                                executingActionId={executingActionId}
+                                activeShellActionIds={activeShellActionIds}
+                                onPlanUpdate={handlePlanUpdate}
+                                onApprove={handleApproveAction}
+                                onRetry={handleRetryAction}
+                                onReject={handleRejectAction}
+                                onComment={handleCommentAction}
+                                onCancel={handleCancelAction}
+                                onApproveAll={handleApproveAllActions}
+                                onRejectAll={handleRejectAllActions}
+                              />
+                            );
+                          })()
                         )}
                       <div className={`chat-bubble ${message.role}`}>
                         {message.role === "user" && (
@@ -1651,6 +2579,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                   categorizedError.retriable
                     ? () => {
                       setCategorizedError(null);
+                      setFailedLlmRequestLog(null);
                       if (lastPromptRef.current) {
                         void runChatCycle(lastPromptRef.current, {
                           contextAttachments: lastContextAttachmentsRef.current,
@@ -1659,7 +2588,20 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                     }
                     : undefined
                 }
-                onDismiss={() => setCategorizedError(null)}
+                onCopyDebugLog={
+                  settings.debugMode &&
+                    failedLlmRequestLog &&
+                    isLlmResponseFailureCategory(categorizedError.category)
+                    ? () => {
+                      void handleCopyFailedRequestLog();
+                    }
+                    : undefined
+                }
+                copyDebugLogLabel="复制本次请求日志"
+                onDismiss={() => {
+                  setCategorizedError(null);
+                  setFailedLlmRequestLog(null);
+                }}
               />
             )}
             <form
@@ -1790,6 +2732,21 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                     </button>
                   </div>
                   <div className="chat-input-actions">
+                    {settings.debugMode && (
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        disabled={
+                          isExportingDebugBundle ||
+                          (!currentConversation && messages.length === 0)
+                        }
+                        onClick={() => {
+                          void handleDownloadConversationDebugBundle();
+                        }}
+                        type="button"
+                      >
+                        {isExportingDebugBundle ? "导出中…" : "下载日志"}
+                      </button>
+                    )}
                     {isStreaming && (
                       <button
                         className="btn btn-ghost btn-sm"
@@ -1832,12 +2789,14 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         request={askUserRequest}
         onResponse={(response, skipped) => {
           if (!askUserRequest) return;
-          submitUserResponse(getChatSessionId(), askUserRequest.id, response, skipped);
+          const targetSessionId = askUserRequest.sessionId ?? getChatSessionId();
+          submitUserResponse(targetSessionId, askUserRequest.id, response, skipped);
           setAskUserRequest(null);
         }}
         onCancel={() => {
           if (!askUserRequest) return;
-          cancelPendingRequest(getChatSessionId());
+          const targetSessionId = askUserRequest.sessionId ?? getChatSessionId();
+          cancelPendingRequest(targetSessionId);
           setAskUserRequest(null);
         }}
       />

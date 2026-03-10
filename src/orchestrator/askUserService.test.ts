@@ -13,6 +13,7 @@ import {
   hasPendingRequest,
   getLastResponse,
   clearSessionState,
+  waitForUserResponse,
   validateResponse,
   formatRequestForDisplay,
   type AskUserRequest,
@@ -46,6 +47,7 @@ describe("askUserService", () => {
       expect(pending!.id).toBe(requestId);
       expect(pending!.question).toBe("What is your preferred database?");
       expect(pending!.required).toBe(true);
+      expect(pending!.sessionId).toBe(testSessionId);
       expect(pending!.context).toBeUndefined();
       expect(pending!.options).toBeUndefined();
     });
@@ -152,6 +154,36 @@ describe("askUserService", () => {
       const success = cancelPendingRequest(testSessionId);
 
       expect(success).toBe(false);
+    });
+  });
+
+  describe("waitForUserResponse", () => {
+    it("should reject stale waiter when a newer request supersedes it", async () => {
+      const firstRequestId = createAskUserRequest(testSessionId, "First question");
+      const firstWaiter = waitForUserResponse(firstRequestId);
+
+      const secondRequestId = createAskUserRequest(testSessionId, "Second question");
+      const secondWaiter = waitForUserResponse(secondRequestId);
+
+      await expect(firstWaiter).rejects.toThrow("superseded");
+
+      const accepted = submitUserResponse(testSessionId, secondRequestId, "Second answer");
+      expect(accepted).toBe(true);
+
+      await expect(secondWaiter).resolves.toMatchObject({
+        id: secondRequestId,
+        response: "Second answer",
+        skipped: false,
+      });
+    });
+
+    it("should reject waiter when session state is cleared", async () => {
+      const requestId = createAskUserRequest(testSessionId, "Need input");
+      const waiter = waitForUserResponse(requestId);
+
+      clearSessionState(testSessionId);
+
+      await expect(waiter).rejects.toThrow("session cleanup");
     });
   });
 

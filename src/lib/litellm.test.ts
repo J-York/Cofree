@@ -8,11 +8,14 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(),
 }));
 
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   createLiteLLMRequestBody,
   isAnthropicModelName,
   isHighRiskToolCallingModelCombo,
   postLiteLLMChatCompletions,
+  postLiteLLMChatCompletionsStream,
   type LiteLLMMessage,
 } from "./litellm";
 import {
@@ -24,6 +27,7 @@ import {
 const BASE_MESSAGES: LiteLLMMessage[] = [{ role: "user", content: "hello" }];
 
 afterEach(() => {
+  vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -162,6 +166,117 @@ describe("Anthropic normalization for tool-calling replies", () => {
 
   });
 
+});
+
+describe("streaming tool-call events", () => {
+  it("forwards tool-call deltas before the final streamed response resolves", async () => {
+    const settings = createSettings({
+      protocol: "openai-chat-completions",
+      supportsThinking: false,
+      modelName: "gpt-4.1",
+    });
+
+    let handler:
+      | ((event: {
+        payload: {
+          request_id: string;
+          content: string;
+          done: boolean;
+          finish_reason: string | null;
+          event_type?: "text_delta" | "tool_call" | "done";
+          tool_call_id?: string | null;
+          tool_name?: string | null;
+          tool_arguments?: string | null;
+        };
+      }) => void)
+      | undefined;
+
+    vi.mocked(listen).mockImplementation(async (_eventName, callback) => {
+      handler = callback as typeof handler;
+      return vi.fn();
+    });
+
+    vi.mocked(invoke).mockImplementation(async (_command, args) => {
+      const requestId = (args as { requestId: string }).requestId;
+      handler?.({
+        payload: {
+          request_id: requestId,
+          content: "",
+          done: false,
+          finish_reason: null,
+          event_type: "tool_call",
+          tool_call_id: "call_1",
+          tool_name: "propose_file_edit",
+          tool_arguments: "{\"relative_path\":\"src/App.tsx\"}",
+        },
+      });
+      handler?.({
+        payload: {
+          request_id: requestId,
+          content: "ready",
+          done: false,
+          finish_reason: null,
+          event_type: "text_delta",
+        },
+      });
+
+      return {
+        status: 200,
+        endpoint: "http://localhost:4000/v1/chat/completions",
+        body: JSON.stringify({
+          id: "chatcmpl_stream_123",
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: "ready",
+                tool_calls: [
+                  {
+                    id: "call_1",
+                    type: "function",
+                    function: {
+                      name: "propose_file_edit",
+                      arguments: "{\"relative_path\":\"src/App.tsx\"}",
+                    },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+          usage: {
+            prompt_tokens: 12,
+            completion_tokens: 8,
+            total_tokens: 20,
+          },
+        }),
+      };
+    });
+
+    const textChunks: string[] = [];
+    const toolCalls: Array<{ callId: string; toolName: string; arguments: string }> = [];
+
+    const response = await postLiteLLMChatCompletionsStream(
+      settings,
+      { model: "gpt-4.1", messages: [], stream: true },
+      (chunk) => {
+        textChunks.push(chunk);
+      },
+      (event) => {
+        toolCalls.push(event);
+      },
+    );
+
+    expect(textChunks).toEqual(["ready"]);
+    expect(toolCalls).toEqual([
+      {
+        callId: "call_1",
+        toolName: "propose_file_edit",
+        arguments: "{\"relative_path\":\"src/App.tsx\"}",
+      },
+    ]);
+    expect(response.status).toBe(200);
+  });
 });
 
 describe("createLiteLLMRequestBody thinking integration", () => {

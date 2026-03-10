@@ -46,6 +46,7 @@ interface CommandExecutionResult {
   status: number;
   stdout: string;
   stderr: string;
+  cancelled?: boolean;
 }
 
 export interface ManualApprovalContext {
@@ -93,6 +94,10 @@ function createExecutionResult(
 }
 
 function pickShellFailureMessage(payload: CommandExecutionResult): string {
+  if (payload.cancelled) {
+    return "命令已取消";
+  }
+
   const stderr = payload.stderr.trim();
   const stdout = payload.stdout.trim();
   const preferredOutput = stderr || stdout;
@@ -164,6 +169,187 @@ function linkedPlanStep(planState: TodoPlanState, action?: ActionProposal): Plan
     return undefined;
   }
   return planState.steps.find((step) => step.id === action.planStepId);
+}
+
+function syncSuccessfulLinkedStep(
+  planState: TodoPlanState,
+  nextActions: ActionProposal[],
+  nextAction: ActionProposal | undefined,
+  note: string,
+): void {
+  if (!nextAction?.planStepId) {
+    return;
+  }
+
+  const linkedActions = nextActions.filter(
+    (action) => action.planStepId === nextAction.planStepId,
+  );
+  if (linkedActions.length === 0) {
+    return;
+  }
+
+  const hasOpenLinkedActions = linkedActions.some(
+    (action) => action.status === "pending" || action.status === "running",
+  );
+  const hasFailedLinkedActions = linkedActions.some(
+    (action) => action.status === "failed" || action.status === "rejected",
+  );
+
+  if (hasFailedLinkedActions) {
+    appendPlanStepNote(linkedPlanStep(planState, nextAction), note);
+    return;
+  }
+
+  if (hasOpenLinkedActions) {
+    setActivePlanStep(planState, nextAction.planStepId);
+    appendPlanStepNote(linkedPlanStep(planState, nextAction), note);
+    return;
+  }
+
+  setPlanStepStatus(planState, nextAction.planStepId, "completed", note);
+}
+
+function buildShellExecutionResult(payload: CommandExecutionResult): ActionExecutionResult {
+  return createExecutionResult(
+    payload.success,
+    payload.success ? "命令执行成功" : pickShellFailureMessage(payload),
+    {
+      command: payload.command,
+      timedOut: payload.timed_out,
+      timed_out: payload.timed_out,
+      cancelled: payload.cancelled ?? false,
+      status: payload.status,
+      stdout: payload.stdout,
+      stderr: payload.stderr,
+    },
+  );
+}
+
+function applyShellExecutionResult(params: {
+  plan: OrchestrationPlan;
+  actionId: string;
+  workspacePath: string;
+  result: ActionExecutionResult;
+  approvalContext?: ManualApprovalContext;
+  executor?: string;
+}): OrchestrationPlan {
+  const { plan, actionId, workspacePath, result, approvalContext } = params;
+  const executor = params.executor ?? "human_reviewer";
+  const nextActions = mapActions(plan, actionId, (entry) => ({
+    ...entry,
+    fingerprint: ensureFingerprint(entry),
+    status: result.success ? "completed" : "failed",
+    executed: result.success,
+    executionResult: {
+      ...result,
+      metadata: {
+        ...(result.metadata ?? {}),
+        executor,
+        approvalMode: approvalContext?.approvalMode ?? "manual",
+        approvalRuleLabel: approvalContext?.approvalRuleLabel ?? null,
+        approvalRuleKind: approvalContext?.approvalRuleKind ?? null,
+      },
+    },
+  }));
+
+  const nextAction = nextActions.find((entry) => entry.id === actionId);
+  recordSensitiveActionAudit({
+    actionId,
+    actionType: "shell",
+    status: result.success ? "success" : "failed",
+    startedAt: nowIso(),
+    finishedAt: nowIso(),
+    executor,
+    reason: result.message,
+    workspacePath,
+    details: nextAction?.executionResult?.metadata ?? {},
+  });
+
+  return applyPlanStateUpdate(plan, nextActions, (planState) => {
+    if (!nextAction?.planStepId) {
+      return;
+    }
+    if (result.success) {
+      syncSuccessfulLinkedStep(
+        planState,
+        nextActions,
+        nextAction,
+        `审批动作执行成功：${result.message}`,
+      );
+      return;
+    }
+    setPlanStepStatus(planState, nextAction.planStepId, "blocked", result.message);
+  });
+}
+
+export function appendRunningShellOutput(
+  plan: OrchestrationPlan,
+  actionId: string,
+  update: {
+    command?: string;
+    stream: "stdout" | "stderr";
+    chunk: string;
+  },
+): OrchestrationPlan {
+  if (!update.chunk) {
+    return plan;
+  }
+
+  const targetAction = plan.proposedActions.find(
+    (action) => action.id === actionId && action.type === "shell",
+  );
+  if (!targetAction || targetAction.type !== "shell") {
+    return plan;
+  }
+
+  const currentMeta = (targetAction.executionResult?.metadata ?? {}) as Record<string, unknown>;
+  const nextStdout =
+    update.stream === "stdout"
+      ? `${String(currentMeta.stdout ?? "")}${update.chunk}`
+      : String(currentMeta.stdout ?? "");
+  const nextStderr =
+    update.stream === "stderr"
+      ? `${String(currentMeta.stderr ?? "")}${update.chunk}`
+      : String(currentMeta.stderr ?? "");
+
+  const nextActions = mapActions(plan, actionId, (action) => ({
+    ...action,
+    status: "running",
+    executed: false,
+    executionResult: createExecutionResult(true, "命令执行中…", {
+      ...currentMeta,
+      command:
+        update.command ??
+        String(
+          currentMeta.command ??
+            (action.type === "shell" ? action.payload.shell : ""),
+        ),
+      stdout: nextStdout,
+      stderr: nextStderr,
+      timedOut: Boolean(currentMeta.timedOut ?? currentMeta.timed_out ?? false),
+      timed_out: Boolean(currentMeta.timedOut ?? currentMeta.timed_out ?? false),
+      status:
+        typeof currentMeta.status === "number" ? currentMeta.status : undefined,
+    }),
+  }));
+
+  return applyPlanStateUpdate(plan, nextActions);
+}
+
+export function completeRunningShellAction(
+  plan: OrchestrationPlan,
+  actionId: string,
+  workspacePath: string,
+  payload: CommandExecutionResult,
+  approvalContext?: ManualApprovalContext,
+): OrchestrationPlan {
+  return applyShellExecutionResult({
+    plan,
+    actionId,
+    workspacePath,
+    result: buildShellExecutionResult(payload),
+    approvalContext,
+  });
 }
 
 export function retryFailedShellAction(
@@ -244,6 +430,44 @@ export function markActionRunning(
     ...action,
     status: "running",
     executed: false,
+  }));
+
+  const nextAction = nextActions.find((action) => action.id === actionId);
+  return applyPlanStateUpdate(plan, nextActions, (planState) => {
+    if (nextAction?.planStepId) {
+      setActivePlanStep(planState, nextAction.planStepId);
+    }
+  });
+}
+
+export function markShellActionRunning(
+  plan: OrchestrationPlan,
+  actionId: string,
+  options?: {
+    message?: string;
+    metadata?: Record<string, unknown>;
+  },
+): OrchestrationPlan {
+  const targetAction = plan.proposedActions.find(
+    (action) => action.id === actionId && action.type === "shell",
+  );
+  if (!targetAction || targetAction.type !== "shell") {
+    return markActionRunning(plan, actionId);
+  }
+
+  const nextActions = mapActions(plan, actionId, (action) => ({
+    ...action,
+    status: "running",
+    executed: false,
+    executionResult: createExecutionResult(
+      true,
+      options?.message ?? "命令执行中…",
+      {
+        ...(action.executionResult?.metadata ?? {}),
+        ...(options?.metadata ?? {}),
+        command: targetAction.payload.shell,
+      },
+    ),
   }));
 
   const nextAction = nextActions.find((action) => action.id === actionId);
@@ -750,19 +974,18 @@ export async function approveAction(
       shell: action.payload.shell,
       timeoutMs: action.payload.timeoutMs,
     });
-    result = createExecutionResult(
-      payload.success,
-      payload.success ? "命令执行成功" : pickShellFailureMessage(payload),
-      {
-        command: action.payload.shell,
-        timedOut: payload.timed_out,
-        status: payload.status,
-        stdout: payload.stdout,
-        stderr: payload.stderr,
+    result = buildShellExecutionResult({
+      ...payload,
+      command: action.payload.shell,
+    });
+    result = {
+      ...result,
+      metadata: {
+        ...(result.metadata ?? {}),
         retryFromActionId: action.payload.retryFromActionId,
         retryAttempt: action.payload.retryAttempt,
-      }
-    );
+      },
+    };
   }
 
   result = {
@@ -802,9 +1025,10 @@ export async function approveAction(
       return;
     }
     if (result.success) {
-      setActivePlanStep(planState, nextAction.planStepId);
-      appendPlanStepNote(
-        linkedPlanStep(planState, nextAction),
+      syncSuccessfulLinkedStep(
+        planState,
+        nextActions,
+        nextAction,
         `审批动作执行成功：${result.message}`,
       );
       return;

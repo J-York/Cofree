@@ -56,6 +56,27 @@ pub struct CommandExecutionResult {
 }
 
 #[derive(Clone, Serialize)]
+pub struct ShellCommandStartResult {
+    pub job_id: String,
+    pub command: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ShellCommandEvent {
+    pub job_id: String,
+    pub event_type: String,
+    pub command: String,
+    pub stream: Option<String>,
+    pub chunk: Option<String>,
+    pub success: Option<bool>,
+    pub timed_out: Option<bool>,
+    pub cancelled: Option<bool>,
+    pub status: Option<i32>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
 pub struct SnapshotResult {
     pub success: bool,
     pub snapshot_id: String,
@@ -125,6 +146,10 @@ pub struct StreamChunkEvent {
     pub content: String,
     pub done: bool,
     pub finish_reason: Option<String>,
+    pub event_type: String,
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_arguments: Option<String>,
 }
 
 #[derive(Clone, Serialize)]

@@ -131,8 +131,71 @@ fn emit_stream_chunk_event(
             content: content.to_string(),
             done,
             finish_reason,
+            event_type: if done {
+                "done".to_string()
+            } else {
+                "text_delta".to_string()
+            },
+            tool_call_id: None,
+            tool_name: None,
+            tool_arguments: None,
         },
     );
+}
+
+fn emit_stream_tool_call_event(
+    app: &tauri::AppHandle,
+    request_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    tool_arguments: Option<&str>,
+) {
+    if tool_call_id.trim().is_empty() || tool_name.trim().is_empty() {
+        return;
+    }
+
+    let _ = app.emit(
+        "llm-stream-chunk",
+        StreamChunkEvent {
+            request_id: request_id.to_string(),
+            content: String::new(),
+            done: false,
+            finish_reason: None,
+            event_type: "tool_call".to_string(),
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(tool_name.to_string()),
+            tool_arguments: tool_arguments.map(|value| value.to_string()),
+        },
+    );
+}
+
+fn emit_stream_tool_call_event_from_entry(app: &tauri::AppHandle, request_id: &str, entry: &Value) {
+    let tool_call_id = entry.get("id").and_then(Value::as_str).unwrap_or_default();
+    let tool_name = entry
+        .get("function")
+        .and_then(|function| function.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let tool_arguments = entry
+        .get("function")
+        .and_then(|function| function.get("arguments"))
+        .and_then(Value::as_str);
+
+    emit_stream_tool_call_event(app, request_id, tool_call_id, tool_name, tool_arguments);
+}
+
+fn emit_all_stream_tool_call_events(
+    app: &tauri::AppHandle,
+    request_id: &str,
+    tool_calls_json: &[Value],
+) {
+    for entry in tool_calls_json {
+        emit_stream_tool_call_event_from_entry(app, request_id, entry);
+    }
+}
+
+fn get_tool_call_entry(tool_calls_json: &[Value], index: usize) -> Option<&Value> {
+    tool_calls_json.get(index)
 }
 
 fn ensure_tool_call_entry(tool_calls_json: &mut Vec<Value>, index: usize) -> &mut Value {
@@ -468,6 +531,13 @@ async fn parse_openai_chat_stream(
                                                 .and_then(|func| func.get("arguments"))
                                                 .and_then(Value::as_str),
                                         );
+                                        if let Some(entry) =
+                                            get_tool_call_entry(&tool_calls_json, tc_index)
+                                        {
+                                            emit_stream_tool_call_event_from_entry(
+                                                app, request_id, entry,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -558,6 +628,7 @@ async fn parse_openai_responses_stream(
                             {
                                 set_tool_call_arguments(entry, arguments);
                             }
+                            emit_stream_tool_call_event_from_entry(app, request_id, entry);
                         }
                         "response.output_item.added" | "response.output_item.done" => {
                             if let Some(item) = parsed.get("item") {
@@ -592,6 +663,7 @@ async fn parse_openai_responses_stream(
                                     {
                                         set_tool_call_arguments(entry, arguments);
                                     }
+                                    emit_stream_tool_call_event_from_entry(app, request_id, entry);
                                 }
                             }
                         }
@@ -670,6 +742,7 @@ async fn parse_anthropic_messages_stream(
                     for chunk in apply_anthropic_stream_event(&mut state, &current_event, &parsed) {
                         emit_stream_chunk_event(app, request_id, &chunk, false, None);
                     }
+                    emit_all_stream_tool_call_events(app, request_id, &state.tool_calls_json);
                     if resolve_anthropic_stream_event_name(&current_event, &parsed)
                         == "message_stop"
                     {
@@ -705,7 +778,7 @@ pub async fn fetch_litellm_models(
     if normalized.is_empty() {
         return Err("LiteLLM Base URL 不能为空".to_string());
     }
-    let client = build_reqwest_client_with_proxy(proxy, 120)?;
+    let client = build_reqwest_client_with_proxy(proxy, Some(120))?;
     let endpoints = build_protocol_endpoints(&normalized, &protocol, true);
     let mut errors = Vec::new();
     for endpoint in endpoints {
@@ -729,7 +802,7 @@ pub async fn post_litellm_chat_completions(
     if normalized.is_empty() {
         return Err("LiteLLM Base URL 不能为空".to_string());
     }
-    let client = build_reqwest_client_with_proxy(proxy, 120)?;
+    let client = build_reqwest_client_with_proxy(proxy, Some(120))?;
     let endpoints = build_protocol_endpoints(&normalized, &protocol, false);
     let mut errors = Vec::new();
     for (index, endpoint) in endpoints.iter().enumerate() {
@@ -782,7 +855,9 @@ pub async fn post_litellm_chat_completions_stream(
     if normalized.is_empty() {
         return Err("LiteLLM Base URL 不能为空".to_string());
     }
-    let client = build_reqwest_client_with_proxy(proxy, 300)?;
+    // Streaming tool turns can legitimately stay open for longer than five minutes.
+    // Keep only the connect timeout so long-running streams are not terminated locally.
+    let client = build_reqwest_client_with_proxy(proxy, None)?;
     let mut stream_body = body.clone();
     if let Some(obj) = stream_body.as_object_mut() {
         obj.insert("stream".to_string(), Value::Bool(true));

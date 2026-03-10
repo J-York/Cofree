@@ -18,6 +18,7 @@ import type {
   ProxySettings,
   ReadFileResult,
   RecoveryResult,
+  ShellCommandStartResult,
   SnapshotResult,
   WorkspaceInfo,
 } from "./tauriTypes";
@@ -174,6 +175,22 @@ export function runShellCommand(params: {
     shell: params.shell,
     timeoutMs: params.timeoutMs,
   });
+}
+
+export function startShellCommand(params: {
+  workspacePath: string;
+  shell: string;
+  timeoutMs?: number;
+}): Promise<ShellCommandStartResult> {
+  return invoke<ShellCommandStartResult>("start_shell_command", {
+    workspacePath: params.workspacePath,
+    shell: params.shell,
+    timeoutMs: params.timeoutMs,
+  });
+}
+
+export function cancelShellCommand(jobId: string): Promise<boolean> {
+  return invoke<boolean>("cancel_shell_command", { jobId });
 }
 
 // ── Checkpoint ───────────────────────────────────────────────────────────────

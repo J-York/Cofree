@@ -24,12 +24,14 @@ const ALL_TOOL_NAMES = [
   "list_files", "read_file", "grep", "glob",
   "git_status", "git_diff",
   "propose_file_edit", "propose_apply_patch", "propose_shell",
-  "diagnostics", "fetch", "task",
+  "diagnostics", "fetch", "ask_user", "task",
 ];
 
 function resolveEnabledTools(agent: ChatAgentDefinition): string[] {
   if (agent.toolPolicy.enabledTools && agent.toolPolicy.enabledTools.length > 0) {
     const base = new Set(agent.toolPolicy.enabledTools);
+    // Keep human-in-the-loop clarification always available for top-level agents.
+    base.add("ask_user");
     if (agent.allowedSubAgents.length > 0) {
       base.add("task");
     }

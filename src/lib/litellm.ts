@@ -19,6 +19,16 @@ export interface StreamChunkEvent {
   content: string;
   done: boolean;
   finish_reason: string | null;
+  event_type?: "text_delta" | "tool_call" | "done";
+  tool_call_id?: string | null;
+  tool_name?: string | null;
+  tool_arguments?: string | null;
+}
+
+export interface StreamToolCallEvent {
+  callId: string;
+  toolName: string;
+  arguments: string;
 }
 
 export interface LiteLLMMessage {
@@ -1523,7 +1533,8 @@ function normalizeResponseBody(protocol: VendorProtocol, raw: string): string {
 export async function postLiteLLMChatCompletionsStream(
   settings: AppSettings,
   body: Record<string, unknown>,
-  onChunk: (content: string) => void
+  onChunk: (content: string) => void,
+  onToolCall?: (event: StreamToolCallEvent) => void,
 ): Promise<LiteLLMHttpResponse> {
   const protocol = getActiveProtocol(settings);
   const baseUrl = getActiveVendor(settings)?.baseUrl || settings.liteLLMBaseUrl;
@@ -1555,11 +1566,24 @@ export async function postLiteLLMChatCompletionsStream(
   const listenerReady = listen<StreamChunkEvent>(
     "llm-stream-chunk",
     (event) => {
+      if (event.payload.request_id !== requestId) {
+        return;
+      }
+
       if (
-        event.payload.request_id === requestId &&
-        !event.payload.done &&
-        event.payload.content
+        event.payload.event_type === "tool_call" &&
+        event.payload.tool_call_id &&
+        event.payload.tool_name
       ) {
+        onToolCall?.({
+          callId: event.payload.tool_call_id,
+          toolName: event.payload.tool_name,
+          arguments: event.payload.tool_arguments ?? "",
+        });
+        return;
+      }
+
+      if (!event.payload.done && event.payload.content) {
         onChunk(event.payload.content);
       }
     }

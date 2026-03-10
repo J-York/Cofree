@@ -64,6 +64,25 @@ export interface CommandExecutionResult {
   stderr: string;
 }
 
+export interface ShellCommandStartResult {
+  job_id: string;
+  command: string;
+}
+
+export interface ShellCommandEvent {
+  job_id: string;
+  event_type: "started" | "output" | "completed";
+  command: string;
+  stream?: "stdout" | "stderr";
+  chunk?: string;
+  success?: boolean;
+  timed_out?: boolean;
+  cancelled?: boolean;
+  status?: number;
+  stdout?: string;
+  stderr?: string;
+}
+
 // ── Grep / Glob ──────────────────────────────────────────────────────────────
 
 export interface GrepMatch {
@@ -113,6 +132,10 @@ export interface StreamChunkEvent {
   content: string;
   done: boolean;
   finish_reason: string | null;
+  event_type?: "text_delta" | "tool_call" | "done";
+  tool_call_id?: string | null;
+  tool_name?: string | null;
+  tool_arguments?: string | null;
 }
 
 export interface ProxySettings {

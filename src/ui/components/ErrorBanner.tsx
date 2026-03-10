@@ -5,9 +5,17 @@ interface ErrorBannerProps {
   error: CategorizedError;
   onRetry?: () => void;
   onDismiss?: () => void;
+  onCopyDebugLog?: () => void;
+  copyDebugLogLabel?: string;
 }
 
-export function ErrorBanner({ error, onRetry, onDismiss }: ErrorBannerProps): ReactElement {
+export function ErrorBanner({
+  error,
+  onRetry,
+  onDismiss,
+  onCopyDebugLog,
+  copyDebugLogLabel,
+}: ErrorBannerProps): ReactElement {
   const [showRaw, setShowRaw] = useState(false);
 
   return (
@@ -52,6 +60,15 @@ export function ErrorBanner({ error, onRetry, onDismiss }: ErrorBannerProps): Re
             type="button"
           >
             {showRaw ? "隐藏详情" : "查看详情"}
+          </button>
+        )}
+        {onCopyDebugLog && (
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={onCopyDebugLog}
+            type="button"
+          >
+            {copyDebugLogLabel || "复制请求日志"}
           </button>
         )}
       </div>

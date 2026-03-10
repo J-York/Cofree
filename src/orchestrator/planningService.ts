@@ -23,6 +23,8 @@ import {
 import {
   DEFAULT_TOOL_PERMISSIONS,
   isActiveModelLocal,
+  getActiveVendor,
+  getActiveManagedModel,
   type AppSettings,
   type ToolPermissions,
 } from "../lib/settingsStore";
@@ -55,6 +57,7 @@ import {
   compressMessagesToFitBudget,
   estimateTokensForMessages,
   estimateTokensForToolDefinitions,
+  MessageTokenTracker,
   updateTokenCalibration,
 } from "./contextBudget";
 import type {
@@ -1782,24 +1785,30 @@ async function requestSummary(
     const chunks = splitMessagesIntoChunks(messagesToSummarize, SUMMARY_CHUNK_MAX_CHARS);
     console.log(`[Context] Map-Reduce 摘要: ${chunks.length} chunks`);
 
-    // Map phase: summarize each chunk
-    const chunkSummaries: string[] = [];
-    for (let i = 0; i < chunks.length; i++) {
-      const chunkContent = formatMessagesForSummary(chunks[i]);
+    // Map phase: summarize chunks in parallel (up to 3 concurrent LLM calls)
+    const chunkTasks = chunks.map((chunk, chunkIndex) => async () => {
+      const chunkContent = formatMessagesForSummary(chunk);
       const chunkSummary = await summarizeSingleChunk(
         chunkContent,
         settings,
         CHUNK_SUMMARY_SYSTEM_PROMPT,
       );
       if (chunkSummary) {
-        chunkSummaries.push(`[片段 ${i + 1}/${chunks.length}]\n${chunkSummary}`);
-      } else {
-        // Fallback: take first 500 chars of the chunk
-        chunkSummaries.push(
-          `[片段 ${i + 1}/${chunks.length}]\n${chunkContent.slice(0, 500)}...`,
-        );
+        return `[片段 ${chunkIndex + 1}/${chunks.length}]\n${chunkSummary}`;
       }
-    }
+      return `[片段 ${chunkIndex + 1}/${chunks.length}]\n${chunkContent.slice(0, 500)}...`;
+    });
+
+    const MAX_PARALLEL_SUMMARY_CHUNKS = 3;
+    const settledResults = await runWithConcurrencyLimit(chunkTasks, MAX_PARALLEL_SUMMARY_CHUNKS);
+    const chunkSummaries: string[] = settledResults.map((result, idx) => {
+      if (result.status === "fulfilled") {
+        return result.value;
+      }
+      console.warn(`[Context] Map-Reduce chunk ${idx + 1} 摘要失败:`, result.reason);
+      const fallbackContent = formatMessagesForSummary(chunks[idx]);
+      return `[片段 ${idx + 1}/${chunks.length}]\n${fallbackContent.slice(0, 500)}...`;
+    });
 
     // Reduce phase: combine chunk summaries into final summary.
     // When truncation is needed, keep the *latest* chunks (tail) because
@@ -2691,46 +2700,87 @@ function buildShellDialectRepairInstruction(
 /**
  * Generate a short human-readable preview of tool call arguments.
  */
-function summarizeToolArgs(toolName: string, argsJson: string): string {
+function extractStringArg(
+  argsJson: string,
+  keys: string[],
+): string {
   try {
-    const args = JSON.parse(argsJson) as Record<string, unknown>;
-    switch (toolName) {
-      case "read_file":
-        return String(args.relative_path || "");
-      case "list_files":
-        return String(args.relative_path || "/");
-      case "grep":
-        return `"${String(args.pattern || "").slice(0, 30)}"${args.include_glob ? ` in ${args.include_glob}` : ""}`;
-      case "glob":
-        return String(args.pattern || "").slice(0, 40);
-      case "git_status":
-        return "";
-      case "git_diff":
-        return args.file_path ? String(args.file_path) : "(all)";
-      case "propose_file_edit":
-        return String(args.relative_path || "");
-      case "propose_apply_patch": {
-        const patch = String(args.patch || "");
-        const match = patch.match(/^diff --git a\/(.+?) b\//m);
-        return match ? match[1] : "(patch)";
+    const parsed = JSON.parse(argsJson) as Record<string, unknown>;
+    for (const key of keys) {
+      const value = parsed[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
       }
-      case "propose_shell": {
-        const cmd = String(args.shell || "");
-        return cmd.length > 50 ? cmd.slice(0, 47) + "..." : cmd;
-      }
-      case "task":
-        return `${args.role}: ${String(args.description || "").slice(0, 30)}...`;
-      case "update_plan":
-        return `${String(args.operation || "")}: ${String(args.step_id || "")}`;
-      case "diagnostics":
-        return args.changed_files ? `${(args.changed_files as string[]).length} files` : "(all)";
-      case "fetch":
-        return String(args.url || "").slice(0, 50);
-      default:
-        return "";
     }
   } catch {
-    return "";
+    // Fall through to partial-JSON extraction below.
+  }
+
+  for (const key of keys) {
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = argsJson.match(
+      new RegExp(`"${escapedKey}"\\s*:\\s*"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)`)
+    );
+    if (match?.[1]) {
+      return match[1].replace(/\\"/g, "\"").trim();
+    }
+  }
+
+  return "";
+}
+
+function summarizeToolArgs(toolName: string, argsJson: string): string {
+  const pathPreview = extractStringArg(argsJson, [
+    "relative_path",
+    "file_path",
+    "path",
+  ]);
+
+  switch (toolName) {
+    case "read_file":
+      return pathPreview;
+    case "list_files":
+      return pathPreview || "/";
+    case "grep": {
+      const pattern = extractStringArg(argsJson, ["pattern"]);
+      const includeGlob = extractStringArg(argsJson, ["include_glob"]);
+      return pattern
+        ? `"${pattern.slice(0, 30)}"${includeGlob ? ` in ${includeGlob}` : ""}`
+        : "";
+    }
+    case "glob":
+      return extractStringArg(argsJson, ["pattern"]).slice(0, 40);
+    case "git_status":
+      return "";
+    case "git_diff":
+      return pathPreview || "(all)";
+    case "propose_file_edit":
+      return pathPreview;
+    case "propose_apply_patch": {
+      const patch = extractStringArg(argsJson, ["patch"]);
+      const match = patch.match(/^diff --git a\/(.+?) b\//m);
+      return match ? match[1] : "(patch)";
+    }
+    case "propose_shell": {
+      const cmd = extractStringArg(argsJson, ["shell"]);
+      return cmd.length > 50 ? cmd.slice(0, 47) + "..." : cmd;
+    }
+    case "task": {
+      const role = extractStringArg(argsJson, ["role"]);
+      const description = extractStringArg(argsJson, ["description"]);
+      return role ? `${role}: ${description.slice(0, 30)}...` : "";
+    }
+    case "update_plan": {
+      const operation = extractStringArg(argsJson, ["operation"]);
+      const stepId = extractStringArg(argsJson, ["step_id"]);
+      return `${operation}: ${stepId}`.trim();
+    }
+    case "diagnostics":
+      return argsJson.includes("\"changed_files\"") ? "changed files" : "(all)";
+    case "fetch":
+      return extractStringArg(argsJson, ["url"]).slice(0, 50);
+    default:
+      return "";
   }
 }
 
@@ -4553,6 +4603,7 @@ async function executeToolCall(
       // Notify UI so it can show the dialog
       onAskUserRequest?.({
         id: requestId,
+        sessionId,
         question,
         context,
         options,
@@ -4833,6 +4884,7 @@ async function requestToolCompletionWithStream(
   activeTools: LiteLLMToolDefinition[],
   signal?: AbortSignal,
   onChunk?: (content: string) => void,
+  onToolCallEvent?: (event: ToolCallEvent) => void,
   toolChoiceOverride?: "auto" | "none",
 ): Promise<{
   assistantMessage: LiteLLMMessage;
@@ -4862,7 +4914,15 @@ async function requestToolCompletionWithStream(
     body,
     (content) => {
       onChunk?.(content);
-    }
+    },
+    (toolCall) => {
+      onToolCallEvent?.({
+        type: "start",
+        callId: toolCall.callId,
+        toolName: toolCall.toolName,
+        argsPreview: summarizeToolArgs(toolCall.toolName, toolCall.arguments),
+      });
+    },
   );
 
   const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
@@ -4979,6 +5039,7 @@ async function executeToolCompletionForTurn(
   turn: number,
   signal?: AbortSignal,
   onChunk?: (content: string) => void,
+  onToolCallEvent?: (event: ToolCallEvent) => void,
   toolChoiceOverride?: "auto" | "none",
 ): Promise<{
   completion: {
@@ -4992,6 +5053,9 @@ async function executeToolCompletionForTurn(
   highRiskReasons: string[];
   fallbackTriggered: boolean;
 }> {
+  // Collect risk signals for logging, but always prefer streaming.
+  // Streaming is more resilient to gateway timeouts (no need to wait for
+  // the full response body) and provides a better UX with incremental output.
   const highRiskReasons: string[] = [];
   if (hasPreviousAssistantToolCalls(messages)) {
     highRiskReasons.push("previous_assistant_tool_calls");
@@ -5000,23 +5064,13 @@ async function executeToolCompletionForTurn(
     highRiskReasons.push("anthropic_openai_chat_compat");
   }
   const highRisk = highRiskReasons.length > 0;
-  const requestMode: "stream" | "nonstream" = highRisk ? "nonstream" : "stream";
+  // Always prefer streaming; fall back to non-streaming only on failure.
+  const requestMode: "stream" | "nonstream" = "stream";
 
   console.log(
     `[Loop][Mode] turn=${turn + 1} | mode=${requestMode} | highRisk=${highRisk}` +
     ` | reasons=${highRiskReasons.length ? highRiskReasons.join(",") : "none"}`,
   );
-
-  if (requestMode === "nonstream") {
-    const completion = await requestToolCompletion(messages, settings, activeTools, signal, toolChoiceOverride);
-    return {
-      completion,
-      requestMode,
-      highRisk,
-      highRiskReasons,
-      fallbackTriggered: false,
-    };
-  }
 
   try {
     const completion = await requestToolCompletionWithStream(
@@ -5025,6 +5079,7 @@ async function executeToolCompletionForTurn(
       activeTools,
       signal,
       onChunk,
+      onToolCallEvent,
       toolChoiceOverride,
     );
     return {
@@ -5188,6 +5243,9 @@ async function runNativeToolCallingLoop(
   const toolDefTokens = estimateTokensForToolDefinitions(activeTools);
   console.log(`[Loop] 工具定义 token 开销: ~${toolDefTokens} tokens (${activeTools.length} tools)`);
 
+  // Incremental token tracker — avoids re-scanning all messages on every call.
+  const tokenTracker = new MessageTokenTracker();
+
   const compressionPolicy = {
     maxPromptTokens: promptBudgetTarget,
     minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
@@ -5200,7 +5258,7 @@ async function runNativeToolCallingLoop(
 
   const summarizer = {
     canSummarize: () => {
-      const estTokens = estimateTokensForMessages(messages);
+      const estTokens = tokenTracker.update(messages);
       return canSummarizeNow(settings.workspacePath, estTokens);
     },
     summarize: (messagesToSummarize: LiteLLMMessage[]) =>
@@ -5282,7 +5340,7 @@ async function runNativeToolCallingLoop(
       }
     }
 
-    const estTokens = estimateTokensForMessages(messages);
+    const estTokens = tokenTracker.update(messages);
     console.log(`[Loop] ── Turn ${turn + 1} ── messages=${messages.length} | ~${estTokens} tokens`);
 
     // Inject task progress summary every 5 turns or when failures accumulate
@@ -5321,6 +5379,7 @@ async function runNativeToolCallingLoop(
       });
       if (editResult.cleared) {
         messages.splice(0, messages.length, ...editResult.messages);
+        tokenTracker.invalidate();
         console.log(
           `[Loop] Context Editing: 清除 ${editResult.pairsRemoved} 个旧 tool-use 轮次 | ` +
           `释放 ~${editResult.tokensFreed} tokens | 剩余 ${messages.length} messages`
@@ -5338,7 +5397,8 @@ async function runNativeToolCallingLoop(
     if (compression.compressed && compression.messages !== messages) {
       const beforeLen = messages.length;
       messages.splice(0, messages.length, ...compression.messages);
-      const afterTokens = estimateTokensForMessages(messages);
+      tokenTracker.invalidate();
+      const afterTokens = tokenTracker.update(messages);
       console.log(
         `[Loop] 上下文压缩: ${beforeLen} → ${messages.length} messages | ~${afterTokens} tokens`
       );
@@ -5358,9 +5418,7 @@ async function runNativeToolCallingLoop(
           "如需特定文件的详细内容，请使用 start_line/end_line 精确读取目标区域，而非重新全文读取。",
         ].join("\n"),
       });
-    }
-    onContextUpdate?.(estimateTokensForMessages(messages));
-
+    }    onContextUpdate?.(tokenTracker.update(messages));
 
     let completion;
     {
@@ -5375,6 +5433,7 @@ async function runNativeToolCallingLoop(
             turn,
             signal,
             onAssistantChunk,
+            onToolCallEvent,
             toolChoiceOverride,
           );
           // Reset override after use
@@ -5388,7 +5447,7 @@ async function runNativeToolCallingLoop(
           break;
         } catch (error) {
           lastLLMError = error;
-          const currentTokens = estimateTokensForMessages(messages);
+          const currentTokens = tokenTracker.update(messages);
           const errorMsg = error instanceof Error ? error.message : String(error);
           const retriable = isRetriableLLMError(error);
           const hasRetriesLeft = llmRetryAttempt + 1 < MAX_LLM_REQUEST_RETRIES;
@@ -5417,7 +5476,7 @@ async function runNativeToolCallingLoop(
 
     // P1-3: Update token calibration with actual API-reported values (per-model).
     if (completion.requestRecord.inputTokens) {
-      const estBeforeCall = estimateTokensForMessages(messages) + toolDefTokens;
+      const estBeforeCall = tokenTracker.update(messages) + toolDefTokens;
       updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens, settings.model);
     }
 
@@ -5659,13 +5718,50 @@ async function runNativeToolCallingLoop(
       });
     };
 
-    // --- Phase 4: Split task calls from other calls for parallel execution ---
-    const taskCalls = completion.toolCalls.filter((tc) => tc.function.name === "task");
-    const otherCalls = completion.toolCalls.filter((tc) => tc.function.name !== "task");
+    // --- Phase 4: Split tool calls into parallelizable groups ---
+    // Read-only tools have no side effects and can safely run in parallel.
+    // Write/mutation tools (propose_*, update_plan, shell-related) must run
+    // serially to preserve ordering dependencies.
+    // Task (sub-agent) calls have their own parallel execution path.
+    const PARALLEL_SAFE_TOOL_NAMES = new Set([
+      "read_file", "grep", "glob", "list_files",
+      "git_status", "git_diff", "diagnostics",
+      "web_search", "web_fetch",
+    ]);
+    const MAX_PARALLEL_READ_TOOLS = 5;
 
-    // Execute non-task tools serially (they may have ordering dependencies)
+    const taskCalls = completion.toolCalls.filter((tc) => tc.function.name === "task");
+    const readOnlyCalls = completion.toolCalls.filter(
+      (tc) => tc.function.name !== "task" && PARALLEL_SAFE_TOOL_NAMES.has(tc.function.name),
+    );
+    const mutationCalls = completion.toolCalls.filter(
+      (tc) => tc.function.name !== "task" && !PARALLEL_SAFE_TOOL_NAMES.has(tc.function.name),
+    );
+
     let planMutatedThisTurn = false;
-    for (const toolCall of otherCalls) {
+
+    // 1. Execute read-only tools in parallel (no ordering dependencies)
+    if (readOnlyCalls.length > 1) {
+      console.log(`[Orchestrator] 并行执行 ${readOnlyCalls.length} 个只读工具调用`);
+      const readResults = await runWithConcurrencyLimit(
+        readOnlyCalls.map((tc) => () => executeSingleToolCall(tc)),
+        MAX_PARALLEL_READ_TOOLS,
+      );
+      for (const settled of readResults) {
+        if (settled.status === "fulfilled") {
+          const { toolCall, toolResult, trace } = settled.value;
+          processToolResult(toolCall, toolResult, trace);
+        } else {
+          console.error(`[Orchestrator] 并行只读工具执行异常:`, settled.reason);
+        }
+      }
+    } else if (readOnlyCalls.length === 1) {
+      const { toolCall, toolResult, trace } = await executeSingleToolCall(readOnlyCalls[0]);
+      processToolResult(toolCall, toolResult, trace);
+    }
+
+    // 2. Execute mutation tools serially (they may have ordering dependencies)
+    for (const toolCall of mutationCalls) {
       const { toolResult, trace } = await executeSingleToolCall(toolCall);
       processToolResult(toolCall, toolResult, trace);
       if (
@@ -5676,7 +5772,7 @@ async function runNativeToolCallingLoop(
       }
     }
 
-    // Execute task calls in parallel (with concurrency limit)
+    // 3. Execute task calls in parallel (with concurrency limit)
     if (taskCalls.length > 1) {
       console.log(`[Orchestrator] 并行执行 ${taskCalls.length} 个 Sub-Agent 任务`);
       const parallelResults = await runWithConcurrencyLimit(
@@ -5712,7 +5808,7 @@ async function runNativeToolCallingLoop(
     }
 
     // Notify caller of updated context size after all tool results are added
-    const postToolTokens = estimateTokensForMessages(messages);
+    const postToolTokens = tokenTracker.update(messages);
     onContextUpdate?.(postToolTokens);
 
     // --- 重复读取提醒：当本轮大部分 read_file 都命中缓存时，注入已知文件清单 ---
@@ -6343,6 +6439,7 @@ export const planningServiceTestUtils = {
   executeToolCall,
   buildProposedActions,
   reconcileAssistantReply,
+  summarizeToolArgs,
 };
 
 function assertLocalOnlyPolicy(settings: AppSettings): void {
@@ -6701,7 +6798,33 @@ export async function runPlanningSession(
     }
     const sessionElapsed = ((performance.now() - sessionT0) / 1000).toFixed(2);
     console.error(`[Planning] ═══ 会话失败 ═══ | ${sessionElapsed}s |`, error);
-    const errorMessage = String(error || "Unknown error");
+    
+    const errorMessage = error instanceof Error ? error.message : String(error || "Unknown error");
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    
+    const protocol = getActiveVendor(input.settings)?.protocol ?? "openai-chat-completions";
+    const baseUrl = getActiveVendor(input.settings)?.baseUrl || input.settings.liteLLMBaseUrl;
+    const modelName = getActiveManagedModel(input.settings)?.name || input.settings.model;
+    
+    const debugInfo = [
+      `错误信息: ${errorMessage}`,
+      ``,
+      `调试信息:`,
+      `- 模型: ${modelName}`,
+      `- 协议: ${protocol}`,
+      `- 端点: ${baseUrl}`,
+      `- 时间: ${new Date().toISOString()}`,
+      `- 耗时: ${sessionElapsed}s`,
+    ];
+    
+    if (errorStack) {
+      debugInfo.push(``, `堆栈跟踪:`, errorStack);
+    }
+    
+    const debugText = debugInfo.join('\n');
+    
+    console.error('[Planning] 完整错误信息:', debugText);
+    
     const fallbackPlan = initializePlan(
       normalizedPrompt,
       input.settings,
@@ -6709,7 +6832,24 @@ export async function runPlanningSession(
       initialPlanSeed,
     );
     return {
-      assistantReply: `服务员暂时无法完成本轮工具调用，请稍后重试。\n\n**错误详情**：\n\`\`\`\n${errorMessage}\n\`\`\``,
+      assistantReply: `服务员暂时无法完成本轮工具调用，请稍后重试。
+
+**错误信息**：
+${errorMessage}
+
+**调试信息**（请复制以下内容用于排查）：
+\`\`\`
+模型: ${modelName}
+协议: ${protocol}
+端点: ${baseUrl}
+时间: ${new Date().toISOString()}
+\`\`\`
+
+💡 **排查建议**：
+1. 检查控制台（开发者工具）中的 [LLM][Error] 日志，查看完整的请求详情
+2. 确认网络连接正常，可以访问 ${baseUrl}
+3. 检查 API Key 是否有效
+4. 如果使用代理，确认代理配置正确`,
       plan: fallbackPlan,
       toolTrace: [],
       assistantToolCalls: undefined,

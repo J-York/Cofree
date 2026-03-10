@@ -1,21 +1,36 @@
 use crate::config;
 use crate::domain::{
     AppError, CommandExecutionResult, FileEntry, FileStructure, GitStatus, GlobEntry, GrepMatch,
-    GrepResult, PatchApplyResult, ReadFileResult, SnapshotFileRecord, SnapshotManifest,
-    SnapshotResult, SymbolInfo, WorkspaceStructureResult,
+    GrepResult, PatchApplyResult, ReadFileResult, ShellCommandEvent, ShellCommandStartResult,
+    SnapshotFileRecord, SnapshotManifest, SnapshotResult, SymbolInfo, WorkspaceStructureResult,
 };
 use crate::infrastructure::{
     canonicalize_workspace_root, generate_id, snapshots_root_dir, validate_workspace_path,
 };
 use glob::glob as glob_match;
 use regex::Regex;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
 use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, State};
+
+#[derive(Default)]
+pub struct ShellJobStore {
+    jobs: Arc<Mutex<HashMap<String, Arc<ShellJobHandle>>>>,
+}
+
+struct ShellJobHandle {
+    child: Mutex<Option<Child>>,
+    cancel_requested: AtomicBool,
+}
 
 fn parse_patch_files(patch: &str) -> Vec<String> {
     let mut files = BTreeSet::new();
@@ -910,31 +925,250 @@ pub fn run_shell_command(
         .unwrap_or(config::SHELL_TIMEOUT_DEFAULT_MS)
         .clamp(config::SHELL_TIMEOUT_MIN_MS, config::SHELL_TIMEOUT_MAX_MS);
     let timeout = Duration::from_millis(max_timeout);
-    let mut child = if cfg!(target_os = "windows") {
+    let child = spawn_shell_child(&workspace, &shell_trimmed)?;
+    collect_shell_command_result(child, &shell_trimmed, timeout, None, None)
+}
+
+#[tauri::command]
+pub fn start_shell_command(
+    app: AppHandle,
+    jobs: State<'_, ShellJobStore>,
+    workspace_path: String,
+    shell: String,
+    timeout_ms: Option<u64>,
+) -> Result<ShellCommandStartResult, String> {
+    let workspace = canonicalize_workspace_root(&workspace_path).map_err(|e| e.to_string())?;
+    let shell_trimmed = shell.trim().to_string();
+    if shell_trimmed.is_empty() {
+        return Err("命令不能为空".to_string());
+    }
+    validate_shell_safety(&shell_trimmed)?;
+    let max_timeout = timeout_ms
+        .unwrap_or(config::SHELL_TIMEOUT_DEFAULT_MS)
+        .clamp(config::SHELL_TIMEOUT_MIN_MS, config::SHELL_TIMEOUT_MAX_MS);
+    let timeout = Duration::from_millis(max_timeout);
+    let child = spawn_shell_child(&workspace, &shell_trimmed)?;
+    let job_id = generate_id("shelljob");
+    let job_handle = Arc::new(ShellJobHandle {
+        child: Mutex::new(Some(child)),
+        cancel_requested: AtomicBool::new(false),
+    });
+
+    jobs.jobs
+        .lock()
+        .map_err(|_| "shell job store lock poisoned".to_string())?
+        .insert(job_id.clone(), Arc::clone(&job_handle));
+
+    let app_handle = app.clone();
+    let job_id_for_thread = job_id.clone();
+    let command_for_thread = shell_trimmed.clone();
+    let jobs_for_thread = Arc::clone(&jobs.inner().jobs);
+    thread::spawn(move || {
+        emit_shell_command_event(
+            &app_handle,
+            ShellCommandEvent {
+                job_id: job_id_for_thread.clone(),
+                event_type: "started".to_string(),
+                command: command_for_thread.clone(),
+                stream: None,
+                chunk: None,
+                success: None,
+                timed_out: None,
+                cancelled: None,
+                status: None,
+                stdout: None,
+                stderr: None,
+            },
+        );
+
+        let result = collect_shell_job_result(
+            Arc::clone(&job_handle),
+            &command_for_thread,
+            timeout,
+            Some(app_handle.clone()),
+            Some(job_id_for_thread.clone()),
+        );
+
+        let cancelled = job_handle.cancel_requested.load(Ordering::SeqCst);
+        let final_result = match result {
+            Ok(mut payload) => {
+                if cancelled && !payload.success {
+                    if !payload.stderr.ends_with('\n') && !payload.stderr.is_empty() {
+                        payload.stderr.push('\n');
+                    }
+                    payload.stderr.push_str("Command cancelled");
+                }
+                payload
+            }
+            Err(error) => CommandExecutionResult {
+                success: false,
+                command: command_for_thread.clone(),
+                timed_out: false,
+                status: -1,
+                stdout: String::new(),
+                stderr: error,
+            },
+        };
+
+        emit_shell_command_event(
+            &app_handle,
+            ShellCommandEvent {
+                job_id: job_id_for_thread.clone(),
+                event_type: "completed".to_string(),
+                command: command_for_thread,
+                stream: None,
+                chunk: None,
+                success: Some(final_result.success),
+                timed_out: Some(final_result.timed_out),
+                cancelled: Some(cancelled),
+                status: Some(final_result.status),
+                stdout: Some(final_result.stdout),
+                stderr: Some(final_result.stderr),
+            },
+        );
+
+        if let Ok(mut guard) = jobs_for_thread.lock() {
+            guard.remove(&job_id_for_thread);
+        }
+    });
+
+    Ok(ShellCommandStartResult {
+        job_id,
+        command: shell_trimmed,
+    })
+}
+
+#[tauri::command]
+pub fn cancel_shell_command(
+    jobs: State<'_, ShellJobStore>,
+    job_id: String,
+) -> Result<bool, String> {
+    let job = {
+        let guard = jobs
+            .jobs
+            .lock()
+            .map_err(|_| "shell job store lock poisoned".to_string())?;
+        guard.get(job_id.trim()).cloned()
+    };
+
+    let Some(job) = job else {
+        return Ok(false);
+    };
+
+    job.cancel_requested.store(true, Ordering::SeqCst);
+    let mut child_guard = job
+        .child
+        .lock()
+        .map_err(|_| "shell job lock poisoned".to_string())?;
+    if let Some(child) = child_guard.as_mut() {
+        child.kill().map_err(|e| format!("取消命令失败: {}", e))?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn spawn_shell_child(workspace: &Path, shell_trimmed: &str) -> Result<Child, String> {
+    if cfg!(target_os = "windows") {
         Command::new("powershell")
-            .args(["-NoProfile", "-Command", &shell_trimmed])
-            .current_dir(&workspace)
+            .args(["-NoProfile", "-Command", shell_trimmed])
+            .current_dir(workspace)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("启动 powershell 失败: {}", e))?
+            .map_err(|e| format!("启动 powershell 失败: {}", e))
     } else {
         Command::new("sh")
-            .args(["-c", &shell_trimmed])
-            .current_dir(&workspace)
+            .args(["-c", shell_trimmed])
+            .current_dir(workspace)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("启动 sh 失败: {}", e))?
-    };
-    let mut stdout_pipe = child
+            .map_err(|e| format!("启动 sh 失败: {}", e))
+    }
+}
+
+fn emit_shell_command_event(app: &AppHandle, event: ShellCommandEvent) {
+    let _ = app.emit("shell-command-event", event);
+}
+
+fn spawn_pipe_reader<R: Read + Send + 'static>(
+    mut reader: R,
+    sink: Arc<Mutex<String>>,
+    app: Option<AppHandle>,
+    job_id: Option<String>,
+    command: String,
+    stream: &'static str,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if let Ok(mut output) = sink.lock() {
+                        output.push_str(&chunk);
+                    }
+                    if let (Some(app_handle), Some(job_id_value)) = (&app, &job_id) {
+                        emit_shell_command_event(
+                            app_handle,
+                            ShellCommandEvent {
+                                job_id: job_id_value.clone(),
+                                event_type: "output".to_string(),
+                                command: command.clone(),
+                                stream: Some(stream.to_string()),
+                                chunk: Some(chunk),
+                                success: None,
+                                timed_out: None,
+                                cancelled: None,
+                                status: None,
+                                stdout: None,
+                                stderr: None,
+                            },
+                        );
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    })
+}
+
+fn collect_shell_command_result(
+    mut child: Child,
+    shell_trimmed: &str,
+    timeout: Duration,
+    app: Option<AppHandle>,
+    job_id: Option<String>,
+) -> Result<CommandExecutionResult, String> {
+    let stdout_pipe = child
         .stdout
         .take()
         .ok_or_else(|| "读取 stdout 失败".to_string())?;
-    let mut stderr_pipe = child
+    let stderr_pipe = child
         .stderr
         .take()
         .ok_or_else(|| "读取 stderr 失败".to_string())?;
+    let stdout = Arc::new(Mutex::new(String::new()));
+    let stderr = Arc::new(Mutex::new(String::new()));
+    let stdout_handle = spawn_pipe_reader(
+        stdout_pipe,
+        Arc::clone(&stdout),
+        app.clone(),
+        job_id.clone(),
+        shell_trimmed.to_string(),
+        "stdout",
+    );
+    let stderr_handle = spawn_pipe_reader(
+        stderr_pipe,
+        Arc::clone(&stderr),
+        app,
+        job_id,
+        shell_trimmed.to_string(),
+        "stderr",
+    );
+
     let started_at = Instant::now();
     let mut timed_out = false;
     let exit_status = loop {
@@ -953,23 +1187,144 @@ pub fn run_shell_command(
             Err(error) => return Err(format!("等待命令执行失败: {}", error)),
         }
     };
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    let _ = stdout_pipe.read_to_string(&mut stdout);
-    let _ = stderr_pipe.read_to_string(&mut stderr);
+
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
+
+    let mut stdout_value = stdout
+        .lock()
+        .map_err(|_| "读取 stdout 失败".to_string())?
+        .clone();
+    let mut stderr_value = stderr
+        .lock()
+        .map_err(|_| "读取 stderr 失败".to_string())?
+        .clone();
+
     if timed_out {
-        if !stderr.ends_with('\n') && !stderr.is_empty() {
-            stderr.push('\n');
+        if !stderr_value.ends_with('\n') && !stderr_value.is_empty() {
+            stderr_value.push('\n');
         }
-        stderr.push_str("Command timed out");
+        stderr_value.push_str("Command timed out");
     }
+
     Ok(CommandExecutionResult {
         success: exit_status.success() && !timed_out,
-        command: shell_trimmed,
+        command: shell_trimmed.to_string(),
         timed_out,
         status: exit_status.code().unwrap_or(-1),
-        stdout,
-        stderr,
+        stdout: std::mem::take(&mut stdout_value),
+        stderr: std::mem::take(&mut stderr_value),
+    })
+}
+
+fn collect_shell_job_result(
+    job_handle: Arc<ShellJobHandle>,
+    shell_trimmed: &str,
+    timeout: Duration,
+    app: Option<AppHandle>,
+    job_id: Option<String>,
+) -> Result<CommandExecutionResult, String> {
+    let (stdout_pipe, stderr_pipe) = {
+        let mut guard = job_handle
+            .child
+            .lock()
+            .map_err(|_| "shell job lock poisoned".to_string())?;
+        let child = guard
+            .as_mut()
+            .ok_or_else(|| "命令进程已不存在".to_string())?;
+        let stdout_pipe = child
+            .stdout
+            .take()
+            .ok_or_else(|| "读取 stdout 失败".to_string())?;
+        let stderr_pipe = child
+            .stderr
+            .take()
+            .ok_or_else(|| "读取 stderr 失败".to_string())?;
+        (stdout_pipe, stderr_pipe)
+    };
+
+    let stdout = Arc::new(Mutex::new(String::new()));
+    let stderr = Arc::new(Mutex::new(String::new()));
+    let stdout_handle = spawn_pipe_reader(
+        stdout_pipe,
+        Arc::clone(&stdout),
+        app.clone(),
+        job_id.clone(),
+        shell_trimmed.to_string(),
+        "stdout",
+    );
+    let stderr_handle = spawn_pipe_reader(
+        stderr_pipe,
+        Arc::clone(&stderr),
+        app,
+        job_id,
+        shell_trimmed.to_string(),
+        "stderr",
+    );
+
+    let started_at = Instant::now();
+    let mut timed_out = false;
+    let exit_status = loop {
+        let state = {
+            let mut guard = job_handle
+                .child
+                .lock()
+                .map_err(|_| "shell job lock poisoned".to_string())?;
+            let child = guard
+                .as_mut()
+                .ok_or_else(|| "命令进程已不存在".to_string())?;
+            match child.try_wait() {
+                Ok(Some(status)) => Some(Ok(status)),
+                Ok(None) => {
+                    if started_at.elapsed() >= timeout {
+                        timed_out = true;
+                        let _ = child.kill();
+                        Some(child.wait().map_err(|e| format!("终止超时命令失败: {}", e)))
+                    } else {
+                        None
+                    }
+                }
+                Err(error) => Some(Err(format!("等待命令执行失败: {}", error))),
+            }
+        };
+
+        match state {
+            Some(Ok(status)) => break status,
+            Some(Err(error)) => return Err(error),
+            None => thread::sleep(Duration::from_millis(50)),
+        }
+    };
+
+    if let Ok(mut guard) = job_handle.child.lock() {
+        *guard = None;
+    }
+
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
+
+    let stdout_value = stdout
+        .lock()
+        .map_err(|_| "读取 stdout 失败".to_string())?
+        .clone();
+    let mut stderr_value = stderr
+        .lock()
+        .map_err(|_| "读取 stderr 失败".to_string())?
+        .clone();
+
+    if timed_out {
+        if !stderr_value.ends_with('\n') && !stderr_value.is_empty() {
+            stderr_value.push('\n');
+        }
+        stderr_value.push_str("Command timed out");
+    }
+
+    Ok(CommandExecutionResult {
+        success: exit_status.success() && !timed_out,
+        command: shell_trimmed.to_string(),
+        timed_out,
+        status: exit_status.code().unwrap_or(-1),
+        stdout: stdout_value,
+        stderr: stderr_value,
     })
 }
 

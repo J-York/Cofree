@@ -28,6 +28,7 @@ export enum AskUserError {
 
 export interface AskUserRequest {
   id: string;
+  sessionId?: string;
   question: string;
   context?: string;
   options?: string[];
@@ -78,7 +79,6 @@ export const cleanupInterval = setInterval(() => {
   
   sessionsToClean.forEach(sessionId => {
     clearState(sessionId);
-    sessionTimestamps.delete(sessionId);
   });
 }, cleanupIntervalMs);
 
@@ -95,6 +95,15 @@ function getOrCreateState(sessionId: string): AskUserState {
 }
 
 function clearState(sessionId: string): void {
+  const state = askUserState.get(sessionId);
+  if (state?.pending) {
+    const requestId = state.pending.id;
+    const resolver = pendingResolvers.get(requestId);
+    if (resolver) {
+      pendingResolvers.delete(requestId);
+      resolver.reject(new Error("ask_user request cancelled by session cleanup"));
+    }
+  }
   askUserState.delete(sessionId);
   sessionTimestamps.delete(sessionId);
 }
@@ -118,16 +127,23 @@ export function createAskUserRequest(
   
   // If there's already a pending request, cancel it
   if (state.pending) {
+    const previousRequestId = state.pending.id;
     logAskUserEvent("request_cancelled", {
       sessionId,
-      requestId: state.pending.id,
+      requestId: previousRequestId,
       reason: "superseded_by_new_request",
     });
+    const resolver = pendingResolvers.get(previousRequestId);
+    if (resolver) {
+      pendingResolvers.delete(previousRequestId);
+      resolver.reject(new Error("ask_user request superseded by a newer request"));
+    }
   }
 
   const requestId = `ask_user_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
   const request: AskUserRequest = {
     id: requestId,
+    sessionId,
     question,
     context,
     options,
@@ -263,12 +279,23 @@ export function waitForUserResponse(
       return;
     }
 
-    pendingResolvers.set(requestId, { resolve, reject });
-
     const onAbort = () => {
       pendingResolvers.delete(requestId);
+      signal?.removeEventListener("abort", onAbort);
       reject(new Error("Aborted"));
     };
+
+    pendingResolvers.set(requestId, {
+      resolve: (response) => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(response);
+      },
+      reject: (reason) => {
+        signal?.removeEventListener("abort", onAbort);
+        reject(reason);
+      },
+    });
+
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }

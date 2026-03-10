@@ -71,7 +71,11 @@ vi.mock("../lib/litellm", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import { addWorkspaceApprovalRule } from "../lib/approvalRuleStore";
-import { postLiteLLMChatCompletions, type LiteLLMMessage } from "../lib/litellm";
+import {
+    postLiteLLMChatCompletions,
+    postLiteLLMChatCompletionsStream,
+    type LiteLLMMessage,
+} from "../lib/litellm";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { DEFAULT_SETTINGS, type AppSettings } from "../lib/settingsStore";
 import { createFileContextAttachment } from "../lib/contextAttachments";
@@ -127,6 +131,43 @@ class MemoryStorage implements Storage {
 describe("planningService approval-flow repair", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        vi.mocked(postLiteLLMChatCompletionsStream).mockImplementation(
+            async (settings: any, body: any, onChunk?: (content: string) => void) => {
+                const response = await vi.mocked(postLiteLLMChatCompletions)(
+                    settings,
+                    body,
+                );
+                if (response?.body) {
+                    try {
+                        const payload = JSON.parse(response.body) as {
+                            choices?: Array<{
+                                message?: {
+                                    content?: string | Array<{ type?: string; text?: string }>;
+                                };
+                            }>;
+                        };
+                        const content = payload.choices?.[0]?.message?.content;
+                        if (typeof content === "string" && content) {
+                            onChunk?.(content);
+                        } else if (Array.isArray(content)) {
+                            const text = content
+                                .map((item) =>
+                                    item && item.type === "text" && typeof item.text === "string"
+                                        ? item.text
+                                        : "",
+                                )
+                                .join("");
+                            if (text) {
+                                onChunk?.(text);
+                            }
+                        }
+                    } catch {
+                        // Ignore mock payload parsing in tests that only care about the final response.
+                    }
+                }
+                return response as any;
+            },
+        );
     });
 
     afterEach(() => {
@@ -153,6 +194,22 @@ describe("planningService approval-flow repair", () => {
         expect(prompt).toContain("宿主系统的 Shell 环境约束（Windows=PowerShell，Unix=sh）");
         expect(prompt).toContain("Windows/PowerShell 下优先用 'Remove-Item -Recurse -Force <路径>'");
         expect(prompt).toContain("Remove-Item -Recurse -Force");
+    });
+
+    it("extracts file targets from partial streamed tool-call JSON", () => {
+        expect(
+            planningServiceTestUtils.summarizeToolArgs(
+                "read_file",
+                "{\"relative_path\":\"src/ui/pages/ChatPage.tsx\"",
+            ),
+        ).toBe("src/ui/pages/ChatPage.tsx");
+
+        expect(
+            planningServiceTestUtils.summarizeToolArgs(
+                "propose_file_edit",
+                "{\"relative_path\":\"src/orchestrator/planningService.ts\",\"operation\":\"replace\"",
+            ),
+        ).toBe("src/orchestrator/planningService.ts");
     });
 
     it("exposes PowerShell-aware propose_shell tool definitions in planning requests", async () => {

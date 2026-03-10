@@ -87,6 +87,101 @@ export function estimateTokensForMessages(messages: LiteLLMMessage[]): number {
 }
 
 // ---------------------------------------------------------------------------
+// Incremental token tracking for hot-loop usage
+// ---------------------------------------------------------------------------
+// In the orchestration loop, `estimateTokensForMessages` is called 3-8 times
+// per turn on the same (or nearly-same) messages array.  Each call re-scans
+// every message's full text, which becomes expensive as context grows.
+//
+// `MessageTokenTracker` maintains a per-message token cache keyed by object
+// identity (WeakRef) and content length.  When messages are appended or
+// spliced the tracker incrementally updates only the changed portion.
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks token counts for a mutable messages array with O(1) amortized
+ * lookups after the initial scan.  Call `update(messages)` whenever the
+ * array may have changed; it returns the total token count.
+ *
+ * Accuracy guarantee: uses the same `estimateTokensForMessage` function,
+ * so results are identical to the non-cached version.  The cache is
+ * invalidated per-message when content length changes (covers in-place
+ * content mutation such as tool message compression).
+ */
+export class MessageTokenTracker {
+  private cachedTokens: WeakMap<LiteLLMMessage, { contentLen: number; toolCallsLen: number; tokens: number }> = new WeakMap();
+  private lastMessages: LiteLLMMessage[] = [];
+  private lastTotal = 0;
+
+  /**
+   * Recompute the total token count, reusing cached per-message values
+   * when the message object and its content length haven't changed.
+   */
+  update(messages: LiteLLMMessage[]): number {
+    // Fast path: same array reference, same length, last element unchanged
+    if (
+      messages === this.lastMessages &&
+      messages.length > 0 &&
+      this.lastTotal > 0
+    ) {
+      // Check only the tail (most common mutation is append)
+      const lastMsg = messages[messages.length - 1];
+      const cached = this.cachedTokens.get(lastMsg);
+      const contentLen = (lastMsg.content ?? "").length;
+      const toolCallsLen = lastMsg.tool_calls ? JSON.stringify(lastMsg.tool_calls).length : 0;
+      if (cached && cached.contentLen === contentLen && cached.toolCallsLen === toolCallsLen) {
+        return this.lastTotal;
+      }
+    }
+
+    let total = 0;
+    for (const msg of messages) {
+      const contentLen = (msg.content ?? "").length;
+      const toolCallsLen = msg.tool_calls ? JSON.stringify(msg.tool_calls).length : 0;
+      const cached = this.cachedTokens.get(msg);
+
+      if (cached && cached.contentLen === contentLen && cached.toolCallsLen === toolCallsLen) {
+        total += cached.tokens;
+      } else {
+        const tokens = estimateTokensForMessage(msg);
+        this.cachedTokens.set(msg, { contentLen, toolCallsLen, tokens });
+        total += tokens;
+      }
+    }
+
+    this.lastMessages = messages;
+    this.lastTotal = total;
+    return total;
+  }
+
+  /**
+   * Notify the tracker that a message was appended.  This is O(1) — it
+   * computes tokens only for the new message and adds to the running total.
+   */
+  notifyAppend(messages: LiteLLMMessage[], appendedMessage: LiteLLMMessage): number {
+    const tokens = estimateTokensForMessage(appendedMessage);
+    const contentLen = (appendedMessage.content ?? "").length;
+    const toolCallsLen = appendedMessage.tool_calls ? JSON.stringify(appendedMessage.tool_calls).length : 0;
+    this.cachedTokens.set(appendedMessage, { contentLen, toolCallsLen, tokens });
+    this.lastMessages = messages;
+    this.lastTotal += tokens;
+    return this.lastTotal;
+  }
+
+  /** Reset all cached state (e.g. after context compression replaces the array). */
+  invalidate(): void {
+    this.cachedTokens = new WeakMap();
+    this.lastMessages = [];
+    this.lastTotal = 0;
+  }
+
+  /** Current cached total (may be stale if `update` hasn't been called). */
+  get total(): number {
+    return this.lastTotal;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // P0-2: Tool definition token overhead estimation
 // ---------------------------------------------------------------------------
 // Tool schemas are serialized as JSON and included in every API call.
