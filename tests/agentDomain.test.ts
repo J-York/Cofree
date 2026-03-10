@@ -283,4 +283,32 @@ describe("assembleRuntimeContext", () => {
     expect(ctx).toContain("coder");
     expect(ctx).toContain("tester");
   });
+
+  it("does not include update_plan in 本轮可用工具 when no internalTools passed", () => {
+    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+    const ctx = assembleRuntimeContext(runtime, "/test");
+    // Without internalTools, update_plan must NOT appear in the main tools line
+    const toolsLine = ctx.split("\n").find((line) => line.startsWith("本轮可用工具:"));
+    expect(toolsLine, "本轮可用工具 line should exist in context").toBeDefined();
+    expect(toolsLine).not.toContain("update_plan");
+  });
+
+  it("includes update_plan in 本轮可用工具 when passed as internalTools", () => {
+    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+    const ctx = assembleRuntimeContext(runtime, "/test", ["update_plan"]);
+    const toolsLine = ctx.split("\n").find((line) => line.startsWith("本轮可用工具:"));
+    expect(toolsLine, "本轮可用工具 line should exist in context").toBeDefined();
+    expect(toolsLine).toContain("update_plan");
+  });
+
+  it("includes update_plan in 自动执行工具 when passed as internalTools", () => {
+    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+    const ctx = assembleRuntimeContext(runtime, "/test", ["update_plan"]);
+    const autoLine = ctx.split("\n").find((line) => line.startsWith("自动执行工具"));
+    expect(autoLine, "自动执行工具 line should exist in context").toBeDefined();
+    expect(autoLine).toContain("update_plan");
+    // update_plan must NOT appear in the ask/approval list
+    const askLine = ctx.split("\n").find((line) => line.startsWith("需审批工具:"));
+    expect(askLine).not.toContain("update_plan");
+  });
 });
