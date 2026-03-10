@@ -51,7 +51,7 @@ describe("askUserService", () => {
     });
 
     it("should create a request with all parameters", () => {
-      const requestId = createAskUserRequest(
+      createAskUserRequest(
         testSessionId,
         "Choose database",
         "For the new project",
