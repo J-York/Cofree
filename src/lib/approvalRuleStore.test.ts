@@ -3,6 +3,7 @@ import type { ActionProposal } from "../orchestrator/types";
 import {
   addWorkspaceApprovalRule,
   buildApprovalRuleOptions,
+  extractPatchFilePaths,
   extractShellApprovalPrefixes,
   findMatchingApprovalRule,
   getWorkspaceApprovalRuleStorageKey,
@@ -53,6 +54,37 @@ function createShellAction(shell: string): ActionProposal {
     },
   };
 }
+
+function createPatchAction(patch: string, fingerprint?: string): ActionProposal {
+  return {
+    id: "patch-1",
+    type: "apply_patch",
+    description: "Apply patch",
+    gateRequired: true,
+    status: "pending",
+    executed: false,
+    fingerprint: fingerprint ?? `apply_patch:modify:src/app.ts:abcd1234`,
+    payload: { patch },
+  };
+}
+
+const SAMPLE_PATCH_APP_TS = [
+  "diff --git a/src/app.ts b/src/app.ts",
+  "--- a/src/app.ts",
+  "+++ b/src/app.ts",
+  "@@ -1,3 +1,3 @@",
+  "-old line",
+  "+new line",
+].join("\n");
+
+const SAMPLE_PATCH_UTILS_TS = [
+  "diff --git a/src/lib/utils.ts b/src/lib/utils.ts",
+  "--- a/src/lib/utils.ts",
+  "+++ b/src/lib/utils.ts",
+  "@@ -1,3 +1,3 @@",
+  "-old",
+  "+new",
+].join("\n");
 
 describe("approvalRuleStore", () => {
   beforeEach(() => {
@@ -158,5 +190,117 @@ describe("approvalRuleStore", () => {
     expect(options.map((option) => option.label)).toEqual([
       "当前完整命令",
     ]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Patch file-path and directory rules
+  // ---------------------------------------------------------------------------
+
+  it("extracts file paths from a unified diff patch", () => {
+    expect(extractPatchFilePaths(SAMPLE_PATCH_APP_TS)).toEqual(["src/app.ts"]);
+    expect(extractPatchFilePaths(SAMPLE_PATCH_UTILS_TS)).toEqual(["src/lib/utils.ts"]);
+  });
+
+  it("builds file-level and directory-level approval options for patch actions", () => {
+    const action = createPatchAction(SAMPLE_PATCH_APP_TS);
+    const options = buildApprovalRuleOptions(action);
+
+    expect(options.map((opt) => opt.label)).toEqual([
+      "当前补丁动作",
+      "修改 src/app.ts",
+      "修改 src/",
+    ]);
+  });
+
+  it("builds only exact option when the patch is in a root-level file (no directory)", () => {
+    const rootPatch = [
+      "diff --git a/README.md b/README.md",
+      "--- a/README.md",
+      "+++ b/README.md",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+    ].join("\n");
+    const action = createPatchAction(rootPatch);
+    const options = buildApprovalRuleOptions(action);
+
+    expect(options.map((opt) => opt.label)).toEqual([
+      "当前补丁动作",
+      "修改 README.md",
+      // no directory option because file is in root
+    ]);
+  });
+
+  it("matches patch_file_path rule when the patch targets the specified file", () => {
+    const action = createPatchAction(SAMPLE_PATCH_APP_TS);
+
+    expect(matchesApprovalRule({ kind: "patch_file_path", filePath: "src/app.ts" }, action)).toBe(true);
+    expect(matchesApprovalRule({ kind: "patch_file_path", filePath: "src/other.ts" }, action)).toBe(false);
+  });
+
+  it("matches patch_directory rule when the patch targets a file inside the directory", () => {
+    const action = createPatchAction(SAMPLE_PATCH_UTILS_TS);
+
+    expect(matchesApprovalRule({ kind: "patch_directory", directory: "src/lib" }, action)).toBe(true);
+    expect(matchesApprovalRule({ kind: "patch_directory", directory: "src" }, action)).toBe(true);
+    expect(matchesApprovalRule({ kind: "patch_directory", directory: "tests" }, action)).toBe(false);
+  });
+
+  it("does not match patch rules against shell actions", () => {
+    const shellAction = createShellAction("git add src/app.ts");
+
+    expect(matchesApprovalRule({ kind: "patch_file_path", filePath: "src/app.ts" }, shellAction)).toBe(false);
+    expect(matchesApprovalRule({ kind: "patch_directory", directory: "src" }, shellAction)).toBe(false);
+  });
+
+  it("file-level rule auto-approves a different patch to the same file", () => {
+    const anotherPatch = [
+      "diff --git a/src/app.ts b/src/app.ts",
+      "--- a/src/app.ts",
+      "+++ b/src/app.ts",
+      "@@ -5,3 +5,3 @@",
+      "-another old line",
+      "+another new line",
+    ].join("\n");
+
+    addWorkspaceApprovalRule("/repo/a", {
+      kind: "patch_file_path",
+      filePath: "src/app.ts",
+    });
+
+    const match = findMatchingApprovalRule("/repo/a", createPatchAction(anotherPatch, "apply_patch:modify:src/app.ts:deadbeef"));
+    expect(match).toMatchObject({ kind: "patch_file_path", filePath: "src/app.ts" });
+  });
+
+  it("directory-level rule auto-approves any patch within the directory", () => {
+    addWorkspaceApprovalRule("/repo/a", {
+      kind: "patch_directory",
+      directory: "src/lib",
+    });
+
+    const match = findMatchingApprovalRule("/repo/a", createPatchAction(SAMPLE_PATCH_UTILS_TS));
+    expect(match).toMatchObject({ kind: "patch_directory", directory: "src/lib" });
+
+    // Should NOT match a patch outside the directory
+    const outsideMatch = findMatchingApprovalRule("/repo/a", createPatchAction(SAMPLE_PATCH_APP_TS));
+    expect(outsideMatch).toBeNull();
+  });
+
+  it("persists and reloads patch_file_path and patch_directory rules", () => {
+    addWorkspaceApprovalRule("/repo/a", { kind: "patch_file_path", filePath: "src/app.ts" });
+    addWorkspaceApprovalRule("/repo/a", { kind: "patch_directory", directory: "src/lib" });
+
+    const rules = loadWorkspaceApprovalRules("/repo/a");
+    expect(rules).toHaveLength(2);
+    expect(rules[0]).toMatchObject({ kind: "patch_file_path", filePath: "src/app.ts" });
+    expect(rules[1]).toMatchObject({ kind: "patch_directory", directory: "src/lib" });
+  });
+
+  it("deduplicates patch_file_path rules with the same path", () => {
+    addWorkspaceApprovalRule("/repo/a", { kind: "patch_file_path", filePath: "src/app.ts" });
+    const second = addWorkspaceApprovalRule("/repo/a", { kind: "patch_file_path", filePath: "src/app.ts" });
+
+    expect(second.added).toBe(false);
+    expect(loadWorkspaceApprovalRules("/repo/a")).toHaveLength(1);
   });
 });

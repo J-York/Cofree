@@ -14,9 +14,23 @@ export interface ShellCommandPrefixApprovalRuleDraft {
   commandTokens: string[];
 }
 
+export interface PatchFilePathApprovalRuleDraft {
+  kind: "patch_file_path";
+  /** Workspace-relative file path, e.g. "src/app.ts" */
+  filePath: string;
+}
+
+export interface PatchDirectoryApprovalRuleDraft {
+  kind: "patch_directory";
+  /** Workspace-relative directory prefix without trailing slash, e.g. "src/components" */
+  directory: string;
+}
+
 export type ApprovalRuleDraft =
   | FingerprintApprovalRuleDraft
-  | ShellCommandPrefixApprovalRuleDraft;
+  | ShellCommandPrefixApprovalRuleDraft
+  | PatchFilePathApprovalRuleDraft
+  | PatchDirectoryApprovalRuleDraft;
 
 export type ApprovalRule =
   | (FingerprintApprovalRuleDraft & {
@@ -24,6 +38,14 @@ export type ApprovalRule =
       createdAt: string;
     })
   | (ShellCommandPrefixApprovalRuleDraft & {
+      id: string;
+      createdAt: string;
+    })
+  | (PatchFilePathApprovalRuleDraft & {
+      id: string;
+      createdAt: string;
+    })
+  | (PatchDirectoryApprovalRuleDraft & {
       id: string;
       createdAt: string;
     });
@@ -40,6 +62,56 @@ function nowIso(): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizePatchPath(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  return normalized || null;
+}
+
+/**
+ * Extract workspace-relative file paths referenced in a unified diff patch.
+ * Parses both `diff --git` headers and `+++ b/...` lines.
+ */
+export function extractPatchFilePaths(patch: string): string[] {
+  const files = new Set<string>();
+  for (const rawLine of patch.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const diffMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (diffMatch) {
+      if (diffMatch[1] && diffMatch[1] !== "/dev/null") {
+        files.add(diffMatch[1]);
+      }
+      if (diffMatch[2] && diffMatch[2] !== "/dev/null") {
+        files.add(diffMatch[2]);
+      }
+      continue;
+    }
+    const plusMatch = line.match(/^\+\+\+\s+b\/(.+)$/);
+    if (plusMatch?.[1]) {
+      files.add(plusMatch[1]);
+    }
+  }
+  return Array.from(files);
+}
+
+/**
+ * Given a list of file paths, return the unique parent directories.
+ * Only returns the immediate parent directory of each file.
+ */
+function extractPatchDirectories(filePaths: string[]): string[] {
+  const dirs = new Set<string>();
+  for (const filePath of filePaths) {
+    const normalized = filePath.replace(/\\/g, "/");
+    const slashIndex = normalized.lastIndexOf("/");
+    if (slashIndex > 0) {
+      dirs.add(normalized.slice(0, slashIndex));
+    }
+  }
+  return Array.from(dirs);
 }
 
 function normalizeCommandToken(value: unknown): string | null {
@@ -98,6 +170,33 @@ function normalizeApprovalRule(raw: unknown): ApprovalRule | null {
         commandTokens,
       };
     }
+    return null;
+  }
+
+  if (raw.kind === "patch_file_path") {
+    const filePath = normalizePatchPath(raw.filePath);
+    if (filePath) {
+      return {
+        id,
+        createdAt,
+        kind: "patch_file_path",
+        filePath,
+      };
+    }
+    return null;
+  }
+
+  if (raw.kind === "patch_directory") {
+    const directory = normalizePatchPath(raw.directory);
+    if (directory) {
+      return {
+        id,
+        createdAt,
+        kind: "patch_directory",
+        directory,
+      };
+    }
+    return null;
   }
 
   return null;
@@ -107,7 +206,16 @@ function getRuleIdentity(rule: ApprovalRuleDraft | ApprovalRule): string {
   if (rule.kind === "action_fingerprint") {
     return `${rule.kind}:${rule.actionType}:${rule.fingerprint}`;
   }
-  return `${rule.kind}:${rule.commandTokens.join(" ")}`;
+  if (rule.kind === "shell_command_prefix") {
+    return `${rule.kind}:${rule.commandTokens.join(" ")}`;
+  }
+  if (rule.kind === "patch_file_path") {
+    return `${rule.kind}:${rule.filePath}`;
+  }
+  if (rule.kind === "patch_directory") {
+    return `${rule.kind}:${rule.directory}`;
+  }
+  return `${rule.kind}`;
 }
 
 function toPersistedRule(rule: ApprovalRuleDraft | ApprovalRule): ApprovalRule {
@@ -116,19 +224,40 @@ function toPersistedRule(rule: ApprovalRuleDraft | ApprovalRule): ApprovalRule {
     return existing;
   }
 
+  const baseId = `approval-rule-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  const baseCreatedAt = nowIso();
+
   if (rule.kind === "action_fingerprint") {
     return {
-      id: `approval-rule-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
-      createdAt: nowIso(),
+      id: baseId,
+      createdAt: baseCreatedAt,
       kind: "action_fingerprint",
       actionType: rule.actionType,
       fingerprint: rule.fingerprint.trim(),
     };
   }
 
+  if (rule.kind === "patch_file_path") {
+    return {
+      id: baseId,
+      createdAt: baseCreatedAt,
+      kind: "patch_file_path",
+      filePath: rule.filePath.trim().replace(/\\/g, "/"),
+    };
+  }
+
+  if (rule.kind === "patch_directory") {
+    return {
+      id: baseId,
+      createdAt: baseCreatedAt,
+      kind: "patch_directory",
+      directory: rule.directory.trim().replace(/\\/g, "/").replace(/\/+$/, ""),
+    };
+  }
+
   return {
-    id: `approval-rule-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
-    createdAt: nowIso(),
+    id: baseId,
+    createdAt: baseCreatedAt,
     kind: "shell_command_prefix",
     commandTokens: normalizeCommandTokens(rule.commandTokens),
   };
@@ -231,7 +360,16 @@ export function describeApprovalRule(rule: ApprovalRuleDraft | ApprovalRule): st
   if (rule.kind === "action_fingerprint") {
     return rule.actionType === "shell" ? "当前完整命令" : "当前补丁动作";
   }
-  return rule.commandTokens.join(" ") + " xxx";
+  if (rule.kind === "shell_command_prefix") {
+    return rule.commandTokens.join(" ") + " xxx";
+  }
+  if (rule.kind === "patch_file_path") {
+    return `修改 ${rule.filePath}`;
+  }
+  if (rule.kind === "patch_directory") {
+    return `修改 ${rule.directory}/`;
+  }
+  return "(未知规则)";
 }
 
 function consumeQuotedToken(
@@ -454,6 +592,31 @@ export function buildApprovalRuleOptions(action: ActionProposal): ApprovalRuleOp
     }
   }
 
+  if (action.type === "apply_patch") {
+    const filePaths = extractPatchFilePaths(action.payload.patch);
+    for (const filePath of filePaths) {
+      pushOption({
+        key: `file:${filePath}`,
+        label: `修改 ${filePath}`,
+        rule: {
+          kind: "patch_file_path",
+          filePath,
+        },
+      });
+    }
+    const directories = extractPatchDirectories(filePaths);
+    for (const directory of directories) {
+      pushOption({
+        key: `dir:${directory}`,
+        label: `修改 ${directory}/`,
+        rule: {
+          kind: "patch_directory",
+          directory,
+        },
+      });
+    }
+  }
+
   return options;
 }
 
@@ -469,15 +632,42 @@ export function matchesApprovalRule(
     );
   }
 
-  if (action.type !== "shell") {
-    return false;
+  if (rule.kind === "shell_command_prefix") {
+    if (action.type !== "shell") {
+      return false;
+    }
+    const prefixes = extractShellApprovalPrefixes(action.payload.shell);
+    return prefixes.some((prefix) =>
+      prefix.length >= rule.commandTokens.length &&
+      rule.commandTokens.every((token, index) => prefix[index] === token),
+    );
   }
 
-  const prefixes = extractShellApprovalPrefixes(action.payload.shell);
-  return prefixes.some((prefix) =>
-    prefix.length >= rule.commandTokens.length &&
-    rule.commandTokens.every((token, index) => prefix[index] === token),
-  );
+  if (rule.kind === "patch_file_path") {
+    if (action.type !== "apply_patch") {
+      return false;
+    }
+    const filePaths = extractPatchFilePaths(action.payload.patch);
+    const normalizedTarget = rule.filePath.replace(/\\/g, "/");
+    return filePaths.some((fp) => fp.replace(/\\/g, "/") === normalizedTarget);
+  }
+
+  if (rule.kind === "patch_directory") {
+    if (action.type !== "apply_patch") {
+      return false;
+    }
+    const filePaths = extractPatchFilePaths(action.payload.patch);
+    const normalizedDir = rule.directory.replace(/\\/g, "/").replace(/\/+$/, "");
+    return filePaths.some((fp) => {
+      const normalizedFp = fp.replace(/\\/g, "/");
+      return (
+        normalizedFp === normalizedDir ||
+        normalizedFp.startsWith(normalizedDir + "/")
+      );
+    });
+  }
+
+  return false;
 }
 
 export function findMatchingApprovalRule(

@@ -143,6 +143,27 @@ fn emit_stream_chunk_event(
     );
 }
 
+fn take_stream_lines(buffer: &mut String, flush_final: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    while let Some(newline_pos) = buffer.find('\n') {
+        let line = buffer[..newline_pos].trim().to_string();
+        let rest = buffer[newline_pos + 1..].to_string();
+        *buffer = rest;
+        lines.push(line);
+    }
+
+    if flush_final {
+        let trailing = buffer.trim().to_string();
+        buffer.clear();
+        if !trailing.is_empty() {
+            lines.push(trailing);
+        }
+    }
+
+    lines
+}
+
 fn emit_stream_tool_call_event(
     app: &tauri::AppHandle,
     request_id: &str,
@@ -215,13 +236,13 @@ fn append_tool_call_delta(
     name: Option<&str>,
     args_delta: Option<&str>,
 ) {
-    if let Some(id) = id {
+    if let Some(id) = id.filter(|value| !value.trim().is_empty()) {
         entry["id"] = Value::String(id.to_string());
     }
-    if let Some(name) = name {
+    if let Some(name) = name.filter(|value| !value.trim().is_empty()) {
         entry["function"]["name"] = Value::String(name.to_string());
     }
-    if let Some(args_delta) = args_delta {
+    if let Some(args_delta) = args_delta.filter(|value| !value.is_empty()) {
         let existing = entry["function"]["arguments"]
             .as_str()
             .unwrap_or_default()
@@ -232,6 +253,116 @@ fn append_tool_call_delta(
 
 fn set_tool_call_arguments(entry: &mut Value, arguments: &str) {
     entry["function"]["arguments"] = Value::String(arguments.to_string());
+}
+
+fn extract_openai_chat_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.to_string(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                Value::String(text) => Some(text.to_string()),
+                Value::Object(record) => record
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(|text| text.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+fn build_openai_chat_display_content(reasoning: &str, content: &str) -> String {
+    if reasoning.is_empty() {
+        return content.to_string();
+    }
+    if content.is_empty() {
+        return format!("<think>{}</think>", reasoning);
+    }
+    format!("<think>{}</think>{}", reasoning, content)
+}
+
+fn build_openai_chat_display_content_from_message(message: &Value) -> String {
+    build_openai_chat_display_content(
+        &extract_openai_chat_text(message.get("reasoning_content")),
+        &extract_openai_chat_text(message.get("content")),
+    )
+}
+
+fn open_openai_chat_think_block(full_content: &mut String) -> Option<&'static str> {
+    if full_content.ends_with("<think>") || full_content.contains("<think>") && !full_content.contains("</think>") {
+        return None;
+    }
+    full_content.push_str("<think>");
+    Some("<think>")
+}
+
+fn close_openai_chat_think_block(full_content: &mut String) -> Option<&'static str> {
+    if !full_content.contains("<think>") || full_content.ends_with("</think>") {
+        return None;
+    }
+    let last_open = full_content.rfind("<think>");
+    let last_close = full_content.rfind("</think>");
+    if matches!((last_open, last_close), (Some(open), Some(close)) if close > open) {
+        return None;
+    }
+    full_content.push_str("</think>");
+    Some("</think>")
+}
+
+fn merge_openai_chat_message_content(full_content: &mut String, content: &str) -> Option<String> {
+    if content.is_empty() {
+        return None;
+    }
+
+    if full_content.is_empty() {
+        full_content.push_str(content);
+        return Some(content.to_string());
+    }
+
+    if content.starts_with(full_content.as_str()) {
+        let suffix = &content[full_content.len()..];
+        if suffix.is_empty() {
+            return None;
+        }
+        full_content.push_str(suffix);
+        return Some(suffix.to_string());
+    }
+
+    if full_content.as_str() != content {
+        *full_content = content.to_string();
+    }
+
+    None
+}
+
+fn merge_openai_chat_tool_call_entry(entry: &mut Value, tool_call: &Value) {
+    append_tool_call_delta(
+        entry,
+        tool_call.get("id").and_then(Value::as_str),
+        tool_call
+            .get("function")
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str),
+        None,
+    );
+
+    if let Some(arguments) = tool_call
+        .get("function")
+        .and_then(|function| function.get("arguments"))
+        .and_then(serialize_tool_call_arguments)
+    {
+        set_tool_call_arguments(entry, &arguments);
+    }
+}
+
+fn merge_openai_chat_tool_call_snapshot(tool_calls_json: &mut Vec<Value>, tool_calls: &[Value]) {
+    for (index, tool_call) in tool_calls.iter().enumerate() {
+        let entry = ensure_tool_call_entry(tool_calls_json, index);
+        merge_openai_chat_tool_call_entry(entry, tool_call);
+    }
 }
 
 fn retain_valid_tool_calls(tool_calls_json: &mut Vec<Value>) {
@@ -478,15 +609,14 @@ async fn parse_openai_chat_stream(
     let mut finish_reason: Option<String> = None;
     let mut tool_calls_json: Vec<Value> = Vec::new();
     let mut usage_info: Option<Value> = None;
+    let mut think_block_open = false;
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("读取流数据失败: {}", e))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim().to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
+        for line in take_stream_lines(&mut buffer, false) {
             if line.is_empty() || line.starts_with(':') {
                 continue;
             }
@@ -504,8 +634,48 @@ async fn parse_openai_chat_stream(
                     if let Some(choices) = parsed.get("choices").and_then(Value::as_array) {
                         for choice in choices {
                             if let Some(delta) = choice.get("delta") {
+                                if let Some(reasoning) =
+                                    delta.get("reasoning_content").and_then(Value::as_str)
+                                {
+                                    if !reasoning.is_empty() {
+                                        if !think_block_open {
+                                            if let Some(tag) = open_openai_chat_think_block(&mut full_content)
+                                            {
+                                                emit_stream_chunk_event(
+                                                    app,
+                                                    request_id,
+                                                    tag,
+                                                    false,
+                                                    None,
+                                                );
+                                            }
+                                            think_block_open = true;
+                                        }
+                                        full_content.push_str(reasoning);
+                                        emit_stream_chunk_event(
+                                            app,
+                                            request_id,
+                                            reasoning,
+                                            false,
+                                            None,
+                                        );
+                                    }
+                                }
                                 if let Some(content) = delta.get("content").and_then(Value::as_str)
                                 {
+                                    if think_block_open {
+                                        if let Some(tag) = close_openai_chat_think_block(&mut full_content)
+                                        {
+                                            emit_stream_chunk_event(
+                                                app,
+                                                request_id,
+                                                tag,
+                                                false,
+                                                None,
+                                            );
+                                        }
+                                        think_block_open = false;
+                                    }
                                     full_content.push_str(content);
                                     emit_stream_chunk_event(app, request_id, content, false, None);
                                 }
@@ -541,6 +711,40 @@ async fn parse_openai_chat_stream(
                                     }
                                 }
                             }
+                            if let Some(message) = choice.get("message") {
+                                let display_content =
+                                    build_openai_chat_display_content_from_message(message);
+                                if !display_content.is_empty() {
+                                    if let Some(chunk) =
+                                        merge_openai_chat_message_content(
+                                            &mut full_content,
+                                            &display_content,
+                                        )
+                                    {
+                                        emit_stream_chunk_event(
+                                            app,
+                                            request_id,
+                                            &chunk,
+                                            false,
+                                            None,
+                                        );
+                                    }
+                                    think_block_open = false;
+                                }
+                                if let Some(tool_calls) =
+                                    message.get("tool_calls").and_then(Value::as_array)
+                                {
+                                    merge_openai_chat_tool_call_snapshot(
+                                        &mut tool_calls_json,
+                                        tool_calls,
+                                    );
+                                    emit_all_stream_tool_call_events(
+                                        app,
+                                        request_id,
+                                        &tool_calls_json,
+                                    );
+                                }
+                            }
                             if let Some(fr) = choice.get("finish_reason").and_then(Value::as_str) {
                                 finish_reason = Some(fr.to_string());
                             }
@@ -548,6 +752,135 @@ async fn parse_openai_chat_stream(
                     }
                 }
             }
+        }
+    }
+
+    for line in take_stream_lines(&mut buffer, true) {
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        if line == "data: [DONE]" {
+            emit_stream_chunk_event(app, request_id, "", true, finish_reason.clone());
+            continue;
+        }
+        if let Some(data) = line.strip_prefix("data: ") {
+            if let Ok(parsed) = serde_json::from_str::<Value>(data) {
+                if let Some(usage) = parsed.get("usage") {
+                    if usage.is_object() && usage.get("prompt_tokens").is_some() {
+                        usage_info = Some(usage.clone());
+                    }
+                }
+                if let Some(choices) = parsed.get("choices").and_then(Value::as_array) {
+                    for choice in choices {
+                        if let Some(delta) = choice.get("delta") {
+                            if let Some(reasoning) =
+                                delta.get("reasoning_content").and_then(Value::as_str)
+                            {
+                                if !reasoning.is_empty() {
+                                    if !think_block_open {
+                                        if let Some(tag) = open_openai_chat_think_block(&mut full_content)
+                                        {
+                                            emit_stream_chunk_event(
+                                                app,
+                                                request_id,
+                                                tag,
+                                                false,
+                                                None,
+                                            );
+                                        }
+                                        think_block_open = true;
+                                    }
+                                    full_content.push_str(reasoning);
+                                    emit_stream_chunk_event(
+                                        app,
+                                        request_id,
+                                        reasoning,
+                                        false,
+                                        None,
+                                    );
+                                }
+                            }
+                            if let Some(content) = delta.get("content").and_then(Value::as_str) {
+                                if think_block_open {
+                                    if let Some(tag) = close_openai_chat_think_block(&mut full_content)
+                                    {
+                                        emit_stream_chunk_event(
+                                            app,
+                                            request_id,
+                                            tag,
+                                            false,
+                                            None,
+                                        );
+                                    }
+                                    think_block_open = false;
+                                }
+                                full_content.push_str(content);
+                                emit_stream_chunk_event(app, request_id, content, false, None);
+                            }
+                            if let Some(tc) = delta.get("tool_calls").and_then(Value::as_array) {
+                                for tool_call_delta in tc {
+                                    let tc_index = tool_call_delta
+                                        .get("index")
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or(0) as usize;
+                                    let tc_entry =
+                                        ensure_tool_call_entry(&mut tool_calls_json, tc_index);
+                                    append_tool_call_delta(
+                                        tc_entry,
+                                        tool_call_delta.get("id").and_then(Value::as_str),
+                                        tool_call_delta
+                                            .get("function")
+                                            .and_then(|func| func.get("name"))
+                                            .and_then(Value::as_str),
+                                        tool_call_delta
+                                            .get("function")
+                                            .and_then(|func| func.get("arguments"))
+                                            .and_then(Value::as_str),
+                                    );
+                                    if let Some(entry) =
+                                        get_tool_call_entry(&tool_calls_json, tc_index)
+                                    {
+                                        emit_stream_tool_call_event_from_entry(app, request_id, entry);
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(message) = choice.get("message") {
+                            let display_content =
+                                build_openai_chat_display_content_from_message(message);
+                            if !display_content.is_empty() {
+                                if let Some(chunk) =
+                                    merge_openai_chat_message_content(&mut full_content, &display_content)
+                                {
+                                    emit_stream_chunk_event(
+                                        app,
+                                        request_id,
+                                        &chunk,
+                                        false,
+                                        None,
+                                    );
+                                }
+                                think_block_open = false;
+                            }
+                            if let Some(tool_calls) =
+                                message.get("tool_calls").and_then(Value::as_array)
+                            {
+                                merge_openai_chat_tool_call_snapshot(&mut tool_calls_json, tool_calls);
+                                emit_all_stream_tool_call_events(app, request_id, &tool_calls_json);
+                            }
+                        }
+                        if let Some(fr) = choice.get("finish_reason").and_then(Value::as_str) {
+                            finish_reason = Some(fr.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if think_block_open {
+        if let Some(tag) = close_openai_chat_think_block(&mut full_content) {
+            emit_stream_chunk_event(app, request_id, tag, false, None);
         }
     }
 
@@ -575,9 +908,7 @@ async fn parse_openai_responses_stream(
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("读取流数据失败: {}", e))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim().to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
+        for line in take_stream_lines(&mut buffer, false) {
             if line.is_empty() || line.starts_with(':') {
                 continue;
             }
@@ -697,6 +1028,119 @@ async fn parse_openai_responses_stream(
         }
     }
 
+    for line in take_stream_lines(&mut buffer, true) {
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        if line == "data: [DONE]" {
+            emit_stream_chunk_event(app, request_id, "", true, finish_reason.clone());
+            continue;
+        }
+        if let Some(data) = line.strip_prefix("data: ") {
+            if let Ok(parsed) = serde_json::from_str::<Value>(data) {
+                let event_type = parsed
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                match event_type {
+                    "response.output_text.delta" => {
+                        if let Some(delta) = parsed.get("delta").and_then(Value::as_str) {
+                            full_content.push_str(delta);
+                            emit_stream_chunk_event(app, request_id, delta, false, None);
+                        }
+                    }
+                    "response.function_call_arguments.delta"
+                    | "response.function_call_arguments.done" => {
+                        let key = parsed
+                            .get("item_id")
+                            .and_then(Value::as_str)
+                            .or_else(|| parsed.get("call_id").and_then(Value::as_str))
+                            .or_else(|| parsed.get("id").and_then(Value::as_str))
+                            .unwrap_or("call-0")
+                            .to_string();
+                        let entry_index = if let Some(existing) = call_index_by_key.get(&key) {
+                            *existing
+                        } else {
+                            let index = tool_calls_json.len();
+                            call_index_by_key.insert(key.clone(), index);
+                            index
+                        };
+                        let entry = ensure_tool_call_entry(&mut tool_calls_json, entry_index);
+                        append_tool_call_delta(
+                            entry,
+                            parsed
+                                .get("call_id")
+                                .and_then(Value::as_str)
+                                .or(Some(key.as_str())),
+                            parsed.get("name").and_then(Value::as_str),
+                            parsed.get("delta").and_then(Value::as_str),
+                        );
+                        if let Some(arguments) = parsed.get("arguments").and_then(Value::as_str) {
+                            set_tool_call_arguments(entry, arguments);
+                        }
+                        emit_stream_tool_call_event_from_entry(app, request_id, entry);
+                    }
+                    "response.output_item.added" | "response.output_item.done" => {
+                        if let Some(item) = parsed.get("item") {
+                            if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                                let key = item
+                                    .get("call_id")
+                                    .and_then(Value::as_str)
+                                    .or_else(|| item.get("id").and_then(Value::as_str))
+                                    .unwrap_or("call-0")
+                                    .to_string();
+                                let entry_index = if let Some(existing) = call_index_by_key.get(&key) {
+                                    *existing
+                                } else {
+                                    let index = tool_calls_json.len();
+                                    call_index_by_key.insert(key.clone(), index);
+                                    index
+                                };
+                                let entry = ensure_tool_call_entry(&mut tool_calls_json, entry_index);
+                                append_tool_call_delta(
+                                    entry,
+                                    item.get("call_id")
+                                        .and_then(Value::as_str)
+                                        .or(Some(key.as_str())),
+                                    item.get("name").and_then(Value::as_str),
+                                    None,
+                                );
+                                if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
+                                    set_tool_call_arguments(entry, arguments);
+                                }
+                                emit_stream_tool_call_event_from_entry(app, request_id, entry);
+                            }
+                        }
+                    }
+                    "response.completed" => {
+                        if let Some(response_obj) = parsed.get("response") {
+                            if let Some(usage) = response_obj.get("usage") {
+                                let prompt_tokens = usage
+                                    .get("input_tokens")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(0);
+                                let completion_tokens = usage
+                                    .get("output_tokens")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(0);
+                                usage_info = serde_json::json!({
+                                    "prompt_tokens": prompt_tokens,
+                                    "completion_tokens": completion_tokens,
+                                    "total_tokens": prompt_tokens + completion_tokens,
+                                });
+                            }
+                            finish_reason = response_obj
+                                .get("status")
+                                .and_then(Value::as_str)
+                                .map(|status| status.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     Ok(build_synthetic_stream_body(
         full_content,
         finish_reason,
@@ -718,9 +1162,7 @@ async fn parse_anthropic_messages_stream(
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("读取流数据失败: {}", e))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(newline_pos) = buffer.find('\n') {
-            let raw_line = buffer[..newline_pos].trim().to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
+        for raw_line in take_stream_lines(&mut buffer, false) {
 
             if raw_line.is_empty() {
                 current_event.clear();
@@ -754,6 +1196,35 @@ async fn parse_anthropic_messages_stream(
                             state.finish_reason.clone(),
                         );
                     }
+                }
+            }
+        }
+    }
+
+    for raw_line in take_stream_lines(&mut buffer, true) {
+        if raw_line.is_empty() {
+            current_event.clear();
+            continue;
+        }
+        if raw_line.starts_with(':') {
+            continue;
+        }
+        if let Some(event_name) = raw_line.strip_prefix("event: ") {
+            current_event = event_name.to_string();
+            continue;
+        }
+        if raw_line == "data: [DONE]" {
+            emit_stream_chunk_event(app, request_id, "", true, state.finish_reason.clone());
+            continue;
+        }
+        if let Some(data) = raw_line.strip_prefix("data: ") {
+            if let Ok(parsed) = serde_json::from_str::<Value>(data) {
+                for chunk in apply_anthropic_stream_event(&mut state, &current_event, &parsed) {
+                    emit_stream_chunk_event(app, request_id, &chunk, false, None);
+                }
+                emit_all_stream_tool_call_events(app, request_id, &state.tool_calls_json);
+                if resolve_anthropic_stream_event_name(&current_event, &parsed) == "message_stop" {
+                    emit_stream_chunk_event(app, request_id, "", true, state.finish_reason.clone());
                 }
             }
         }
@@ -1077,6 +1548,138 @@ mod tests {
         assert_eq!(
             payload["choices"][0]["message"]["content"],
             Value::String(String::new())
+        );
+    }
+
+    #[test]
+    fn merges_openai_chat_message_content_without_duplicate_chunks() {
+        let mut full_content = String::new();
+
+        let first = merge_openai_chat_message_content(&mut full_content, "ready");
+        let duplicate = merge_openai_chat_message_content(&mut full_content, "ready");
+        let suffix = merge_openai_chat_message_content(&mut full_content, "ready now");
+
+        assert_eq!(first.as_deref(), Some("ready"));
+        assert_eq!(duplicate, None);
+        assert_eq!(suffix.as_deref(), Some(" now"));
+        assert_eq!(full_content, "ready now");
+    }
+
+    #[test]
+    fn preserves_openai_chat_tool_calls_from_final_message_snapshot() {
+        let mut tool_calls_json = Vec::new();
+
+        merge_openai_chat_tool_call_snapshot(
+            &mut tool_calls_json,
+            &[serde_json::json!({
+                "id": "call_plan_1",
+                "type": "function",
+                "function": {
+                    "name": "update_plan",
+                    "arguments": {
+                        "operation": "add",
+                        "step_id": "1",
+                        "title": "Project scaffolding"
+                    }
+                }
+            })],
+        );
+
+        let payload: Value = serde_json::from_str(&build_synthetic_stream_body(
+            String::new(),
+            Some("tool_calls".to_string()),
+            tool_calls_json,
+            zero_usage(),
+        ))
+        .expect("synthetic payload should be valid JSON");
+
+        assert_eq!(
+            payload["choices"][0]["message"]["tool_calls"],
+            serde_json::json!([
+                {
+                    "id": "call_plan_1",
+                    "type": "function",
+                    "function": {
+                        "name": "update_plan",
+                        "arguments": "{\"operation\":\"add\",\"step_id\":\"1\",\"title\":\"Project scaffolding\"}"
+                    }
+                }
+            ])
+        );
+        assert_eq!(
+            payload["choices"][0]["finish_reason"],
+            Value::String("tool_calls".to_string())
+        );
+    }
+
+    #[test]
+    fn builds_openai_chat_display_content_with_reasoning_block() {
+        assert_eq!(
+            build_openai_chat_display_content("first think", "final answer"),
+            "<think>first think</think>final answer"
+        );
+        assert_eq!(
+            build_openai_chat_display_content("first think", ""),
+            "<think>first think</think>"
+        );
+    }
+
+    #[test]
+    fn builds_openai_chat_display_content_from_message_snapshot() {
+        let message = serde_json::json!({
+            "reasoning_content": "step by step",
+            "content": "done"
+        });
+
+        assert_eq!(
+            build_openai_chat_display_content_from_message(&message),
+            "<think>step by step</think>done"
+        );
+    }
+
+    #[test]
+    fn take_stream_lines_flushes_trailing_line_without_newline() {
+        let mut buffer = "data: {\"id\":1}".to_string();
+
+        let without_flush = take_stream_lines(&mut buffer, false);
+        assert!(without_flush.is_empty());
+        assert_eq!(buffer, "data: {\"id\":1}");
+
+        let with_flush = take_stream_lines(&mut buffer, true);
+        assert_eq!(with_flush, vec!["data: {\"id\":1}".to_string()]);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn append_tool_call_delta_keeps_existing_name_when_followup_delta_name_is_empty() {
+        let mut entry = serde_json::json!({
+            "id": "",
+            "type": "function",
+            "function": {
+                "name": "",
+                "arguments": ""
+            }
+        });
+
+        append_tool_call_delta(
+            &mut entry,
+            Some("call_U9LcHUuhbiegPM7Noe62BFXY"),
+            Some("list_files"),
+            Some("{"),
+        );
+        append_tool_call_delta(&mut entry, None, Some(""), Some("\"relative_path\""));
+        append_tool_call_delta(&mut entry, None, Some(""), Some(":"));
+        append_tool_call_delta(&mut entry, None, Some(""), Some("\"\""));
+        append_tool_call_delta(&mut entry, None, Some(""), Some("}"));
+
+        assert_eq!(entry["id"], Value::String("call_U9LcHUuhbiegPM7Noe62BFXY".to_string()));
+        assert_eq!(
+            entry["function"]["name"],
+            Value::String("list_files".to_string())
+        );
+        assert_eq!(
+            entry["function"]["arguments"],
+            Value::String("{\"relative_path\":\"\"}".to_string())
         );
     }
 }

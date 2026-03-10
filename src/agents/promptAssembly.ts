@@ -29,7 +29,7 @@ const RULE_CORE = [
   "2) **Show, don't tell（少废话，多干活）**：直接通过工具执行任务，产生具体的、有价值的代码变更。不要在回复中长篇大论解释代码原理或者复制粘贴全量代码，除非用户主动要求你解释。",
   "3) **写出高质量的代码（Production-Ready）**：提交的修改必须包含必要的类型定义、错误处理、安全防护和一致的代码风格，同时考虑到边界条件和性能最优。",
   "4) **信任回调并基于事实迭代**：工具返回的报错或成功反馈就是事实。出错不要盲猜，查阅 stderr 并使用 read_file 校验后修正。成功就直接进入下一步，无需说无用的确认废话。",
-  "5) **一件事一次做对（Atomic Changes）**：每次针对一个功能单元发起工具编辑指令（最好是多个文件同步提出 propose_file_edit），保持整体原子性。",
+  "5) **一件事一次做对（Atomic Changes）**：每次写入工具调用只修改一个文件，默认按文件逐个推进。跨文件任务也要拆成多个顺序的 propose_file_edit，不要把多个文件塞进同一个写入动作里。",
   "6) **Todo 一致性**：当任务已经被拆解为 todo 时，一次只推进一个步骤。开始推进、完成、或阻塞等状态变更时，必须使用 update_plan。切勿将等待用户的环节标为 completed。",
 ].join("\n");
 
@@ -39,10 +39,10 @@ const RULE_EDITING = [
   "2) 工具调用规范：",
   "   - 小中型修改或插入优选 `propose_file_edit`。支持 replace/insert/delete/create，推荐使用精准的 search，也可以使用 start_line/end_line 按行定位。`propose_file_edit` 可以有效减少 Token 消耗与重试概率。",
   "   - `propose_file_edit` 中 `search` 的原文必须与目标文件完美对齐，连缩进和空行都应当精确，绝对不要包含读取时屏幕上的行号前缀 `123│ `。",
-  "   - 只有跨文件大块重头到脚的重构才考虑用 `propose_apply_patch`。",
+  "   - 除非用户明确要求原始 diff/patch，否则不要使用 `propose_apply_patch`。即使使用，也只能提交单文件 patch；多文件修改请拆成多个 `propose_file_edit` 顺序处理。",
   "   - 执行任何测试/清仓/构建/git 等命令，必须使用 `propose_shell`，并符合宿主系统的 Shell 环境约束（Windows=PowerShell，Unix=sh）。",
   "3) 报错后应立刻：读取出错的相关源码或日志 -> 推理真正原因 -> 一次解决问题。",
-  "4) 多文件修改原子性约束：如果你更改了函数签名，你必须在同一轮工具调用中，利用多次 `propose_file_edit` 工具将所有引用地全部进行同步修改，避免编译阶段的雪崩错误。",
+  "4) 跨文件修改约束：如果你更改了函数签名或共享接口，仍然要按文件逐个提交修改，并在后续轮次继续补齐引用方；不要再回退到多文件 raw patch。",
   "5) 提出完毕后，立刻停止。工具发起后，系统会帮你去询问用户，不要代替系统说“请审查”之类的话。",
 ].join("\n");
 
@@ -84,7 +84,7 @@ const RULE_SEARCH_STRATEGY = [
   "- 大文件（400+ 行）：分段读取。先不带参数调用 read_file 查看前半部分，根据 total_lines 和 truncated 标志决定是否需要继续读取。",
   "  - 若 truncated=true，使用 start_line/end_line 读取后续部分（如 start_line=301, end_line=600）。",
   "  - 每次读取 ~300 行为宜。如果只需要特定函数或区域，根据行号精确读取该范围即可。",
-  "- 修改文件前必须先读取相关部分，确保 search 字段精确匹配原文（不含行号前缀）。",
+  "- 修改现有文件前必须先获得精确上下文，通常通过 read_file/grep 完成；若上下文已经在当前会话中足够精确，可直接编辑。确保 search 字段精确匹配原文（不含行号前缀）。",
 ].join("\n");
 
 const RULE_TASK_COMPLETION = [
@@ -334,9 +334,9 @@ function buildModelAdaptationBlock(capabilities: ModelCapabilities): string {
     sections.push(
       "## 工具调用策略",
       "按以下步骤执行任务：",
-      "1. 先使用 grep/glob/list_files 定位相关文件",
-      "2. 使用 read_file 读取需要修改的文件内容",
-      "3. 确认理解文件结构后，使用 propose_file_edit 提出修改",
+      "1. 先使用 grep/glob/list_files 定位相关文件或符号",
+      "2. 通过 read_file、grep 结果或已有会话上下文获得精确上下文",
+      "3. 确认目标位置和修改范围后，使用 propose_file_edit 提出修改",
       "4. 每次只调用一个工具，等待结果后再决定下一步",
       "不要跳过步骤，不要假设文件内容。",
     );
@@ -414,11 +414,13 @@ export function assembleRuntimeContext(
     );
 
   // Detect OS for shell command guidance
+  const processPlatform =
+    typeof globalThis === "object" && "process" in globalThis
+      ? ((globalThis as { process?: { platform?: string } }).process?.platform ?? "")
+      : "";
   const isWindows = typeof navigator !== "undefined"
     ? navigator.userAgent?.includes("Windows") ?? false
-    : typeof process !== "undefined"
-      ? (process.platform === "win32")
-      : false;
+    : processPlatform === "win32";
   const osHint = isWindows
     ? "操作系统: Windows (shell 命令通过 PowerShell 执行，请使用 PowerShell 语法)"
     : "操作系统: Unix/macOS (shell 命令通过 sh 执行，请使用 POSIX shell 语法)";

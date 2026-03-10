@@ -645,7 +645,7 @@ export async function compressMessagesToFitBudget(params: {
     const detectedPinnedLen = initialSystemPrefixLength(currentMessages);
     const pinnedLenRaw =
       typeof pinnedPrefixLen === "number" && Number.isFinite(pinnedPrefixLen)
-        ? Math.floor(pinnedPrefixLen)
+        ? Math.max(Math.floor(pinnedPrefixLen), detectedPinnedLen)
         : detectedPinnedLen;
     const pinnedLen = Math.max(0, Math.min(currentMessages.length, pinnedLenRaw));
     const pinned = currentMessages.slice(0, pinnedLen);
@@ -836,7 +836,8 @@ export function clearOldToolUses(
   messages: LiteLLMMessage[],
   config: ClearToolUsesConfig,
 ): ClearToolUsesResult {
-  const { keepRecentTurns, clearAtLeast, pinnedPrefixLen } = config;
+  const { keepRecentTurns, clearAtLeast } = config;
+  const pinnedPrefixLen = Math.max(config.pinnedPrefixLen, initialSystemPrefixLength(messages));
 
   // --- Step 1: Identify all tool-use turns ---
   const turns: ToolUseTurn[] = [];

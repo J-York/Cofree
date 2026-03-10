@@ -97,6 +97,7 @@ import { useSession } from "../../lib/sessionContext";
 import {
   createMessageId,
   buildToolCallsFromPlan,
+  deriveCarryForwardPlan,
   toConversationHistory,
   type ConversationHistoryMessage,
 } from "./chat/helpers";
@@ -1128,6 +1129,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     lastPromptRef.current = promptText;
     lastContextAttachmentsRef.current = contextAttachments;
     const conversationHistory = toConversationHistory(messagesRef.current);
+    const existingPlanForRun = deriveCarryForwardPlan({
+      records: messagesRef.current,
+      prompt: promptText,
+      explicitPlan: options.existingPlan,
+      isContinuation: options.isContinuation === true,
+    });
     const assistantMessageId = createMessageId("assistant");
     const now = new Date().toISOString();
     const chatSessionId = getChatSessionId();
@@ -1265,8 +1272,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           boundAgentId: convBinding?.agentId ?? null,
           phase: options.phase ?? "default",
           isContinuation: options.isContinuation === true,
-          existingPlanState: options.existingPlan?.state ?? null,
-          existingPlanActionCount: options.existingPlan?.proposedActions.length ?? 0,
+          existingPlanState: existingPlanForRun?.state ?? null,
+          existingPlanActionCount: existingPlanForRun?.proposedActions.length ?? 0,
           executionSettings: {
             provider: executionSettings.provider ?? null,
             model: executionSettings.model,
@@ -1289,7 +1296,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         contextAttachments,
         isContinuation: options.isContinuation,
         internalSystemNote: options.internalSystemNote,
-        existingPlan: options.existingPlan,
+        existingPlan: existingPlanForRun,
         blockedActionFingerprints: visibleUserMessage
           ? []
           : messagesRef.current.flatMap((message) =>

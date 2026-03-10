@@ -56,6 +56,17 @@ vi.mock("../agents/toolPolicy", () => ({
     })),
 }));
 
+vi.mock("../lib/modelGateway", () => ({
+    createGatewayRequestBody: vi.fn((messages, _settings, runtime, options) => ({
+        model: runtime?.modelRef ?? "test-model",
+        messages,
+        stream: options?.stream ?? false,
+        tools: options?.tools,
+        tool_choice: options?.toolChoice,
+        temperature: options?.temperature,
+    })),
+}));
+
 vi.mock("../lib/litellm", () => ({
     createLiteLLMRequestBody: vi.fn((messages, _settings, options) => ({
         model: "test-model",
@@ -80,6 +91,7 @@ import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { assembleRuntimeContext } from "../agents/promptAssembly";
 import { DEFAULT_SETTINGS, type AppSettings } from "../lib/settingsStore";
 import { createFileContextAttachment } from "../lib/contextAttachments";
+import { createGatewayRequestBody } from "../lib/modelGateway";
 import { loadCofreeRc, resolveMatchingContextRules } from "../lib/cofreerc";
 import { generateRepoMap } from "./repoMapService";
 import {
@@ -88,7 +100,7 @@ import {
     runPlanningSession,
     type ToolExecutionTrace,
 } from "./planningService";
-import { clearOldToolUses } from "./contextBudget";
+import { clearOldToolUses, compressMessagesToFitBudget } from "./contextBudget";
 
 function createSettings(): AppSettings {
   return {
@@ -144,10 +156,26 @@ describe("planningService approval-flow repair", () => {
                             choices?: Array<{
                                 message?: {
                                     content?: string | Array<{ type?: string; text?: string }>;
+                                    reasoning_content?: string | Array<{ type?: string; text?: string }>;
                                 };
                             }>;
                         };
+                        const reasoning = payload.choices?.[0]?.message?.reasoning_content;
                         const content = payload.choices?.[0]?.message?.content;
+                        const reasoningText = typeof reasoning === "string"
+                            ? reasoning
+                            : Array.isArray(reasoning)
+                                ? reasoning
+                                    .map((item) =>
+                                        item && item.type === "text" && typeof item.text === "string"
+                                            ? item.text
+                                            : "",
+                                    )
+                                    .join("")
+                                : "";
+                        if (reasoningText) {
+                            onChunk?.(`<think>${reasoningText}</think>`);
+                        }
                         if (typeof content === "string" && content) {
                             onChunk?.(content);
                         } else if (Array.isArray(content)) {
@@ -195,6 +223,8 @@ describe("planningService approval-flow repair", () => {
         expect(prompt).toContain("宿主系统的 Shell 环境约束（Windows=PowerShell，Unix=sh）");
         expect(prompt).toContain("Windows/PowerShell 下优先用 'Remove-Item -Recurse -Force <路径>'");
         expect(prompt).toContain("Remove-Item -Recurse -Force");
+        expect(prompt).toContain("必须先获得精确上下文，通常通过 read_file/grep 完成");
+        expect(prompt).toContain("通过 read_file、grep 结果或已有会话上下文获得精确上下文");
     });
 
     it("passes update_plan as an internal tool to assembleRuntimeContext so it appears in 本轮可用工具", async () => {
@@ -220,6 +250,100 @@ describe("planningService approval-flow repair", () => {
         const internalTools = calls[0]?.[2] as string[] | undefined;
         expect(Array.isArray(internalTools)).toBe(true);
         expect(internalTools).toContain("update_plan");
+    });
+
+    it("builds tool-loop request bodies through modelGateway", async () => {
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-model-gateway",
+                choices: [{ message: { role: "assistant", content: "done" } }],
+                usage: { prompt_tokens: 4, completion_tokens: 2 },
+            }),
+        });
+
+        await runPlanningSession({
+            prompt: "Describe the shell tool contract",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        expect(vi.mocked(createGatewayRequestBody)).toHaveBeenCalled();
+        const firstCall = vi.mocked(createGatewayRequestBody).mock.calls[0];
+        expect(firstCall?.[2]).toMatchObject({ agentId: "agent-default" });
+        expect(firstCall?.[3]).toMatchObject({ stream: true, temperature: 0.1 });
+    });
+
+    it("retries once when the model narrates a tool call in plain text without native tool_calls", async () => {
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-pseudo-tool-1",
+                choices: [{
+                    message: {
+                        role: "assistant",
+                        content: "I will call propose_shell now to inspect the workspace.",
+                    },
+                }],
+                usage: { prompt_tokens: 4, completion_tokens: 2 },
+            }),
+        }).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-pseudo-tool-2",
+                choices: [{ message: { role: "assistant", content: "done" } }],
+                usage: { prompt_tokens: 5, completion_tokens: 2 },
+            }),
+        });
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            if (command === "list_files") {
+                return [];
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const result = await runPlanningSession({
+            prompt: "Describe the shell tool contract",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        expect(result.assistantReply).toBe("done");
+        expect(vi.mocked(postLiteLLMChatCompletionsStream)).toHaveBeenCalledTimes(2);
+    });
+
+    it("preserves reasoning_content as a think block in the final assistant reply", async () => {
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-reasoning-content",
+                choices: [{
+                    message: {
+                        role: "assistant",
+                        reasoning_content: "先分析项目结构，再决定下一步。",
+                        content: "已生成执行计划。",
+                    },
+                }],
+                usage: { prompt_tokens: 8, completion_tokens: 4 },
+            }),
+        });
+
+        const chunks: string[] = [];
+        const result = await runPlanningSession({
+            prompt: "帮我看一下当前目录该怎么开始",
+            settings: createSettings(),
+            conversationHistory: [],
+            onAssistantChunk: (chunk) => {
+                chunks.push(chunk);
+            },
+        });
+
+        expect(chunks.join("")).toBe("<think>先分析项目结构，再决定下一步。</think>已生成执行计划。");
+        expect(result.assistantReply).toBe("<think>先分析项目结构，再决定下一步。</think>已生成执行计划。");
     });
 
     it("extracts file targets from partial streamed tool-call JSON", () => {
@@ -631,6 +755,103 @@ describe("planningService approval-flow repair", () => {
         expect(planState.steps[1].status).toBe("in_progress");
         expect(planState.activeStepId).toBe("step-implement");
         expect(payload.active_step_id).toBe("step-implement");
+    });
+
+    it("refreshes the todo system prompt after update_plan before the next turn", async () => {
+        vi.mocked(postLiteLLMChatCompletions)
+            .mockResolvedValueOnce({
+                status: 200,
+                endpoint: "http://localhost:4000/chat/completions",
+                body: JSON.stringify({
+                    id: "chatcmpl-plan-refresh-1",
+                    choices: [
+                        {
+                            message: {
+                                role: "assistant",
+                                content: "",
+                                tool_calls: [
+                                    {
+                                        id: "call-plan-refresh-1",
+                                        type: "function",
+                                        function: {
+                                            name: "update_plan",
+                                            arguments: JSON.stringify({
+                                                operation: "complete",
+                                                step_id: "step-plan",
+                                                note: "需求已分析完成",
+                                            }),
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                    usage: {
+                        prompt_tokens: 16,
+                        completion_tokens: 8,
+                    },
+                }),
+            })
+            .mockResolvedValueOnce({
+                status: 200,
+                endpoint: "http://localhost:4000/chat/completions",
+                body: JSON.stringify({
+                    id: "chatcmpl-plan-refresh-2",
+                    choices: [
+                        {
+                            message: {
+                                role: "assistant",
+                                content: "done",
+                            },
+                        },
+                    ],
+                    usage: {
+                        prompt_tokens: 14,
+                        completion_tokens: 2,
+                    },
+                }),
+            });
+
+        await runPlanningSession({
+            prompt: "完成 todo 列表中的当前工作",
+            settings: createSettings(),
+            conversationHistory: [],
+            existingPlan: {
+                state: "planning",
+                prompt: "完成 todo 列表中的当前工作",
+                steps: [
+                    {
+                        id: "step-plan",
+                        title: "分析需求",
+                        summary: "分析需求并拆解",
+                        owner: "planner",
+                        status: "in_progress",
+                    },
+                    {
+                        id: "step-implement",
+                        title: "执行实现",
+                        summary: "执行代码改动",
+                        owner: "coder",
+                        status: "pending",
+                        dependsOn: ["step-plan"],
+                    },
+                ],
+                activeStepId: "step-plan",
+                proposedActions: [],
+                workspacePath: "d:/Code/cofree",
+            },
+        });
+
+        const secondRequestBody = vi.mocked(postLiteLLMChatCompletions).mock.calls[1]?.[1] as {
+            messages: Array<{ role: string; content: string }>;
+        };
+        const todoMessages = (secondRequestBody?.messages ?? []).filter(
+            (message) => message.role === "system" && message.content.startsWith("[Todo Plan]"),
+        );
+
+        expect(todoMessages).toHaveLength(1);
+        expect(todoMessages[0]?.content).toContain("(planner/completed) 分析需求");
+        expect(todoMessages[0]?.content).toContain("(coder/in_progress) 执行实现 [当前]");
     });
 
     it("returns explicit pending-approval semantics for gated shell proposals", async () => {
@@ -1298,6 +1519,60 @@ describe("planningService approval-flow repair", () => {
         );
         expect(buildCalls).toHaveLength(1);
     });
+
+    it("rejects multi-file propose_apply_patch requests", async () => {
+        vi.mocked(invoke).mockImplementation(async (command: string, args?: any) => {
+            if (command === "check_workspace_patch") {
+                expect(args?.patch).toContain("diff --git a/src/a.ts b/src/a.ts");
+                return {
+                    success: true,
+                    message: "Patch 可应用（2 files）",
+                    files: ["src/a.ts", "src/b.ts"],
+                };
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const multiFilePatch = [
+            "diff --git a/src/a.ts b/src/a.ts",
+            "--- a/src/a.ts",
+            "+++ b/src/a.ts",
+            "@@ -1 +1 @@",
+            "-a",
+            "+aa",
+            "diff --git a/src/b.ts b/src/b.ts",
+            "--- a/src/b.ts",
+            "+++ b/src/b.ts",
+            "@@ -1 +1 @@",
+            "-b",
+            "+bb",
+            "",
+        ].join("\n");
+
+        const result = await planningServiceTestUtils.executeToolCall(
+            {
+                id: "tool-raw-patch-multifile",
+                type: "function",
+                function: {
+                    name: "propose_apply_patch",
+                    arguments: JSON.stringify({
+                        patch: multiFilePatch,
+                    }),
+                },
+            },
+            "d:/Code/cofree",
+            {
+                ...DEFAULT_SETTINGS.toolPermissions,
+                propose_apply_patch: "ask",
+            },
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.errorCategory).toBe("validation");
+        expect(result.errorMessage).toContain("仅允许单文件 patch");
+        expect(result.content).toContain("src/a.ts");
+        expect(result.content).toContain("src/b.ts");
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -1593,5 +1868,30 @@ describe("clearOldToolUses", () => {
             (m) => m.role === "assistant" && (m.content ?? "").trim() === "" && !m.tool_calls,
         );
         expect(emptyAssistants).toHaveLength(0);
+    });
+
+    it("keeps the full leading system prefix during compression even if pinnedPrefixLen is too small", async () => {
+        const result = await compressMessagesToFitBudget({
+            messages: [
+                { role: "system", content: "system prompt" },
+                { role: "system", content: "[Todo Plan]\n○ [step-plan] (planner/in_progress) 分析需求 [当前]" },
+                { role: "user", content: "A".repeat(600) },
+                { role: "assistant", content: "B".repeat(600) },
+            ],
+            policy: {
+                maxPromptTokens: 60,
+                minMessagesToSummarize: 10,
+                minRecentMessagesToKeep: 1,
+                recentTokensMinRatio: 0.2,
+            },
+            pinnedPrefixLen: 1,
+        });
+
+        expect(result.compressed).toBe(true);
+        expect(result.messages[0]).toMatchObject({ role: "system", content: "system prompt" });
+        expect(result.messages[1]).toMatchObject({
+            role: "system",
+            content: "[Todo Plan]\n○ [step-plan] (planner/in_progress) 分析需求 [当前]",
+        });
     });
 });

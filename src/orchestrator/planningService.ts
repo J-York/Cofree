@@ -20,6 +20,7 @@ import {
   type LiteLLMMessage,
   type LiteLLMToolDefinition,
 } from "../lib/litellm";
+import { createGatewayRequestBody } from "../lib/modelGateway";
 import {
   DEFAULT_TOOL_PERMISSIONS,
   isActiveModelLocal,
@@ -57,6 +58,7 @@ import {
   compressMessagesToFitBudget,
   estimateTokensForMessages,
   estimateTokensForToolDefinitions,
+  initialSystemPrefixLength,
   MessageTokenTracker,
   updateTokenCalibration,
 } from "./contextBudget";
@@ -106,15 +108,15 @@ const SUMMARY_CACHE_MAX_ENTRIES = 100;
 const BASE_SUMMARY_COOLDOWN_MS = 60 * 1000;
 
 const MIN_MESSAGES_TO_SUMMARIZE = 4;
-const MIN_RECENT_MESSAGES_TO_KEEP = 6;
+const MIN_RECENT_MESSAGES_TO_KEEP = 8;
 const RECENT_TOKENS_MIN_RATIO = 0.4;
 const TOOL_MESSAGE_MAX_CHARS = 3000;
 
 // --- Context Editing: proactive tool-use eviction ---
-const CONTEXT_EDIT_KEEP_RECENT_TURNS = 5;
+const CONTEXT_EDIT_KEEP_RECENT_TURNS = 8;
 const CONTEXT_EDIT_CLEAR_AT_LEAST = 3;
 const CONTEXT_EDIT_TRIGGER_EVERY_N_TURNS = 8;
-const CONTEXT_EDIT_TRIGGER_TOKEN_RATIO = 0.6;
+const CONTEXT_EDIT_TRIGGER_TOKEN_RATIO = 0.85;
 
 // P2-2: Dynamic cooldown state — tracks token growth to adjust cooldown.
 // Capped at MAX_TRACKED_WORKSPACES to prevent unbounded memory growth.
@@ -195,6 +197,7 @@ const MAX_CREATE_HINT_REPAIR_ROUNDS = 1;
 const MAX_SHELL_DIALECT_REPAIR_ROUNDS = 1;
 const MAX_SEARCH_NOT_FOUND_REPAIR_ROUNDS = 2;
 const MAX_MULTI_ARTIFACT_REMINDER_ROUNDS = 2;
+const MAX_PSEUDO_TOOL_CALL_REPAIR_ROUNDS = 1;
 const MAX_PROPOSED_ACTIONS_PER_BATCH = 5;
 
 const MAX_TOOL_NOT_FOUND_STRIKES = 3;
@@ -219,6 +222,7 @@ const TASK_TYPE_TURN_LIMITS: Record<string, number> = {
 const MAX_CONSECUTIVE_READ_ONLY_TURNS = 8;
 const DEDUP_TURN_WINDOW = 10;
 const WORKING_MEMORY_NOTE_PREFIX = "[工作记忆刷新]";
+const TODO_PLAN_NOTE_PREFIX = "[Todo Plan]";
 const WORKING_MEMORY_REFRESH_INTERVAL = 3;
 
 function computeWorkingMemoryFingerprint(wm: WorkingMemory): string {
@@ -275,6 +279,41 @@ function smartTruncate(
   return content.slice(0, headEnd) + ellipsis + content.slice(tailStart);
 }
 
+function upsertPinnedSystemMessage(params: {
+  messages: LiteLLMMessage[];
+  prefix: string;
+  content: string;
+  insertionIndex?: number;
+}): void {
+  for (let index = params.messages.length - 1; index >= 0; index -= 1) {
+    const message = params.messages[index];
+    if (
+      message.role === "system"
+      && typeof message.content === "string"
+      && message.content.startsWith(params.prefix)
+    ) {
+      params.messages.splice(index, 1);
+    }
+  }
+
+  const normalizedContent = params.content.trim();
+  if (!normalizedContent) {
+    return;
+  }
+
+  const currentPrefixLen = initialSystemPrefixLength(params.messages);
+  const requestedIndex =
+    typeof params.insertionIndex === "number" && Number.isFinite(params.insertionIndex)
+      ? Math.floor(params.insertionIndex)
+      : currentPrefixLen;
+  const insertAt = Math.max(0, Math.min(currentPrefixLen, requestedIndex));
+
+  params.messages.splice(insertAt, 0, {
+    role: "system",
+    content: normalizedContent,
+  });
+}
+
 function upsertWorkingMemoryContextMessage(params: {
   messages: LiteLLMMessage[];
   workingMemory: WorkingMemory;
@@ -282,17 +321,6 @@ function upsertWorkingMemoryContextMessage(params: {
   query: string;
   focusedPaths?: string[];
 }): void {
-  for (let index = params.messages.length - 1; index >= 0; index -= 1) {
-    const message = params.messages[index];
-    if (
-      message.role === "system"
-      && typeof message.content === "string"
-      && message.content.startsWith(WORKING_MEMORY_NOTE_PREFIX)
-    ) {
-      params.messages.splice(index, 1);
-    }
-  }
-
   const memoryContext = serializeWorkingMemory(
     params.workingMemory,
     params.tokenBudget,
@@ -307,10 +335,22 @@ function upsertWorkingMemoryContextMessage(params: {
     return;
   }
 
-  params.messages.push({
-    role: "system",
+  upsertPinnedSystemMessage({
+    messages: params.messages,
+    prefix: WORKING_MEMORY_NOTE_PREFIX,
     content: `${WORKING_MEMORY_NOTE_PREFIX}\n${memoryContext}`,
   });
+}
+
+function upsertTodoPlanContextMessage(messages: LiteLLMMessage[], planState: TodoPlanState): string {
+  const todoPrompt = buildTodoSystemPrompt(planState);
+  upsertPinnedSystemMessage({
+    messages,
+    prefix: TODO_PLAN_NOTE_PREFIX,
+    content: todoPrompt,
+    insertionIndex: 2,
+  });
+  return todoPrompt;
 }
 
 function extractCandidatePathsFromTaskDescription(taskDescription: string): string[] {
@@ -668,6 +708,7 @@ export function derivePlanWorkflowState(
 interface ChatCompletionChoiceMessage {
   content?: unknown;
   tool_calls?: unknown;
+  reasoning_content?: unknown;
 }
 
 interface ChatCompletionPayload {
@@ -883,7 +924,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "propose_apply_patch",
       description:
-        "Advanced raw patch path. Propose a write action by submitting unified diff patch for HITL approval (does not execute). Use only when explicit patch/diff is requested or structured edits cannot express the task.\n\nMinimal example:\ndiff --git a/src/foo.ts b/src/foo.ts\n--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1,3 +1,3 @@\n-old line\n+new line",
+        "Advanced raw patch path. Propose a write action by submitting a SINGLE-FILE unified diff patch for HITL approval (does not execute). Use only when explicit patch/diff is requested or structured edits cannot express the task. Multi-file patches are rejected; for multi-file work, use propose_file_edit sequentially.\n\nMinimal example:\ndiff --git a/src/foo.ts b/src/foo.ts\n--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1,3 +1,3 @@\n-old line\n+new line",
       parameters: {
         type: "object",
         required: ["patch"],
@@ -892,7 +933,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           patch: {
             type: "string",
             description:
-              "Unified diff patch content. MUST include 'diff --git' header. For new files: 'diff --git a/file b/file' then '--- /dev/null' and '+++ b/file'. For edits: 'diff --git a/file b/file' then '--- a/file' and '+++ b/file'. For delete-file patches: include 'deleted file mode 100644', then '--- a/file' and '+++ /dev/null'.",
+              "Unified diff patch content for exactly ONE file. MUST include 'diff --git' header. For new files: 'diff --git a/file b/file' then '--- /dev/null' and '+++ b/file'. For edits: 'diff --git a/file b/file' then '--- a/file' and '+++ b/file'. For delete-file patches: include 'deleted file mode 100644', then '--- a/file' and '+++ /dev/null'. Multi-file patches are rejected.",
           },
           description: {
             type: "string",
@@ -1647,6 +1688,63 @@ function normalizeMessageContent(content: unknown): string {
   }
 
   return "";
+}
+
+function buildAssistantDisplayContent(message: ChatCompletionChoiceMessage): string {
+  const content = normalizeMessageContent(message.content);
+  const reasoning = normalizeMessageContent(message.reasoning_content);
+
+  if (!reasoning.trim()) {
+    return content;
+  }
+  if (content.includes("<think>")) {
+    return content;
+  }
+  return `<think>${reasoning}</think>${content}`;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function detectPseudoToolCallNarration(
+  content: string,
+  availableToolNames: string[],
+): string | null {
+  const normalized = content.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const lower = normalized.toLowerCase();
+  const mentionedTool = availableToolNames.find((toolName) =>
+    new RegExp(`\\b${escapeRegex(toolName.toLowerCase())}\\b`, "i").test(lower),
+  );
+  if (!mentionedTool) {
+    return null;
+  }
+
+  const pseudoPatterns: Array<{ pattern: RegExp; reason: string }> = [
+    {
+      pattern: /\b(?:let'?s|i(?:'|’)ll|i will|need to|must|should|going to)\s+(?:call|use|invoke)\b/i,
+      reason: "narrated_tool_intent",
+    },
+    {
+      pattern: /\btool\s*call\b/i,
+      reason: "mentions_tool_call_literal",
+    },
+    {
+      pattern: /\b(?:call|use|invoke)\s+(?:the\s+)?[a-z_][a-z0-9_]*\b/i,
+      reason: "direct_call_phrase",
+    },
+    {
+      pattern: /\b(?:functions?\.|to=functions\.)[a-z_][a-z0-9_]*\b/i,
+      reason: "sdk_style_tool_reference",
+    },
+  ];
+
+  const matched = pseudoPatterns.find(({ pattern }) => pattern.test(normalized));
+  return matched ? `${matched.reason}:${mentionedTool}` : null;
 }
 
 
@@ -3040,7 +3138,6 @@ export async function executeSubAgentTask(
       requestSummary(messagesToSummarize, settings, { workspacePath }),
     markSummarized: () => markSummarizedNow(workspacePath),
   };
-  const pinnedPrefixLen = 2;
 
   console.log(`[SubAgent] 启动 | role=${role} | maxTurns=${maxTurns} | tools=${subAgentTools.length}`);
   onProgress?.({ kind: "summary", message: `${agentDef.displayName} Sub-Agent 已启动` });
@@ -3060,6 +3157,8 @@ export async function executeSubAgentTask(
     }
 
     console.log(`[SubAgent] ── Turn ${turn + 1}/${maxTurns} ── messages=${messages.length}`);
+
+    const pinnedPrefixLen = initialSystemPrefixLength(messages);
 
     const compression = await compressMessagesToFitBudget({
       messages,
@@ -3741,6 +3840,18 @@ async function executeToolCall(
       );
       if (!preflight.success) {
         const message = `Patch 预检失败: ${preflight.message}`;
+        return {
+          content: JSON.stringify({
+            error: message,
+            files: preflight.files,
+          }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message,
+        };
+      }
+      if (preflight.files.length > 1) {
+        const message = `propose_apply_patch 仅允许单文件 patch；当前 patch 涉及 ${preflight.files.length} 个文件。请改用 propose_file_edit 按文件逐个提交。`;
         return {
           content: JSON.stringify({
             error: message,
@@ -4803,6 +4914,7 @@ export async function requestToolCompletion(
   activeTools: LiteLLMToolDefinition[],
   signal?: AbortSignal,
   toolChoiceOverride?: "auto" | "none",
+  runtime?: ResolvedAgentRuntime | null,
 ): Promise<{
   assistantMessage: LiteLLMMessage;
   toolCalls: ToolCallRecord[];
@@ -4813,17 +4925,21 @@ export async function requestToolCompletion(
     throw new DOMException("The operation was aborted.", "AbortError");
   }
 
-  const effectiveToolChoice = toolChoiceOverride ?? "auto";
-  const body = createLiteLLMRequestBody(messages, settings, {
+  const effectiveToolChoice = toolChoiceOverride ?? "model-adapted";
+  const body = createGatewayRequestBody(messages, settings, runtime ?? null, {
     stream: false,
     temperature: 0.1,
     tools: effectiveToolChoice === "none" ? undefined : activeTools,
-    toolChoice: effectiveToolChoice === "none" ? undefined : effectiveToolChoice,
+    toolChoice:
+      toolChoiceOverride === undefined || toolChoiceOverride === "none"
+        ? undefined
+        : toolChoiceOverride,
   });
+  const requestModel = typeof body.model === "string" ? body.model : settings.model;
 
   const t0 = performance.now();
   console.log(
-    `[LLM] 发送请求 (非流式) | model=${settings.model} | messages=${messages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
+    `[LLM] 发送请求 (非流式) | model=${requestModel} | messages=${messages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
   );
 
   const response = await postLiteLLMChatCompletions(settings, body);
@@ -4860,7 +4976,7 @@ export async function requestToolCompletion(
 
   const assistantMessage: LiteLLMMessage = {
     role: "assistant",
-    content: normalizeMessageContent(rawMessage.content),
+    content: buildAssistantDisplayContent(rawMessage),
     tool_calls: toolCalls.length ? toolCalls : undefined,
   };
 
@@ -4886,6 +5002,7 @@ async function requestToolCompletionWithStream(
   onChunk?: (content: string) => void,
   onToolCallEvent?: (event: ToolCallEvent) => void,
   toolChoiceOverride?: "auto" | "none",
+  runtime?: ResolvedAgentRuntime | null,
 ): Promise<{
   assistantMessage: LiteLLMMessage;
   toolCalls: ToolCallRecord[];
@@ -4896,17 +5013,21 @@ async function requestToolCompletionWithStream(
     throw new DOMException("The operation was aborted.", "AbortError");
   }
 
-  const effectiveToolChoice = toolChoiceOverride ?? "auto";
-  const body = createLiteLLMRequestBody(messages, settings, {
+  const effectiveToolChoice = toolChoiceOverride ?? "model-adapted";
+  const body = createGatewayRequestBody(messages, settings, runtime ?? null, {
     stream: true,
     temperature: 0.1,
     tools: effectiveToolChoice === "none" ? undefined : activeTools,
-    toolChoice: effectiveToolChoice === "none" ? undefined : effectiveToolChoice,
+    toolChoice:
+      toolChoiceOverride === undefined || toolChoiceOverride === "none"
+        ? undefined
+        : toolChoiceOverride,
   });
+  const requestModel = typeof body.model === "string" ? body.model : settings.model;
 
   const t0 = performance.now();
   console.log(
-    `[LLM] 发送请求 (流式) | model=${settings.model} | messages=${messages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
+    `[LLM] 发送请求 (流式) | model=${requestModel} | messages=${messages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
   );
 
   const response = await postLiteLLMChatCompletionsStream(
@@ -4958,7 +5079,7 @@ async function requestToolCompletionWithStream(
 
   const assistantMessage: LiteLLMMessage = {
     role: "assistant",
-    content: normalizeMessageContent(rawMessage.content),
+    content: buildAssistantDisplayContent(rawMessage),
     tool_calls: toolCalls.length ? toolCalls : undefined,
   };
 
@@ -5035,6 +5156,7 @@ function shouldFallbackToNonStreamingForToolTurn(error: unknown): boolean {
 async function executeToolCompletionForTurn(
   messages: LiteLLMMessage[],
   settings: AppSettings,
+  runtime: ResolvedAgentRuntime,
   activeTools: LiteLLMToolDefinition[],
   turn: number,
   signal?: AbortSignal,
@@ -5081,6 +5203,7 @@ async function executeToolCompletionForTurn(
       onChunk,
       onToolCallEvent,
       toolChoiceOverride,
+      runtime,
     );
     return {
       completion,
@@ -5096,7 +5219,14 @@ async function executeToolCompletionForTurn(
     console.warn(
       `[Loop][Fallback] turn=${turn + 1} | from=stream | to=nonstream | reason=${error instanceof Error ? error.message : String(error)}`,
     );
-    const completion = await requestToolCompletion(messages, settings, activeTools, signal, toolChoiceOverride);
+    const completion = await requestToolCompletion(
+      messages,
+      settings,
+      activeTools,
+      signal,
+      toolChoiceOverride,
+      runtime,
+    );
     return {
       completion,
       requestMode: "nonstream",
@@ -5148,7 +5278,7 @@ async function runNativeToolCallingLoop(
     } as ToolPermissions)
     : basePermissions;
   const patchRepairInstruction =
-    "请读取必要文件片段后，重新调用 propose_file_edit。";
+    "请读取必要文件片段后，仅针对一个文件重新调用 propose_file_edit；不要再次提交多文件 raw patch。";
   const createPathRepairInstruction =
     "若目标是新建文件，请调用 propose_file_edit 并设置 operation='create'；若目录不存在，可先调用 propose_shell 创建目录。Windows/PowerShell 下使用 New-Item -ItemType Directory -Force <目录>；Unix 下可用 mkdir -p <目录>。";
   const searchNotFoundRepairInstruction =
@@ -5166,14 +5296,10 @@ async function runNativeToolCallingLoop(
   const blockedFingerprints = blockedActionFingerprints
     .map((value) => value.trim())
     .filter(Boolean);
-  const pinnedPrefixLen = 2 + (blockedFingerprints.length > 0 ? 1 : 0);
 
   const messages: LiteLLMMessage[] = [
     { role: "system", content: agentSystemPrompt },
     { role: "system", content: effectiveRuntimeContext },
-    ...(planState.steps.length > 0
-      ? [{ role: "system" as const, content: buildTodoSystemPrompt(planState) }]
-      : []),
     ...(blockedFingerprints.length > 0
       ? [
         {
@@ -5202,6 +5328,7 @@ async function runNativeToolCallingLoop(
       ]
       : [{ role: "user" as const, content: prompt }]),
   ];
+  let lastTodoPlanPrompt = upsertTodoPlanContextMessage(messages, planState);
 
   const requestRecords: RequestRecord[] = [];
   const proposedActions: ActionProposal[] = [];
@@ -5214,6 +5341,7 @@ async function runNativeToolCallingLoop(
   let toolNotFoundStrikes = 0;
   let consecutiveFailureTurns = 0;
   let searchNotFoundRepairRounds = 0;
+  let pseudoToolCallRepairRounds = 0;
   let fileEditFailureTracker = new Map<string, number>(); // relativePath → consecutive fail count
   const MAX_SAME_FILE_EDIT_FAILURES = 4;
   let consecutiveReadOnlyTurns = 0;
@@ -5321,6 +5449,11 @@ async function runNativeToolCallingLoop(
       }
     }
 
+    const currentTodoPlanPrompt = buildTodoSystemPrompt(planState);
+    if (currentTodoPlanPrompt !== lastTodoPlanPrompt) {
+      lastTodoPlanPrompt = upsertTodoPlanContextMessage(messages, planState);
+    }
+
     if (turn > 0) {
       const currentFingerprint = computeWorkingMemoryFingerprint(workingMemory);
       const hasMemoryContent = currentFingerprint !== "0:0:0:0";
@@ -5338,6 +5471,8 @@ async function runNativeToolCallingLoop(
         lastWorkingMemoryFingerprint = currentFingerprint;
       }
     }
+
+    const pinnedPrefixLen = initialSystemPrefixLength(messages);
 
     const estTokens = tokenTracker.update(messages);
     console.log(`[Loop] ── Turn ${turn + 1} ── messages=${messages.length} | ~${estTokens} tokens`);
@@ -5428,6 +5563,7 @@ async function runNativeToolCallingLoop(
           const turnRequest = await executeToolCompletionForTurn(
             messages,
             settings,
+            runtime,
             activeTools,
             turn,
             signal,
@@ -5492,6 +5628,33 @@ async function runNativeToolCallingLoop(
         });
         continue;
       }
+
+      const pseudoToolCallReason = toolChoiceOverride !== "none"
+        ? detectPseudoToolCallNarration(
+          completion.assistantMessage.content,
+          enabledToolNames,
+        )
+        : null;
+      if (
+        pseudoToolCallReason &&
+        pseudoToolCallRepairRounds < MAX_PSEUDO_TOOL_CALL_REPAIR_ROUNDS
+      ) {
+        pseudoToolCallRepairRounds += 1;
+        console.warn(
+          `[Loop] Turn ${turn + 1}: detected pseudo tool-call narration without native tool_calls (${pseudoToolCallReason}), requesting retry`,
+        );
+        messages.push({
+          role: "system",
+          content: [
+            "系统提示：你刚才在普通文本里描述了“将调用工具/准备调用工具”，但并没有发送原生 tool_calls，所以系统无法执行。",
+            `本轮可用工具: [${enabledToolNames.join(", ")}]`,
+            "如果需要继续使用工具，请直接发送原生工具调用，不要输出任何类似“我将调用 read_file / let's call ... / tool call now”的描述文本。",
+            "如果任务其实已经完成且不需要工具，请直接给出最终答案。",
+          ].join("\n"),
+        });
+        continue;
+      }
+
       console.log(`[Loop] Turn ${turn + 1} 结束: 模型返回文本回复 (无工具调用)`);
       const finalText = completion.assistantMessage.content.trim();
       return {

@@ -275,6 +275,16 @@ describe("streaming tool-call events", () => {
         arguments: "{\"relative_path\":\"src/App.tsx\"}",
       },
     ]);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      "post_litellm_chat_completions_stream",
+      expect.objectContaining({
+        body: expect.objectContaining({
+          model: "gpt-4.1",
+          stream: true,
+          stream_options: { include_usage: true },
+        }),
+      }),
+    );
     expect(response.status).toBe(200);
   });
 });

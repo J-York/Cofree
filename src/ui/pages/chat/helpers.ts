@@ -26,6 +26,23 @@ const TOOL_NAME_LABELS: Record<string, string> = {
   fetch: "获取网页",
 };
 
+const TERMINAL_STEP_STATUSES = new Set(["completed", "failed", "skipped"]);
+const CONTINUATION_PROMPT_PREFIXES = [
+  "继续",
+  "接着",
+  "继续吧",
+  "继续做",
+  "继续完成",
+  "继续处理",
+  "继续刚才",
+  "继续下去",
+  "resume",
+  "continue",
+  "carry on",
+  "keep going",
+  "go on",
+];
+
 export function createMessageId(role: "user" | "assistant" | "tool"): string {
   if (
     typeof crypto !== "undefined" &&
@@ -85,6 +102,58 @@ export function toConversationHistory(
       ...(record.tool_call_id ? { tool_call_id: record.tool_call_id } : {}),
       ...(record.name ? { name: record.name } : {}),
     }));
+}
+
+function hasUnfinishedTodoPlan(plan: OrchestrationPlan | null): plan is OrchestrationPlan {
+  if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) {
+    return false;
+  }
+
+  return plan.steps.some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+}
+
+function isContinuationLikePrompt(prompt: string): boolean {
+  const normalized = prompt.trim();
+  if (!normalized) {
+    return false;
+  }
+  const lower = normalized.toLowerCase();
+  return CONTINUATION_PROMPT_PREFIXES.some((prefix) =>
+    lower.startsWith(prefix.toLowerCase()),
+  );
+}
+
+export function deriveCarryForwardPlan(params: {
+  records: ChatMessageRecord[];
+  prompt: string;
+  explicitPlan?: OrchestrationPlan | null;
+  isContinuation?: boolean;
+}): OrchestrationPlan | undefined {
+  if (params.explicitPlan) {
+    return params.explicitPlan;
+  }
+
+  if (!params.isContinuation && !isContinuationLikePrompt(params.prompt)) {
+    return undefined;
+  }
+
+  const latestPlan = [...params.records]
+    .reverse()
+    .map((record) => record.plan)
+    .find(hasUnfinishedTodoPlan);
+
+  if (!latestPlan) {
+    return undefined;
+  }
+
+  return {
+    ...latestPlan,
+    prompt: params.prompt.trim() || latestPlan.prompt,
+    proposedActions: [],
+    state: latestPlan.steps.some((step) => step.status === "in_progress")
+      ? "executing"
+      : "planning",
+  };
 }
 
 export function formatToolName(name: string): string {

@@ -1600,7 +1600,7 @@ export async function postLiteLLMChatCompletionsStream(
         baseUrl,
         apiKey,
         protocol,
-        body,
+        body: effectiveStreamBody,
         requestId,
         proxy: settings.proxy,
       }

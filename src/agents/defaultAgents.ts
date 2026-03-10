@@ -40,7 +40,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     role: "coder",
     displayName: "Coder",
     promptIntent: "Produce high-quality implementation edits/patches. Focus on atomic changes, write production-ready code with solid error handling, and explain technical tradeoffs if necessary.",
-    tools: ["read_file", "grep", "glob", "propose_file_edit", "propose_apply_patch"],
+    tools: ["read_file", "grep", "glob", "propose_file_edit"],
     sensitiveActionAllowed: false,
     allowAsSubAgent: true,
     subAgentMaxTurns: 25,
