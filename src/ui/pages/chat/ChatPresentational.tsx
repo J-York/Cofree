@@ -175,11 +175,15 @@ export function LiveToolStatus({ calls }: { calls: LiveToolCall[] }) {
               ? "✓"
               : call.status === "pending_approval"
                 ? "⏸"
-                : "✕";
+                : call.status === "waiting_for_user"
+                  ? "?"
+                  : "✕";
         const label =
           call.status === "pending_approval"
             ? `${formatToolName(call.toolName)} · 待审批`
-            : formatToolName(call.toolName);
+            : call.status === "waiting_for_user"
+              ? `${formatToolName(call.toolName)} · 等待您的输入`
+              : formatToolName(call.toolName);
         return (
           <div key={call.callId} className={`live-tool-item ${call.status}`}>
             <span className="live-tool-icon">{icon}</span>
@@ -297,7 +301,7 @@ export function ToolTracePanel({ traces }: { traces: ToolExecutionTrace[] }) {
           {traces.map((trace) => (
             <li
               key={`${trace.callId}-${trace.startedAt}`}
-              className={`tool-trace-item ${trace.status === "pending_approval" ? "pending" : trace.status}`}
+              className={`tool-trace-item ${trace.status === "pending_approval" ? "pending" : trace.status === "waiting_for_user" ? "pending" : trace.status}`}
             >
               <div className="tool-trace-head">
                 <span className="tool-trace-name">{trace.name}</span>
@@ -309,6 +313,11 @@ export function ToolTracePanel({ traces }: { traces: ToolExecutionTrace[] }) {
               {trace.status === "pending_approval" && (
                 <p className="status-note">
                   该工具调用仅创建了待审批动作，尚未实际执行。
+                </p>
+              )}
+              {trace.status === "waiting_for_user" && (
+                <p className="status-note">
+                  正在等待用户输入，请在弹出的对话框中回答问题。
                 </p>
               )}
               {(trace.errorCategory || trace.errorMessage) && (

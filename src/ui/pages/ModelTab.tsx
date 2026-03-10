@@ -68,7 +68,7 @@ export function ModelTab({
             <div>
               <h3 className="settings-card-title">当前全局模型</h3>
               <p className="settings-card-desc">
-                未固定模型的 Agent 会跟随这里的供应商与模型；固定模型的 Agent 会覆盖这里的默认值。
+                所有Agent默认使用这里的全局模型设置。您可以在Agent管理中为特定Agent指定专用模型。
               </p>
             </div>
             {activeVendor && (

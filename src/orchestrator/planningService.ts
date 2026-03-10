@@ -85,6 +85,11 @@ import {
   type WorkingMemory,
 } from "./workingMemory";
 import { buildMatchedContextRuleNote } from "./explicitContextService";
+import {
+  createAskUserRequest,
+  waitForUserResponse,
+  type AskUserRequest,
+} from "./askUserService";
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
 const MAX_PARALLEL_SUB_AGENTS = 3;
@@ -344,7 +349,7 @@ interface ToolCallRecord {
   };
 }
 
-export type ToolExecutionStatus = "success" | "failed" | "pending_approval";
+export type ToolExecutionStatus = "success" | "failed" | "pending_approval" | "waiting_for_user";
 
 interface ToolExecutionResult {
   content: string;
@@ -1182,6 +1187,49 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "ask_user",
+      description:
+        "Ask the user a question and wait for their response. Use this when you need human input, clarification, or decision-making that cannot be inferred from context.\n\n" +
+        "The tool will pause execution until the user provides an answer. The user's response will be returned as a string.\n\n" +
+        "Best practices:\n" +
+        "- Ask clear, specific questions\n" +
+        "- Provide context to help the user understand why you're asking\n" +
+        "- Use options for multiple-choice questions to make it easier for users\n" +
+        "- Mark questions as optional (required=false) when appropriate\n\n" +
+        "Examples:\n" +
+        "- ask_user(question='Which database should I use?', options=['PostgreSQL', 'MongoDB', 'SQLite'])\n" +
+        "- ask_user(question='What should the API endpoint be named?', context='Creating a new user registration endpoint')\n" +
+        "- ask_user(question='Should I proceed with this approach?', required=false)",
+      parameters: {
+        type: "object",
+        required: ["question"],
+        additionalProperties: false,
+        properties: {
+          question: {
+            type: "string",
+            minLength: 1,
+            description: "The question to ask the user. Should be clear and specific.",
+          },
+          context: {
+            type: "string",
+            description: "Optional context or background information to help the user understand the question.",
+          },
+          options: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional list of predefined answer choices for the user to select from.",
+          },
+          required: {
+            type: "boolean",
+            description: "Whether the user must provide an answer. Defaults to true. Set to false for optional questions.",
+          },
+        },
+      },
+    },
+  },
 ];
 
 export type PlanningSessionPhase = "default";
@@ -1200,6 +1248,7 @@ const ALL_TOOL_NAMES = [
   "update_plan",
   "diagnostics",
   "fetch",
+  "ask_user",
 ];
 
 export function estimateRequestedArtifactCount(prompt: string): number {
@@ -1507,6 +1556,10 @@ export interface RunPlanningSessionInput {
     planState: TodoPlanState,
     proposedActions: ActionProposal[]
   ) => void;
+  /** Session ID for ask_user tool to track user responses. */
+  sessionId?: string;
+  /** Called when the AI invokes the ask_user tool. The UI should show a dialog and call submitUserResponse when done. */
+  onAskUserRequest?: (request: AskUserRequest) => void;
 }
 
 export interface PlanningSessionResult {
@@ -3252,6 +3305,8 @@ async function executeToolCall(
   signal?: AbortSignal,
   turn?: number,
   focusedPaths?: string[],
+  sessionId?: string,
+  onAskUserRequest?: (request: AskUserRequest) => void,
 ): Promise<ToolExecutionResult> {
   const safeWorkspace = workspacePath.trim();
   if (!safeWorkspace) {
@@ -4459,6 +4514,82 @@ async function executeToolCall(
       };
     }
 
+    if (call.function.name === "ask_user") {
+      const question = asString(args.question).trim();
+      if (!question) {
+        const message = "question 不能为空";
+        return {
+          content: JSON.stringify({ error: message }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message,
+        };
+      }
+
+      const context = asString(args.context).trim() || undefined;
+      const options = Array.isArray(args.options)
+        ? (args.options as string[]).map((opt) => String(opt).trim()).filter(Boolean)
+        : undefined;
+      const required = args.required !== undefined ? asBoolean(args.required, true) : true;
+
+      if (!sessionId) {
+        const message = "ask_user 工具需要 sessionId，当前调用缺少 session 上下文";
+        return {
+          content: JSON.stringify({ error: message }),
+          success: false,
+          errorCategory: "validation",
+          errorMessage: message,
+        };
+      }
+
+      const requestId = createAskUserRequest(
+        sessionId,
+        question,
+        context,
+        options,
+        required
+      );
+
+      // Notify UI so it can show the dialog
+      onAskUserRequest?.({
+        id: requestId,
+        question,
+        context,
+        options,
+        required,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Block tool loop until user responds (or cancels / signal aborts)
+      let userResponse;
+      try {
+        userResponse = await waitForUserResponse(requestId, signal);
+      } catch (_err) {
+        return {
+          content: JSON.stringify({
+            ok: false,
+            request_id: requestId,
+            skipped: true,
+            response: null,
+            message: "用户取消了输入请求。",
+          }),
+          success: true,
+        };
+      }
+
+      return {
+        content: JSON.stringify({
+          ok: true,
+          request_id: requestId,
+          question,
+          response: userResponse.response || null,
+          skipped: userResponse.skipped,
+          options: options || null,
+        }),
+        success: true,
+      };
+    }
+
     return {
       content: JSON.stringify({
         error: `"${call.function.name}" is not a valid tool, try one of [${(enabledToolNames ?? ALL_TOOL_NAMES).join(", ")}].`,
@@ -4492,6 +4623,8 @@ async function executeToolCallWithRetry(
   signal?: AbortSignal,
   turn?: number,
   focusedPaths?: string[],
+  sessionId?: string,
+  onAskUserRequest?: (request: AskUserRequest) => void,
 ): Promise<{
   result: ToolExecutionResult;
   trace: ToolExecutionTrace;
@@ -4531,6 +4664,8 @@ async function executeToolCallWithRetry(
       signal,
       turn,
       focusedPaths,
+      sessionId,
+      onAskUserRequest,
     );
     const success = current.success !== false;
     const traceStatus: ToolExecutionStatus = success
@@ -4936,6 +5071,8 @@ async function runNativeToolCallingLoop(
   onLoopCheckpoint?: RunPlanningSessionInput["onLoopCheckpoint"],
   onPlanStateUpdate?: RunPlanningSessionInput["onPlanStateUpdate"],
   focusedPaths: string[] = [],
+  sessionId?: string,
+  onAskUserRequest?: (request: AskUserRequest) => void,
 ): Promise<{
   assistantReply: string;
   requestRecords: RequestRecord[];
@@ -5361,6 +5498,8 @@ async function runNativeToolCallingLoop(
         signal,
         turn,
         focusedPaths,
+        sessionId,
+        onAskUserRequest,
       );
       const toolMs = (performance.now() - toolT0).toFixed(0);
 
@@ -6467,7 +6606,7 @@ export async function runPlanningSession(
       historyMessages,
       initialPlanSeed,
       initialInternalNote,
-      input.blockedActionFingerprints,
+      input.blockedActionFingerprints ?? [],
       input.signal,
       input.onAssistantChunk,
       input.isContinuation,
@@ -6478,6 +6617,8 @@ export async function runPlanningSession(
       input.onLoopCheckpoint,
       input.onPlanStateUpdate,
       sessionFocusedPaths,
+      input.sessionId,
+      input.onAskUserRequest,
     );
 
     // Filter out internal tools from the final `assistantToolCalls` so that

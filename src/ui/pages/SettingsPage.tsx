@@ -1102,34 +1102,60 @@ function AgentEditor({
             />
           </div>
           <div className="field">
-            <label className="field-label">默认模型</label>
-            <select
-              className="select"
-              value={
-                agent.modelSelection
-                  ? `${agent.modelSelection.vendorId}::${agent.modelSelection.modelId}`
-                  : ""
-              }
-              onChange={(e) => {
-                const value = e.target.value;
-                if (!value) {
-                  onUpdate({ modelSelection: undefined });
-                  return;
-                }
-                const option = modelOptions.find((entry) => entry.key === value);
-                onUpdate({ modelSelection: option?.selection });
-              }}
-            >
-              <option value="">跟随全局模型</option>
-              {modelOptions.map((option) => (
-                <option key={option.key} value={option.key}>
-                  {option.label} · {option.detail}
-                </option>
-              ))}
-            </select>
-            <div className="agent-field-hint">
-              这里直接绑定到供应商下的具体模型；留空时表示跟随当前全局模型。
+            <label className="field-label">模型设置</label>
+            <div className="agent-model-section">
+              <label className="agent-model-checkbox">
+                <input
+                  type="checkbox"
+                  checked={agent.useGlobalModel !== false}
+                  onChange={(e) => {
+                    const useGlobalModel = e.target.checked;
+                    if (useGlobalModel) {
+                      onUpdate({ useGlobalModel: true, modelSelection: undefined });
+                    } else {
+                      onUpdate({ useGlobalModel: false });
+                    }
+                  }}
+                />
+                <span>使用全局模型设置</span>
+              </label>
+              <div className="agent-field-hint">
+                启用时，该Agent将使用您在"模型配置"中设置的全局模型。
+              </div>
             </div>
+            
+            {agent.useGlobalModel === false && (
+              <div className="agent-specific-model">
+                <label className="field-label">固定模型</label>
+                <select
+                  className="select"
+                  value={
+                    agent.modelSelection
+                      ? `${agent.modelSelection.vendorId}::${agent.modelSelection.modelId}`
+                      : ""
+                  }
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (!value) {
+                      onUpdate({ modelSelection: undefined });
+                      return;
+                    }
+                    const option = modelOptions.find((entry) => entry.key === value);
+                    onUpdate({ modelSelection: option?.selection });
+                  }}
+                >
+                  <option value="">选择模型</option>
+                  {modelOptions.map((option) => (
+                    <option key={option.key} value={option.key}>
+                      {option.label} · {option.detail}
+                    </option>
+                  ))}
+                </select>
+                <div className="agent-field-hint">
+                  为该Agent指定专用模型，将覆盖全局模型设置。
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

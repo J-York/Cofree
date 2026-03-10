@@ -11,6 +11,7 @@ src-tauri/gen/schemas/
 
 # Tauri snapshots
 src-tauri/.cofree/
+
 # Environment files
 .env
 .env.*
@@ -24,9 +25,31 @@ yarn-error.log*
 
 # OS files
 .DS_Store
+Thumbs.db
 
 # Lockfile from non-pnpm workflows
 package-lock.json
 
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Coverage reports
+coverage/
+*.lcov
+
+# Debug files
+debug_agent_models.js
+
+# AI assistant directories
 .claude/
 .snow/
+.windsurf/

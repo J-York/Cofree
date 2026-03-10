@@ -648,7 +648,17 @@
   font-weight: 600;
 }
 .agent-card-badge.custom { color: var(--accent-solid); background: var(--accent-muted); border-color: rgba(99,102,241,0.18); }
-.agent-card-desc { font-size: 11px; color: var(--text-3); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.agent-card-desc { 
+  font-size: 11px; 
+  color: var(--text-3); 
+  line-height: 1.4; 
+  display: -webkit-box; 
+  -webkit-line-clamp: 2; 
+  -webkit-box-orient: vertical; 
+  overflow: hidden;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+}
 
 .agent-editor { margin-top: 4px; }
 
@@ -672,6 +682,31 @@
   color: var(--text-3);
   margin-top: 4px;
   line-height: 1.5;
+}
+
+.agent-model-section {
+  margin-bottom: 12px;
+}
+
+.agent-model-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-1);
+  cursor: pointer;
+  user-select: none;
+  margin-bottom: 4px;
+}
+
+.agent-model-checkbox input[type="checkbox"] {
+  accent-color: var(--accent-solid);
+}
+
+.agent-specific-model {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-1);
 }
 
 .agent-tool-grid {

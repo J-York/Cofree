@@ -44,6 +44,9 @@ import {
 } from "../../lib/errorClassifier";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { InputDialog } from "../components/InputDialog";
+import { AskUserDialog } from "../components/AskUserDialog";
+import type { AskUserRequest } from "../../orchestrator/askUserService";
+import { submitUserResponse, cancelPendingRequest } from "../../orchestrator/askUserService";
 import {
   formatTime,
 } from "../utils/chatUtils";
@@ -213,6 +216,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     title: "",
     onConfirm: () => { },
   });
+  const [askUserRequest, setAskUserRequest] = useState<AskUserRequest | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<ChatMessageRecord[]>(
     currentConversation?.messages ?? []
@@ -995,6 +999,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
               return m;
             })
           );
+        },
+        sessionId: getChatSessionId(),
+        onAskUserRequest: (request: AskUserRequest) => {
+          setAskUserRequest(request);
         },
       });
 
@@ -1818,6 +1826,20 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         defaultValue={inputDialog.defaultValue}
         onConfirm={inputDialog.onConfirm}
         onCancel={() => setInputDialog((prev) => ({ ...prev, open: false }))}
+      />
+      <AskUserDialog
+        open={askUserRequest !== null}
+        request={askUserRequest}
+        onResponse={(response, skipped) => {
+          if (!askUserRequest) return;
+          submitUserResponse(getChatSessionId(), askUserRequest.id, response, skipped);
+          setAskUserRequest(null);
+        }}
+        onCancel={() => {
+          if (!askUserRequest) return;
+          cancelPendingRequest(getChatSessionId());
+          setAskUserRequest(null);
+        }}
       />
     </div>
   );

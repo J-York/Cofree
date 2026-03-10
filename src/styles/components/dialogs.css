@@ -7,3 +7,27 @@
 .input-dialog-textarea::placeholder { color: var(--text-3); }
 .input-dialog-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px; }
 
+/* ── Ask User Dialog ────────────────────────────────────── */
+.ask-user-dialog { max-width: 520px; }
+.ask-user-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.ask-user-meta { display: flex; align-items: center; gap: 8px; }
+.ask-user-timestamp { font-size: 11px; color: var(--text-3); }
+.ask-user-content { display: flex; flex-direction: column; gap: 12px; }
+.ask-user-context { background: var(--surface-3); border-left: 3px solid var(--color-accent, #6366f1); border-radius: 0 var(--r-sm) var(--r-sm) 0; padding: 10px 12px; }
+.ask-user-context-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-3); margin-bottom: 4px; }
+.ask-user-context-text { font-size: 13px; color: var(--text-2); line-height: 1.5; white-space: pre-wrap; }
+.ask-user-question { padding: 4px 0; }
+.ask-user-question-text { font-size: 15px; font-weight: 500; color: var(--text-1); line-height: 1.5; }
+.ask-user-options { display: flex; flex-direction: column; gap: 6px; }
+.ask-user-options-label { font-size: 12px; font-weight: 600; color: var(--text-3); margin-bottom: 2px; }
+.ask-user-options-grid { display: flex; flex-direction: column; gap: 6px; }
+.ask-user-option-label { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--surface-3); border: 1px solid var(--border-1); border-radius: var(--r-sm); cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+.ask-user-option-label:hover { border-color: var(--border-focus); background: var(--surface-4, var(--surface-3)); }
+.ask-user-option-label input[type="radio"] { accent-color: var(--color-accent, #6366f1); flex-shrink: 0; }
+.ask-user-option-label input[type="radio"]:checked + .ask-user-option-text { color: var(--text-1); font-weight: 500; }
+.ask-user-option-text { font-size: 14px; color: var(--text-2); }
+.ask-user-input { display: flex; flex-direction: column; gap: 6px; }
+.ask-user-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 16px; }
+.ask-user-actions-left { display: flex; gap: 6px; }
+.ask-user-actions-right { display: flex; gap: 6px; }
+

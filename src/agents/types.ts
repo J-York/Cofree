@@ -133,6 +133,8 @@ export interface ChatAgentDefinition {
   systemPromptTemplate: string;
   toolPolicy: ChatAgentToolPolicy;
   modelSelection?: ModelSelection;
+  /** Whether this agent should use the global model settings by default */
+  useGlobalModel?: boolean;
   /** Sub-agent roles this agent is allowed to delegate to via `task`. */
   allowedSubAgents: SubAgentRole[];
   /** Reserved for future Agent Teams orchestration. */

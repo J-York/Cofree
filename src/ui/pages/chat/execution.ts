@@ -40,10 +40,12 @@ export function resolveConversationModelSelection(
     };
   }
 
-  if (activeAgent.modelSelection) {
+  // Check if agent has explicitly disabled global model usage and has its own model selection
+  if (activeAgent.modelSelection && activeAgent.useGlobalModel === false) {
     return activeAgent.modelSelection;
   }
 
+  // Default to global model settings
   const activeSelection = resolveManagedModelSelection(settings, {
     vendorId: settings.activeVendorId,
     modelId: settings.activeModelId,

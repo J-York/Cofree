@@ -1091,6 +1091,7 @@ export function createCustomAgent(
     enabledTools?: string[];
     allowedSubAgents?: SubAgentRole[];
     modelSelection?: ModelSelection;
+    useGlobalModel?: boolean;
   },
 ): { settings: AppSettings; agent: ChatAgentDefinition } {
   const agent: ChatAgentDefinition = {
@@ -1100,6 +1101,7 @@ export function createCustomAgent(
     systemPromptTemplate: params.systemPromptTemplate?.trim() || "",
     toolPolicy: params.enabledTools ? { enabledTools: params.enabledTools } : {},
     modelSelection: normalizeModelSelection(settings, params.modelSelection),
+    useGlobalModel: params.useGlobalModel !== undefined ? params.useGlobalModel : true,
     allowedSubAgents: params.allowedSubAgents ?? ["planner", "coder", "tester"],
     builtin: false,
   };
