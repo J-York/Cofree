@@ -77,6 +77,7 @@ import {
     type LiteLLMMessage,
 } from "../lib/litellm";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
+import { assembleRuntimeContext } from "../agents/promptAssembly";
 import { DEFAULT_SETTINGS, type AppSettings } from "../lib/settingsStore";
 import { createFileContextAttachment } from "../lib/contextAttachments";
 import { loadCofreeRc, resolveMatchingContextRules } from "../lib/cofreerc";
@@ -194,6 +195,31 @@ describe("planningService approval-flow repair", () => {
         expect(prompt).toContain("宿主系统的 Shell 环境约束（Windows=PowerShell，Unix=sh）");
         expect(prompt).toContain("Windows/PowerShell 下优先用 'Remove-Item -Recurse -Force <路径>'");
         expect(prompt).toContain("Remove-Item -Recurse -Force");
+    });
+
+    it("passes update_plan as an internal tool to assembleRuntimeContext so it appears in 本轮可用工具", async () => {
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-ctx",
+                choices: [{ message: { role: "assistant", content: "done" } }],
+                usage: { prompt_tokens: 4, completion_tokens: 2 },
+            }),
+        });
+
+        await runPlanningSession({
+            prompt: "请帮我做一个MVP",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        const calls = vi.mocked(assembleRuntimeContext).mock.calls;
+        expect(calls.length).toBeGreaterThan(0);
+        // The third argument must be an array that contains "update_plan"
+        const internalTools = calls[0]?.[2] as string[] | undefined;
+        expect(Array.isArray(internalTools)).toBe(true);
+        expect(internalTools).toContain("update_plan");
     });
 
     it("extracts file targets from partial streamed tool-call JSON", () => {

@@ -5160,8 +5160,7 @@ async function runNativeToolCallingLoop(
     "\n注意：search 中不要包含行号前缀（如 '  10│'），这些仅用于显示。";
   const taskType = classifyTaskType(prompt);
   const agentSystemPrompt = assembleSystemPrompt(runtime, taskType);
-  const runtimeContext = assembleRuntimeContext(runtime, settings.workspacePath);
-  const effectiveRuntimeContext = `${runtimeContext}\n内置计划工具: [update_plan]`;
+  const effectiveRuntimeContext = assembleRuntimeContext(runtime, settings.workspacePath, INTERNAL_TOOL_NAMES);
   const requestedArtifactCount =
     phase === "default" ? estimateRequestedArtifactCount(prompt) : 0;
   const blockedFingerprints = blockedActionFingerprints

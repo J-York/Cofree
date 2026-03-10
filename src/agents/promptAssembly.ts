@@ -376,20 +376,32 @@ function buildModelAdaptationBlock(capabilities: ModelCapabilities): string {
 /**
  * Assemble a runtime context block that describes the current workspace,
  * available tools, and sub-agent roles.
+ *
+ * @param internalTools - Additional always-available internal tools (e.g. `update_plan`)
+ *   that are not in `runtime.enabledTools` but should appear in the `本轮可用工具` list
+ *   so the model sees a consistent tool inventory matching the actual function definitions
+ *   sent to the LLM.  Internal tools are always auto-executed (no approval required).
  */
 export function assembleRuntimeContext(
   runtime: ResolvedAgentRuntime,
   workspacePath: string,
+  internalTools: readonly string[] = [],
 ): string {
   const workspaceLine = workspacePath.trim()
     ? `当前工作区: ${workspacePath}`
     : "当前工作区: 未选择";
 
-  const enabledToolsLine = `本轮可用工具: [${runtime.enabledTools.join(", ")}]`;
+  const allEnabledTools = internalTools.length > 0
+    ? [...runtime.enabledTools, ...internalTools]
+    : runtime.enabledTools;
+  const enabledToolsLine = `本轮可用工具: [${allEnabledTools.join(", ")}]`;
 
   const autoTools = Object.entries(runtime.toolPermissions)
     .filter(([, level]) => level === "auto")
     .map(([name]) => name);
+  // Internal tools never require approval — include them in the auto list so the
+  // model knows they execute immediately without triggering the approval gate.
+  const autoToolsWithInternal = [...autoTools, ...internalTools];
   const askTools = Object.entries(runtime.toolPermissions)
     .filter(([, level]) => level === "ask")
     .map(([name]) => name);
@@ -416,7 +428,7 @@ export function assembleRuntimeContext(
     workspaceLine,
     osHint,
     enabledToolsLine,
-    `自动执行工具（无需审批）: [${autoTools.join(", ")}]`,
+    `自动执行工具（无需审批）: [${autoToolsWithInternal.join(", ")}]`,
     `需审批工具: [${askTools.join(", ")}]`,
     "当前阶段可按需读取事实或提出待审批动作。",
     ...(agentLines.length > 0 ? ["可用 Sub-Agent 角色：", ...agentLines] : []),
