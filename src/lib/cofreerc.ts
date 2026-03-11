@@ -36,6 +36,15 @@ export interface ContextRuleConfig {
   contextFiles?: string[];
 }
 
+export interface WorkspaceRefreshConfig {
+  /** Enable automatic workspace context refresh during conversation. Default: true */
+  enabled?: boolean;
+  /** Refresh workspace overview and repo-map every N turns. Default: 20 */
+  turnInterval?: number;
+  /** Refresh workspace context after file edits/creations. Default: true */
+  onFileChange?: boolean;
+}
+
 export interface CofreeRcConfig {
   /** Additional system prompt instructions appended to the base prompt */
   systemPrompt?: string;
@@ -53,6 +62,8 @@ export interface CofreeRcConfig {
   repoMap?: RepoMapConfig;
   /** Path-scoped or global context rules for lazy project guidance */
   contextRules?: ContextRuleConfig[];
+  /** Workspace context refresh configuration for dynamic updates during conversation */
+  workspaceRefresh?: WorkspaceRefreshConfig;
 }
 
 const COFREERC_FILENAMES = [".cofreerc", ".cofreerc.json"];

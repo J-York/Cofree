@@ -50,7 +50,7 @@ import {
   buildCofreeRcPromptFragment,
   type CofreeRcConfig,
 } from "../lib/cofreerc";
-import { generateRepoMap } from "./repoMapService";
+import { generateRepoMap, clearRepoMapCaches } from "./repoMapService";
 import { buildExplicitContextNote } from "./explicitContextService";
 import { SummaryCache } from "../lib/summaryCache";
 import {
@@ -340,6 +340,85 @@ function upsertWorkingMemoryContextMessage(params: {
     prefix: WORKING_MEMORY_NOTE_PREFIX,
     content: `${WORKING_MEMORY_NOTE_PREFIX}\n${memoryContext}`,
   });
+}
+
+const WORKSPACE_REFRESH_NOTE_PREFIX = "[工作区上下文更新]";
+
+/**
+ * Refresh workspace context (overview + repo-map) and inject as a system message.
+ * This allows the LLM to see updated workspace state after file modifications.
+ */
+async function refreshWorkspaceContext(params: {
+  messages: LiteLLMMessage[];
+  workspacePath: string;
+  projectConfig: CofreeRcConfig;
+  normalizedPrompt: string;
+  sessionFocusedPaths: string[];
+  turnNumber: number;
+}): Promise<void> {
+  const { messages, workspacePath, projectConfig, normalizedPrompt, sessionFocusedPaths, turnNumber } = params;
+
+  let refreshNote = "";
+
+  // Refresh workspace overview
+  try {
+    const overviewBudget: WorkspaceOverviewBudget | undefined = projectConfig.overviewBudget;
+    const overview = await summarizeWorkspaceFiles(
+      workspacePath,
+      projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+        ? projectConfig.ignorePatterns
+        : null,
+      overviewBudget
+    );
+    const overviewPrompt = `项目概览（已更新）：\n${overview}`;
+    refreshNote = overviewPrompt;
+  } catch (e) {
+    console.warn("[Workspace Refresh] Failed to regenerate workspace overview", e);
+  }
+
+  // Clear repo-map cache and regenerate
+  if (projectConfig.repoMap?.enabled !== false) {
+    try {
+      // Force cache invalidation to get fresh data
+      clearRepoMapCaches();
+
+      const contextLimit = 128000; // Use default context limit
+      const repoMapBudget = Math.min(
+        4000,
+        Math.max(500, Math.floor(contextLimit * 0.03)),
+      );
+      const repoMap = await generateRepoMap(
+        workspacePath,
+        projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+          ? projectConfig.ignorePatterns
+          : null,
+        projectConfig.repoMap?.tokenBudget ?? repoMapBudget,
+        {
+          taskDescription: normalizedPrompt,
+          prioritizedPaths: sessionFocusedPaths,
+          maxFiles: projectConfig.repoMap?.maxFiles,
+        },
+      );
+      if (repoMap) {
+        refreshNote = refreshNote ? `${refreshNote}\n\n${repoMap}` : repoMap;
+        console.log(
+          `[Workspace Refresh] Repo-map regenerated at turn ${turnNumber} (~${repoMap.length} chars)`,
+        );
+      }
+    } catch (e) {
+      console.warn("[Workspace Refresh] Failed to regenerate repo-map", e);
+    }
+  }
+
+  if (refreshNote) {
+    // Inject the refreshed context as a system message
+    upsertPinnedSystemMessage({
+      messages,
+      prefix: WORKSPACE_REFRESH_NOTE_PREFIX,
+      content: `${WORKSPACE_REFRESH_NOTE_PREFIX}\n${refreshNote}`,
+    });
+    console.log(`[Workspace Refresh] Context refreshed at turn ${turnNumber}`);
+  }
 }
 
 function upsertTodoPlanContextMessage(messages: LiteLLMMessage[], planState: TodoPlanState): string {
@@ -5355,6 +5434,10 @@ async function runNativeToolCallingLoop(
   let toolChoiceOverride: "auto" | "none" | undefined = undefined;
   let lastWorkingMemoryFingerprint = "";
 
+  // --- Workspace context refresh tracking ---
+  let hasModifiedFiles = false; // Track if files have been edited/created
+  let lastWorkspaceRefreshTurn = -1; // Last turn when workspace context was refreshed
+
   // --- Context window management ---
   const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
 
@@ -5476,6 +5559,39 @@ async function runNativeToolCallingLoop(
           focusedPaths,
         });
         lastWorkingMemoryFingerprint = currentFingerprint;
+      }
+
+      // --- Workspace context refresh ---
+      if (settings.workspacePath && projectConfig) {
+        const refreshConfig = projectConfig.workspaceRefresh;
+        const refreshEnabled = refreshConfig?.enabled !== false; // Default: true
+        const refreshInterval = refreshConfig?.turnInterval ?? 20; // Default: 20 turns
+        const refreshOnFileChange = refreshConfig?.onFileChange !== false; // Default: true
+
+        const shouldRefreshByTurn = refreshEnabled && refreshInterval > 0 &&
+          (turn - lastWorkspaceRefreshTurn) >= refreshInterval;
+        const shouldRefreshByFileChange = refreshEnabled && refreshOnFileChange &&
+          hasModifiedFiles && (turn - lastWorkspaceRefreshTurn) >= 3; // Min 3 turns between refreshes
+
+        if (shouldRefreshByTurn || shouldRefreshByFileChange) {
+          try {
+            await refreshWorkspaceContext({
+              messages,
+              workspacePath: settings.workspacePath,
+              projectConfig,
+              normalizedPrompt: prompt,
+              sessionFocusedPaths: focusedPaths,
+              turnNumber: turn,
+            });
+            lastWorkspaceRefreshTurn = turn;
+            hasModifiedFiles = false; // Reset file modification flag
+            console.log(
+              `[Loop] Workspace context refreshed (trigger: ${shouldRefreshByTurn ? 'turn-interval' : 'file-change'})`
+            );
+          } catch (e) {
+            console.warn("[Loop] Failed to refresh workspace context", e);
+          }
+        }
       }
     }
 
@@ -5763,6 +5879,11 @@ async function runNativeToolCallingLoop(
         }
       } else {
         turnSuccessCount += 1;
+
+        // Track file modifications for workspace refresh
+        if (toolCall.function.name === "propose_file_edit" || toolCall.function.name === "propose_apply_patch") {
+          hasModifiedFiles = true;
+        }
 
         // Detect dedup cache hits
         try {
