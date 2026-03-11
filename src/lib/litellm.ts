@@ -516,6 +516,7 @@ function summarizeResponseBody(
   usage?: Record<string, number>;
   errorMessage?: string;
   bodyPreview?: string;
+  systemFingerprint?: string;
 } {
   const parsed = tryParseJson(rawBody);
   if (!isRecord(parsed)) {
@@ -527,6 +528,9 @@ function summarizeResponseBody(
   const responseId = typeof parsed.id === "string" ? parsed.id : undefined;
   const usage = summarizeUsage(parsed.usage);
   const errorMessage = extractErrorMessage(parsed) || undefined;
+  const systemFingerprint = typeof parsed.system_fingerprint === "string"
+    ? parsed.system_fingerprint
+    : undefined;
 
   if (protocol === "anthropic-messages") {
     const content = Array.isArray(parsed.content) ? parsed.content : [];
@@ -565,6 +569,7 @@ function summarizeResponseBody(
       toolCallCount: toolCallCount > 0 ? toolCallCount : undefined,
       usage,
       errorMessage,
+      systemFingerprint,
     };
   }
 
@@ -590,6 +595,7 @@ function summarizeResponseBody(
         : undefined,
     usage,
     errorMessage,
+    systemFingerprint,
   };
 }
 
@@ -674,6 +680,7 @@ function logLlmResponse(params: {
     outputSummary: responseSummary.outputSummary,
     toolCallCount: responseSummary.toolCallCount,
     usage: responseSummary.usage,
+    systemFingerprint: responseSummary.systemFingerprint,
     bodyPreview: responseSummary.bodyPreview,
   });
 }
@@ -904,17 +911,14 @@ export function fetchVendorModelIds(params: {
 }
 
 function toOpenAIChatMessages(messages: LiteLLMMessage[]): LiteLLMMessage[] {
-  let seenNonSystem = false;
-  return messages.map((msg) => {
-    if (msg.role !== "system") {
-      seenNonSystem = true;
-      return msg;
-    }
-    if (!seenNonSystem) {
-      return msg;
-    }
-    return { ...msg, role: "user" as const, content: `[System]\n${msg.content}` };
-  });
+  // For better caching with OpenAI API, preserve message structure without transformation.
+  // OpenAI's caching is based on exact prefix matching of the messages array.
+  // Converting system messages to user messages breaks cache consistency.
+  //
+  // Note: OpenAI API officially only supports one system message at the beginning,
+  // but many implementations (including proxies) accept multiple system messages.
+  // We preserve the original structure to maximize cache hit rates.
+  return messages;
 }
 
 function toOpenAIResponsesInput(messages: LiteLLMMessage[]): unknown[] {
@@ -1353,6 +1357,7 @@ export function createLiteLLMRequestBody(
     | "auto"
     | "none"
     | { type: "function"; function: { name: string } };
+    seed?: number;
   }
 ): Record<string, unknown> {
   const protocol = getActiveProtocol(settings);
@@ -1385,6 +1390,12 @@ export function createLiteLLMRequestBody(
   if (options?.tools?.length) {
     body.tools = options.tools;
     body.tool_choice = options.toolChoice ?? "auto";
+  }
+
+  // Add seed parameter for better caching and deterministic outputs
+  // Helps OpenAI's caching mechanism by ensuring consistent requests
+  if (options?.seed !== undefined) {
+    body.seed = options.seed;
   }
 
   return body;
