@@ -215,7 +215,7 @@ function getRuleIdentity(rule: ApprovalRuleDraft | ApprovalRule): string {
   if (rule.kind === "patch_directory") {
     return `${rule.kind}:${rule.directory}`;
   }
-  return `${rule.kind}`;
+  return "(unknown)";
 }
 
 function toPersistedRule(rule: ApprovalRuleDraft | ApprovalRule): ApprovalRule {

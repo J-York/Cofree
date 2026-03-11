@@ -101,7 +101,6 @@ import {
 } from "../lib/toolResultCache";
 import {
   getPerformanceConfig,
-  type PerformanceConfig,
 } from "../lib/performanceConfig";
 import {
   globalMetricsTracker,
@@ -495,6 +494,7 @@ interface ToolExecutionResult {
   errorMessage?: string;
   success?: boolean;
   traceStatus?: ToolExecutionStatus;
+  fromCache?: boolean;
 }
 
 const INTERNAL_TOOL_NAMES = ["update_plan"] as const;

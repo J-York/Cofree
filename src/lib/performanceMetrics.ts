@@ -218,8 +218,7 @@ export class PerformanceMetricsTracker {
     // Cache statistics
     const cacheHits = cacheStats?.hits ?? 0;
     const cacheMisses = cacheStats?.misses ?? 0;
-    const totalCacheAccess = cacheHits + cacheMisses;
-    const cacheHitRate = totalCacheAccess > 0 ? cacheHits / totalCacheAccess : 0;
+    // const totalCacheAccess = cacheHits + cacheMisses;
 
     return {
       sessionStartTime: this.sessionStartTime,
