@@ -181,6 +181,7 @@ function createAuthHeaders(
 
   if (protocol === "anthropic-messages") {
     headers["anthropic-version"] = "2023-06-01";
+    headers["anthropic-beta"] = "prompt-caching-2024-07-31";
     if (apiKey.trim()) {
       headers["x-api-key"] = apiKey.trim();
     }
@@ -488,6 +489,8 @@ function summarizeUsage(usage: unknown): Record<string, number> | undefined {
     "prompt_tokens",
     "completion_tokens",
     "total_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
   ] as const;
 
   for (const field of usageFields) {
@@ -513,6 +516,7 @@ function summarizeResponseBody(
   usage?: Record<string, number>;
   errorMessage?: string;
   bodyPreview?: string;
+  systemFingerprint?: string;
 } {
   const parsed = tryParseJson(rawBody);
   if (!isRecord(parsed)) {
@@ -524,6 +528,9 @@ function summarizeResponseBody(
   const responseId = typeof parsed.id === "string" ? parsed.id : undefined;
   const usage = summarizeUsage(parsed.usage);
   const errorMessage = extractErrorMessage(parsed) || undefined;
+  const systemFingerprint = typeof parsed.system_fingerprint === "string"
+    ? parsed.system_fingerprint
+    : undefined;
 
   if (protocol === "anthropic-messages") {
     const content = Array.isArray(parsed.content) ? parsed.content : [];
@@ -562,6 +569,7 @@ function summarizeResponseBody(
       toolCallCount: toolCallCount > 0 ? toolCallCount : undefined,
       usage,
       errorMessage,
+      systemFingerprint,
     };
   }
 
@@ -587,6 +595,7 @@ function summarizeResponseBody(
         : undefined,
     usage,
     errorMessage,
+    systemFingerprint,
   };
 }
 
@@ -671,6 +680,7 @@ function logLlmResponse(params: {
     outputSummary: responseSummary.outputSummary,
     toolCallCount: responseSummary.toolCallCount,
     usage: responseSummary.usage,
+    systemFingerprint: responseSummary.systemFingerprint,
     bodyPreview: responseSummary.bodyPreview,
   });
 }
@@ -901,17 +911,14 @@ export function fetchVendorModelIds(params: {
 }
 
 function toOpenAIChatMessages(messages: LiteLLMMessage[]): LiteLLMMessage[] {
-  let seenNonSystem = false;
-  return messages.map((msg) => {
-    if (msg.role !== "system") {
-      seenNonSystem = true;
-      return msg;
-    }
-    if (!seenNonSystem) {
-      return msg;
-    }
-    return { ...msg, role: "user" as const, content: `[System]\n${msg.content}` };
-  });
+  // For better caching with OpenAI API, preserve message structure without transformation.
+  // OpenAI's caching is based on exact prefix matching of the messages array.
+  // Converting system messages to user messages breaks cache consistency.
+  //
+  // Note: OpenAI API officially only supports one system message at the beginning,
+  // but many implementations (including proxies) accept multiple system messages.
+  // We preserve the original structure to maximize cache hit rates.
+  return messages;
 }
 
 function toOpenAIResponsesInput(messages: LiteLLMMessage[]): unknown[] {
@@ -956,7 +963,7 @@ function toOpenAIResponsesInput(messages: LiteLLMMessage[]): unknown[] {
 
 function toAnthropicMessages(
   messages: LiteLLMMessage[]
-): { system?: string; messages: Array<Record<string, unknown>> } {
+): { system?: string | Array<Record<string, unknown>>; messages: Array<Record<string, unknown>> } {
   const systemParts: string[] = [];
   const anthropicMessages: Array<Record<string, unknown>> = [];
 
@@ -1016,8 +1023,28 @@ function toAnthropicMessages(
     }
   }
 
+  // Convert system prompt to cache-enabled format if present
+  // Mark the system prompt for caching since it's large and repetitive
+  let systemContent: string | Array<Record<string, unknown>> | undefined;
+  if (systemParts.length > 0) {
+    const systemText = systemParts.join("\n\n");
+    // Only enable caching if system prompt is substantial (>1024 chars)
+    // Anthropic charges for cached content, so only cache meaningful content
+    if (systemText.length > 1024) {
+      systemContent = [
+        {
+          type: "text",
+          text: systemText,
+          cache_control: { type: "ephemeral" },
+        },
+      ];
+    } else {
+      systemContent = systemText;
+    }
+  }
+
   return {
-    system: systemParts.length ? systemParts.join("\n\n") : undefined,
+    system: systemContent,
     messages: anthropicMessages,
   };
 }
@@ -1330,6 +1357,7 @@ export function createLiteLLMRequestBody(
     | "auto"
     | "none"
     | { type: "function"; function: { name: string } };
+    seed?: number;
   }
 ): Record<string, unknown> {
   const protocol = getActiveProtocol(settings);
@@ -1362,6 +1390,12 @@ export function createLiteLLMRequestBody(
   if (options?.tools?.length) {
     body.tools = options.tools;
     body.tool_choice = options.toolChoice ?? "auto";
+  }
+
+  // Add seed parameter for better caching and deterministic outputs
+  // Helps OpenAI's caching mechanism by ensuring consistent requests
+  if (options?.seed !== undefined) {
+    body.seed = options.seed;
   }
 
   return body;
@@ -1484,6 +1518,28 @@ function normalizeAnthropicMessagesBody(raw: string): string {
   const usage: Record<string, unknown> = isRecord(payload.usage)
     ? payload.usage
     : {};
+
+  // Preserve cache-related usage metrics
+  const normalizedUsage: Record<string, number> = {
+    prompt_tokens:
+      typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+    completion_tokens:
+      typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
+    total_tokens:
+      typeof usage.input_tokens === "number" &&
+        typeof usage.output_tokens === "number"
+        ? usage.input_tokens + usage.output_tokens
+        : 0,
+  };
+
+  // Add cache metrics if present
+  if (typeof usage.cache_creation_input_tokens === "number") {
+    normalizedUsage.cache_creation_input_tokens = usage.cache_creation_input_tokens;
+  }
+  if (typeof usage.cache_read_input_tokens === "number") {
+    normalizedUsage.cache_read_input_tokens = usage.cache_read_input_tokens;
+  }
+
   return JSON.stringify({
     id: payload.id,
     choices: [
@@ -1497,17 +1553,7 @@ function normalizeAnthropicMessagesBody(raw: string): string {
           typeof payload.stop_reason === "string" ? payload.stop_reason : "stop",
       },
     ],
-    usage: {
-      prompt_tokens:
-        typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
-      completion_tokens:
-        typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
-      total_tokens:
-        typeof usage.input_tokens === "number" &&
-          typeof usage.output_tokens === "number"
-          ? usage.input_tokens + usage.output_tokens
-          : 0,
-    },
+    usage: normalizedUsage,
   });
 }
 
