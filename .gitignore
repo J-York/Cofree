@@ -53,3 +53,5 @@ debug_agent_models.js
 .claude/
 .snow/
 .windsurf/
+
+tmp/

@@ -315,6 +315,60 @@ describe("planningService approval-flow repair", () => {
         expect(vi.mocked(postLiteLLMChatCompletionsStream)).toHaveBeenCalledTimes(2);
     });
 
+    it("falls back to non-streaming when the streamed response assembles to empty text without tool calls", async () => {
+        vi.mocked(postLiteLLMChatCompletionsStream).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-empty-stream",
+                choices: [
+                    {
+                        message: {
+                            role: "assistant",
+                            content: "",
+                        },
+                        finish_reason: "stop",
+                    },
+                ],
+                usage: {
+                    prompt_tokens: 7,
+                    completion_tokens: 0,
+                    total_tokens: 7,
+                },
+            }),
+        } as any);
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-nonstream-retry",
+                choices: [
+                    {
+                        message: {
+                            role: "assistant",
+                            content: "来自非流式回退的正常回复",
+                        },
+                    },
+                ],
+                usage: {
+                    prompt_tokens: 7,
+                    completion_tokens: 12,
+                    total_tokens: 19,
+                },
+            }),
+        });
+
+        const result = await runPlanningSession({
+            prompt: "帮我检查一下当前问题",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        expect(result.assistantReply).toBe("来自非流式回退的正常回复");
+        expect(vi.mocked(postLiteLLMChatCompletionsStream)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(postLiteLLMChatCompletions)).toHaveBeenCalledTimes(1);
+    });
+
     it("preserves reasoning_content as a think block in the final assistant reply", async () => {
         vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
             status: 200,

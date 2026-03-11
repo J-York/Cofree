@@ -4964,6 +4964,7 @@ export async function requestToolCompletion(
   }
 
   const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
+  const assistantContent = buildAssistantDisplayContent(rawMessage);
 
   const inTok = payload.usage?.prompt_tokens;
   const outTok = payload.usage?.completion_tokens;
@@ -4976,7 +4977,7 @@ export async function requestToolCompletion(
 
   const assistantMessage: LiteLLMMessage = {
     role: "assistant",
-    content: buildAssistantDisplayContent(rawMessage),
+    content: assistantContent,
     tool_calls: toolCalls.length ? toolCalls : undefined,
   };
 
@@ -4988,8 +4989,8 @@ export async function requestToolCompletion(
       requestId,
       inputLength: inputLengthOf(messages),
       outputLength: response.body.length,
-      inputTokens: inTok || undefined,
-      outputTokens: outTok || undefined,
+      inputTokens: inTok ?? undefined,
+      outputTokens: outTok ?? undefined,
     },
   };
 }
@@ -5067,6 +5068,7 @@ async function requestToolCompletionWithStream(
   }
 
   const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
+  const assistantContent = buildAssistantDisplayContent(rawMessage);
 
   const inTok = payload.usage?.prompt_tokens;
   const outTok = payload.usage?.completion_tokens;
@@ -5077,9 +5079,14 @@ async function requestToolCompletionWithStream(
     ` | id=${requestId}`
   );
 
+  if (!assistantContent.trim() && toolCalls.length === 0) {
+    console.warn("[LLM] 流式响应未解析出文本或工具调用，触发非流式回退");
+    throw new Error("stream returned empty assistant response");
+  }
+
   const assistantMessage: LiteLLMMessage = {
     role: "assistant",
-    content: buildAssistantDisplayContent(rawMessage),
+    content: assistantContent,
     tool_calls: toolCalls.length ? toolCalls : undefined,
   };
 
@@ -5091,8 +5098,8 @@ async function requestToolCompletionWithStream(
       requestId,
       inputLength: inputLengthOf(messages),
       outputLength: response.body.length,
-      inputTokens: inTok || undefined,
-      outputTokens: outTok || undefined,
+      inputTokens: inTok ?? undefined,
+      outputTokens: outTok ?? undefined,
     },
   };
 }
