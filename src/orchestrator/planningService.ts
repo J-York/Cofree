@@ -95,9 +95,24 @@ import {
   waitForUserResponse,
   type AskUserRequest,
 } from "./askUserService";
+import {
+  globalToolCache,
+  extractFileDependencies,
+} from "../lib/toolResultCache";
+import {
+  getPerformanceConfig,
+  type PerformanceConfig,
+} from "../lib/performanceConfig";
+import {
+  globalMetricsTracker,
+} from "../lib/performanceMetrics";
+
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
-const MAX_PARALLEL_SUB_AGENTS = 3;
+
+// Performance configuration - updated for v0.0.9
+const perfConfig = getPerformanceConfig("default");
+const MAX_PARALLEL_SUB_AGENTS = perfConfig.maxParallelSubAgents; // Was 3, now 5
 const MAX_LIST_ENTRIES = 120;
 const MAX_FILE_PREVIEW_CHARS = 15000;
 const MAX_TOOL_RESULT_PREVIEW = 400;
@@ -1976,7 +1991,7 @@ async function requestSummary(
       return `[片段 ${chunkIndex + 1}/${chunks.length}]\n${chunkContent.slice(0, 500)}...`;
     });
 
-    const MAX_PARALLEL_SUMMARY_CHUNKS = 3;
+    const MAX_PARALLEL_SUMMARY_CHUNKS = perfConfig.maxParallelSummaryChunks; // Was 3, now 5
     const settledResults = await runWithConcurrencyLimit(chunkTasks, MAX_PARALLEL_SUMMARY_CHUNKS);
     const chunkSummaries: string[] = settledResults.map((result, idx) => {
       if (result.status === "fulfilled") {
@@ -2755,6 +2770,9 @@ async function autoExecutePatchProposal(params: {
     ...(params.autoApprovalMeta ?? {}),
   };
   if (applyResult.success) {
+    // Invalidate cache for affected files
+    globalToolCache.invalidate("file_change", applyResult.files);
+
     const diagnostics = await fetchPostPatchDiagnostics(
       params.workspacePath,
       applyResult.files
@@ -2790,6 +2808,12 @@ async function autoExecuteShellProposal(params: {
     shell: params.shell,
     timeoutMs: params.timeoutMs,
   });
+
+  // Invalidate cache for git operations
+  if (cmdResult.success && params.shell.trim().startsWith("git ")) {
+    globalToolCache.invalidate("git_operation");
+  }
+
   return {
     content: JSON.stringify({
       ok: cmdResult.success,
@@ -3560,6 +3584,30 @@ async function executeToolCall(
     };
   }
 
+  // --- Performance: Check tool result cache ---
+  const toolName = call.function.name;
+  const cacheableTools = new Set([
+    "read_file", "list_files", "git_status", "git_diff",
+    "diagnostics", "grep", "glob",
+  ]);
+
+  if (perfConfig.enableToolCache && cacheableTools.has(toolName)) {
+    const startTime = Date.now();
+    const cached = globalToolCache.get(toolName, args);
+    if (cached) {
+      const executionTime = Date.now() - startTime;
+      globalMetricsTracker.recordToolExecution(toolName, executionTime, true);
+      console.log(`[Cache] HIT for ${toolName}:`, JSON.stringify(args).slice(0, 80));
+      return {
+        content: cached,
+        success: true,
+        fromCache: true,
+      };
+    }
+  }
+
+  const toolExecutionStart = Date.now();
+
   try {
     if (call.function.name === "list_files") {
       const relativePath = normalizeRelativePath(args.relative_path);
@@ -3572,13 +3620,25 @@ async function executeToolCall(
         relativePath,
         ignorePatterns,
       });
+      const resultContent = JSON.stringify({
+        ok: true,
+        relative_path: relativePath,
+        entry_count: entries.length,
+        entries_preview: renderListEntries(entries),
+      });
+
+      // Store in cache
+      if (perfConfig.enableToolCache) {
+        const dependencies = extractFileDependencies(toolName, args);
+        globalToolCache.set(toolName, args, resultContent, dependencies);
+      }
+
+      // Track metrics
+      const executionTime = Date.now() - toolExecutionStart;
+      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
+
       return {
-        content: JSON.stringify({
-          ok: true,
-          relative_path: relativePath,
-          entry_count: entries.length,
-          entries_preview: renderListEntries(entries),
-        }),
+        content: resultContent,
         success: true,
       };
     }
@@ -3654,22 +3714,34 @@ async function executeToolCall(
       const trimmed = smartTruncate(numbered, MAX_FILE_PREVIEW_CHARS);
       const wasTruncated = numbered.length > MAX_FILE_PREVIEW_CHARS;
 
+      const resultContent = JSON.stringify({
+        ok: true,
+        relative_path: relativePath,
+        total_lines: result.total_lines,
+        showing_lines: `${result.start_line}-${result.end_line}`,
+        content_preview: trimmed,
+        truncated: wasTruncated,
+        ...(wasTruncated
+          ? {
+            hint: `文件共 ${result.total_lines} 行，当前预览已被截断（仅显示头部和尾部）。` +
+              `若需编辑此文件，请勿直接从预览中复制长段落作为 search 片段（可能与实际内容不一致）。` +
+              `推荐：先用 read_file 的 start_line/end_line 读取目标区域的精确内容，再用 propose_file_edit 的 start_line/end_line 行范围方式编辑。`,
+          }
+          : {}),
+      });
+
+      // Store in cache (only for full file reads without line ranges)
+      if (perfConfig.enableToolCache && !startLine && !endLine) {
+        const dependencies = extractFileDependencies(toolName, args);
+        globalToolCache.set(toolName, args, resultContent, dependencies);
+      }
+
+      // Track metrics
+      const executionTime = Date.now() - toolExecutionStart;
+      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
+
       return {
-        content: JSON.stringify({
-          ok: true,
-          relative_path: relativePath,
-          total_lines: result.total_lines,
-          showing_lines: `${result.start_line}-${result.end_line}`,
-          content_preview: trimmed,
-          truncated: wasTruncated,
-          ...(wasTruncated
-            ? {
-              hint: `文件共 ${result.total_lines} 行，当前预览已被截断（仅显示头部和尾部）。` +
-                `若需编辑此文件，请勿直接从预览中复制长段落作为 search 片段（可能与实际内容不一致）。` +
-                `推荐：先用 read_file 的 start_line/end_line 读取目标区域的精确内容，再用 propose_file_edit 的 start_line/end_line 行范围方式编辑。`,
-            }
-            : {}),
-        }),
+        content: resultContent,
         success: true,
       };
     }
@@ -3683,11 +3755,23 @@ async function executeToolCall(
       }>("git_status_workspace", {
         workspacePath: safeWorkspace,
       });
+
+      const resultContent = JSON.stringify({
+        ok: true,
+        ...status,
+      });
+
+      // Store in cache
+      if (perfConfig.enableToolCache) {
+        globalToolCache.set(toolName, args, resultContent);
+      }
+
+      // Track metrics
+      const executionTime = Date.now() - toolExecutionStart;
+      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
+
       return {
-        content: JSON.stringify({
-          ok: true,
-          ...status,
-        }),
+        content: resultContent,
         success: true,
       };
     }
@@ -3698,13 +3782,25 @@ async function executeToolCall(
         workspacePath: safeWorkspace,
         filePath: filePath || null,
       });
+
+      const resultContent = JSON.stringify({
+        ok: true,
+        file_path: filePath || null,
+        diff_preview: smartTruncate(diff, MAX_FILE_PREVIEW_CHARS),
+        truncated: diff.length > MAX_FILE_PREVIEW_CHARS,
+      });
+
+      // Store in cache
+      if (perfConfig.enableToolCache) {
+        globalToolCache.set(toolName, args, resultContent);
+      }
+
+      // Track metrics
+      const executionTime = Date.now() - toolExecutionStart;
+      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
+
       return {
-        content: JSON.stringify({
-          ok: true,
-          file_path: filePath || null,
-          diff_preview: smartTruncate(diff, MAX_FILE_PREVIEW_CHARS),
-          truncated: diff.length > MAX_FILE_PREVIEW_CHARS,
-        }),
+        content: resultContent,
         success: true,
       };
     }
@@ -3741,15 +3837,28 @@ async function executeToolCall(
         .slice(0, 30)
         .map((m) => `${m.file}:${m.line}│${m.content}`)
         .join("\n");
+
+      const resultContent = JSON.stringify({
+        ok: true,
+        pattern,
+        include_glob: includeGlob,
+        match_count: matchCount,
+        truncated: result.truncated,
+        matches_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
+      });
+
+      // Store in cache
+      if (perfConfig.enableToolCache) {
+        const dependencies = extractFileDependencies(toolName, args);
+        globalToolCache.set(toolName, args, resultContent, dependencies);
+      }
+
+      // Track metrics
+      const executionTime = Date.now() - toolExecutionStart;
+      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
+
       return {
-        content: JSON.stringify({
-          ok: true,
-          pattern,
-          include_glob: includeGlob,
-          match_count: matchCount,
-          truncated: result.truncated,
-          matches_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
-        }),
+        content: resultContent,
         success: true,
       };
     }
@@ -3782,13 +3891,26 @@ async function executeToolCall(
         .slice(0, 60)
         .map((e) => `${e.path} (${e.size}B)`)
         .join("\n");
+
+      const resultContent = JSON.stringify({
+        ok: true,
+        pattern,
+        file_count: entries.length,
+        files_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
+      });
+
+      // Store in cache
+      if (perfConfig.enableToolCache) {
+        const dependencies = extractFileDependencies(toolName, args);
+        globalToolCache.set(toolName, args, resultContent, dependencies);
+      }
+
+      // Track metrics
+      const executionTime = Date.now() - toolExecutionStart;
+      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
+
       return {
-        content: JSON.stringify({
-          ok: true,
-          pattern,
-          file_count: entries.length,
-          files_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
-        }),
+        content: resultContent,
         success: true,
       };
     }
@@ -6018,7 +6140,7 @@ async function runNativeToolCallingLoop(
       "git_status", "git_diff", "diagnostics",
       "web_search", "web_fetch",
     ]);
-    const MAX_PARALLEL_READ_TOOLS = 5;
+    const MAX_PARALLEL_READ_TOOLS = perfConfig.maxParallelReadTools; // Was 5, now 15
 
     const taskCalls = completion.toolCalls.filter((tc) => tc.function.name === "task");
     const readOnlyCalls = completion.toolCalls.filter(
