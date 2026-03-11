@@ -17,6 +17,7 @@ export function formatTime(isoTime: string): string {
 export function actionStatusBadgeClass(status: string): string {
   if (status === "completed" || status === "success") return "badge badge-success";
   if (status === "failed" || status === "rejected") return "badge badge-error";
+  if (status === "background") return "badge badge-warning";
   if (status === "running" || status === "pending_approval") return "badge badge-warning";
   return "badge badge-default";
 }
@@ -33,7 +34,11 @@ export function canCancelAction(
   action: ActionProposal,
   hasActiveShellJob: boolean,
 ): boolean {
-  return action.type === "shell" && action.status === "running" && hasActiveShellJob;
+  return (
+    action.type === "shell" &&
+    (action.status === "running" || action.status === "background") &&
+    hasActiveShellJob
+  );
 }
 
 export function canReviewAction(action: ActionProposal): boolean {

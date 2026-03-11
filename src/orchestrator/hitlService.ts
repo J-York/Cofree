@@ -303,6 +303,7 @@ export function appendRunningShellOutput(
   }
 
   const currentMeta = (targetAction.executionResult?.metadata ?? {}) as Record<string, unknown>;
+  const isBackgroundAction = targetAction.status === "background";
   const nextStdout =
     update.stream === "stdout"
       ? `${String(currentMeta.stdout ?? "")}${update.chunk}`
@@ -314,9 +315,12 @@ export function appendRunningShellOutput(
 
   const nextActions = mapActions(plan, actionId, (action) => ({
     ...action,
-    status: "running",
-    executed: false,
-    executionResult: createExecutionResult(true, "命令执行中…", {
+    status: isBackgroundAction ? "background" : "running",
+    executed: isBackgroundAction ? action.executed : false,
+    executionResult: createExecutionResult(
+      true,
+      isBackgroundAction ? "后台命令运行中…" : "命令执行中…",
+      {
       ...currentMeta,
       command:
         update.command ??
@@ -330,7 +334,133 @@ export function appendRunningShellOutput(
       timed_out: Boolean(currentMeta.timedOut ?? currentMeta.timed_out ?? false),
       status:
         typeof currentMeta.status === "number" ? currentMeta.status : undefined,
-    }),
+      },
+    ),
+  }));
+
+  return applyPlanStateUpdate(plan, nextActions);
+}
+
+export function markShellActionBackground(
+  plan: OrchestrationPlan,
+  actionId: string,
+  workspacePath: string,
+  params: {
+    jobId: string;
+    readyUrl?: string;
+    approvalContext?: ManualApprovalContext;
+    executor?: string;
+  },
+): OrchestrationPlan {
+  const targetAction = plan.proposedActions.find(
+    (action) => action.id === actionId && action.type === "shell",
+  );
+  if (!targetAction || targetAction.type !== "shell") {
+    return plan;
+  }
+
+  const executor = params.executor ?? "human_reviewer";
+  const currentMeta = (targetAction.executionResult?.metadata ?? {}) as Record<string, unknown>;
+  const readyUrl = params.readyUrl ?? targetAction.payload.readyUrl;
+  const result = createExecutionResult(
+    true,
+    readyUrl ? `后台服务已就绪：${readyUrl}` : "后台命令已启动",
+    {
+      ...currentMeta,
+      command: String(currentMeta.command ?? targetAction.payload.shell),
+      stdout: String(currentMeta.stdout ?? ""),
+      stderr: String(currentMeta.stderr ?? ""),
+      timedOut: false,
+      timed_out: false,
+      status:
+        typeof currentMeta.status === "number" ? currentMeta.status : undefined,
+      background: true,
+      backgroundActive: true,
+      shellJobId: params.jobId,
+      readyUrl: readyUrl ?? null,
+    },
+  );
+
+  const nextActions = mapActions(plan, actionId, (entry) => ({
+    ...entry,
+    fingerprint: ensureFingerprint(entry),
+    status: "background" as const,
+    executed: true,
+    executionResult: {
+      ...result,
+      metadata: {
+        ...(result.metadata ?? {}),
+        executor,
+        approvalMode: params.approvalContext?.approvalMode ?? "manual",
+        approvalRuleLabel: params.approvalContext?.approvalRuleLabel ?? null,
+        approvalRuleKind: params.approvalContext?.approvalRuleKind ?? null,
+      },
+    },
+  }));
+
+  const nextAction = nextActions.find((entry) => entry.id === actionId);
+  recordSensitiveActionAudit({
+    actionId,
+    actionType: "shell",
+    status: "success",
+    startedAt: nowIso(),
+    finishedAt: nowIso(),
+    executor,
+    reason: result.message,
+    workspacePath,
+    details: nextAction?.executionResult?.metadata ?? {},
+  });
+
+  return applyPlanStateUpdate(plan, nextActions, (planState) => {
+    syncSuccessfulLinkedStep(
+      planState,
+      nextActions,
+      nextAction,
+      `审批动作执行成功：${result.message}`,
+    );
+  });
+}
+
+export function completeBackgroundShellAction(
+  plan: OrchestrationPlan,
+  actionId: string,
+  payload: CommandExecutionResult,
+): OrchestrationPlan {
+  const targetAction = plan.proposedActions.find(
+    (action) => action.id === actionId && action.type === "shell",
+  );
+  if (!targetAction || targetAction.type !== "shell") {
+    return plan;
+  }
+
+  const currentMeta = (targetAction.executionResult?.metadata ?? {}) as Record<string, unknown>;
+  const nextResult = createExecutionResult(
+    payload.success && !payload.cancelled,
+    payload.cancelled
+      ? "后台命令已取消"
+      : payload.success
+        ? "后台命令已结束"
+        : pickShellFailureMessage(payload),
+    {
+      ...currentMeta,
+      command: payload.command,
+      timedOut: payload.timed_out,
+      timed_out: payload.timed_out,
+      cancelled: payload.cancelled ?? false,
+      status: payload.status,
+      stdout: payload.stdout,
+      stderr: payload.stderr,
+      background: true,
+      backgroundActive: false,
+      finishedAt: nowIso(),
+    },
+  );
+
+  const nextActions = mapActions(plan, actionId, (action) => ({
+    ...action,
+    status: "background" as const,
+    executed: true,
+    executionResult: nextResult,
   }));
 
   return applyPlanStateUpdate(plan, nextActions);

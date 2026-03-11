@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   appendRunningShellOutput,
   commentAction,
+  completeBackgroundShellAction,
   completeRunningShellAction,
   deriveWorkflowState,
   markActionRunning,
+  markShellActionBackground,
   rejectAction,
   rejectAllPendingActions,
 } from "./hitlService";
@@ -258,6 +260,75 @@ describe("hitlService todo synchronization", () => {
       status: 0,
       timedOut: false,
       timed_out: false,
+    });
+  });
+
+  it("detaches a running shell action into background and frees the plan to continue", () => {
+    const runningPlan = markActionRunning(createTodoLinkedPlan(), "shell-1");
+    const withOutput = appendRunningShellOutput(runningPlan, "shell-1", {
+      command: "python3 -m http.server 5173",
+      stream: "stdout",
+      chunk: "Serving HTTP on 0.0.0.0 port 5173\n",
+    });
+    const detachedPlan = markShellActionBackground(
+      withOutput,
+      "shell-1",
+      "/tmp/workspace",
+      {
+        jobId: "shelljob-1",
+        readyUrl: "http://127.0.0.1:5173",
+      },
+    );
+
+    const shellAction = detachedPlan.proposedActions.find((action) => action.id === "shell-1");
+    expect(detachedPlan.state).toBe("human_review");
+    expect(detachedPlan.activeStepId).toBe("step-edit");
+    expect(detachedPlan.steps[1].status).toBe("completed");
+    expect(shellAction?.status).toBe("background");
+    expect(shellAction?.executed).toBe(true);
+    expect(shellAction?.executionResult?.message).toContain("http://127.0.0.1:5173");
+    expect(shellAction?.executionResult?.metadata).toMatchObject({
+      background: true,
+      backgroundActive: true,
+      shellJobId: "shelljob-1",
+      readyUrl: "http://127.0.0.1:5173",
+      stdout: "Serving HTTP on 0.0.0.0 port 5173\n",
+    });
+  });
+
+  it("captures the final exit of a detached background shell action without blocking the plan again", () => {
+    const detachedPlan = markShellActionBackground(
+      markActionRunning(createTodoLinkedPlan(), "shell-1"),
+      "shell-1",
+      "/tmp/workspace",
+      {
+        jobId: "shelljob-1",
+        readyUrl: "http://127.0.0.1:5173",
+      },
+    );
+    const completedPlan = completeBackgroundShellAction(
+      detachedPlan,
+      "shell-1",
+      {
+        success: false,
+        command: "python3 -m http.server 5173",
+        timed_out: false,
+        status: 143,
+        stdout: "",
+        stderr: "Command cancelled",
+        cancelled: true,
+      },
+    );
+
+    const shellAction = completedPlan.proposedActions.find((action) => action.id === "shell-1");
+    expect(completedPlan.state).toBe("human_review");
+    expect(shellAction?.status).toBe("background");
+    expect(shellAction?.executionResult?.message).toBe("后台命令已取消");
+    expect(shellAction?.executionResult?.metadata).toMatchObject({
+      background: true,
+      backgroundActive: false,
+      cancelled: true,
+      status: 143,
     });
   });
 

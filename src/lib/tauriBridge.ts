@@ -181,11 +181,13 @@ export function startShellCommand(params: {
   workspacePath: string;
   shell: string;
   timeoutMs?: number;
+  detached?: boolean;
 }): Promise<ShellCommandStartResult> {
   return invoke<ShellCommandStartResult>("start_shell_command", {
     workspacePath: params.workspacePath,
     shell: params.shell,
     timeoutMs: params.timeoutMs,
+    detached: params.detached,
   });
 }
 

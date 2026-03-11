@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import { useMemo, useState, type ReactElement } from "react";
 import { VENDOR_PROTOCOLS, getProtocolLabel } from "../../lib/litellm";
 import { maskApiKey } from "../../lib/settingsStore";
 import { VendorModelRow as SettingsVendorModelRow } from "./VendorModelRow";
@@ -43,11 +43,76 @@ export function ModelTab({
   onRenameModel,
   onDeleteModel,
   onUpdateModelThinking,
+  onUpdateModelMetaSettings,
   onAssignFirstModelForVendor,
   onFetchVendorModels,
   onAddManualModel,
   onSetActiveModel,
 }: ModelTabProps): ReactElement {
+  const [metaEditorModelId, setMetaEditorModelId] = useState<string | null>(null);
+  const [metaContextWindowTokens, setMetaContextWindowTokens] = useState("0");
+  const [metaMaxOutputTokens, setMetaMaxOutputTokens] = useState("0");
+  const [metaTemperature, setMetaTemperature] = useState("");
+  const [metaTopP, setMetaTopP] = useState("");
+  const [metaFrequencyPenalty, setMetaFrequencyPenalty] = useState("");
+  const [metaPresencePenalty, setMetaPresencePenalty] = useState("");
+  const [metaSeed, setMetaSeed] = useState("");
+
+  const metaEditorModel = useMemo(
+    () => draft.managedModels.find((model) => model.id === metaEditorModelId) ?? null,
+    [draft.managedModels, metaEditorModelId],
+  );
+
+  const openMetaEditor = (modelId: string) => {
+    const target = draft.managedModels.find((model) => model.id === modelId);
+    if (!target) {
+      return;
+    }
+    setMetaEditorModelId(modelId);
+    setMetaContextWindowTokens(String(target.metaSettings.contextWindowTokens));
+    setMetaMaxOutputTokens(String(target.metaSettings.maxOutputTokens));
+    setMetaTemperature(
+      target.metaSettings.temperature !== null ? String(target.metaSettings.temperature) : "",
+    );
+    setMetaTopP(target.metaSettings.topP !== null ? String(target.metaSettings.topP) : "");
+    setMetaFrequencyPenalty(
+      target.metaSettings.frequencyPenalty !== null
+        ? String(target.metaSettings.frequencyPenalty)
+        : "",
+    );
+    setMetaPresencePenalty(
+      target.metaSettings.presencePenalty !== null
+        ? String(target.metaSettings.presencePenalty)
+        : "",
+    );
+    setMetaSeed(target.metaSettings.seed !== null ? String(target.metaSettings.seed) : "");
+  };
+
+  const parseOptionalNumber = (raw: string): number | null => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const saveMetaEditor = () => {
+    if (!metaEditorModel) {
+      return;
+    }
+    onUpdateModelMetaSettings(metaEditorModel.id, {
+      contextWindowTokens: Math.max(0, Math.floor(Number(metaContextWindowTokens) || 0)),
+      maxOutputTokens: Math.max(0, Math.floor(Number(metaMaxOutputTokens) || 0)),
+      temperature: parseOptionalNumber(metaTemperature),
+      topP: parseOptionalNumber(metaTopP),
+      frequencyPenalty: parseOptionalNumber(metaFrequencyPenalty),
+      presencePenalty: parseOptionalNumber(metaPresencePenalty),
+      seed: parseOptionalNumber(metaSeed),
+    });
+    setMetaEditorModelId(null);
+  };
+
   return (
     <>
       <header className="settings-pane-header">
@@ -376,6 +441,7 @@ export function ModelTab({
                         onThinkingLevelChange={(value) =>
                           onUpdateModelThinking(model.id, { thinkingLevel: value })
                         }
+                        onOpenMetaSettings={() => openMetaEditor(model.id)}
                       />
                     ))}
                   </div>
@@ -420,6 +486,126 @@ export function ModelTab({
           </div>
         </div>
       </div>
+
+      {metaEditorModel && (
+        <div className="model-picker-backdrop" role="presentation">
+          <div className="model-picker model-meta-editor">
+            <div className="model-picker-header">
+              <h3 className="model-picker-title">模型元设置 · {metaEditorModel.name}</h3>
+              <p className="model-picker-desc">
+                每个模型独立生效。留空表示自动值，Token 设为 0 表示不强制覆盖。
+              </p>
+            </div>
+
+            <div className="model-meta-editor-body">
+              <div className="grid-2">
+                <div className="field">
+                  <label className="field-label">上下文窗口 Token</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    step={1024}
+                    value={metaContextWindowTokens}
+                    onChange={(e) => setMetaContextWindowTokens(e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label className="field-label">最大输出 Token</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    step={128}
+                    value={metaMaxOutputTokens}
+                    onChange={(e) => setMetaMaxOutputTokens(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid-2">
+                <div className="field">
+                  <label className="field-label">Temperature (0-2)</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    value={metaTemperature}
+                    onChange={(e) => setMetaTemperature(e.target.value)}
+                    placeholder="自动"
+                  />
+                </div>
+                <div className="field">
+                  <label className="field-label">Top P (0-1)</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={metaTopP}
+                    onChange={(e) => setMetaTopP(e.target.value)}
+                    placeholder="自动"
+                  />
+                </div>
+              </div>
+
+              <div className="grid-2">
+                <div className="field">
+                  <label className="field-label">Frequency Penalty (-2 到 2)</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={-2}
+                    max={2}
+                    step={0.1}
+                    value={metaFrequencyPenalty}
+                    onChange={(e) => setMetaFrequencyPenalty(e.target.value)}
+                    placeholder="自动"
+                  />
+                </div>
+                <div className="field">
+                  <label className="field-label">Presence Penalty (-2 到 2)</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={-2}
+                    max={2}
+                    step={0.1}
+                    value={metaPresencePenalty}
+                    onChange={(e) => setMetaPresencePenalty(e.target.value)}
+                    placeholder="自动"
+                  />
+                </div>
+              </div>
+
+              <div className="field">
+                <label className="field-label">Seed（可复现）</label>
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={metaSeed}
+                  onChange={(e) => setMetaSeed(e.target.value)}
+                  placeholder="自动"
+                />
+              </div>
+            </div>
+
+            <div className="model-picker-footer">
+              <button className="btn btn-primary btn-sm" onClick={saveMetaEditor} type="button">
+                保存
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setMetaEditorModelId(null)} type="button">
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

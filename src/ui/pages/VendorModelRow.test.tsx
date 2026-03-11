@@ -10,6 +10,15 @@ const BASE_MODEL: ManagedModel = {
   source: "manual",
   supportsThinking: true,
   thinkingLevel: "medium",
+  metaSettings: {
+    contextWindowTokens: 0,
+    maxOutputTokens: 0,
+    temperature: null,
+    topP: null,
+    frequencyPenalty: null,
+    presencePenalty: null,
+    seed: null,
+  },
   createdAt: "2026-03-07T00:00:00.000Z",
   updatedAt: "2026-03-07T00:00:00.000Z",
 };
@@ -43,6 +52,7 @@ function renderRow(model: ManagedModel, overrides?: Partial<Parameters<typeof Ve
     onCancelDelete: vi.fn(),
     onThinkingSupportChange: vi.fn(),
     onThinkingLevelChange: vi.fn(),
+    onOpenMetaSettings: vi.fn(),
     ...overrides,
   });
 }

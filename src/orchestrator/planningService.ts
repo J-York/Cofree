@@ -26,6 +26,7 @@ import {
   isActiveModelLocal,
   getActiveVendor,
   getActiveManagedModel,
+  resolveEffectiveContextTokenLimit,
   type AppSettings,
   type ToolPermissions,
 } from "../lib/settingsStore";
@@ -105,6 +106,11 @@ import {
 import {
   globalMetricsTracker,
 } from "../lib/performanceMetrics";
+import {
+  resolveShellExecutionMode,
+  resolveShellReadyTimeoutMs,
+  resolveShellReadyUrl,
+} from "../lib/shellCommand";
 
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
@@ -1163,7 +1169,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "propose_shell",
       description:
-        "Propose a shell command execution action for HITL approval (does not execute). Match the command to the real executor: on Windows this runs via PowerShell (`powershell -NoProfile -Command`), while on Unix it runs via `sh -c`. Supports pipes, redirects, and chaining within that shell dialect.\n\nExamples:\n- propose_shell(shell='npm install; npm test')\n- propose_shell(shell='New-Item -ItemType Directory -Force logs')\n- propose_shell(shell='Remove-Item -Recurse -Force old_dir')\n- propose_shell(shell='git add .; git commit -m \"Update\"')\n- propose_shell(shell='cargo build --release')\n\nIf propose_shell is auto-executed, the command runs immediately in the real shell. Read stderr carefully and retry with corrected syntax instead of repeating the same failing command.\n\nThe command will be shown to the user for approval before execution when approval is required.",
+        "Propose a shell command execution action for HITL approval (does not execute). Match the command to the real executor: on Windows this runs via PowerShell (`powershell -NoProfile -Command`), while on Unix it runs via `sh -c`. Supports pipes, redirects, and chaining within that shell dialect.\n\nExamples:\n- propose_shell(shell='npm install; npm test')\n- propose_shell(shell='New-Item -ItemType Directory -Force logs')\n- propose_shell(shell='Remove-Item -Recurse -Force old_dir')\n- propose_shell(shell='git add .; git commit -m \"Update\"')\n- propose_shell(shell='cargo build --release')\n\nFor long-running dev servers or watch processes, set execution_mode='background' so Cofree launches the command asynchronously instead of waiting for process exit. If the port or URL is known, also pass ready_url for readiness checks.\n\nIf propose_shell is auto-executed, the command runs immediately in the real shell only for foreground commands. Read stderr carefully and retry with corrected syntax instead of repeating the same failing command.\n\nThe command will be shown to the user for approval before execution when approval is required.",
       parameters: {
         type: "object",
         required: ["shell"],
@@ -1181,6 +1187,24 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
             maximum: 600000,
             description:
               "Optional execution timeout in milliseconds. Defaults to 120000 (2 minutes).",
+          },
+          execution_mode: {
+            type: "string",
+            enum: ["foreground", "background"],
+            description:
+              "Use 'background' for long-running services such as dev servers, watchers, and local HTTP servers. Foreground waits for process exit.",
+          },
+          ready_url: {
+            type: "string",
+            description:
+              "Optional local URL to probe when execution_mode='background', for example 'http://127.0.0.1:5173'.",
+          },
+          ready_timeout_ms: {
+            type: "number",
+            minimum: 1000,
+            maximum: 120000,
+            description:
+              "Optional readiness timeout for background commands. Defaults to 20000.",
           },
           description: {
             type: "string",
@@ -3140,7 +3164,7 @@ export async function executeSubAgentTask(
   );
 
   // Compute context budgets for sub-agent
-  const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
+  const limitTokens = resolveEffectiveContextTokenLimit(settings);
   const outputBufferTokens = Math.min(8000, Math.max(512, Math.floor(limitTokens * 0.15)));
   const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
   const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
@@ -4536,19 +4560,37 @@ async function executeToolCall(
           errorMessage: message,
         };
       }
+      const executionMode = resolveShellExecutionMode(shell, args.execution_mode);
+      const readyUrl = resolveShellReadyUrl({
+        shell,
+        preferredUrl: args.ready_url,
+        executionMode,
+      });
+      const readyTimeoutMs = resolveShellReadyTimeoutMs(
+        args.ready_timeout_ms,
+        executionMode,
+      );
       const action: ActionProposal = {
         id: createActionId("gate-shell"),
         toolCallId: call.id,
         toolName: call.function.name,
         planStepId: planState?.activeStepId,
         type: "shell",
-        description: asString(args.description, "Execute shell command (Gate)"),
+        description: asString(
+          args.description,
+          executionMode === "background"
+            ? "Launch background service (Gate)"
+            : "Execute shell command (Gate)",
+        ),
         gateRequired: true,
         status: "pending",
         executed: false,
         payload: {
           shell,
           timeoutMs: timeout,
+          executionMode,
+          readyUrl,
+          readyTimeoutMs,
         },
       };
       action.fingerprint = actionFingerprint(action);
@@ -4559,7 +4601,7 @@ async function executeToolCall(
           : matchedRule
             ? "workspace_rule"
             : null;
-      if (autoApprovalSource) {
+      if (autoApprovalSource && executionMode === "foreground") {
         return autoExecuteShellProposal({
           workspacePath: safeWorkspace,
           shell,
@@ -4573,12 +4615,18 @@ async function executeToolCall(
           action_id: action.id,
           shell,
           timeout_ms: timeout,
+          execution_mode: executionMode,
+          ready_url: readyUrl,
+          ready_timeout_ms: readyTimeoutMs,
           approval_required: true,
           proposal_created: true,
           execution_state: "pending_approval",
           command_executed: false,
           action_status: action.status,
-          message: "Shell 命令已创建待审批动作，尚未执行。",
+          message:
+            executionMode === "background"
+              ? "后台 Shell 命令已创建待审批动作，将在审批后异步启动。"
+              : "Shell 命令已创建待审批动作，尚未执行。",
         }),
         success: true,
         traceStatus: "pending_approval",
@@ -5561,7 +5609,7 @@ async function runNativeToolCallingLoop(
   let lastWorkspaceRefreshTurn = -1; // Last turn when workspace context was refreshed
 
   // --- Context window management ---
-  const limitTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
+  const limitTokens = resolveEffectiveContextTokenLimit(settings);
 
   // --- Shared Working Memory for multi-agent collaboration ---
   const workingMemory = createWorkingMemory({
@@ -6684,7 +6732,10 @@ export function actionFingerprint(action: ActionProposal): string {
   }
   // action.type === "shell"
   const normalizedShell = normalizeWhitespace(action.payload.shell);
-  return `${action.type}:${normalizedShell}:${action.payload.timeoutMs}`;
+  const executionMode = action.payload.executionMode ?? "foreground";
+  const readyUrl = (action.payload.readyUrl ?? "").trim();
+  const readyTimeoutMs = action.payload.readyTimeoutMs ?? "";
+  return `${action.type}:${normalizedShell}:${action.payload.timeoutMs}:${executionMode}:${readyUrl}:${readyTimeoutMs}`;
 }
 
 function validateProposedAction(action: ActionProposal): string | null {
@@ -6701,6 +6752,12 @@ function validateProposedAction(action: ActionProposal): string | null {
     }
     if (action.payload.timeoutMs < 1000 || action.payload.timeoutMs > 600000) {
       return "timeout 超出范围";
+    }
+    if (
+      action.payload.readyTimeoutMs !== undefined &&
+      (action.payload.readyTimeoutMs < 1000 || action.payload.readyTimeoutMs > 120000)
+    ) {
+      return "ready timeout 超出范围";
     }
     return null;
   }
@@ -6968,7 +7025,7 @@ export async function runPlanningSession(
 
       // Inject repo-map (project structure with symbols)
       if (projectConfig.repoMap?.enabled !== false) try {
-        const contextLimit = input.settings.maxContextTokens > 0 ? input.settings.maxContextTokens : 128000;
+        const contextLimit = resolveEffectiveContextTokenLimit(input.settings);
         const repoMapBudget = Math.min(
           4000,
           Math.max(500, Math.floor(contextLimit * 0.03)),

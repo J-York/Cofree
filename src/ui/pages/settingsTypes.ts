@@ -53,6 +53,7 @@ export interface VendorModelRowProps {
   onCancelDelete: () => void;
   onThinkingSupportChange: (value: boolean) => void;
   onThinkingLevelChange: (value: ManagedModel["thinkingLevel"]) => void;
+  onOpenMetaSettings: () => void;
 }
 
 export interface ModelPickerOverlayProps {
@@ -162,6 +163,10 @@ export interface ModelTabProps {
   onUpdateModelThinking: (
     modelId: string,
     updates: Partial<Pick<ManagedModel, "supportsThinking" | "thinkingLevel">>,
+  ) => void;
+  onUpdateModelMetaSettings: (
+    modelId: string,
+    updates: Partial<ManagedModel["metaSettings"]>,
   ) => void;
   onAssignFirstModelForVendor: (vendorId: string) => void;
   onFetchVendorModels: () => Promise<void>;

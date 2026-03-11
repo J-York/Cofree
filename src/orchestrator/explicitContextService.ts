@@ -1,4 +1,7 @@
-import type { AppSettings } from "../lib/settingsStore";
+import {
+  resolveEffectiveContextTokenLimit,
+  type AppSettings,
+} from "../lib/settingsStore";
 import { globWorkspaceFiles, readWorkspaceFile } from "../lib/tauriBridge";
 import type { CofreeRcConfig } from "../lib/cofreerc";
 import { resolveMatchingContextRules } from "../lib/cofreerc";
@@ -154,8 +157,7 @@ export async function buildMatchedContextRuleNote(params: {
     return "";
   }
 
-  const maxContextTokens =
-    params.settings.maxContextTokens > 0 ? params.settings.maxContextTokens : 128000;
+  const maxContextTokens = resolveEffectiveContextTokenLimit(params.settings);
   const ruleBudgetTokens = Math.min(
     MAX_RULE_BUDGET_TOKENS,
     Math.max(MIN_RULE_BUDGET_TOKENS, Math.floor(maxContextTokens * 0.05)),
@@ -247,8 +249,7 @@ export async function buildExplicitContextNote(params: {
     return "";
   }
 
-  const maxContextTokens =
-    settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
+  const maxContextTokens = resolveEffectiveContextTokenLimit(settings);
   const attachmentBudgetTokens = Math.min(
     MAX_ATTACHMENT_BUDGET_TOKENS,
     Math.max(MIN_ATTACHMENT_BUDGET_TOKENS, Math.floor(maxContextTokens * 0.12)),

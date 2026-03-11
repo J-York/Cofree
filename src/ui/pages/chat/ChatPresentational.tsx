@@ -539,7 +539,7 @@ function PlanActionCard({
       {action.executionResult && (
         <p
           className={
-            action.status === "running"
+            action.status === "running" || action.status === "background"
               ? "status-note"
               : action.executionResult.success
               ? "status-success"

@@ -765,6 +765,29 @@ function getModelName(settings: AppSettings): string {
   return getActiveManagedModel(settings)?.name || settings.model;
 }
 
+function getActiveModelMetaSettings(settings: AppSettings) {
+  return (
+    getActiveManagedModel(settings)?.metaSettings ?? {
+      contextWindowTokens: 0,
+      maxOutputTokens: 0,
+      temperature: null,
+      topP: null,
+      frequencyPenalty: null,
+      presencePenalty: null,
+      seed: null,
+    }
+  );
+}
+
+function getConfiguredMaxOutputTokens(settings: AppSettings): number | null {
+  const value = Number(getActiveModelMetaSettings(settings).maxOutputTokens);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  const normalized = Math.max(0, Math.floor(value));
+  return normalized > 0 ? normalized : null;
+}
+
 export function isAnthropicModelName(modelName: string): boolean {
   const normalized = modelName.trim().toLowerCase();
   return normalized.includes("claude") || normalized.startsWith("anthropic/");
@@ -1076,17 +1099,22 @@ function createOpenAIResponsesRequestBody(
     responseFormat?: JsonSchemaResponseFormat;
     stream?: boolean;
     temperature?: number;
+    topP?: number;
+    frequencyPenalty?: number;
+    presencePenalty?: number;
     tools?: LiteLLMToolDefinition[];
     toolChoice?:
     | "auto"
     | "none"
     | { type: "function"; function: { name: string } };
+    seed?: number;
   }
 ): Record<string, unknown> {
+  const metaSettings = getActiveModelMetaSettings(settings);
   const body: Record<string, unknown> = {
     model: getModelName(settings),
     input: toOpenAIResponsesInput(messages),
-    temperature: options?.temperature ?? 0.2,
+    temperature: options?.temperature ?? metaSettings.temperature ?? 0.2,
     stream: options?.stream ?? false,
   };
   const thinkingLevel = getActiveModelThinkingLevel(settings);
@@ -1115,6 +1143,28 @@ function createOpenAIResponsesRequestBody(
     };
   }
 
+  const maxOutputTokens = getConfiguredMaxOutputTokens(settings);
+  if (maxOutputTokens) {
+    body.max_output_tokens = maxOutputTokens;
+  }
+
+  const topP = options?.topP ?? metaSettings.topP;
+  if (topP !== null && topP !== undefined) {
+    body.top_p = topP;
+  }
+  const frequencyPenalty = options?.frequencyPenalty ?? metaSettings.frequencyPenalty;
+  if (frequencyPenalty !== null && frequencyPenalty !== undefined) {
+    body.frequency_penalty = frequencyPenalty;
+  }
+  const presencePenalty = options?.presencePenalty ?? metaSettings.presencePenalty;
+  if (presencePenalty !== null && presencePenalty !== undefined) {
+    body.presence_penalty = presencePenalty;
+  }
+  const seed = options?.seed ?? metaSettings.seed;
+  if (seed !== null && seed !== undefined) {
+    body.seed = Math.floor(seed);
+  }
+
   return body;
 }
 
@@ -1125,6 +1175,7 @@ function createAnthropicRequestBody(
     responseFormat?: JsonSchemaResponseFormat;
     stream?: boolean;
     temperature?: number;
+    topP?: number;
     tools?: LiteLLMToolDefinition[];
     toolChoice?:
     | "auto"
@@ -1134,6 +1185,7 @@ function createAnthropicRequestBody(
 ): Record<string, unknown> {
   const anthropic = toAnthropicMessages(messages);
   const modelName = getModelName(settings);
+  const metaSettings = getActiveModelMetaSettings(settings);
   const thinkingLevel = getActiveModelThinkingLevel(settings);
   const usesEffortMode = Boolean(thinkingLevel) && isAnthropicEffortModel(modelName);
   const usesManualThinking =
@@ -1143,12 +1195,17 @@ function createAnthropicRequestBody(
   const body: Record<string, unknown> = {
     model: modelName,
     messages: anthropic.messages,
-    max_tokens: 4096,
+    max_tokens: getConfiguredMaxOutputTokens(settings) ?? 4096,
     stream: options?.stream ?? false,
   };
 
   if (!usesManualThinking) {
-    body.temperature = options?.temperature ?? 0.2;
+    body.temperature = options?.temperature ?? metaSettings.temperature ?? 0.2;
+  }
+
+  const topP = options?.topP ?? metaSettings.topP;
+  if (topP !== null && topP !== undefined) {
+    body.top_p = topP;
   }
 
   if (anthropic.system) {
@@ -1352,6 +1409,9 @@ export function createLiteLLMRequestBody(
     responseFormat?: JsonSchemaResponseFormat;
     stream?: boolean;
     temperature?: number;
+    topP?: number;
+    frequencyPenalty?: number;
+    presencePenalty?: number;
     tools?: LiteLLMToolDefinition[];
     toolChoice?:
     | "auto"
@@ -1362,6 +1422,7 @@ export function createLiteLLMRequestBody(
 ): Record<string, unknown> {
   const protocol = getActiveProtocol(settings);
   const modelRef = getModelName(settings);
+  const metaSettings = getActiveModelMetaSettings(settings);
 
   if (protocol === "openai-responses") {
     return createOpenAIResponsesRequestBody(messages, settings, options);
@@ -1374,10 +1435,15 @@ export function createLiteLLMRequestBody(
   const body: Record<string, unknown> = {
     model: modelRef,
     messages: toOpenAIChatMessages(messages),
-    temperature: options?.temperature ?? 0.2,
+    temperature: options?.temperature ?? metaSettings.temperature ?? 0.2,
     stream: options?.stream ?? true,
   };
+  const maxOutputTokens = getConfiguredMaxOutputTokens(settings);
   const thinkingLevel = getActiveModelThinkingLevel(settings);
+
+  if (maxOutputTokens) {
+    body.max_tokens = maxOutputTokens;
+  }
 
   if (thinkingLevel) {
     body.reasoning_effort = thinkingLevel;
@@ -1387,6 +1453,19 @@ export function createLiteLLMRequestBody(
     body.response_format = options.responseFormat;
   }
 
+  const topP = options?.topP ?? metaSettings.topP;
+  if (topP !== null && topP !== undefined) {
+    body.top_p = topP;
+  }
+  const frequencyPenalty = options?.frequencyPenalty ?? metaSettings.frequencyPenalty;
+  if (frequencyPenalty !== null && frequencyPenalty !== undefined) {
+    body.frequency_penalty = frequencyPenalty;
+  }
+  const presencePenalty = options?.presencePenalty ?? metaSettings.presencePenalty;
+  if (presencePenalty !== null && presencePenalty !== undefined) {
+    body.presence_penalty = presencePenalty;
+  }
+
   if (options?.tools?.length) {
     body.tools = options.tools;
     body.tool_choice = options.toolChoice ?? "auto";
@@ -1394,8 +1473,9 @@ export function createLiteLLMRequestBody(
 
   // Add seed parameter for better caching and deterministic outputs
   // Helps OpenAI's caching mechanism by ensuring consistent requests
-  if (options?.seed !== undefined) {
-    body.seed = options.seed;
+  const seed = options?.seed ?? metaSettings.seed;
+  if (seed !== null && seed !== undefined) {
+    body.seed = Math.floor(seed);
   }
 
   return body;

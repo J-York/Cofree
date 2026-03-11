@@ -924,7 +924,7 @@ pub fn run_shell_command(
     let max_timeout = timeout_ms
         .unwrap_or(config::SHELL_TIMEOUT_DEFAULT_MS)
         .clamp(config::SHELL_TIMEOUT_MIN_MS, config::SHELL_TIMEOUT_MAX_MS);
-    let timeout = Duration::from_millis(max_timeout);
+    let timeout = Some(Duration::from_millis(max_timeout));
     let child = spawn_shell_child(&workspace, &shell_trimmed)?;
     collect_shell_command_result(child, &shell_trimmed, timeout, None, None)
 }
@@ -936,6 +936,7 @@ pub fn start_shell_command(
     workspace_path: String,
     shell: String,
     timeout_ms: Option<u64>,
+    detached: Option<bool>,
 ) -> Result<ShellCommandStartResult, String> {
     let workspace = canonicalize_workspace_root(&workspace_path).map_err(|e| e.to_string())?;
     let shell_trimmed = shell.trim().to_string();
@@ -943,10 +944,14 @@ pub fn start_shell_command(
         return Err("命令不能为空".to_string());
     }
     validate_shell_safety(&shell_trimmed)?;
-    let max_timeout = timeout_ms
-        .unwrap_or(config::SHELL_TIMEOUT_DEFAULT_MS)
-        .clamp(config::SHELL_TIMEOUT_MIN_MS, config::SHELL_TIMEOUT_MAX_MS);
-    let timeout = Duration::from_millis(max_timeout);
+    let timeout = if detached.unwrap_or(false) {
+        None
+    } else {
+        let max_timeout = timeout_ms
+            .unwrap_or(config::SHELL_TIMEOUT_DEFAULT_MS)
+            .clamp(config::SHELL_TIMEOUT_MIN_MS, config::SHELL_TIMEOUT_MAX_MS);
+        Some(Duration::from_millis(max_timeout))
+    };
     let child = spawn_shell_child(&workspace, &shell_trimmed)?;
     let job_id = generate_id("shelljob");
     let job_handle = Arc::new(ShellJobHandle {
@@ -1138,7 +1143,7 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
 fn collect_shell_command_result(
     mut child: Child,
     shell_trimmed: &str,
-    timeout: Duration,
+    timeout: Option<Duration>,
     app: Option<AppHandle>,
     job_id: Option<String>,
 ) -> Result<CommandExecutionResult, String> {
@@ -1175,7 +1180,7 @@ fn collect_shell_command_result(
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
-                if started_at.elapsed() >= timeout {
+                if timeout.is_some_and(|limit| started_at.elapsed() >= limit) {
                     timed_out = true;
                     let _ = child.kill();
                     break child
@@ -1220,7 +1225,7 @@ fn collect_shell_command_result(
 fn collect_shell_job_result(
     job_handle: Arc<ShellJobHandle>,
     shell_trimmed: &str,
-    timeout: Duration,
+    timeout: Option<Duration>,
     app: Option<AppHandle>,
     job_id: Option<String>,
 ) -> Result<CommandExecutionResult, String> {
@@ -1276,7 +1281,7 @@ fn collect_shell_job_result(
             match child.try_wait() {
                 Ok(Some(status)) => Some(Ok(status)),
                 Ok(None) => {
-                    if started_at.elapsed() >= timeout {
+                    if timeout.is_some_and(|limit| started_at.elapsed() >= limit) {
                         timed_out = true;
                         let _ = child.kill();
                         Some(child.wait().map_err(|e| format!("终止超时命令失败: {}", e)))

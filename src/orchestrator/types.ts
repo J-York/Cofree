@@ -18,6 +18,7 @@ export type SensitiveActionType = "apply_patch" | "shell";
 export type ActionStatus =
   | "pending"
   | "running"
+  | "background"
   | "completed"
   | "failed"
   | "rejected";
@@ -59,6 +60,9 @@ export interface ApplyPatchPayload {
 export interface ShellPayload {
   shell: string;
   timeoutMs: number;
+  executionMode?: "foreground" | "background";
+  readyUrl?: string;
+  readyTimeoutMs?: number;
   retryFromActionId?: string;
   retryAttempt?: number;
 }

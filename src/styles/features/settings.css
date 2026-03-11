@@ -611,6 +611,18 @@
   background: var(--surface-1);
 }
 
+.model-meta-editor {
+  max-height: 82vh;
+}
+
+.model-meta-editor-body {
+  padding: 14px 20px 4px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 /* ── Agent Management ──────────────────────────────────── */
 .agent-card-list {
   display: grid;

@@ -50,6 +50,8 @@ export function createModelGatewayConfig(
     model: runtime.modelRef,
     liteLLMBaseUrl: runtime.baseUrl,
     apiKey: runtime.apiKey,
+    activeVendorId: runtime.vendorId,
+    activeModelId: runtime.modelId,
   });
 
   return {
@@ -79,7 +81,14 @@ export function createGatewayRequestBody(
   },
 ): Record<string, unknown> {
   const effectiveSettings: AppSettings = runtime
-    ? { ...settings, model: runtime.modelRef, liteLLMBaseUrl: runtime.baseUrl, apiKey: runtime.apiKey }
+    ? {
+      ...settings,
+      model: runtime.modelRef,
+      liteLLMBaseUrl: runtime.baseUrl,
+      apiKey: runtime.apiKey,
+      activeVendorId: runtime.vendorId,
+      activeModelId: runtime.modelId,
+    }
     : settings;
 
   const protocol = (runtime?.vendorProtocol || "openai-chat-completions") as VendorProtocol;
@@ -88,10 +97,16 @@ export function createGatewayRequestBody(
 
   // Apply model-capability-aware parameter adaptation
   const adapted = adaptRequestParams(modelRef, protocol, hasTools, options?.temperature);
+  const activeManagedModel = effectiveSettings.managedModels.find(
+    (entry) => entry.id === effectiveSettings.activeModelId,
+  );
+  const hasModelTemperature =
+    activeManagedModel?.metaSettings.temperature !== null &&
+    activeManagedModel?.metaSettings.temperature !== undefined;
 
   const adaptedOptions = {
     ...options,
-    temperature: options?.temperature ?? adapted.temperature,
+    temperature: options?.temperature ?? (hasModelTemperature ? undefined : adapted.temperature),
     toolChoice: options?.toolChoice ?? adapted.toolChoice,
   };
 
@@ -102,8 +117,12 @@ export function createGatewayRequestBody(
     body.parallel_tool_calls = adapted.parallelToolCalls;
   }
 
-  // Inject max_tokens if the model has a recommended limit and it's not already set
-  if (adapted.maxTokens && !body.max_tokens) {
+  // Inject max_tokens only for protocols that accept this field.
+  if (
+    adapted.maxTokens &&
+    (protocol === "openai-chat-completions" || protocol === "anthropic-messages") &&
+    !body.max_tokens
+  ) {
     body.max_tokens = adapted.maxTokens;
   }
 

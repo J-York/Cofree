@@ -290,6 +290,85 @@ describe("streaming tool-call events", () => {
 });
 
 describe("createLiteLLMRequestBody thinking integration", () => {
+  it("uses configured max output tokens for openai chat completions", () => {
+    const settings = createSettings({
+      protocol: "openai-chat-completions",
+      supportsThinking: false,
+    });
+
+    const body = createLiteLLMRequestBody(
+      BASE_MESSAGES,
+      {
+        ...settings,
+        managedModels: settings.managedModels.map((model) =>
+          model.id === settings.activeModelId
+            ? {
+              ...model,
+              metaSettings: {
+                ...model.metaSettings,
+                maxOutputTokens: 3072,
+              },
+            }
+            : model,
+        ),
+      },
+      { stream: false },
+    );
+
+    expect(body.max_tokens).toBe(3072);
+  });
+
+  it("uses protocol-specific output token fields for responses and anthropic", () => {
+    const responses = createSettings({
+      protocol: "openai-responses",
+      supportsThinking: false,
+    });
+    const anthropic = createSettings({
+      protocol: "anthropic-messages",
+      supportsThinking: false,
+    });
+
+    const responsesBody = createLiteLLMRequestBody(
+      BASE_MESSAGES,
+      {
+        ...responses,
+        managedModels: responses.managedModels.map((model) =>
+          model.id === responses.activeModelId
+            ? {
+              ...model,
+              metaSettings: {
+                ...model.metaSettings,
+                maxOutputTokens: 2048,
+              },
+            }
+            : model,
+        ),
+      },
+      { stream: false },
+    );
+    const anthropicBody = createLiteLLMRequestBody(
+      BASE_MESSAGES,
+      {
+        ...anthropic,
+        managedModels: anthropic.managedModels.map((model) =>
+          model.id === anthropic.activeModelId
+            ? {
+              ...model,
+              metaSettings: {
+                ...model.metaSettings,
+                maxOutputTokens: 1536,
+              },
+            }
+            : model,
+        ),
+      },
+      { stream: false },
+    );
+
+    expect(responsesBody.max_output_tokens).toBe(2048);
+    expect(anthropicBody.max_tokens).toBe(1536);
+  });
+
   it("adds reasoning effort for openai chat completions models", () => {
     const settings = createSettings({
       protocol: "openai-chat-completions",

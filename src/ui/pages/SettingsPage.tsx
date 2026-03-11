@@ -449,6 +449,30 @@ export function SettingsPage({
     setDraft((current) => updateProxySettings(current, updates));
   };
 
+  const handleUpdateModelMetaSettings = (
+    modelId: string,
+    updates: Partial<AppSettings["managedModels"][number]["metaSettings"]>,
+  ) => {
+    setDraft((current) =>
+      updateManagedModel(current, modelId, {
+        metaSettings: {
+          ...(
+            current.managedModels.find((entry) => entry.id === modelId)?.metaSettings ?? {
+              contextWindowTokens: 0,
+              maxOutputTokens: 0,
+              temperature: null,
+              topP: null,
+              frequencyPenalty: null,
+              presencePenalty: null,
+              seed: null,
+            }
+          ),
+          ...updates,
+        },
+      }),
+    );
+  };
+
   const handleClearWorkspaceHistory = () => {
     clearWorkspaceConversations(draft.workspacePath);
     setConfirmClearScope(null);
@@ -686,6 +710,7 @@ export function SettingsPage({
                 onRenameModel={handleRenameModel}
                 onDeleteModel={handleDeleteModel}
                 onUpdateModelThinking={handleUpdateModelThinking}
+                onUpdateModelMetaSettings={handleUpdateModelMetaSettings}
                 onAssignFirstModelForVendor={handleAssignFirstModelForVendor}
                 onFetchVendorModels={handleFetchVendorModels}
                 onAddManualModel={handleAddManualModel}

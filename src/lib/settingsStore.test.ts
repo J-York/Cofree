@@ -58,6 +58,15 @@ describe("settingsStore managed model thinking", () => {
 
     expect(model.supportsThinking).toBe(false);
     expect(model.thinkingLevel).toBe("medium");
+    expect(model.metaSettings).toEqual({
+      contextWindowTokens: 0,
+      maxOutputTokens: 0,
+      temperature: null,
+      topP: null,
+      frequencyPenalty: null,
+      presencePenalty: null,
+      seed: null,
+    });
   });
 
   it("loads legacy persisted models without thinking metadata as disabled medium", () => {
@@ -100,6 +109,34 @@ describe("settingsStore managed model thinking", () => {
     expect(loaded.managedModels[0]).toMatchObject({
       supportsThinking: true,
       thinkingLevel: "high",
+    });
+  });
+
+  it("normalizes and persists model meta settings", () => {
+    const modelId = DEFAULT_SETTINGS.managedModels[0].id;
+    const customized = updateManagedModel(DEFAULT_SETTINGS, modelId, {
+      metaSettings: {
+        contextWindowTokens: 98765,
+        maxOutputTokens: 4096,
+        temperature: 0.3,
+        topP: 0.85,
+        frequencyPenalty: 0.2,
+        presencePenalty: -0.3,
+        seed: 42,
+      },
+    });
+
+    saveSettings(customized);
+    const loaded = loadSettings();
+
+    expect(loaded.managedModels[0].metaSettings).toMatchObject({
+      contextWindowTokens: 98765,
+      maxOutputTokens: 4096,
+      temperature: 0.3,
+      topP: 0.85,
+      frequencyPenalty: 0.2,
+      presencePenalty: -0.3,
+      seed: 42,
     });
   });
 

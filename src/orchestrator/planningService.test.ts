@@ -1014,6 +1014,64 @@ describe("planningService approval-flow repair", () => {
         });
     });
 
+    it("keeps long-running shell proposals pending instead of auto-executing them synchronously", async () => {
+        vi.stubGlobal("window", { localStorage: new MemoryStorage() });
+        addWorkspaceApprovalRule("d:/Code/cofree", {
+            kind: "shell_command_prefix",
+            commandTokens: ["python3", "-m", "http.server"],
+        });
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const result = await planningServiceTestUtils.executeToolCall(
+            {
+                id: "tool-background-shell",
+                type: "function",
+                function: {
+                    name: "propose_shell",
+                    arguments: JSON.stringify({
+                        shell: "python3 -m http.server 5173",
+                    }),
+                },
+            },
+            "d:/Code/cofree",
+            {
+                ...DEFAULT_SETTINGS.toolPermissions,
+                propose_shell: "ask",
+            },
+        );
+
+        const payload = JSON.parse(result.content) as Record<string, unknown>;
+
+        expect(result.success).toBe(true);
+        expect(result.traceStatus).toBe("pending_approval");
+        expect(result.proposedAction).toMatchObject({
+            type: "shell",
+            status: "pending",
+            executed: false,
+            payload: {
+                shell: "python3 -m http.server 5173",
+                timeoutMs: 120000,
+                executionMode: "background",
+                readyUrl: "http://127.0.0.1:5173",
+                readyTimeoutMs: 20000,
+            },
+        });
+        expect(payload).toMatchObject({
+            action_type: "shell",
+            shell: "python3 -m http.server 5173",
+            timeout_ms: 120000,
+            execution_mode: "background",
+            ready_url: "http://127.0.0.1:5173",
+            ready_timeout_ms: 20000,
+            approval_required: true,
+            proposal_created: true,
+            action_status: "pending",
+        });
+        expect(payload).not.toHaveProperty("auto_executed");
+    });
+
     it("drops a pending shell approval when the fingerprint is blocked", () => {
         const actions = planningServiceTestUtils.buildProposedActions(
             [
@@ -1032,7 +1090,7 @@ describe("planningService approval-flow repair", () => {
                     },
                 },
             ],
-            ["shell:git status --porcelain:120000"],
+            ["shell:git status --porcelain:120000:foreground:"],
         );
 
         expect(actions).toHaveLength(0);
@@ -1174,7 +1232,7 @@ describe("planningService approval-flow repair", () => {
             settings: createSettings(),
             conversationHistory: [],
             isContinuation: true,
-            blockedActionFingerprints: ["shell:git status --porcelain:120000"],
+            blockedActionFingerprints: ["shell:git status --porcelain:120000:foreground:"],
         });
 
         expect(result.plan.proposedActions).toHaveLength(0);

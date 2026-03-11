@@ -22,6 +22,7 @@ export function VendorModelRow({
   onCancelDelete,
   onThinkingSupportChange,
   onThinkingLevelChange,
+  onOpenMetaSettings,
 }: VendorModelRowProps): ReactElement {
   return (
     <div className="vendor-model-row">
@@ -101,6 +102,9 @@ export function VendorModelRow({
             </div>
           </div>
           <div className="vendor-model-row-actions">
+            <button className="btn btn-ghost btn-sm" onClick={onOpenMetaSettings} type="button">
+              元设置
+            </button>
             <button className="btn btn-ghost btn-sm" onClick={onStartEdit} type="button">
               重命名
             </button>

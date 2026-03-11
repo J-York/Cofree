@@ -52,6 +52,7 @@ const RULE_TOOL_SELECTION = [
   "- **创建新文件**：必须使用 propose_file_edit，设置 operation='create'、relative_path 和 content。绝对不要用 cat/echo 重定向。",
   "- **删除文件/目录**：使用 propose_shell。Windows/PowerShell 下优先用 'Remove-Item -Recurse -Force <路径>' 或 'Remove-Item -Force <文件>'；Unix 下可用 'rm -r <路径>' 或 'rm <文件>'。",
   "- **命令执行**：使用 propose_shell，但必须使用与真实执行器匹配的语法。Windows 下优先使用 PowerShell 语法（如 ';'、$env:NAME、New-Item、Remove-Item），Unix 下使用 POSIX shell。示例：PowerShell 可用 propose_shell(shell='npm install; npm test')。",
+  "- **长时间运行的服务命令**：如果命令会持续占用前台（如 `python -m http.server 5173`、`npm run dev`、watch 模式、dev server），必须使用 `propose_shell` 并设置 `execution_mode='background'`。如果端口或本地 URL 已知，额外传 `ready_url`，让系统在服务就绪后继续后续步骤。",
   '- **Git 操作**：使用 propose_shell；在 Windows/PowerShell 下可写 shell=\'git add .; git commit -m "message"\'，或使用 \'git checkout -b branch\'。注意：Git 操作仅在 Git 仓库中有效，非 Git 目录会返回空结果。',
   "",
   "## 交互式命令警告",

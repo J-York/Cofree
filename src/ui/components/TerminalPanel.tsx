@@ -1,6 +1,7 @@
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { type KeyboardEvent, type ReactElement, useEffect, useRef, useState } from "react";
-import { runShellCommand } from "../../lib/tauriBridge";
-import type { CommandExecutionResult } from "../../lib/tauriTypes";
+import { cancelShellCommand, startShellCommand } from "../../lib/tauriBridge";
+import type { CommandExecutionResult, ShellCommandEvent } from "../../lib/tauriTypes";
 import { IconSpinner, IconTerminal } from "./Icons";
 
 interface TerminalPanelProps {
@@ -69,6 +70,8 @@ export function TerminalPanel({
   const [entries, setEntries] = useState<TerminalEntry[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [activeCommand, setActiveCommand] = useState("");
+  const [activeStdout, setActiveStdout] = useState("");
+  const [activeStderr, setActiveStderr] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
 
@@ -76,6 +79,13 @@ export function TerminalPanel({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const draftCommandRef = useRef("");
   const workspaceVersionRef = useRef(0);
+  const activeJobIdRef = useRef<string | null>(null);
+  const activeCommandRef = useRef("");
+  const activeStdoutRef = useRef("");
+  const activeStderrRef = useRef("");
+  const activeStartedAtRef = useRef(0);
+  const activeTimestampRef = useRef("");
+  const activeWorkspaceVersionRef = useRef(0);
 
   const workspaceLabel = workspacePath ? getWorkspaceLabel(workspacePath) : "workspace";
 
@@ -99,7 +109,16 @@ export function TerminalPanel({
     setHistoryIndex(null);
     setIsRunning(false);
     setActiveCommand("");
+    setActiveStdout("");
+    setActiveStderr("");
     draftCommandRef.current = "";
+    activeJobIdRef.current = null;
+    activeCommandRef.current = "";
+    activeStdoutRef.current = "";
+    activeStderrRef.current = "";
+    activeStartedAtRef.current = 0;
+    activeTimestampRef.current = "";
+    activeWorkspaceVersionRef.current = workspaceVersionRef.current;
   }, [workspacePath]);
 
   const resetHistoryNavigation = (): void => {
@@ -114,6 +133,99 @@ export function TerminalPanel({
     inputRef.current?.focus();
   };
 
+  const resetActiveCommandState = (): void => {
+    activeJobIdRef.current = null;
+    activeCommandRef.current = "";
+    activeStdoutRef.current = "";
+    activeStderrRef.current = "";
+    activeStartedAtRef.current = 0;
+    activeTimestampRef.current = "";
+    setIsRunning(false);
+    setActiveCommand("");
+    setActiveStdout("");
+    setActiveStderr("");
+    inputRef.current?.focus();
+  };
+
+  const appendTerminalEntry = (
+    commandText: string,
+    result: CommandExecutionResult,
+    durationMs: number,
+    timestamp: string,
+  ): void => {
+    setEntries((current) => [
+      ...current,
+      {
+        id: createTerminalEntryId(),
+        command: commandText,
+        success: result.success,
+        timedOut: result.timed_out,
+        status: result.status,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        durationMs,
+        timestamp,
+      },
+    ]);
+  };
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let disposed = false;
+
+    void listen<ShellCommandEvent>("shell-command-event", (event) => {
+      if (disposed || event.payload.job_id !== activeJobIdRef.current) {
+        return;
+      }
+
+      const payload = event.payload;
+      if (
+        payload.event_type === "output" &&
+        payload.chunk &&
+        (payload.stream === "stdout" || payload.stream === "stderr")
+      ) {
+        if (payload.stream === "stdout") {
+          activeStdoutRef.current += payload.chunk;
+          setActiveStdout(activeStdoutRef.current);
+        } else {
+          activeStderrRef.current += payload.chunk;
+          setActiveStderr(activeStderrRef.current);
+        }
+        return;
+      }
+
+      if (payload.event_type !== "completed") {
+        return;
+      }
+
+      const workspaceVersion = activeWorkspaceVersionRef.current;
+      const result: CommandExecutionResult = {
+        success: Boolean(payload.success),
+        command: payload.command,
+        timed_out: Boolean(payload.timed_out),
+        status: Number(payload.status ?? -1),
+        stdout: String(payload.stdout ?? activeStdoutRef.current),
+        stderr: String(payload.stderr ?? activeStderrRef.current),
+      };
+      if (workspaceVersion === workspaceVersionRef.current) {
+        appendTerminalEntry(
+          activeCommandRef.current || payload.command,
+          result,
+          performance.now() - activeStartedAtRef.current,
+          activeTimestampRef.current || new Date().toISOString(),
+        );
+      }
+      resetActiveCommandState();
+    }).then((dispose) => {
+      unlisten = dispose;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const handleSubmit = async (): Promise<void> => {
     const shell = command.trim();
     if (!shell || isRunning) return;
@@ -127,6 +239,8 @@ export function TerminalPanel({
 
     setIsRunning(true);
     setActiveCommand(shell);
+    setActiveStdout("");
+    setActiveStderr("");
     setHistory((current) => [...current, shell]);
     setCommand("");
     resetHistoryNavigation();
@@ -134,52 +248,57 @@ export function TerminalPanel({
     const startedAt = performance.now();
     const timestamp = new Date().toISOString();
     const workspaceVersion = workspaceVersionRef.current;
+    activeCommandRef.current = shell;
+    activeStdoutRef.current = "";
+    activeStderrRef.current = "";
+    activeStartedAtRef.current = startedAt;
+    activeTimestampRef.current = timestamp;
+    activeWorkspaceVersionRef.current = workspaceVersion;
 
     try {
-      const result = await runShellCommand({
+      const startPromise = startShellCommand({
         workspacePath,
         shell,
         timeoutMs: 120000,
       });
-      if (workspaceVersion !== workspaceVersionRef.current) return;
-      const durationMs = performance.now() - startedAt;
-      setEntries((current) => [
-        ...current,
-        {
-          id: createTerminalEntryId(),
-          command: shell,
-          success: result.success,
-          timedOut: result.timed_out,
-          status: result.status,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          durationMs,
-          timestamp,
-        },
-      ]);
+      // Set the job ID from the promise synchronously via .then() so that
+      // shell-command-event listeners can match completion events that arrive
+      // before the outer await resumes (e.g. for fast commands like `pwd`).
+      startPromise.then((started) => {
+        activeJobIdRef.current = started.job_id;
+      });
+      const started = await startPromise;
+      activeJobIdRef.current = started.job_id;
     } catch (error) {
       const failure = createFailureResult(shell, error);
       if (workspaceVersion !== workspaceVersionRef.current) return;
-      const durationMs = performance.now() - startedAt;
-      setEntries((current) => [
-        ...current,
-        {
-          id: createTerminalEntryId(),
-          command: shell,
-          success: false,
-          timedOut: false,
-          status: failure.status,
-          stdout: "",
-          stderr: failure.stderr,
-          durationMs,
-          timestamp,
-        },
-      ]);
-    } finally {
-      if (workspaceVersion !== workspaceVersionRef.current) return;
-      setIsRunning(false);
-      setActiveCommand("");
-      inputRef.current?.focus();
+      appendTerminalEntry(
+        shell,
+        failure,
+        performance.now() - startedAt,
+        timestamp,
+      );
+      resetActiveCommandState();
+    }
+  };
+
+  const handleCancel = async (): Promise<void> => {
+    const activeJobId = activeJobIdRef.current;
+    if (!activeJobId) {
+      return;
+    }
+
+    try {
+      await cancelShellCommand(activeJobId);
+    } catch (error) {
+      const failure = createFailureResult(activeCommandRef.current, error);
+      appendTerminalEntry(
+        activeCommandRef.current,
+        failure,
+        performance.now() - activeStartedAtRef.current,
+        activeTimestampRef.current || new Date().toISOString(),
+      );
+      resetActiveCommandState();
     }
   };
 
@@ -304,6 +423,12 @@ export function TerminalPanel({
                   运行中
                 </span>
               </div>
+              {activeStdout && (
+                <pre className="terminal-entry-output">{activeStdout}</pre>
+              )}
+              {activeStderr && (
+                <pre className="terminal-entry-output terminal-entry-output-error">{activeStderr}</pre>
+              )}
             </section>
           )}
         </div>
@@ -336,6 +461,15 @@ export function TerminalPanel({
           </label>
           <div className="terminal-composer-actions">
             <span className="terminal-composer-hint">↑↓ 历史 · clear 清屏</span>
+            {isRunning && (
+              <button
+                className="btn btn-ghost btn-sm"
+                type="button"
+                onClick={() => void handleCancel()}
+              >
+                取消
+              </button>
+            )}
             <button
               className="btn btn-primary btn-sm"
               type="submit"

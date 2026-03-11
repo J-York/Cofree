@@ -25,6 +25,7 @@ const WORKFLOW_STATES = new Set<OrchestrationPlan["state"]>([
 const ACTION_STATUSES = new Set<ActionProposal["status"]>([
   "pending",
   "running",
+  "background",
   "completed",
   "failed",
   "rejected"
@@ -143,7 +144,15 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       planStepId,
       payload: {
         shell: shellCommand,
-        timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000))
+        timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000)),
+        executionMode: asString(payload.executionMode, "foreground") === "background"
+          ? "background"
+          : "foreground",
+        readyUrl: typeof payload.readyUrl === "string" ? payload.readyUrl : undefined,
+        readyTimeoutMs:
+          typeof payload.readyTimeoutMs === "number"
+            ? Math.max(1000, asNumber(payload.readyTimeoutMs, 20000))
+            : undefined,
       }
     };
   }
@@ -177,7 +186,8 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       planStepId,
       payload: {
         shell: shellCommand,
-        timeoutMs: 120000
+        timeoutMs: 120000,
+        executionMode: "foreground",
       }
     };
   }
@@ -197,7 +207,15 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       planStepId,
       payload: {
         shell: asString(payload.shell, "pnpm build"),
-        timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000))
+        timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000)),
+        executionMode: asString(payload.executionMode, "foreground") === "background"
+          ? "background"
+          : "foreground",
+        readyUrl: typeof payload.readyUrl === "string" ? payload.readyUrl : undefined,
+        readyTimeoutMs:
+          typeof payload.readyTimeoutMs === "number"
+            ? Math.max(1000, asNumber(payload.readyTimeoutMs, 20000))
+            : undefined,
       }
     };
   }

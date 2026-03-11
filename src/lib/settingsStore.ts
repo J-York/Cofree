@@ -82,8 +82,19 @@ export interface ManagedModel {
   source: ManagedModelSource;
   supportsThinking: boolean;
   thinkingLevel: ManagedModelThinkingLevel;
+  metaSettings: ManagedModelMetaSettings;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ManagedModelMetaSettings {
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+  temperature: number | null;
+  topP: number | null;
+  frequencyPenalty: number | null;
+  presencePenalty: number | null;
+  seed: number | null;
 }
 
 export interface AppSettings {
@@ -183,6 +194,56 @@ function normalizeManagedModelThinkingLevel(
     : DEFAULT_MANAGED_MODEL_THINKING_LEVEL;
 }
 
+function createDefaultManagedModelMetaSettings(): ManagedModelMetaSettings {
+  return {
+    contextWindowTokens: 0,
+    maxOutputTokens: 0,
+    temperature: null,
+    topP: null,
+    frequencyPenalty: null,
+    presencePenalty: null,
+    seed: null,
+  };
+}
+
+function normalizeNumberInRangeOrNull(
+  value: unknown,
+  min: number,
+  max: number,
+): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeIntegerTokenLimit(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(parsed));
+}
+
+function normalizeManagedModelMetaSettings(raw: unknown): ManagedModelMetaSettings {
+  if (!isRecord(raw)) {
+    return createDefaultManagedModelMetaSettings();
+  }
+  return {
+    contextWindowTokens: normalizeIntegerTokenLimit(raw.contextWindowTokens),
+    maxOutputTokens: normalizeIntegerTokenLimit(raw.maxOutputTokens),
+    temperature: normalizeNumberInRangeOrNull(raw.temperature, 0, 2),
+    topP: normalizeNumberInRangeOrNull(raw.topP, 0, 1),
+    frequencyPenalty: normalizeNumberInRangeOrNull(raw.frequencyPenalty, -2, 2),
+    presencePenalty: normalizeNumberInRangeOrNull(raw.presencePenalty, -2, 2),
+    seed: normalizeNumberInRangeOrNull(raw.seed, 0, Number.MAX_SAFE_INTEGER),
+  };
+}
+
 function formatLegacyModelRef(provider?: string, model?: string): string {
   const trimmedModel = model?.trim() || DEFAULT_MODEL_NAME;
   const trimmedProvider = provider?.trim();
@@ -205,6 +266,7 @@ function createFixedDefaultEntities(): { vendor: VendorConfig; model: ManagedMod
     source: "manual",
     supportsThinking: false,
     thinkingLevel: DEFAULT_MANAGED_MODEL_THINKING_LEVEL,
+    metaSettings: createDefaultManagedModelMetaSettings(),
     createdAt: FIXED_TIMESTAMP,
     updatedAt: FIXED_TIMESTAMP,
   };
@@ -286,6 +348,7 @@ export function createManagedModel(
     source,
     supportsThinking: false,
     thinkingLevel: DEFAULT_MANAGED_MODEL_THINKING_LEVEL,
+    metaSettings: createDefaultManagedModelMetaSettings(),
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -326,6 +389,7 @@ function normalizeManagedModel(raw: unknown): ManagedModel | null {
     source: raw.source === "fetched" ? "fetched" : "manual",
     supportsThinking: raw.supportsThinking === true,
     thinkingLevel: normalizeManagedModelThinkingLevel(raw.thinkingLevel),
+    metaSettings: normalizeManagedModelMetaSettings(raw.metaSettings),
     createdAt,
     updatedAt,
   };
@@ -527,6 +591,19 @@ export function syncRuntimeSettings(settings: AppSettings, apiKey = settings.api
   return withRuntimeSelection(settings, apiKey);
 }
 
+export function resolveEffectiveContextTokenLimit(
+  settings: Pick<AppSettings, "maxContextTokens" | "managedModels" | "activeModelId">,
+): number {
+  const contextLimit = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
+  const activeModel = getManagedModelById(settings, settings.activeModelId);
+  const modelLimit = activeModel?.metaSettings.contextWindowTokens ?? 0;
+  const modelWindowLimit =
+    modelLimit > 0
+      ? modelLimit
+      : Number.POSITIVE_INFINITY;
+  return Math.max(1, Math.min(contextLimit, modelWindowLimit));
+}
+
 export function updateWorkspacePath(settings: AppSettings, workspacePath: string): AppSettings {
   const normalizedWorkspacePath = normalizeWorkspacePath(workspacePath);
   return syncRuntimeSettings({
@@ -569,7 +646,12 @@ export function updateProxySettings(
 export function updateContextSettings(
   settings: AppSettings,
   updates: Partial<
-    Pick<AppSettings, "maxSnippetLines" | "maxContextTokens" | "sendRelativePathOnly">
+    Pick<
+      AppSettings,
+      | "maxSnippetLines"
+      | "maxContextTokens"
+      | "sendRelativePathOnly"
+    >
   >,
 ): AppSettings {
   return syncRuntimeSettings({ ...settings, ...updates });
@@ -682,6 +764,7 @@ function migrateLegacyProfilesToManagedResources(parsed: Partial<PersistedSettin
       source: "manual",
       supportsThinking: false,
       thinkingLevel: DEFAULT_MANAGED_MODEL_THINKING_LEVEL,
+      metaSettings: createDefaultManagedModelMetaSettings(),
       createdAt: sourceProfile.createdAt || timestamp,
       updatedAt: timestamp,
     };
@@ -868,6 +951,35 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
     } as ToolPermissions,
   };
 
+  const legacyModelContextWindow = normalizeIntegerTokenLimit(
+    (parsed as Record<string, unknown>).modelContextWindowTokens,
+  );
+  const legacyModelMaxOutput = normalizeIntegerTokenLimit(
+    (parsed as Record<string, unknown>).modelMaxOutputTokens,
+  );
+  const hasLegacyModelMeta = legacyModelContextWindow > 0 || legacyModelMaxOutput > 0;
+  const withLegacyModelMeta = hasLegacyModelMeta
+    ? {
+      ...baseWithoutAgents,
+      managedModels: baseWithoutAgents.managedModels.map((model) => {
+        const alreadyConfigured =
+          model.metaSettings.contextWindowTokens > 0 ||
+          model.metaSettings.maxOutputTokens > 0;
+        if (alreadyConfigured) {
+          return model;
+        }
+        return {
+          ...model,
+          metaSettings: {
+            ...model.metaSettings,
+            contextWindowTokens: legacyModelContextWindow,
+            maxOutputTokens: legacyModelMaxOutput,
+          },
+        };
+      }),
+    }
+    : baseWithoutAgents;
+
   const legacyProfileSelections = legacyMigration?.legacyProfileSelections ?? (() => {
     const rawProfiles = Array.isArray((parsed as Record<string, unknown>).profiles)
       ? ((parsed as Record<string, unknown>).profiles as LegacyModelProfile[])
@@ -876,14 +988,14 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
       rawProfiles.flatMap((profile) => {
         const profileId = profile.id?.trim();
         if (!profileId) return [];
-        const selection = resolveLegacyProfileSelection(profile, baseWithoutAgents);
+        const selection = resolveLegacyProfileSelection(profile, withLegacyModelMeta);
         return selection ? [[profileId, selection]] : [];
       }),
     );
   })();
 
   const withAgents: AppSettings = {
-    ...baseWithoutAgents,
+    ...withLegacyModelMeta,
     customAgents: normalizeCustomAgents(
       (parsed as Record<string, unknown>).customAgents,
       legacyProfileSelections,
@@ -1369,6 +1481,10 @@ export function updateManagedModel(
           updates.thinkingLevel !== undefined
             ? normalizeManagedModelThinkingLevel(updates.thinkingLevel)
             : model.thinkingLevel,
+        metaSettings:
+          updates.metaSettings !== undefined
+            ? normalizeManagedModelMetaSettings(updates.metaSettings)
+            : model.metaSettings,
         updatedAt: nowIso(),
       }
       : model,
