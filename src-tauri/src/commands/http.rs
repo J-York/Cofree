@@ -52,6 +52,7 @@ pub fn apply_protocol_headers(
     match normalize_protocol(protocol) {
         "anthropic-messages" => {
             request = request.header("anthropic-version", "2023-06-01");
+            request = request.header("anthropic-beta", "prompt-caching-2024-07-31");
             if !api_key.trim().is_empty() {
                 request = request.header("x-api-key", api_key.trim());
             }

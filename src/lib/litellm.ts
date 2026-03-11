@@ -181,6 +181,7 @@ function createAuthHeaders(
 
   if (protocol === "anthropic-messages") {
     headers["anthropic-version"] = "2023-06-01";
+    headers["anthropic-beta"] = "prompt-caching-2024-07-31";
     if (apiKey.trim()) {
       headers["x-api-key"] = apiKey.trim();
     }
@@ -488,6 +489,8 @@ function summarizeUsage(usage: unknown): Record<string, number> | undefined {
     "prompt_tokens",
     "completion_tokens",
     "total_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
   ] as const;
 
   for (const field of usageFields) {
@@ -956,7 +959,7 @@ function toOpenAIResponsesInput(messages: LiteLLMMessage[]): unknown[] {
 
 function toAnthropicMessages(
   messages: LiteLLMMessage[]
-): { system?: string; messages: Array<Record<string, unknown>> } {
+): { system?: string | Array<Record<string, unknown>>; messages: Array<Record<string, unknown>> } {
   const systemParts: string[] = [];
   const anthropicMessages: Array<Record<string, unknown>> = [];
 
@@ -1016,8 +1019,28 @@ function toAnthropicMessages(
     }
   }
 
+  // Convert system prompt to cache-enabled format if present
+  // Mark the system prompt for caching since it's large and repetitive
+  let systemContent: string | Array<Record<string, unknown>> | undefined;
+  if (systemParts.length > 0) {
+    const systemText = systemParts.join("\n\n");
+    // Only enable caching if system prompt is substantial (>1024 chars)
+    // Anthropic charges for cached content, so only cache meaningful content
+    if (systemText.length > 1024) {
+      systemContent = [
+        {
+          type: "text",
+          text: systemText,
+          cache_control: { type: "ephemeral" },
+        },
+      ];
+    } else {
+      systemContent = systemText;
+    }
+  }
+
   return {
-    system: systemParts.length ? systemParts.join("\n\n") : undefined,
+    system: systemContent,
     messages: anthropicMessages,
   };
 }
@@ -1484,6 +1507,28 @@ function normalizeAnthropicMessagesBody(raw: string): string {
   const usage: Record<string, unknown> = isRecord(payload.usage)
     ? payload.usage
     : {};
+
+  // Preserve cache-related usage metrics
+  const normalizedUsage: Record<string, number> = {
+    prompt_tokens:
+      typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+    completion_tokens:
+      typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
+    total_tokens:
+      typeof usage.input_tokens === "number" &&
+        typeof usage.output_tokens === "number"
+        ? usage.input_tokens + usage.output_tokens
+        : 0,
+  };
+
+  // Add cache metrics if present
+  if (typeof usage.cache_creation_input_tokens === "number") {
+    normalizedUsage.cache_creation_input_tokens = usage.cache_creation_input_tokens;
+  }
+  if (typeof usage.cache_read_input_tokens === "number") {
+    normalizedUsage.cache_read_input_tokens = usage.cache_read_input_tokens;
+  }
+
   return JSON.stringify({
     id: payload.id,
     choices: [
@@ -1497,17 +1542,7 @@ function normalizeAnthropicMessagesBody(raw: string): string {
           typeof payload.stop_reason === "string" ? payload.stop_reason : "stop",
       },
     ],
-    usage: {
-      prompt_tokens:
-        typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
-      completion_tokens:
-        typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
-      total_tokens:
-        typeof usage.input_tokens === "number" &&
-          typeof usage.output_tokens === "number"
-          ? usage.input_tokens + usage.output_tokens
-          : 0,
-    },
+    usage: normalizedUsage,
   });
 }
 
