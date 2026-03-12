@@ -404,6 +404,17 @@ fn zero_usage() -> Value {
     serde_json::json!({ "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 })
 }
 
+/// Map Anthropic stop_reason values to OpenAI finish_reason equivalents.
+fn map_anthropic_stop_reason(stop_reason: Option<String>) -> Option<String> {
+    stop_reason.map(|reason| match reason.as_str() {
+        "end_turn" => "stop".to_string(),
+        "tool_use" => "tool_calls".to_string(),
+        "max_tokens" => "length".to_string(),
+        "stop_sequence" => "stop".to_string(),
+        _ => reason,
+    })
+}
+
 fn anthropic_usage_to_openai(usage: &Value) -> Value {
     let input_tokens = usage
         .get("input_tokens")
@@ -474,8 +485,20 @@ fn populate_anthropic_tool_call_from_block(
         None,
     );
 
-    if let Some(arguments) = block.get("input").and_then(serialize_tool_call_arguments) {
-        set_tool_call_arguments(entry, &arguments);
+    // Only set arguments from `input` if it's a non-empty object.
+    // Anthropic streaming sends `input: {}` in content_block_start as a placeholder;
+    // the actual arguments arrive later via partial_json deltas in content_block_delta.
+    // If we set arguments to "{}" here, subsequent partial_json chunks get appended
+    // to "{}", producing corrupted JSON like "{}{"path":"/foo"}".
+    let input = block.get("input");
+    let is_empty_object = input
+        .and_then(Value::as_object)
+        .map(|obj| obj.is_empty())
+        .unwrap_or(false);
+    if !is_empty_object {
+        if let Some(arguments) = input.and_then(serialize_tool_call_arguments) {
+            set_tool_call_arguments(entry, &arguments);
+        }
     }
 }
 
@@ -1232,7 +1255,7 @@ async fn parse_anthropic_messages_stream(
 
     Ok(build_synthetic_stream_body(
         state.full_content,
-        state.finish_reason,
+        map_anthropic_stop_reason(state.finish_reason),
         state.tool_calls_json,
         state.usage_info,
     ))
@@ -1415,7 +1438,7 @@ mod tests {
     fn synthetic_payload_from_state(state: AnthropicStreamState) -> Value {
         serde_json::from_str(&build_synthetic_stream_body(
             state.full_content,
-            state.finish_reason,
+            map_anthropic_stop_reason(state.finish_reason),
             state.tool_calls_json,
             state.usage_info,
         ))
@@ -1489,7 +1512,7 @@ mod tests {
         );
         assert_eq!(
             payload["choices"][0]["finish_reason"],
-            Value::String("tool_use".to_string())
+            Value::String("tool_calls".to_string())
         );
         assert_eq!(payload["usage"]["prompt_tokens"], Value::from(12));
         assert_eq!(payload["usage"]["completion_tokens"], Value::from(7));
@@ -1548,6 +1571,76 @@ mod tests {
         assert_eq!(
             payload["choices"][0]["message"]["content"],
             Value::String(String::new())
+        );
+    }
+
+    #[test]
+    fn reconstructs_tool_use_from_partial_json_with_empty_input_placeholder() {
+        // Real-world Anthropic streaming: content_block_start has `input: {}`
+        // as a placeholder, and actual arguments arrive via partial_json deltas.
+        let mut state = AnthropicStreamState::new();
+
+        apply_anthropic_stream_event(
+            &mut state,
+            "content_block_start",
+            &serde_json::json!({
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_789",
+                    "name": "read_file",
+                    "input": {}
+                }
+            }),
+        );
+        apply_anthropic_stream_event(
+            &mut state,
+            "content_block_delta",
+            &serde_json::json!({
+                "index": 0,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": "{\"relative_path\":"
+                }
+            }),
+        );
+        apply_anthropic_stream_event(
+            &mut state,
+            "content_block_delta",
+            &serde_json::json!({
+                "index": 0,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": " \"src/main.ts\"}"
+                }
+            }),
+        );
+        apply_anthropic_stream_event(
+            &mut state,
+            "content_block_stop",
+            &serde_json::json!({ "index": 0 }),
+        );
+        apply_anthropic_stream_event(
+            &mut state,
+            "message_delta",
+            &serde_json::json!({
+                "delta": { "stop_reason": "tool_use" }
+            }),
+        );
+
+        let payload = synthetic_payload_from_state(state);
+        assert_eq!(
+            payload["choices"][0]["message"]["tool_calls"],
+            serde_json::json!([
+                {
+                    "id": "toolu_789",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": "{\"relative_path\": \"src/main.ts\"}"
+                    }
+                }
+            ])
         );
     }
 

@@ -984,25 +984,61 @@ function toOpenAIResponsesInput(messages: LiteLLMMessage[]): unknown[] {
   return items;
 }
 
+/**
+ * Appends content blocks to the last message in `anthropicMessages` if it's a
+ * `user` message, otherwise pushes a new `user` message.
+ *
+ * This is critical for Anthropic's API which requires strict role alternation
+ * (user → assistant → user → …).  Multiple consecutive tool results, system
+ * hints, or user texts must be merged into a single `user` message.
+ */
+function appendToLastUserMessageOrPush(
+  anthropicMessages: Array<Record<string, unknown>>,
+  contentBlocks: Array<Record<string, unknown>>,
+): void {
+  const last = anthropicMessages[anthropicMessages.length - 1];
+  if (last && last.role === "user" && Array.isArray(last.content)) {
+    (last.content as Array<Record<string, unknown>>).push(...contentBlocks);
+  } else {
+    anthropicMessages.push({
+      role: "user",
+      content: [...contentBlocks],
+    });
+  }
+}
+
 function toAnthropicMessages(
   messages: LiteLLMMessage[]
 ): { system?: string | Array<Record<string, unknown>>; messages: Array<Record<string, unknown>> } {
+  // Only leading system messages go to the top-level `system` parameter.
+  // Mid-conversation system messages are converted to user messages to
+  // preserve temporal context (Anthropic doesn't support inline system role).
   const systemParts: string[] = [];
+  let seenNonSystem = false;
   const anthropicMessages: Array<Record<string, unknown>> = [];
 
   for (const message of messages) {
     if (message.role === "system") {
       if (message.content.trim()) {
-        systemParts.push(message.content.trim());
+        if (!seenNonSystem) {
+          // Leading system messages → top-level system parameter
+          systemParts.push(message.content.trim());
+        } else {
+          // Mid-conversation system messages → user message to preserve context
+          appendToLastUserMessageOrPush(anthropicMessages, [
+            { type: "text", text: `[System] ${message.content.trim()}` },
+          ]);
+        }
       }
       continue;
     }
 
+    seenNonSystem = true;
+
     if (message.role === "user") {
-      anthropicMessages.push({
-        role: "user",
-        content: [{ type: "text", text: message.content }],
-      });
+      appendToLastUserMessageOrPush(anthropicMessages, [
+        { type: "text", text: message.content },
+      ]);
       continue;
     }
 
@@ -1032,17 +1068,17 @@ function toAnthropicMessages(
       continue;
     }
 
+    // Anthropic requires tool_result blocks to be in user messages.
+    // Merge consecutive tool results into the same user message to
+    // avoid consecutive user messages (violates role alternation).
     if (message.role === "tool" && message.tool_call_id) {
-      anthropicMessages.push({
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: message.tool_call_id,
-            content: message.content,
-          },
-        ],
-      });
+      appendToLastUserMessageOrPush(anthropicMessages, [
+        {
+          type: "tool_result",
+          tool_use_id: message.tool_call_id,
+          content: message.content,
+        },
+      ]);
     }
   }
 
@@ -1215,9 +1251,15 @@ function createAnthropicRequestBody(
   if (usesEffortMode && thinkingLevel) {
     body.output_config = { effort: thinkingLevel };
   } else if (usesManualThinking && thinkingLevel) {
+    const budgetTokens = ANTHROPIC_THINKING_BUDGET_BY_LEVEL[thinkingLevel];
+    // Anthropic requires max_tokens > budget_tokens when thinking is enabled.
+    const currentMaxTokens = body.max_tokens as number;
+    if (currentMaxTokens <= budgetTokens) {
+      body.max_tokens = budgetTokens + 1024;
+    }
     body.thinking = {
       type: "enabled",
-      budget_tokens: ANTHROPIC_THINKING_BUDGET_BY_LEVEL[thinkingLevel],
+      budget_tokens: budgetTokens,
     };
   }
 
@@ -1561,6 +1603,26 @@ function normalizeOpenAIResponsesBody(raw: string): string {
   });
 }
 
+/**
+ * Map Anthropic stop_reason values to OpenAI finish_reason equivalents.
+ * Anthropic: end_turn, tool_use, max_tokens, stop_sequence
+ * OpenAI:    stop,     tool_calls, length,     stop
+ */
+function mapAnthropicStopReason(stopReason: string | null): string {
+  switch (stopReason) {
+    case "end_turn":
+      return "stop";
+    case "tool_use":
+      return "tool_calls";
+    case "max_tokens":
+      return "length";
+    case "stop_sequence":
+      return "stop";
+    default:
+      return "stop";
+  }
+}
+
 function normalizeAnthropicMessagesBody(raw: string): string {
   const payload = JSON.parse(raw) as Record<string, unknown>;
   const content = Array.isArray(payload.content) ? payload.content : [];
@@ -1629,8 +1691,9 @@ function normalizeAnthropicMessagesBody(raw: string): string {
           content: textParts.join(""),
           tool_calls: toolCalls.length ? toolCalls : undefined,
         },
-        finish_reason:
-          typeof payload.stop_reason === "string" ? payload.stop_reason : "stop",
+        finish_reason: mapAnthropicStopReason(
+          typeof payload.stop_reason === "string" ? payload.stop_reason : null
+        ),
       },
     ],
     usage: normalizedUsage,
