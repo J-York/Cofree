@@ -1,6 +1,6 @@
 use crate::commands::http::{
     apply_protocol_headers, build_protocol_endpoints, build_reqwest_client_with_proxy,
-    normalize_base_url, normalize_protocol,
+    normalize_protocol,
 };
 use crate::domain::{LiteLLMHttpResponse, ProxySettings, StreamChunkEvent};
 use futures_util::StreamExt;
@@ -1268,12 +1268,11 @@ pub async fn fetch_litellm_models(
     protocol: String,
     proxy: Option<ProxySettings>,
 ) -> Result<Vec<String>, String> {
-    let normalized = normalize_base_url(&base_url);
-    if normalized.is_empty() {
+    let endpoints = build_protocol_endpoints(base_url.trim(), &protocol, true);
+    if endpoints.is_empty() {
         return Err("LiteLLM Base URL 不能为空".to_string());
     }
     let client = build_reqwest_client_with_proxy(proxy, Some(120))?;
-    let endpoints = build_protocol_endpoints(&normalized, &protocol, true);
     let mut errors = Vec::new();
     for endpoint in endpoints {
         match fetch_models_from_endpoint(&client, &endpoint, &protocol, &api_key).await {
@@ -1292,12 +1291,11 @@ pub async fn post_litellm_chat_completions(
     body: Value,
     proxy: Option<ProxySettings>,
 ) -> Result<LiteLLMHttpResponse, String> {
-    let normalized = normalize_base_url(&base_url);
-    if normalized.is_empty() {
+    let endpoints = build_protocol_endpoints(base_url.trim(), &protocol, false);
+    if endpoints.is_empty() {
         return Err("LiteLLM Base URL 不能为空".to_string());
     }
     let client = build_reqwest_client_with_proxy(proxy, Some(120))?;
-    let endpoints = build_protocol_endpoints(&normalized, &protocol, false);
     let mut errors = Vec::new();
     for (index, endpoint) in endpoints.iter().enumerate() {
         match post_chat_completion_to_endpoint(&client, endpoint, &protocol, &api_key, &body).await
@@ -1345,8 +1343,8 @@ pub async fn post_litellm_chat_completions_stream(
     request_id: String,
     proxy: Option<ProxySettings>,
 ) -> Result<LiteLLMHttpResponse, String> {
-    let normalized = normalize_base_url(&base_url);
-    if normalized.is_empty() {
+    let endpoints = build_protocol_endpoints(base_url.trim(), &protocol, false);
+    if endpoints.is_empty() {
         return Err("LiteLLM Base URL 不能为空".to_string());
     }
     // Streaming tool turns can legitimately stay open for longer than five minutes.
@@ -1362,7 +1360,6 @@ pub async fn post_litellm_chat_completions_stream(
             );
         }
     }
-    let endpoints = build_protocol_endpoints(&normalized, &protocol, false);
     let mut errors = Vec::new();
     for (index, endpoint) in endpoints.iter().enumerate() {
         let response = match apply_protocol_headers(

@@ -3,10 +3,6 @@ use crate::domain::ProxySettings;
 use reqwest::header::ACCEPT;
 use std::time::Duration;
 
-pub fn normalize_base_url(base_url: &str) -> String {
-    base_url.trim().trim_end_matches('/').to_string()
-}
-
 pub fn normalize_protocol(protocol: &str) -> &str {
     match protocol.trim() {
         "openai-responses" => "openai-responses",
@@ -15,9 +11,13 @@ pub fn normalize_protocol(protocol: &str) -> &str {
     }
 }
 
+/// 根据 BASEURL 后缀规则构建请求端点：
+/// - 末尾 `#`：不补全，直接向去掉 # 的 URL 发请求
+/// - 末尾 `/`：只加资源路径（/chat/completions 或 /messages 等），不加 /v1
+/// - 否则：不以 /v1 结尾则先补 /v1，再拼端点
 pub fn build_protocol_endpoints(base_url: &str, protocol: &str, models_only: bool) -> Vec<String> {
-    let normalized = normalize_base_url(base_url);
-    if normalized.is_empty() {
+    let raw = base_url.trim();
+    if raw.is_empty() {
         return Vec::new();
     }
 
@@ -31,14 +31,25 @@ pub fn build_protocol_endpoints(base_url: &str, protocol: &str, models_only: boo
         }
     };
 
-    // Anthropic 端点需要 /v1 前缀，自动补全
-    // 最终格式：base_url/v1/messages
-    let base_with_v1 = if normalized.ends_with("/v1") {
-        normalized.to_string()
-    } else {
-        format!("{}/v1", normalized)
-    };
+    if raw.ends_with('#') {
+        let url = raw.trim_end_matches('#').trim();
+        if url.is_empty() {
+            return Vec::new();
+        }
+        return vec![url.to_string()];
+    }
 
+    if raw.ends_with('/') {
+        let base = raw.trim_end_matches('/');
+        return vec![format!("{}/{}", base, suffix)];
+    }
+
+    let base = raw.trim_end_matches('/');
+    let base_with_v1 = if base.ends_with("/v1") {
+        base.to_string()
+    } else {
+        format!("{}/v1", base)
+    };
     vec![format!("{}/{}", base_with_v1, suffix)]
 }
 

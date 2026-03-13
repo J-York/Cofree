@@ -138,17 +138,13 @@ export function parseModelRef(modelRef: string): {
   };
 }
 
-function normalizeBaseUrl(baseUrl: string): string {
-  return baseUrl.trim().replace(/\/$/, "");
-}
-
 function buildProtocolEndpoints(
   baseUrl: string,
   protocol: VendorProtocol,
   resource: "models" | "invoke"
 ): string[] {
-  const normalized = normalizeBaseUrl(baseUrl);
-  if (!normalized) {
+  const raw = baseUrl.trim();
+  if (!raw) {
     return [];
   }
 
@@ -161,13 +157,22 @@ function buildProtocolEndpoints(
           ? "responses"
           : "messages";
 
-  // Anthropic 端点需要 /v1 前缀，自动补全
-  // 最终格式：baseUrl/v1/messages
-  let baseWithV1 = normalized;
-  if (!normalized.endsWith("/v1")) {
-    baseWithV1 = `${normalized}/v1`;
+  // 末尾 #：不补全，直接向去掉 # 的 URL 发请求；若去掉 # 后为空则视为无效
+  if (raw.endsWith("#")) {
+    const url = raw.slice(0, -1).trim();
+    if (!url) return [];
+    return [url];
   }
 
+  // 末尾 /：只加资源路径，不加 /v1
+  if (raw.endsWith("/")) {
+    const base = raw.replace(/\/+$/, "");
+    return [`${base}/${suffix}`];
+  }
+
+  // 否则：不以 /v1 结尾则先补 /v1，再拼端点
+  const base = raw.replace(/\/+$/, "");
+  const baseWithV1 = base.endsWith("/v1") ? base : `${base}/v1`;
   return [`${baseWithV1}/${suffix}`];
 }
 
