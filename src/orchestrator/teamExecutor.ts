@@ -1,6 +1,11 @@
 import { executeSubAgentTask, type SubAgentResult } from "./planningService";
 import type { AppSettings, ToolPermissions } from "../lib/settingsStore";
-import type { WorkingMemory } from "./workingMemory";
+import {
+  createWorkingMemory,
+  forkWorkingMemory,
+  mergeForkedMemories,
+  type WorkingMemory,
+} from "./workingMemory";
 import type { SubAgentProgressEvent } from "./types";
 import type {
   AgentTeamDefinition,
@@ -9,9 +14,11 @@ import type {
 } from "../agents/agentTeam";
 
 export interface TeamExecutionResult {
-  status: "completed" | "failed" | "partial";
+  status: "completed" | "failed" | "partial" | "blocked";
   stageResults: Record<string, SubAgentResult>;
   finalReply: string;
+  /** P4-1: Total turns consumed across all stages. */
+  totalTurnsUsed: number;
 }
 
 type TeamStageFailureStatus = Extract<SubAgentResult["status"], "failed" | "blocked">;
@@ -20,13 +27,19 @@ type TeamStageNonSuccessStatus = Exclude<SubAgentResult["status"], "completed">;
 interface TeamAggregationSummary {
   hasFailure: boolean;
   hasPartial: boolean;
+  hasBlocked: boolean;
   hasCompletedStage: boolean;
+  totalTurns: number;
 }
 
 /**
- * Team stage condition semantics are centralized here:
- * - if_previous_succeeded: all previously executed stages must have status === "completed"
- * - if_issues_found: a previously executed reviewer/tester stage must report issues/failures
+ * Team stage condition semantics (P4-3 — centralized and documented):
+ *
+ * - always: unconditionally run this stage.
+ * - if_previous_succeeded: run only when ALL previously executed stages are "completed".
+ *   "partial" is treated as NOT succeeded (conservative). "blocked"/"failed" are also NOT succeeded.
+ * - if_issues_found: run when a previously executed reviewer/tester stage reported issues/failures.
+ *   A stage that failed or was blocked does NOT count as "issues found" — it must produce structured output.
  */
 function evaluateStageCondition(
   condition: AgentTeamStageCondition | undefined,
@@ -154,9 +167,16 @@ function buildStageDescription(
 function summarizeTeamExecution(stageResults: Map<string, SubAgentResult>): TeamAggregationSummary {
   let hasFailure = false;
   let hasPartial = false;
+  let hasBlocked = false;
   let hasCompletedStage = false;
+  let totalTurns = 0;
 
   for (const result of stageResults.values()) {
+    totalTurns += result.turnCount ?? 0;
+    if (result.status === "blocked") {
+      hasBlocked = true;
+      continue;
+    }
     if (isFailureStatus(result.status)) {
       hasFailure = true;
       continue;
@@ -170,10 +190,13 @@ function summarizeTeamExecution(stageResults: Map<string, SubAgentResult>): Team
     }
   }
 
-  return { hasFailure, hasPartial, hasCompletedStage };
+  return { hasFailure, hasPartial, hasBlocked, hasCompletedStage, totalTurns };
 }
 
 function resolveTeamStatus(summary: TeamAggregationSummary): TeamExecutionResult["status"] {
+  if (summary.hasBlocked && !summary.hasCompletedStage && !summary.hasPartial) {
+    return "blocked";
+  }
   if (summary.hasFailure) {
     return summary.hasCompletedStage || summary.hasPartial ? "partial" : "failed";
   }
@@ -202,6 +225,7 @@ function aggregateTeamResults(
     status: resolvedStatus,
     stageResults: resultsObj,
     finalReply: finalReply.trim(),
+    totalTurnsUsed: summary.totalTurns,
   };
 }
 
@@ -252,19 +276,64 @@ export async function executeAgentTeam(params: {
   const { team, taskDescription, workspacePath, settings, toolPermissions, workingMemory, focusedPaths } = params;
   const stageResults: Map<string, SubAgentResult> = new Map();
   const groups = groupStagesByExecutionOrder(team.pipeline);
+  let totalTurnsConsumed = 0;
+  const maxTotalTurns = team.config.maxTotalTurns;
+
+  // P4-1: Resolve the working memory strategy per team config.
+  // - sharedWorkingMemory=true: sequential stages share the parent memory,
+  //   parallel stages use fork-join to avoid concurrent mutation.
+  // - sharedWorkingMemory=false: every stage gets a fresh isolated memory.
+  function resolveStageMemory(forceIsolate = false): WorkingMemory | undefined {
+    if (!workingMemory) return undefined;
+    if (forceIsolate) {
+      if (team.config.sharedWorkingMemory) {
+        return forkWorkingMemory(workingMemory);
+      }
+      return createWorkingMemory({
+        maxTokenBudget: workingMemory.maxTokenBudget,
+        projectContext: workingMemory.projectContext,
+      });
+    }
+    if (team.config.sharedWorkingMemory) return workingMemory;
+    return createWorkingMemory({
+      maxTokenBudget: workingMemory.maxTokenBudget,
+      projectContext: workingMemory.projectContext,
+    });
+  }
 
   for (const group of groups) {
     if (params.signal?.aborted) {
       break;
     }
 
+    // P4-1: Enforce total turn budget across all stages
+    if (totalTurnsConsumed >= maxTotalTurns) {
+      console.warn(
+        `[TeamExecutor] Total turn budget exhausted (${totalTurnsConsumed}/${maxTotalTurns}), stopping team.`
+      );
+      break;
+    }
+
     const stagesToRun = group.filter((stage) => evaluateStageCondition(stage.condition, stageResults));
     if (stagesToRun.length === 0) {
+      // P4-3: Record skipped stages so they appear in final aggregation
+      for (const stage of group) {
+        if (!stageResults.has(stage.stageLabel)) {
+          stageResults.set(stage.stageLabel, {
+            reply: `Stage skipped: condition "${stage.condition?.type ?? "always"}" evaluated to false.`,
+            status: "partial",
+            proposedActions: [],
+            toolTrace: [],
+            turnCount: 0,
+          });
+        }
+      }
       continue;
     }
 
     if (stagesToRun.length === 1) {
       const stage = stagesToRun[0];
+      const stageMemory = resolveStageMemory();
       const result = await executeStage(
         {
           stage,
@@ -272,7 +341,7 @@ export async function executeAgentTeam(params: {
           workspacePath,
           settings,
           toolPermissions,
-          workingMemory,
+          workingMemory: stageMemory,
           focusedPaths,
           onStageProgress: params.onStageProgress,
           signal: params.signal,
@@ -281,6 +350,7 @@ export async function executeAgentTeam(params: {
       );
 
       stageResults.set(stage.stageLabel, result);
+      totalTurnsConsumed += result.turnCount ?? 0;
 
       if (!shouldContinueAfterStageFailure(team, result.status)) {
         break;
@@ -289,35 +359,54 @@ export async function executeAgentTeam(params: {
       continue;
     }
 
+    // Parallel stage group:
+    // - sharedWorkingMemory=true: fork-join against the parent memory
+    // - sharedWorkingMemory=false: fresh isolated memories, no merge-back
+    const stageMemories: WorkingMemory[] = [];
     const parallelResults = await Promise.allSettled(
-      stagesToRun.map(async (stage) => ({
-        stageLabel: stage.stageLabel,
-        result: await executeStage(
-          {
-            stage,
-            taskDescription,
-            workspacePath,
-            settings,
-            toolPermissions,
-            workingMemory,
-            focusedPaths,
-            onStageProgress: params.onStageProgress,
-            signal: params.signal,
-          },
-          stageResults,
-        ),
-      })),
+      stagesToRun.map(async (stage) => {
+        const stageMemory = resolveStageMemory(true);
+        if (stageMemory && team.config.sharedWorkingMemory) {
+          stageMemories.push(stageMemory);
+        }
+        return {
+          stageLabel: stage.stageLabel,
+          result: await executeStage(
+            {
+              stage,
+              taskDescription,
+              workspacePath,
+              settings,
+              toolPermissions,
+              workingMemory: stageMemory,
+              focusedPaths,
+              onStageProgress: params.onStageProgress,
+              signal: params.signal,
+            },
+            stageResults,
+          ),
+        };
+      }),
     );
+
+    // Merge forked memories back into the shared parent
+    if (workingMemory && team.config.sharedWorkingMemory && stageMemories.length > 0) {
+      mergeForkedMemories(workingMemory, stageMemories);
+    }
 
     const settledGroupResults: SubAgentResult[] = [];
 
-    for (const result of parallelResults) {
+    for (let i = 0; i < parallelResults.length; i++) {
+      const result = parallelResults[i];
       if (result.status === "fulfilled") {
         stageResults.set(result.value.stageLabel, result.value.result);
         settledGroupResults.push(result.value.result);
+        totalTurnsConsumed += result.value.result.turnCount ?? 0;
         continue;
       }
 
+      // P4-2: Rejected stages MUST enter stageResults so they appear in final aggregation
+      const failedStageLabel = stagesToRun[i].stageLabel;
       const syntheticFailure: SubAgentResult = {
         reply: `Stage execution failed before completion: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
         status: "failed",
@@ -325,6 +414,7 @@ export async function executeAgentTeam(params: {
         toolTrace: [],
         turnCount: 0,
       };
+      stageResults.set(failedStageLabel, syntheticFailure);
       settledGroupResults.push(syntheticFailure);
     }
 

@@ -221,12 +221,15 @@ export async function saveWorkflowCheckpoint(
   messageId: string,
   plan: OrchestrationPlan,
   toolTrace: ToolExecutionTrace[] = [],
-  continuationMemory?: HitlContinuationMemory
+  continuationMemory?: HitlContinuationMemory,
+  workingMemorySnapshot?: WorkingMemorySnapshot,
 ): Promise<void> {
   const payload: WorkflowCheckpointPayload = {
     plan: sanitizePlanForCheckpoint(plan),
     toolTrace: sanitizeToolTraceForCheckpoint(toolTrace),
-    continuationMemory: continuationMemory ? sanitizeForPersistence(continuationMemory) as HitlContinuationMemory : undefined
+    continuationMemory: continuationMemory ? sanitizeForPersistence(continuationMemory) as HitlContinuationMemory : undefined,
+    // P3-1: Persist working memory so it can be restored on reload/HITL continuation
+    workingMemory: workingMemorySnapshot ?? undefined,
   };
   await invoke("save_workflow_checkpoint", {
     sessionId,
@@ -254,6 +257,29 @@ export async function loadLatestWorkflowCheckpoint(
   const normalizedPlan = normalizeOrchestrationPlan(parsed.plan);
   if (!normalizedPlan) {
     return null;
+  }
+
+  // P3-4: Degrade background shell actions to "failed" on checkpoint restore.
+  // Background monitoring cannot survive reload, so mark them as interrupted.
+  for (const action of normalizedPlan.proposedActions) {
+    if (action.status === "background") {
+      action.status = "failed";
+      action.executionResult = {
+        success: false,
+        message: "后台命令监听已因页面重载中断，请手动确认实际状态后重试。",
+        timestamp: new Date().toISOString(),
+        metadata: { interruptedByReload: true },
+      };
+    }
+    if (action.status === "running") {
+      action.status = "failed";
+      action.executionResult = {
+        success: false,
+        message: "命令执行被页面重载中断。",
+        timestamp: new Date().toISOString(),
+        metadata: { interruptedByReload: true },
+      };
+    }
   }
 
   return {

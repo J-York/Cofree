@@ -131,6 +131,24 @@ function generateFactId(): string {
   return `fact-${Date.now()}-${factIdCounter}`;
 }
 
+function evictDiscoveredFactsToCap(memory: WorkingMemory): void {
+  while (memory.discoveredFacts.length > MAX_DISCOVERED_FACTS) {
+    const lowIdx = memory.discoveredFacts.findIndex((f) => f.confidence === "low");
+    if (lowIdx >= 0) {
+      memory.discoveredFacts.splice(lowIdx, 1);
+      continue;
+    }
+
+    const medIdx = memory.discoveredFacts.findIndex((f) => f.confidence === "medium");
+    if (medIdx >= 0) {
+      memory.discoveredFacts.splice(medIdx, 1);
+      continue;
+    }
+
+    memory.discoveredFacts.shift();
+  }
+}
+
 export function addDiscoveredFact(
   memory: WorkingMemory,
   fact: Omit<DiscoveredFact, "id" | "createdAt">,
@@ -146,21 +164,7 @@ export function addDiscoveredFact(
     createdAt: new Date().toISOString(),
   };
   memory.discoveredFacts.push(newFact);
-
-  // LRU eviction: when over limit, remove oldest low-confidence facts first
-  while (memory.discoveredFacts.length > MAX_DISCOVERED_FACTS) {
-    const lowIdx = memory.discoveredFacts.findIndex((f) => f.confidence === "low");
-    if (lowIdx >= 0) {
-      memory.discoveredFacts.splice(lowIdx, 1);
-    } else {
-      const medIdx = memory.discoveredFacts.findIndex((f) => f.confidence === "medium");
-      if (medIdx >= 0) {
-        memory.discoveredFacts.splice(medIdx, 1);
-      } else {
-        memory.discoveredFacts.shift();
-      }
-    }
-  }
+  evictDiscoveredFactsToCap(memory);
 }
 
 export function recordSubAgentExecution(
@@ -730,6 +734,106 @@ export function restoreWorkingMemory(snapshot: WorkingMemorySnapshot): WorkingMe
     projectContext: snapshot.projectContext ?? "",
     maxTokenBudget: snapshot.maxTokenBudget ?? 4000,
   };
+}
+
+/**
+ * Fork a working memory into an independent copy.
+ * Mutations on the fork will not affect the original.
+ */
+export function forkWorkingMemory(source: WorkingMemory): WorkingMemory {
+  return {
+    fileKnowledge: new Map(source.fileKnowledge),
+    discoveredFacts: source.discoveredFacts.map((f) => ({ ...f })),
+    subAgentHistory: source.subAgentHistory.map((h) => ({ ...h })),
+    taskProgress: source.taskProgress.map((p) => ({ ...p })),
+    projectContext: source.projectContext,
+    maxTokenBudget: source.maxTokenBudget,
+  };
+}
+
+/**
+ * Merge multiple forked working memories back into a target.
+ * Used after parallel stages to consolidate concurrent writes safely.
+ *
+ * Strategy:
+ *  - fileKnowledge: latest-timestamp wins for conflicting paths
+ *  - discoveredFacts: dedupe by (content, category), respect MAX cap
+ *  - subAgentHistory: concatenate all new entries, sort by completedAt
+ *  - taskProgress: concatenate all new entries, sort by timestamp
+ */
+export function mergeForkedMemories(
+  target: WorkingMemory,
+  forks: WorkingMemory[],
+): void {
+  // fileKnowledge — last-modified wins
+  for (const fork of forks) {
+    for (const [path, knowledge] of fork.fileKnowledge) {
+      const existing = target.fileKnowledge.get(path);
+      if (!existing || knowledge.lastReadAt > existing.lastReadAt) {
+        target.fileKnowledge.set(path, knowledge);
+      }
+    }
+  }
+
+  // discoveredFacts — dedupe by content+category
+  const existingFactKeys = new Set(
+    target.discoveredFacts.map((f) => `${f.category}::${f.content}`),
+  );
+  const newFacts: DiscoveredFact[] = [];
+  for (const fork of forks) {
+    for (const fact of fork.discoveredFacts) {
+      const key = `${fact.category}::${fact.content}`;
+      if (!existingFactKeys.has(key)) {
+        existingFactKeys.add(key);
+        newFacts.push(fact);
+      }
+    }
+  }
+  newFacts.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  target.discoveredFacts.push(...newFacts);
+  evictDiscoveredFactsToCap(target);
+
+  // subAgentHistory — concat new entries from forks
+  const existingHistoryTimestamps = new Set(
+    target.subAgentHistory.map((h) => `${h.role}::${h.completedAt}`),
+  );
+  const newHistory: SubAgentExecRecord[] = [];
+  for (const fork of forks) {
+    for (const record of fork.subAgentHistory) {
+      const key = `${record.role}::${record.completedAt}`;
+      if (!existingHistoryTimestamps.has(key)) {
+        existingHistoryTimestamps.add(key);
+        newHistory.push(record);
+      }
+    }
+  }
+  newHistory.sort((a, b) => a.completedAt.localeCompare(b.completedAt));
+  target.subAgentHistory.push(...newHistory);
+  while (target.subAgentHistory.length > MAX_SUBAGENT_HISTORY) {
+    target.subAgentHistory.shift();
+  }
+
+  // taskProgress — concat new entries from forks
+  const existingProgressIds = new Set(target.taskProgress.map((p) => p.id));
+  const newProgress: TaskProgressEntry[] = [];
+  for (const fork of forks) {
+    for (const entry of fork.taskProgress) {
+      if (!existingProgressIds.has(entry.id)) {
+        existingProgressIds.add(entry.id);
+        newProgress.push(entry);
+      }
+    }
+  }
+  newProgress.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  target.taskProgress.push(...newProgress);
+  while (target.taskProgress.length > MAX_TASK_PROGRESS_ENTRIES) {
+    const completedIdx = target.taskProgress.findIndex((e) => e.status === "completed");
+    if (completedIdx >= 0) {
+      target.taskProgress.splice(completedIdx, 1);
+    } else {
+      target.taskProgress.shift();
+    }
+  }
 }
 
 /**

@@ -67,6 +67,9 @@ export interface ShellPayload {
   retryAttempt?: number;
 }
 
+/** P5-2: Tracks where an action originated for audit/debugging. */
+export type ActionOrigin = "main_agent" | "sub_agent" | "team_stage";
+
 interface ActionProposalBase {
   id: string;
   description: string;
@@ -78,6 +81,10 @@ interface ActionProposalBase {
   toolName?: string;
   fingerprint?: string;
   planStepId?: string;
+  /** P5-2: Which agent layer proposed this action. */
+  origin?: ActionOrigin;
+  /** P5-2: For sub_agent/team_stage origins, the role or stage label. */
+  originDetail?: string;
 }
 
 export interface ApplyPatchActionProposal extends ActionProposalBase {
