@@ -970,6 +970,21 @@ function toOpenAIResponsesPayload(
   const instructions: string[] = [];
   let seenNonSystem = false;
 
+  // Collect system messages that appear between function_call and
+  // function_call_output items.  These must be deferred until after
+  // all outputs for the current tool-call round are emitted, because
+  // breaking the function_call → function_call_output chain confuses
+  // the Responses API and leads to tool-calling degeneration.
+  let pendingSystemTexts: string[] = [];
+  let insideToolCallBlock = false;
+
+  const flushPendingSystemTexts = () => {
+    if (pendingSystemTexts.length === 0) return;
+    const merged = pendingSystemTexts.join("\n\n");
+    appendOpenAIResponsesUserText(items, `[System] ${merged}`);
+    pendingSystemTexts = [];
+  };
+
   for (const message of messages) {
     if (message.role === "system") {
       const normalized = message.content.trim();
@@ -978,6 +993,8 @@ function toOpenAIResponsesPayload(
       }
       if (!seenNonSystem) {
         instructions.push(normalized);
+      } else if (insideToolCallBlock) {
+        pendingSystemTexts.push(normalized);
       } else {
         appendOpenAIResponsesUserText(items, `[System] ${normalized}`);
       }
@@ -987,6 +1004,8 @@ function toOpenAIResponsesPayload(
     seenNonSystem = true;
 
     if (message.role === "user") {
+      insideToolCallBlock = false;
+      flushPendingSystemTexts();
       items.push({
         type: "message",
         role: "user",
@@ -996,6 +1015,8 @@ function toOpenAIResponsesPayload(
     }
 
     if (message.role === "assistant") {
+      insideToolCallBlock = false;
+      flushPendingSystemTexts();
       if (message.content.trim()) {
         items.push({ role: "assistant", content: message.content });
       }
@@ -1007,6 +1028,9 @@ function toOpenAIResponsesPayload(
           arguments: toolCall.function.arguments,
         });
       }
+      if (message.tool_calls?.length) {
+        insideToolCallBlock = true;
+      }
       continue;
     }
 
@@ -1016,8 +1040,11 @@ function toOpenAIResponsesPayload(
         call_id: message.tool_call_id,
         output: message.content,
       });
+      continue;
     }
   }
+
+  flushPendingSystemTexts();
 
   return {
     instructions: instructions.length ? instructions.join("\n\n") : undefined,

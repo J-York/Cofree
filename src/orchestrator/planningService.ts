@@ -223,7 +223,7 @@ const MAX_CREATE_HINT_REPAIR_ROUNDS = 1;
 const MAX_SHELL_DIALECT_REPAIR_ROUNDS = 1;
 const MAX_SEARCH_NOT_FOUND_REPAIR_ROUNDS = 2;
 const MAX_MULTI_ARTIFACT_REMINDER_ROUNDS = 2;
-const MAX_PSEUDO_TOOL_CALL_REPAIR_ROUNDS = 3;
+const MAX_PSEUDO_TOOL_CALL_REPAIR_ROUNDS = 5;
 const MAX_PROPOSED_ACTIONS_PER_BATCH = 5;
 
 const MAX_TOOL_NOT_FOUND_STRIKES = 3;
@@ -242,8 +242,122 @@ const WORKING_MEMORY_NOTE_PREFIX = "[工作记忆刷新]";
 const TODO_PLAN_NOTE_PREFIX = "[Todo Plan]";
 const WORKING_MEMORY_REFRESH_INTERVAL = 3;
 
+// --- Tool-calling reinforcement interval ---
+const TOOL_CALLING_REINFORCEMENT_INTERVAL = 10;
+const TOOL_CALLING_REINFORCEMENT_NOTE_PREFIX = "[工具调用提醒]";
+
 function computeWorkingMemoryFingerprint(wm: WorkingMemory): string {
   return `${wm.fileKnowledge.size}:${wm.discoveredFacts.length}:${wm.subAgentHistory.length}:${wm.taskProgress.length}`;
+}
+
+/**
+ * Sanitize messages before sending to the LLM API.
+ *
+ * This function ensures that the tool-call → tool-result sequence is never
+ * broken by interleaved system messages, which is a common cause of GPT
+ * models "forgetting" to use native tool calling after many turns.
+ *
+ * It also consolidates consecutive system messages to reduce noise.
+ */
+function sanitizeMessagesForToolCalling(messages: LiteLLMMessage[]): LiteLLMMessage[] {
+  const result: LiteLLMMessage[] = [];
+  let i = 0;
+
+  while (i < messages.length) {
+    const msg = messages[i];
+
+    if (msg.role === "assistant" && msg.tool_calls?.length) {
+      result.push(msg);
+      i++;
+
+      const expectedCallIds = new Set(msg.tool_calls.map((tc) => tc.id));
+      const deferredSystemMessages: LiteLLMMessage[] = [];
+
+      while (i < messages.length && expectedCallIds.size > 0) {
+        const next = messages[i];
+        if (
+          next.role === "tool" &&
+          next.tool_call_id &&
+          expectedCallIds.has(next.tool_call_id)
+        ) {
+          result.push(next);
+          expectedCallIds.delete(next.tool_call_id);
+          i++;
+          continue;
+        }
+        if (next.role === "tool" && next.tool_call_id) {
+          result.push(next);
+          i++;
+          continue;
+        }
+        if (next.role === "system") {
+          deferredSystemMessages.push(next);
+          i++;
+          continue;
+        }
+        break;
+      }
+
+      if (deferredSystemMessages.length > 0) {
+        const consolidated = consolidateSystemMessages(deferredSystemMessages);
+        result.push(...consolidated);
+      }
+      continue;
+    }
+
+    result.push(msg);
+    i++;
+  }
+
+  return result;
+}
+
+/**
+ * Merge consecutive system messages that share a common prefix into a single
+ * message, reducing the number of system messages the model must process.
+ */
+function consolidateSystemMessages(
+  systemMsgs: LiteLLMMessage[],
+): LiteLLMMessage[] {
+  if (systemMsgs.length <= 1) {
+    return systemMsgs;
+  }
+  const merged = systemMsgs.map((m) => m.content.trim()).filter(Boolean).join("\n\n");
+  return [{ role: "system", content: merged }];
+}
+
+/**
+ * Remove stale interstitial system messages that accumulate between tool
+ * turns.  Keeps only the most recent N system messages outside of the
+ * pinned prefix and the final block.
+ */
+function pruneStaleSystemMessages(
+  messages: LiteLLMMessage[],
+  pinnedPrefixLen: number,
+  maxInterstitialSystemMsgs: number,
+): LiteLLMMessage[] {
+  const interstitialIndices: number[] = [];
+
+  for (let i = pinnedPrefixLen; i < messages.length; i++) {
+    const msg = messages[i];
+    if (
+      msg.role === "system" &&
+      !msg.content.startsWith(WORKING_MEMORY_NOTE_PREFIX) &&
+      !msg.content.startsWith(TODO_PLAN_NOTE_PREFIX)
+    ) {
+      interstitialIndices.push(i);
+    }
+  }
+
+  if (interstitialIndices.length <= maxInterstitialSystemMsgs) {
+    return messages;
+  }
+
+  const toRemove = new Set(
+    interstitialIndices.slice(0, interstitialIndices.length - maxInterstitialSystemMsgs),
+  );
+
+  return messages.filter((_, idx) => !toRemove.has(idx));
 }
 
 /**
@@ -819,6 +933,7 @@ interface ChatCompletionPayload {
   id?: string;
   choices?: Array<{
     message?: ChatCompletionChoiceMessage;
+    finish_reason?: string;
   }>;
   usage?: {
     prompt_tokens?: number;
@@ -1871,7 +1986,7 @@ function detectPseudoToolCallNarration(
 
   const pseudoPatterns: Array<{ pattern: RegExp; reason: string }> = [
     {
-      pattern: /\b(?:let'?s|i(?:'|’)ll|i will|need to|must|should|going to)\s+(?:call|use|invoke)\b/i,
+      pattern: /\b(?:let'?s|i(?:'|’)ll|i will|need to|must|should|going to)\s+(?:call|use|invoke|run|execute)\b/i,
       reason: "narrated_tool_intent",
     },
     {
@@ -1885,6 +2000,18 @@ function detectPseudoToolCallNarration(
     {
       pattern: /\b(?:functions?\.|to=functions\.)[a-z_][a-z0-9_]*\b/i,
       reason: "sdk_style_tool_reference",
+    },
+    {
+      pattern: /\bcalling\s+(?:the\s+)?(?:tool|function)\b/i,
+      reason: "calling_tool_phrase",
+    },
+    {
+      pattern: /```(?:json|tool_call|function_call)?\s*\n?\s*\{\s*"(?:name|function|tool)"/i,
+      reason: "code_block_tool_call",
+    },
+    {
+      pattern: /\bI(?:'m| am)\s+(?:now\s+)?(?:going to|about to)\s+(?:call|use|invoke|run)\b/i,
+      reason: "self_narration_intent",
     },
   ];
 
@@ -5361,13 +5488,15 @@ export async function requestToolCompletion(
   toolCalls: ToolCallRecord[];
   droppedToolCalls: number;
   requestRecord: RequestRecord;
+  finishReason?: string;
 }> {
   if (signal?.aborted) {
     throw new DOMException("The operation was aborted.", "AbortError");
   }
 
+  const sanitizedMessages = sanitizeMessagesForToolCalling(messages);
   const effectiveToolChoice = toolChoiceOverride ?? "model-adapted";
-  const body = createGatewayRequestBody(messages, settings, runtime ?? null, {
+  const body = createGatewayRequestBody(sanitizedMessages, settings, runtime ?? null, {
     stream: false,
     temperature: 0.1,
     tools: effectiveToolChoice === "none" ? undefined : activeTools,
@@ -5380,7 +5509,7 @@ export async function requestToolCompletion(
 
   const t0 = performance.now();
   console.log(
-    `[LLM] 发送请求 (非流式) | model=${requestModel} | messages=${messages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
+    `[LLM] 发送请求 (非流式) | model=${requestModel} | messages=${sanitizedMessages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
   );
 
   const response = await postLiteLLMChatCompletions(settings, body);
@@ -5404,6 +5533,7 @@ export async function requestToolCompletion(
     throw new Error("模型响应缺少 message。");
   }
 
+  const finishReason = firstChoice?.finish_reason ?? undefined;
   const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
   const assistantContent = buildAssistantDisplayContent(rawMessage);
 
@@ -5412,9 +5542,16 @@ export async function requestToolCompletion(
   console.log(
     `[LLM] 收到响应 | ${elapsed}s | toolCalls=${toolCalls.length}` +
     (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
+    (finishReason ? ` | finish_reason=${finishReason}` : "") +
     (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
     ` | id=${requestId}`
   );
+
+  if (finishReason === "length") {
+    console.warn(
+      `[LLM] 响应被截断 (finish_reason=length) | 工具调用可能不完整 | id=${requestId}`
+    );
+  }
 
   const assistantMessage: LiteLLMMessage = {
     role: "assistant",
@@ -5426,6 +5563,7 @@ export async function requestToolCompletion(
     assistantMessage,
     toolCalls,
     droppedToolCalls: droppedCount,
+    finishReason,
     requestRecord: {
       requestId,
       inputLength: inputLengthOf(messages),
@@ -5450,13 +5588,15 @@ async function requestToolCompletionWithStream(
   toolCalls: ToolCallRecord[];
   droppedToolCalls: number;
   requestRecord: RequestRecord;
+  finishReason?: string;
 }> {
   if (signal?.aborted) {
     throw new DOMException("The operation was aborted.", "AbortError");
   }
 
+  const sanitizedMessages = sanitizeMessagesForToolCalling(messages);
   const effectiveToolChoice = toolChoiceOverride ?? "model-adapted";
-  const body = createGatewayRequestBody(messages, settings, runtime ?? null, {
+  const body = createGatewayRequestBody(sanitizedMessages, settings, runtime ?? null, {
     stream: true,
     temperature: 0.1,
     tools: effectiveToolChoice === "none" ? undefined : activeTools,
@@ -5469,7 +5609,7 @@ async function requestToolCompletionWithStream(
 
   const t0 = performance.now();
   console.log(
-    `[LLM] 发送请求 (流式) | model=${requestModel} | messages=${messages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
+    `[LLM] 发送请求 (流式) | model=${requestModel} | messages=${sanitizedMessages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
   );
 
   const response = await postLiteLLMChatCompletionsStream(
@@ -5508,6 +5648,7 @@ async function requestToolCompletionWithStream(
     throw new Error("模型响应缺少 message。");
   }
 
+  const finishReason = firstChoice?.finish_reason ?? undefined;
   const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
   const assistantContent = buildAssistantDisplayContent(rawMessage);
 
@@ -5516,9 +5657,16 @@ async function requestToolCompletionWithStream(
   console.log(
     `[LLM] 收到响应 | ${elapsed}s | toolCalls=${toolCalls.length}` +
     (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
+    (finishReason ? ` | finish_reason=${finishReason}` : "") +
     (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
     ` | id=${requestId}`
   );
+
+  if (finishReason === "length") {
+    console.warn(
+      `[LLM] 响应被截断 (finish_reason=length) | 工具调用可能不完整 | id=${requestId}`
+    );
+  }
 
   if (!assistantContent.trim() && toolCalls.length === 0) {
     console.warn("[LLM] 流式响应未解析出文本或工具调用，触发非流式回退");
@@ -5535,6 +5683,7 @@ async function requestToolCompletionWithStream(
     assistantMessage,
     toolCalls,
     droppedToolCalls: droppedCount,
+    finishReason,
     requestRecord: {
       requestId,
       inputLength: inputLengthOf(messages),
@@ -5617,6 +5766,7 @@ async function executeToolCompletionForTurn(
     toolCalls: ToolCallRecord[];
     droppedToolCalls: number;
     requestRecord: RequestRecord;
+    finishReason?: string;
   };
   requestMode: "stream" | "nonstream";
   highRisk: boolean;
@@ -5992,6 +6142,42 @@ async function runNativeToolCallingLoop(
       });
     }
 
+    // --- Tool calling reinforcement for long conversations ---
+    // GPT models tend to "forget" to use native tool calling after many turns.
+    // Periodically reinforce the tool calling mechanism.
+    if (
+      turn > 0 &&
+      turn % TOOL_CALLING_REINFORCEMENT_INTERVAL === 0 &&
+      toolChoiceOverride !== "none"
+    ) {
+      const existingReinforcement = messages.findIndex(
+        (m) => m.role === "system" && m.content.startsWith(TOOL_CALLING_REINFORCEMENT_NOTE_PREFIX),
+      );
+      if (existingReinforcement >= pinnedPrefixLen) {
+        messages.splice(existingReinforcement, 1);
+      }
+      messages.push({
+        role: "system",
+        content: [
+          TOOL_CALLING_REINFORCEMENT_NOTE_PREFIX,
+          "重要：你必须通过原生工具调用（function calling / tool_calls）来使用工具。",
+          "不要在回复文本中描述、转录或模拟工具调用。直接发送 tool_calls 即可。",
+          `可用工具: [${enabledToolNames.join(", ")}]`,
+        ].join("\n"),
+      });
+    }
+
+    // --- Prune stale interstitial system messages ---
+    // Limit accumulated system messages to prevent context pollution.
+    const maxInterstitialSysMsgs = Math.max(6, Math.ceil(turn * 0.3));
+    const prunedMessages = pruneStaleSystemMessages(messages, pinnedPrefixLen, maxInterstitialSysMsgs);
+    if (prunedMessages.length < messages.length) {
+      const removed = messages.length - prunedMessages.length;
+      messages.splice(0, messages.length, ...prunedMessages);
+      tokenTracker.invalidate();
+      console.log(`[Loop] 清理陈旧系统消息: 移除 ${removed} 条`);
+    }
+
     // --- Context Editing: 主动淘汰旧 tool-use 对 ---
     const shouldEditByTurns = CONTEXT_EDIT_TRIGGER_EVERY_N_TURNS > 0
       && turn > 0 && turn % CONTEXT_EDIT_TRIGGER_EVERY_N_TURNS === 0;
@@ -6107,6 +6293,38 @@ async function runNativeToolCallingLoop(
     if (completion.requestRecord.inputTokens) {
       const estBeforeCall = tokenTracker.update(messages) + toolDefTokens;
       updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens, settings.model);
+    }
+
+    // Handle finish_reason=length: the model was truncated and may have
+    // incomplete tool calls. Pop the truncated response and ask to retry
+    // with a shorter output or to summarize and use tools.
+    if (
+      completion.finishReason === "length" &&
+      completion.toolCalls.length === 0 &&
+      !completion.assistantMessage.content.trim()
+    ) {
+      console.warn(
+        `[Loop] Turn ${turn + 1}: 响应被 max_tokens 截断且无有效内容，请求模型缩短输出后重试`,
+      );
+      messages.pop();
+      messages.push({
+        role: "system",
+        content: [
+          "系统提示：你的上一次回复因为超出最大 token 限制而被截断，系统没有收到完整的回复或工具调用。",
+          "请用更简洁的方式回复。如果需要使用工具，直接发送工具调用，不要输出冗长的分析文本。",
+          "如果要修改文件，每次只修改一个文件的一小段，避免在单次回复中生成过多内容。",
+        ].join("\n"),
+      });
+      continue;
+    }
+
+    if (
+      completion.finishReason === "length" &&
+      completion.toolCalls.length > 0
+    ) {
+      console.warn(
+        `[Loop] Turn ${turn + 1}: 响应被截断但包含 ${completion.toolCalls.length} 个工具调用，继续处理已解析的调用`,
+      );
     }
 
     if (!completion.toolCalls.length) {
@@ -7199,6 +7417,10 @@ export const planningServiceTestUtils = {
   buildProposedActions,
   reconcileAssistantReply,
   summarizeToolArgs,
+  sanitizeMessagesForToolCalling,
+  pruneStaleSystemMessages,
+  detectPseudoToolCallNarration,
+  detectPseudoToolJsonTranscript,
 };
 
 function assertLocalOnlyPolicy(settings: AppSettings): void {
