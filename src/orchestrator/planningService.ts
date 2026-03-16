@@ -267,7 +267,7 @@ function sanitizeMessagesForToolCalling(messages: LiteLLMMessage[]): LiteLLMMess
     const msg = messages[i];
 
     if (msg.role === "assistant" && msg.tool_calls?.length) {
-      result.push(msg);
+      result.push(stripAssistantThinkContentMessage(msg));
       i++;
 
       const expectedCallIds = new Set(msg.tool_calls.map((tc) => tc.id));
@@ -305,11 +305,37 @@ function sanitizeMessagesForToolCalling(messages: LiteLLMMessage[]): LiteLLMMess
       continue;
     }
 
-    result.push(msg);
+    result.push(stripAssistantThinkContentMessage(msg));
     i++;
   }
 
   return result;
+}
+
+function stripAssistantThinkContentMessage(message: LiteLLMMessage): LiteLLMMessage {
+  if (message.role !== "assistant" || !message.content) {
+    return message;
+  }
+  const sanitized = stripThinkBlocks(message.content);
+  if (sanitized === message.content) {
+    return message;
+  }
+  return {
+    ...message,
+    content: sanitized,
+  };
+}
+
+function stripThinkBlocks(content: string): string {
+  if (!content.includes("<think>")) {
+    return content;
+  }
+  let sanitized = content.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  const danglingIndex = sanitized.toLowerCase().lastIndexOf("<think>");
+  if (danglingIndex >= 0) {
+    sanitized = sanitized.slice(0, danglingIndex);
+  }
+  return sanitized;
 }
 
 /**
@@ -1964,6 +1990,23 @@ function formatVendorProtocolLabel(protocol: string): string {
     case "openai-chat-completions":
     default:
       return "OpenAI Chat Completions";
+  }
+}
+
+function normalizeFinishReason(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  switch (normalized) {
+    case "completed":
+      return "stop";
+    case "incomplete":
+      return "length";
+    case "requires_action":
+      return "tool_calls";
+    default:
+      return normalized || undefined;
   }
 }
 
@@ -5533,7 +5576,7 @@ export async function requestToolCompletion(
     throw new Error("模型响应缺少 message。");
   }
 
-  const finishReason = firstChoice?.finish_reason ?? undefined;
+  const finishReason = normalizeFinishReason(firstChoice?.finish_reason);
   const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
   const assistantContent = buildAssistantDisplayContent(rawMessage);
 
@@ -5648,7 +5691,7 @@ async function requestToolCompletionWithStream(
     throw new Error("模型响应缺少 message。");
   }
 
-  const finishReason = firstChoice?.finish_reason ?? undefined;
+  const finishReason = normalizeFinishReason(firstChoice?.finish_reason);
   const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
   const assistantContent = buildAssistantDisplayContent(rawMessage);
 
