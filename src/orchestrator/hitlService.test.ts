@@ -235,6 +235,32 @@ describe("hitlService todo synchronization", () => {
     });
   });
 
+  it("caps running shell output to a tail preview and tracks truncation metadata", () => {
+    const runningPlan = markActionRunning(createTodoLinkedPlan(), "shell-1");
+    const withFirstChunk = appendRunningShellOutput(runningPlan, "shell-1", {
+      command: "npm install",
+      stream: "stdout",
+      chunk: "a".repeat(9000),
+      chunkBytes: 9000,
+    });
+    const withTruncatedPreview = appendRunningShellOutput(withFirstChunk, "shell-1", {
+      command: "npm install",
+      stream: "stdout",
+      chunk: "b".repeat(9000),
+      chunkBytes: 9000,
+    });
+
+    const shellAction = withTruncatedPreview.proposedActions.find((action) => action.id === "shell-1");
+    expect(shellAction?.executionResult?.metadata).toMatchObject({
+      stdoutTruncated: true,
+      stdout_truncated: true,
+      stdoutTotalBytes: 18000,
+      stdout_total_bytes: 18000,
+    });
+    expect(String(shellAction?.executionResult?.metadata?.stdout ?? "")).toHaveLength(12000);
+    expect(String(shellAction?.executionResult?.metadata?.stdout ?? "")).toMatch(/b{100}$/);
+  });
+
   it("completes a running shell action from an externally supplied result", () => {
     const runningPlan = markActionRunning(createTodoLinkedPlan(), "shell-1");
     const completedPlan = completeRunningShellAction(

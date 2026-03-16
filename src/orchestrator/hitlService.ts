@@ -11,6 +11,12 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { recordSensitiveActionAudit } from "../lib/auditLog";
+import { awaitShellCommand } from "../lib/tauriBridge";
+import type { CommandExecutionResult } from "../lib/tauriTypes";
+import {
+  DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
+  DEFAULT_SHELL_OUTPUT_PREVIEW_CHARS,
+} from "../lib/shellCommand";
 import type {
   ActionExecutionResult,
   ActionProposal,
@@ -37,16 +43,6 @@ interface SnapshotResult {
   success: boolean;
   snapshot_id: string;
   files: string[];
-}
-
-interface CommandExecutionResult {
-  success: boolean;
-  command: string;
-  timed_out: boolean;
-  status: number;
-  stdout: string;
-  stderr: string;
-  cancelled?: boolean;
 }
 
 export interface ManualApprovalContext {
@@ -90,6 +86,113 @@ function createExecutionResult(
     message,
     timestamp: nowIso(),
     metadata,
+  };
+}
+
+function asNonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function limitShellPreview(text: string): { text: string; truncated: boolean } {
+  if (text.length <= DEFAULT_SHELL_OUTPUT_PREVIEW_CHARS) {
+    return { text, truncated: false };
+  }
+  return {
+    text: text.slice(-DEFAULT_SHELL_OUTPUT_PREVIEW_CHARS),
+    truncated: true,
+  };
+}
+
+function buildShellResultMetadata(payload: CommandExecutionResult): Record<string, unknown> {
+  const stdoutTotalBytes =
+    asNonNegativeNumber(payload.stdout_total_bytes) ?? payload.stdout.length;
+  const stderrTotalBytes =
+    asNonNegativeNumber(payload.stderr_total_bytes) ?? payload.stderr.length;
+  const outputLimitBytes =
+    asNonNegativeNumber(payload.output_limit_bytes) ??
+    DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES;
+
+  return {
+    command: payload.command,
+    timedOut: payload.timed_out,
+    timed_out: payload.timed_out,
+    cancelled: payload.cancelled ?? false,
+    status: payload.status,
+    stdout: payload.stdout,
+    stderr: payload.stderr,
+    stdoutTruncated: Boolean(payload.stdout_truncated),
+    stdout_truncated: Boolean(payload.stdout_truncated),
+    stderrTruncated: Boolean(payload.stderr_truncated),
+    stderr_truncated: Boolean(payload.stderr_truncated),
+    stdoutTotalBytes: stdoutTotalBytes,
+    stdout_total_bytes: stdoutTotalBytes,
+    stderrTotalBytes: stderrTotalBytes,
+    stderr_total_bytes: stderrTotalBytes,
+    outputLimitBytes,
+    output_limit_bytes: outputLimitBytes,
+  };
+}
+
+function buildRunningShellStreamMetadata(
+  currentMeta: Record<string, unknown>,
+  update: {
+    stream: "stdout" | "stderr";
+    chunk: string;
+    chunkBytes?: number;
+  },
+): Record<string, unknown> {
+  const chunkBytes = Math.max(
+    0,
+    Math.round(asNonNegativeNumber(update.chunkBytes) ?? update.chunk.length),
+  );
+  const currentStdout = String(currentMeta.stdout ?? "");
+  const currentStderr = String(currentMeta.stderr ?? "");
+  const currentStdoutBytes =
+    asNonNegativeNumber(currentMeta.stdoutTotalBytes ?? currentMeta.stdout_total_bytes) ??
+    currentStdout.length;
+  const currentStderrBytes =
+    asNonNegativeNumber(currentMeta.stderrTotalBytes ?? currentMeta.stderr_total_bytes) ??
+    currentStderr.length;
+  const currentStdoutTruncated = Boolean(
+    currentMeta.stdoutTruncated ?? currentMeta.stdout_truncated ?? false,
+  );
+  const currentStderrTruncated = Boolean(
+    currentMeta.stderrTruncated ?? currentMeta.stderr_truncated ?? false,
+  );
+
+  const nextStdoutPreview =
+    update.stream === "stdout"
+      ? limitShellPreview(`${currentStdout}${update.chunk}`)
+      : { text: currentStdout, truncated: currentStdoutTruncated };
+  const nextStderrPreview =
+    update.stream === "stderr"
+      ? limitShellPreview(`${currentStderr}${update.chunk}`)
+      : { text: currentStderr, truncated: currentStderrTruncated };
+
+  const stdoutTotalBytes =
+    update.stream === "stdout" ? currentStdoutBytes + chunkBytes : currentStdoutBytes;
+  const stderrTotalBytes =
+    update.stream === "stderr" ? currentStderrBytes + chunkBytes : currentStderrBytes;
+  const outputLimitBytes =
+    asNonNegativeNumber(currentMeta.outputLimitBytes ?? currentMeta.output_limit_bytes) ??
+    DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES;
+
+  return {
+    ...currentMeta,
+    stdout: nextStdoutPreview.text,
+    stderr: nextStderrPreview.text,
+    stdoutTruncated: currentStdoutTruncated || nextStdoutPreview.truncated,
+    stdout_truncated: currentStdoutTruncated || nextStdoutPreview.truncated,
+    stderrTruncated: currentStderrTruncated || nextStderrPreview.truncated,
+    stderr_truncated: currentStderrTruncated || nextStderrPreview.truncated,
+    stdoutTotalBytes,
+    stdout_total_bytes: stdoutTotalBytes,
+    stderrTotalBytes,
+    stderr_total_bytes: stderrTotalBytes,
+    outputLimitBytes,
+    output_limit_bytes: outputLimitBytes,
   };
 }
 
@@ -213,15 +316,7 @@ function buildShellExecutionResult(payload: CommandExecutionResult): ActionExecu
   return createExecutionResult(
     payload.success,
     payload.success ? "命令执行成功" : pickShellFailureMessage(payload),
-    {
-      command: payload.command,
-      timedOut: payload.timed_out,
-      timed_out: payload.timed_out,
-      cancelled: payload.cancelled ?? false,
-      status: payload.status,
-      stdout: payload.stdout,
-      stderr: payload.stderr,
-    },
+    buildShellResultMetadata(payload),
   );
 }
 
@@ -289,6 +384,7 @@ export function appendRunningShellOutput(
     command?: string;
     stream: "stdout" | "stderr";
     chunk: string;
+    chunkBytes?: number;
   },
 ): OrchestrationPlan {
   if (!update.chunk) {
@@ -304,14 +400,7 @@ export function appendRunningShellOutput(
 
   const currentMeta = (targetAction.executionResult?.metadata ?? {}) as Record<string, unknown>;
   const isBackgroundAction = targetAction.status === "background";
-  const nextStdout =
-    update.stream === "stdout"
-      ? `${String(currentMeta.stdout ?? "")}${update.chunk}`
-      : String(currentMeta.stdout ?? "");
-  const nextStderr =
-    update.stream === "stderr"
-      ? `${String(currentMeta.stderr ?? "")}${update.chunk}`
-      : String(currentMeta.stderr ?? "");
+  const nextMeta = buildRunningShellStreamMetadata(currentMeta, update);
 
   const nextActions = mapActions(plan, actionId, (action) => ({
     ...action,
@@ -321,19 +410,17 @@ export function appendRunningShellOutput(
       true,
       isBackgroundAction ? "后台命令运行中…" : "命令执行中…",
       {
-      ...currentMeta,
-      command:
-        update.command ??
-        String(
-          currentMeta.command ??
-            (action.type === "shell" ? action.payload.shell : ""),
-        ),
-      stdout: nextStdout,
-      stderr: nextStderr,
-      timedOut: Boolean(currentMeta.timedOut ?? currentMeta.timed_out ?? false),
-      timed_out: Boolean(currentMeta.timedOut ?? currentMeta.timed_out ?? false),
-      status:
-        typeof currentMeta.status === "number" ? currentMeta.status : undefined,
+        ...nextMeta,
+        command:
+          update.command ??
+          String(
+            currentMeta.command ??
+              (action.type === "shell" ? action.payload.shell : ""),
+          ),
+        timedOut: Boolean(currentMeta.timedOut ?? currentMeta.timed_out ?? false),
+        timed_out: Boolean(currentMeta.timedOut ?? currentMeta.timed_out ?? false),
+        status:
+          typeof currentMeta.status === "number" ? currentMeta.status : undefined,
       },
     ),
   }));
@@ -443,13 +530,7 @@ export function completeBackgroundShellAction(
         : pickShellFailureMessage(payload),
     {
       ...currentMeta,
-      command: payload.command,
-      timedOut: payload.timed_out,
-      timed_out: payload.timed_out,
-      cancelled: payload.cancelled ?? false,
-      status: payload.status,
-      stdout: payload.stdout,
-      stderr: payload.stderr,
+      ...buildShellResultMetadata(payload),
       background: true,
       backgroundActive: false,
       finishedAt: nowIso(),
@@ -1099,10 +1180,11 @@ export async function approveAction(
       }
     }
   } else {
-    const payload = await invoke<CommandExecutionResult>("run_shell_command", {
+    const payload = await awaitShellCommand({
       workspacePath,
       shell: action.payload.shell,
       timeoutMs: action.payload.timeoutMs,
+      maxOutputBytes: DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
     });
     result = buildShellExecutionResult({
       ...payload,

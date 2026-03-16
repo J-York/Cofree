@@ -14,6 +14,9 @@
 - [BUILD](./BUILD.md) — 本地开发、桌面构建、版本发布与 CI 流水线
 - [DEVELOPMENT_GUIDELINES](./DEVELOPMENT_GUIDELINES.md) — 文档维护与协作约定
 
+## 工程提案
+- [MULTI_AGENT_REMEDIATION_PLAN](./MULTI_AGENT_REMEDIATION_PLAN.md) — 多 Agent 调度链路整改方案与实施追踪清单（Phase 0-5 全部完成，已集成至代码库）
+
 ## 历史说明
 - [ROADMAP](./ROADMAP.md) — 仅保留文档重构后的历史说明，不再承载未来规划
 

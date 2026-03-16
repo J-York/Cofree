@@ -292,7 +292,9 @@ fn build_openai_chat_display_content_from_message(message: &Value) -> String {
 }
 
 fn open_openai_chat_think_block(full_content: &mut String) -> Option<&'static str> {
-    if full_content.ends_with("<think>") || full_content.contains("<think>") && !full_content.contains("</think>") {
+    if full_content.ends_with("<think>")
+        || full_content.contains("<think>") && !full_content.contains("</think>")
+    {
         return None;
     }
     full_content.push_str("<think>");
@@ -662,39 +664,29 @@ async fn parse_openai_chat_stream(
                                 {
                                     if !reasoning.is_empty() {
                                         if !think_block_open {
-                                            if let Some(tag) = open_openai_chat_think_block(&mut full_content)
+                                            if let Some(tag) =
+                                                open_openai_chat_think_block(&mut full_content)
                                             {
                                                 emit_stream_chunk_event(
-                                                    app,
-                                                    request_id,
-                                                    tag,
-                                                    false,
-                                                    None,
+                                                    app, request_id, tag, false, None,
                                                 );
                                             }
                                             think_block_open = true;
                                         }
                                         full_content.push_str(reasoning);
                                         emit_stream_chunk_event(
-                                            app,
-                                            request_id,
-                                            reasoning,
-                                            false,
-                                            None,
+                                            app, request_id, reasoning, false, None,
                                         );
                                     }
                                 }
                                 if let Some(content) = delta.get("content").and_then(Value::as_str)
                                 {
                                     if think_block_open {
-                                        if let Some(tag) = close_openai_chat_think_block(&mut full_content)
+                                        if let Some(tag) =
+                                            close_openai_chat_think_block(&mut full_content)
                                         {
                                             emit_stream_chunk_event(
-                                                app,
-                                                request_id,
-                                                tag,
-                                                false,
-                                                None,
+                                                app, request_id, tag, false, None,
                                             );
                                         }
                                         think_block_open = false;
@@ -738,18 +730,12 @@ async fn parse_openai_chat_stream(
                                 let display_content =
                                     build_openai_chat_display_content_from_message(message);
                                 if !display_content.is_empty() {
-                                    if let Some(chunk) =
-                                        merge_openai_chat_message_content(
-                                            &mut full_content,
-                                            &display_content,
-                                        )
-                                    {
+                                    if let Some(chunk) = merge_openai_chat_message_content(
+                                        &mut full_content,
+                                        &display_content,
+                                    ) {
                                         emit_stream_chunk_event(
-                                            app,
-                                            request_id,
-                                            &chunk,
-                                            false,
-                                            None,
+                                            app, request_id, &chunk, false, None,
                                         );
                                     }
                                     think_block_open = false;
@@ -801,39 +787,27 @@ async fn parse_openai_chat_stream(
                             {
                                 if !reasoning.is_empty() {
                                     if !think_block_open {
-                                        if let Some(tag) = open_openai_chat_think_block(&mut full_content)
+                                        if let Some(tag) =
+                                            open_openai_chat_think_block(&mut full_content)
                                         {
                                             emit_stream_chunk_event(
-                                                app,
-                                                request_id,
-                                                tag,
-                                                false,
-                                                None,
+                                                app, request_id, tag, false, None,
                                             );
                                         }
                                         think_block_open = true;
                                     }
                                     full_content.push_str(reasoning);
                                     emit_stream_chunk_event(
-                                        app,
-                                        request_id,
-                                        reasoning,
-                                        false,
-                                        None,
+                                        app, request_id, reasoning, false, None,
                                     );
                                 }
                             }
                             if let Some(content) = delta.get("content").and_then(Value::as_str) {
                                 if think_block_open {
-                                    if let Some(tag) = close_openai_chat_think_block(&mut full_content)
+                                    if let Some(tag) =
+                                        close_openai_chat_think_block(&mut full_content)
                                     {
-                                        emit_stream_chunk_event(
-                                            app,
-                                            request_id,
-                                            tag,
-                                            false,
-                                            None,
-                                        );
+                                        emit_stream_chunk_event(app, request_id, tag, false, None);
                                     }
                                     think_block_open = false;
                                 }
@@ -845,7 +819,8 @@ async fn parse_openai_chat_stream(
                                     let tc_index = tool_call_delta
                                         .get("index")
                                         .and_then(Value::as_u64)
-                                        .unwrap_or(0) as usize;
+                                        .unwrap_or(0)
+                                        as usize;
                                     let tc_entry =
                                         ensure_tool_call_entry(&mut tool_calls_json, tc_index);
                                     append_tool_call_delta(
@@ -863,7 +838,9 @@ async fn parse_openai_chat_stream(
                                     if let Some(entry) =
                                         get_tool_call_entry(&tool_calls_json, tc_index)
                                     {
-                                        emit_stream_tool_call_event_from_entry(app, request_id, entry);
+                                        emit_stream_tool_call_event_from_entry(
+                                            app, request_id, entry,
+                                        );
                                     }
                                 }
                             }
@@ -872,23 +849,21 @@ async fn parse_openai_chat_stream(
                             let display_content =
                                 build_openai_chat_display_content_from_message(message);
                             if !display_content.is_empty() {
-                                if let Some(chunk) =
-                                    merge_openai_chat_message_content(&mut full_content, &display_content)
-                                {
-                                    emit_stream_chunk_event(
-                                        app,
-                                        request_id,
-                                        &chunk,
-                                        false,
-                                        None,
-                                    );
+                                if let Some(chunk) = merge_openai_chat_message_content(
+                                    &mut full_content,
+                                    &display_content,
+                                ) {
+                                    emit_stream_chunk_event(app, request_id, &chunk, false, None);
                                 }
                                 think_block_open = false;
                             }
                             if let Some(tool_calls) =
                                 message.get("tool_calls").and_then(Value::as_array)
                             {
-                                merge_openai_chat_tool_call_snapshot(&mut tool_calls_json, tool_calls);
+                                merge_openai_chat_tool_call_snapshot(
+                                    &mut tool_calls_json,
+                                    tool_calls,
+                                );
                                 emit_all_stream_tool_call_events(app, request_id, &tool_calls_json);
                             }
                         }
@@ -1112,14 +1087,16 @@ async fn parse_openai_responses_stream(
                                     .or_else(|| item.get("id").and_then(Value::as_str))
                                     .unwrap_or("call-0")
                                     .to_string();
-                                let entry_index = if let Some(existing) = call_index_by_key.get(&key) {
-                                    *existing
-                                } else {
-                                    let index = tool_calls_json.len();
-                                    call_index_by_key.insert(key.clone(), index);
-                                    index
-                                };
-                                let entry = ensure_tool_call_entry(&mut tool_calls_json, entry_index);
+                                let entry_index =
+                                    if let Some(existing) = call_index_by_key.get(&key) {
+                                        *existing
+                                    } else {
+                                        let index = tool_calls_json.len();
+                                        call_index_by_key.insert(key.clone(), index);
+                                        index
+                                    };
+                                let entry =
+                                    ensure_tool_call_entry(&mut tool_calls_json, entry_index);
                                 append_tool_call_delta(
                                     entry,
                                     item.get("call_id")
@@ -1128,7 +1105,9 @@ async fn parse_openai_responses_stream(
                                     item.get("name").and_then(Value::as_str),
                                     None,
                                 );
-                                if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
+                                if let Some(arguments) =
+                                    item.get("arguments").and_then(Value::as_str)
+                                {
                                     set_tool_call_arguments(entry, arguments);
                                 }
                                 emit_stream_tool_call_event_from_entry(app, request_id, entry);
@@ -1186,7 +1165,6 @@ async fn parse_anthropic_messages_stream(
         let chunk = chunk_result.map_err(|e| format!("读取流数据失败: {}", e))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         for raw_line in take_stream_lines(&mut buffer, false) {
-
             if raw_line.is_empty() {
                 current_event.clear();
                 continue;
@@ -1762,7 +1740,10 @@ mod tests {
         append_tool_call_delta(&mut entry, None, Some(""), Some("\"\""));
         append_tool_call_delta(&mut entry, None, Some(""), Some("}"));
 
-        assert_eq!(entry["id"], Value::String("call_U9LcHUuhbiegPM7Noe62BFXY".to_string()));
+        assert_eq!(
+            entry["id"],
+            Value::String("call_U9LcHUuhbiegPM7Noe62BFXY".to_string())
+        );
         assert_eq!(
             entry["function"]["name"],
             Value::String("list_files".to_string())

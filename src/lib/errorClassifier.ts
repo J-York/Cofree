@@ -123,6 +123,7 @@ export function classifyError(error: unknown): CategorizedError {
     lower.includes("500") ||
     lower.includes("502") ||
     lower.includes("503") ||
+    lower.includes("524") ||
     lower.includes("rate limit") ||
     lower.includes("服务员响应失败") ||
     lower.includes("模型响应") ||

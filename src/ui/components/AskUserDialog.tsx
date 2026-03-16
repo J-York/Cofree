@@ -4,8 +4,10 @@
  * Description: Dialog component for Ask User tool interactions
  */
 
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, useCallback, type ReactElement } from "react";
 import type { AskUserRequest } from "../../orchestrator/askUserService";
+
+const OTHER_OPTION_SENTINEL = "__cofree_other__";
 
 export interface AskUserDialogProps {
   open: boolean;
@@ -20,32 +22,70 @@ export function AskUserDialog({
   onResponse,
   onCancel,
 }: AskUserDialogProps): ReactElement | null {
-  const [selectedOption, setSelectedOption] = useState<string>("");
+  const [selectedOptions, setSelectedOptions] = useState<Set<string>>(new Set());
   const [customResponse, setCustomResponse] = useState<string>("");
+  const [otherText, setOtherText] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const otherInputRef = useRef<HTMLInputElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
+
+  const hasOptions = !!(request?.options && request.options.length > 0);
+  const isMultiple = !!(hasOptions && request?.allowMultiple);
+  const otherSelected = selectedOptions.has(OTHER_OPTION_SENTINEL);
 
   useEffect(() => {
     if (open && request) {
-      setSelectedOption("");
+      setSelectedOptions(new Set());
       setCustomResponse("");
+      setOtherText("");
       setIsSubmitting(false);
-      // Focus input after dialog opens
       setTimeout(() => {
-        if (request.options && request.options.length > 0) {
-          // For option-based questions, don't auto-focus text input
-          return;
-        } else {
-          inputRef.current?.focus();
-        }
+        if (hasOptions) return;
+        inputRef.current?.focus();
       }, 50);
     }
-  }, [open, request]);
+  }, [open, request, hasOptions]);
+
+  const buildResponse = useCallback((): string => {
+    if (!hasOptions) return customResponse.trim();
+
+    if (isMultiple) {
+      const picked = Array.from(selectedOptions)
+        .filter((v) => v !== OTHER_OPTION_SENTINEL)
+        .slice();
+      if (otherSelected && otherText.trim()) {
+        picked.push(otherText.trim());
+      }
+      return JSON.stringify(picked);
+    }
+
+    // Single-select
+    const [first] = selectedOptions;
+    if (first === OTHER_OPTION_SENTINEL) return otherText.trim();
+    return first ?? "";
+  }, [hasOptions, isMultiple, selectedOptions, customResponse, otherSelected, otherText]);
+
+  const canSubmit = (() => {
+    if (!hasOptions) {
+      return customResponse.trim() !== "" || request?.required === false;
+    }
+    if (selectedOptions.size === 0) return request?.required === false;
+    if (otherSelected && selectedOptions.size === 1 && !otherText.trim()) {
+      return request?.required === false;
+    }
+    return true;
+  })();
+
+  const handleSubmit = useCallback(() => {
+    if (isSubmitting || !canSubmit) return;
+    const response = buildResponse();
+    setIsSubmitting(true);
+    onResponse(response, !response);
+  }, [isSubmitting, canSubmit, buildResponse, onResponse]);
 
   useEffect(() => {
     if (!open) return;
-
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         onCancel();
@@ -54,34 +94,14 @@ export function AskUserDialog({
         handleSubmit();
       }
     };
-
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [open, selectedOption, customResponse, isSubmitting]);
+  }, [open, handleSubmit, onCancel]);
 
   if (!open || !request) return null;
 
   const handleBackdropClick = (e: React.MouseEvent) => {
-    if (e.target === backdropRef.current) {
-      onCancel();
-    }
-  };
-
-  const handleSubmit = () => {
-    if (isSubmitting) return;
-
-    const response = request.options && request.options.length > 0
-      ? selectedOption
-      : customResponse.trim();
-
-    if (!response && request.required !== false) {
-      // Required question with no answer
-      inputRef.current?.focus();
-      return;
-    }
-
-    setIsSubmitting(true);
-    onResponse(response || "", !response);
+    if (e.target === backdropRef.current) onCancel();
   };
 
   const handleSkip = () => {
@@ -91,10 +111,25 @@ export function AskUserDialog({
     }
   };
 
-  const hasOptions = request.options && request.options.length > 0;
-  const canSubmit = hasOptions 
-    ? selectedOption.trim() !== ""
-    : customResponse.trim() !== "" || request.required === false;
+  const toggleOption = (value: string) => {
+    if (isMultiple) {
+      setSelectedOptions((prev) => {
+        const next = new Set(prev);
+        if (next.has(value)) next.delete(value);
+        else next.add(value);
+        return next;
+      });
+      if (value === OTHER_OPTION_SENTINEL) {
+        setTimeout(() => otherInputRef.current?.focus(), 50);
+      }
+    } else {
+      setSelectedOptions(new Set([value]));
+      if (value === OTHER_OPTION_SENTINEL) {
+        setTimeout(() => otherInputRef.current?.focus(), 50);
+      }
+    }
+  };
+
   const canSkip = request.required === false;
 
   return (
@@ -127,25 +162,49 @@ export function AskUserDialog({
 
           {hasOptions ? (
             <div className="ask-user-options">
-              <div className="ask-user-options-label">请选择：</div>
+              <div className="ask-user-options-label">
+                {isMultiple ? "请选择（可多选）：" : "请选择："}
+              </div>
               <div className="ask-user-options-grid">
                 {request.options!.map((option, index) => (
-                  <label
-                    key={index}
-                    className="ask-user-option-label"
-                  >
+                  <label key={index} className="ask-user-option-label">
                     <input
-                      type="radio"
+                      type={isMultiple ? "checkbox" : "radio"}
                       name="ask-user-option"
                       value={option}
-                      checked={selectedOption === option}
-                      onChange={(e) => setSelectedOption(e.target.value)}
+                      checked={selectedOptions.has(option)}
+                      onChange={() => toggleOption(option)}
                       disabled={isSubmitting}
                     />
                     <span className="ask-user-option-text">{option}</span>
                   </label>
                 ))}
+                {/* "其他" option is always present when options exist */}
+                <label className="ask-user-option-label ask-user-option-other">
+                  <input
+                    type={isMultiple ? "checkbox" : "radio"}
+                    name="ask-user-option"
+                    value={OTHER_OPTION_SENTINEL}
+                    checked={otherSelected}
+                    onChange={() => toggleOption(OTHER_OPTION_SENTINEL)}
+                    disabled={isSubmitting}
+                  />
+                  <span className="ask-user-option-text">其他</span>
+                </label>
               </div>
+              {otherSelected && (
+                <div className="ask-user-other-input">
+                  <input
+                    ref={otherInputRef}
+                    type="text"
+                    className="ask-user-other-textfield"
+                    value={otherText}
+                    onChange={(e) => setOtherText(e.target.value)}
+                    placeholder="请输入您的答案..."
+                    disabled={isSubmitting}
+                  />
+                </div>
+              )}
             </div>
           ) : (
             <div className="ask-user-input">
@@ -155,8 +214,8 @@ export function AskUserDialog({
                 value={customResponse}
                 onChange={(e) => setCustomResponse(e.target.value)}
                 placeholder={
-                  request.required === false 
-                    ? "请输入您的回答（可选）..." 
+                  request.required === false
+                    ? "请输入您的回答（可选）..."
                     : "请输入您的回答..."
                 }
                 rows={3}

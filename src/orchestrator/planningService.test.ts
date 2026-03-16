@@ -4,6 +4,11 @@ vi.mock("@tauri-apps/api/core", () => ({
     invoke: vi.fn(),
 }));
 
+vi.mock("../lib/tauriBridge", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../lib/tauriBridge")>();
+    return { ...actual, awaitShellCommand: vi.fn() };
+});
+
 vi.mock("../lib/cofreerc", () => ({
     loadCofreeRc: vi.fn(async () => ({})),
     buildCofreeRcPromptFragment: vi.fn(() => ""),
@@ -81,6 +86,7 @@ vi.mock("../lib/litellm", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { awaitShellCommand } from "../lib/tauriBridge";
 import { addWorkspaceApprovalRule } from "../lib/approvalRuleStore";
 import {
     postLiteLLMChatCompletions,
@@ -671,6 +677,82 @@ describe("planningService approval-flow repair", () => {
         expect(systemPrompt).toContain("docs/ARCHITECTURE.md");
     });
 
+    it("keeps shell proposals pending for sub-agents even when a workspace rule matches", async () => {
+        vi.stubGlobal("window", { localStorage: new MemoryStorage() });
+        addWorkspaceApprovalRule("d:/Code/cofree", {
+            kind: "shell_command_prefix",
+            commandTokens: ["npm", "install"],
+        });
+        vi.mocked(postLiteLLMChatCompletions)
+            .mockResolvedValueOnce({
+                status: 200,
+                endpoint: "http://localhost:4000/chat/completions",
+                body: JSON.stringify({
+                    id: "chatcmpl-subagent-shell-rule-1",
+                    choices: [
+                        {
+                            message: {
+                                role: "assistant",
+                                content: "",
+                                tool_calls: [
+                                    {
+                                        id: "subagent-shell-1",
+                                        type: "function",
+                                        function: {
+                                            name: "propose_shell",
+                                            arguments: JSON.stringify({
+                                                shell: "npm install",
+                                                description: "Install dependencies",
+                                            }),
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                    usage: { prompt_tokens: 8, completion_tokens: 6 },
+                }),
+            })
+            .mockResolvedValueOnce({
+                status: 200,
+                endpoint: "http://localhost:4000/chat/completions",
+                body: JSON.stringify({
+                    id: "chatcmpl-subagent-shell-rule-2",
+                    choices: [
+                        {
+                            message: {
+                                role: "assistant",
+                                content: "done",
+                            },
+                        },
+                    ],
+                    usage: { prompt_tokens: 8, completion_tokens: 2 },
+                }),
+            });
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const result = await executeSubAgentTask(
+            "coder",
+            "Install the missing dependencies.",
+            "d:/Code/cofree",
+            createSettings(),
+            DEFAULT_SETTINGS.toolPermissions,
+        );
+
+        expect(result.proposedActions).toHaveLength(1);
+        expect(result.proposedActions[0]).toMatchObject({
+            type: "shell",
+            status: "pending",
+            executed: false,
+            payload: {
+                shell: "npm install",
+            },
+        });
+        expect(result.toolTrace[0]?.status).toBe("pending_approval");
+    });
+
     it("propagates session focused paths into task-tool sub-agents", async () => {
         vi.mocked(loadCofreeRc).mockResolvedValue({
             contextRules: [
@@ -962,23 +1044,20 @@ describe("planningService approval-flow repair", () => {
             kind: "shell_command_prefix",
             commandTokens: ["git", "add"],
         });
-        vi.mocked(invoke).mockImplementation(async (command: string, args?: any) => {
-            if (command === "run_shell_command") {
-                expect(args).toMatchObject({
-                    workspacePath: "d:/Code/cofree",
-                    shell: "git add src/app.ts",
-                    timeoutMs: 120000,
-                });
-                return {
-                    success: true,
-                    command: "git add src/app.ts",
-                    timed_out: false,
-                    status: 0,
-                    stdout: "ok",
-                    stderr: "",
-                };
-            }
-            throw new Error(`Unexpected invoke: ${command}`);
+        vi.mocked(awaitShellCommand).mockImplementation(async (params) => {
+            expect(params).toMatchObject({
+                workspacePath: "d:/Code/cofree",
+                shell: "git add src/app.ts",
+                timeoutMs: 120000,
+            });
+            return {
+                success: true,
+                command: "git add src/app.ts",
+                timed_out: false,
+                status: 0,
+                stdout: "ok",
+                stderr: "",
+            };
         });
 
         const result = await planningServiceTestUtils.executeToolCall(
@@ -1484,35 +1563,36 @@ describe("planningService approval-flow repair", () => {
                 }),
             });
 
-        vi.mocked(invoke).mockImplementation(async (command: string, args?: any) => {
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
             if (command === "list_files") {
                 return [];
             }
-            if (command === "run_shell_command") {
-                const shell = String(args?.shell ?? "");
-                if (shell === "mkdir -p logs && npm test") {
-                    return {
-                        success: false,
-                        command: shell,
-                        timed_out: false,
-                        status: 1,
-                        stdout: "",
-                        stderr:
-                            "ParserError: The token '&&' is not a valid statement separator in this version.\nCategoryInfo : ParserError\nFullyQualifiedErrorId : InvalidEndOfLine",
-                    };
-                }
-                if (shell === "New-Item -ItemType Directory -Force logs; npm test") {
-                    return {
-                        success: true,
-                        command: shell,
-                        timed_out: false,
-                        status: 0,
-                        stdout: "ok",
-                        stderr: "",
-                    };
-                }
-            }
             throw new Error(`Unexpected invoke: ${command}`);
+        });
+        vi.mocked(awaitShellCommand).mockImplementation(async (params) => {
+            const shell = params.shell;
+            if (shell === "mkdir -p logs && npm test") {
+                return {
+                    success: false,
+                    command: shell,
+                    timed_out: false,
+                    status: 1,
+                    stdout: "",
+                    stderr:
+                        "ParserError: The token '&&' is not a valid statement separator in this version.\nCategoryInfo : ParserError\nFullyQualifiedErrorId : InvalidEndOfLine",
+                };
+            }
+            if (shell === "New-Item -ItemType Directory -Force logs; npm test") {
+                return {
+                    success: true,
+                    command: shell,
+                    timed_out: false,
+                    status: 0,
+                    stdout: "ok",
+                    stderr: "",
+                };
+            }
+            throw new Error(`Unexpected awaitShellCommand: ${shell}`);
         });
 
         const result = await runPlanningSession({
@@ -1531,15 +1611,13 @@ describe("planningService approval-flow repair", () => {
                     message.role === "system" &&
                     message.content.includes("shell 方言不匹配"),
             );
-        const shellCalls = vi.mocked(invoke).mock.calls.filter(
-            ([command]) => command === "run_shell_command",
-        );
+        const shellCalls = vi.mocked(awaitShellCommand).mock.calls;
 
         expect(shellCalls).toHaveLength(2);
-        expect(shellCalls[0]?.[1]).toMatchObject({
+        expect(shellCalls[0]?.[0]).toMatchObject({
             shell: "mkdir -p logs && npm test",
         });
-        expect(shellCalls[1]?.[1]).toMatchObject({
+        expect(shellCalls[1]?.[0]).toMatchObject({
             shell: "New-Item -ItemType Directory -Force logs; npm test",
         });
         expect(repairMessage?.content).toContain(

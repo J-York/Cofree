@@ -156,6 +156,8 @@ import {
 } from "./chat/debugExport";
 import {
   DEFAULT_BACKGROUND_READY_TIMEOUT_MS,
+  DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
+  DEFAULT_SHELL_OUTPUT_FLUSH_INTERVAL_MS,
   extractShellReadyUrlFromText,
   resolveShellExecutionMode,
   resolveShellReadyTimeoutMs,
@@ -191,16 +193,23 @@ interface ShellOutputBuffer {
   command: string;
   stdout: string;
   stderr: string;
+  stdoutBytes: number;
+  stderrBytes: number;
   timerId: ReturnType<typeof setTimeout> | null;
 }
 
 const DEBUG_LOG_MAX_CONTENT_CHARS = 2000;
 const DEBUG_LOG_HISTORY_LIMIT = 18;
 const DEBUG_EXPORT_HISTORY_LIMIT = 200;
+const shellOutputTextEncoder = new TextEncoder();
 
 function truncateDebugLogText(text: string, maxChars = DEBUG_LOG_MAX_CONTENT_CHARS): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} chars]`;
+}
+
+function measureShellChunkBytes(text: string): number {
+  return shellOutputTextEncoder.encode(text).length;
 }
 
 function isLlmResponseFailureCategory(category: CategorizedError["category"]): boolean {
@@ -1586,7 +1595,11 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           },
         });
       }
-      guardedSetMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
+      guardedSetMessages((prev) =>
+        prev.filter(
+          (m) => m.id !== assistantMessageId || m.content.trim() !== ""
+        )
+      );
       guardedSetNote("回复失败");
     } finally {
       if (localRafId !== null) {
@@ -1746,6 +1759,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       shell: action.payload.shell,
       timeoutMs: action.payload.timeoutMs,
       detached: executionMode === "background",
+      maxOutputBytes: DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
     });
     runningShellJobsRef.current.set(started.job_id, {
       messageId: params.messageId,
@@ -1968,8 +1982,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
     const stdoutChunk = buffer.stdout;
     const stderrChunk = buffer.stderr;
+    const stdoutChunkBytes = buffer.stdoutBytes;
+    const stderrChunkBytes = buffer.stderrBytes;
     buffer.stdout = "";
     buffer.stderr = "";
+    buffer.stdoutBytes = 0;
+    buffer.stderrBytes = 0;
 
     handlePlanUpdate(
       job.messageId,
@@ -1980,6 +1998,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             command: buffer.command,
             stream: "stdout",
             chunk: stdoutChunk,
+            chunkBytes: stdoutChunkBytes,
           });
         }
         if (stderrChunk) {
@@ -1987,6 +2006,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             command: buffer.command,
             stream: "stderr",
             chunk: stderrChunk,
+            chunkBytes: stderrChunkBytes,
           });
         }
         return nextPlan;
@@ -2034,19 +2054,23 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             command: payload.command,
             stdout: "",
             stderr: "",
+            stdoutBytes: 0,
+            stderrBytes: 0,
             timerId: null,
           };
 
         existing.command = payload.command || existing.command;
         if (payload.stream === "stdout") {
           existing.stdout += payload.chunk;
+          existing.stdoutBytes += measureShellChunkBytes(payload.chunk);
         } else {
           existing.stderr += payload.chunk;
+          existing.stderrBytes += measureShellChunkBytes(payload.chunk);
         }
         if (existing.timerId === null) {
           existing.timerId = setTimeout(() => {
             flushShellOutputBufferRef.current(payload.job_id);
-          }, 120);
+          }, DEFAULT_SHELL_OUTPUT_FLUSH_INTERVAL_MS);
         }
         shellOutputBuffersRef.current.set(payload.job_id, existing);
         return;
@@ -2070,6 +2094,13 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             stdout: String(payload.stdout ?? ""),
             stderr: String(payload.stderr ?? ""),
             cancelled: Boolean(payload.cancelled),
+            stdout_truncated: Boolean(payload.stdout_truncated),
+            stderr_truncated: Boolean(payload.stderr_truncated),
+            stdout_total_bytes: Number(payload.stdout_total_bytes ?? 0),
+            stderr_total_bytes: Number(payload.stderr_total_bytes ?? 0),
+            output_limit_bytes: Number(
+              payload.output_limit_bytes ?? DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
+            ),
           }),
         );
         setSessionNote(
@@ -2094,6 +2125,13 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             stdout: String(payload.stdout ?? ""),
             stderr: String(payload.stderr ?? ""),
             cancelled: Boolean(payload.cancelled),
+            stdout_truncated: Boolean(payload.stdout_truncated),
+            stderr_truncated: Boolean(payload.stderr_truncated),
+            stdout_total_bytes: Number(payload.stdout_total_bytes ?? 0),
+            stderr_total_bytes: Number(payload.stderr_total_bytes ?? 0),
+            output_limit_bytes: Number(
+              payload.output_limit_bytes ?? DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
+            ),
           },
           runningJob.approvalContext,
         );

@@ -23,9 +23,16 @@
 .ask-user-options-grid { display: flex; flex-direction: column; gap: 6px; }
 .ask-user-option-label { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--surface-3); border: 1px solid var(--border-1); border-radius: var(--r-sm); cursor: pointer; transition: border-color 0.15s, background 0.15s; }
 .ask-user-option-label:hover { border-color: var(--border-focus); background: var(--surface-4, var(--surface-3)); }
-.ask-user-option-label input[type="radio"] { accent-color: var(--color-accent, #6366f1); flex-shrink: 0; }
-.ask-user-option-label input[type="radio"]:checked + .ask-user-option-text { color: var(--text-1); font-weight: 500; }
+.ask-user-option-label input[type="radio"],
+.ask-user-option-label input[type="checkbox"] { accent-color: var(--color-accent, #6366f1); flex-shrink: 0; }
+.ask-user-option-label input[type="radio"]:checked + .ask-user-option-text,
+.ask-user-option-label input[type="checkbox"]:checked + .ask-user-option-text { color: var(--text-1); font-weight: 500; }
 .ask-user-option-text { font-size: 14px; color: var(--text-2); }
+.ask-user-option-other .ask-user-option-text { font-style: italic; }
+.ask-user-other-input { margin-top: 6px; padding-left: 2px; }
+.ask-user-other-textfield { width: 100%; padding: 8px 12px; font-family: var(--font-sans); font-size: 14px; line-height: 1.45; color: var(--text-1); background: var(--surface-3); border: 1px solid var(--border-1); border-radius: var(--r-sm); outline: none; transition: border-color 0.15s; }
+.ask-user-other-textfield:focus { border-color: var(--border-focus); }
+.ask-user-other-textfield::placeholder { color: var(--text-3); }
 .ask-user-input { display: flex; flex-direction: column; gap: 6px; }
 .ask-user-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 16px; }
 .ask-user-actions-left { display: flex; gap: 6px; }

@@ -58,6 +58,7 @@ describe("askUserService", () => {
         "Choose database",
         "For the new project",
         ["PostgreSQL", "MongoDB", "SQLite"],
+        false,
         false
       );
 
@@ -66,7 +67,24 @@ describe("askUserService", () => {
       expect(pending!.question).toBe("Choose database");
       expect(pending!.context).toBe("For the new project");
       expect(pending!.options).toEqual(["PostgreSQL", "MongoDB", "SQLite"]);
+      expect(pending!.allowMultiple).toBe(false);
       expect(pending!.required).toBe(false);
+    });
+
+    it("should create a multi-select request", () => {
+      createAskUserRequest(
+        testSessionId,
+        "Which features?",
+        undefined,
+        ["Auth", "Search", "Notifications"],
+        true,
+        true
+      );
+
+      const pending = getPendingRequest(testSessionId);
+      expect(pending).not.toBeNull();
+      expect(pending!.allowMultiple).toBe(true);
+      expect(pending!.options).toEqual(["Auth", "Search", "Notifications"]);
     });
 
     it("should cancel existing request when creating new one", () => {
@@ -111,6 +129,7 @@ describe("askUserService", () => {
         "Optional question?",
         undefined,
         undefined,
+        false,
         false
       );
 

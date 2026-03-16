@@ -53,6 +53,11 @@ pub struct CommandExecutionResult {
     pub status: i32,
     pub stdout: String,
     pub stderr: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub stdout_total_bytes: u64,
+    pub stderr_total_bytes: u64,
+    pub output_limit_bytes: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -74,6 +79,11 @@ pub struct ShellCommandEvent {
     pub status: Option<i32>,
     pub stdout: Option<String>,
     pub stderr: Option<String>,
+    pub stdout_truncated: Option<bool>,
+    pub stderr_truncated: Option<bool>,
+    pub stdout_total_bytes: Option<u64>,
+    pub stderr_total_bytes: Option<u64>,
+    pub output_limit_bytes: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
