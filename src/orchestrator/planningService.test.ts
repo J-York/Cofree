@@ -94,7 +94,7 @@ import {
     type LiteLLMMessage,
 } from "../lib/litellm";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
-import { assembleRuntimeContext } from "../agents/promptAssembly";
+import { assembleRuntimeContext, classifyTaskType } from "../agents/promptAssembly";
 import { DEFAULT_SETTINGS, type AppSettings } from "../lib/settingsStore";
 import { createFileContextAttachment } from "../lib/contextAttachments";
 import { createGatewayRequestBody } from "../lib/modelGateway";
@@ -305,7 +305,7 @@ describe("planningService approval-flow repair", () => {
             }),
         });
         vi.mocked(invoke).mockImplementation(async (command: string) => {
-            if (command === "list_files") {
+            if (command === "list_workspace_files") {
                 return [];
             }
             throw new Error(`Unexpected invoke: ${command}`);
@@ -318,7 +318,197 @@ describe("planningService approval-flow repair", () => {
         });
 
         expect(result.assistantReply).toBe("done");
+        expect(vi.mocked(postLiteLLMChatCompletionsStream).mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("retries once when the model dumps tool JSON transcripts in plain text without native tool_calls", async () => {
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-pseudo-json-1",
+                choices: [{
+                    message: {
+                        role: "assistant",
+                        content: "{\"relative_path\":\"apps/api/src/index.ts\",\"start_line\":1,\"end_line\":200}{\"ok\":false,\"error\":\"read_file failed: no such file or directory\"}",
+                    },
+                }],
+                usage: { prompt_tokens: 4, completion_tokens: 2 },
+            }),
+        }).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-pseudo-json-2",
+                choices: [{ message: { role: "assistant", content: "done" } }],
+                usage: { prompt_tokens: 5, completion_tokens: 2 },
+            }),
+        });
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            if (command === "list_workspace_files") {
+                return [];
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const result = await runPlanningSession({
+            prompt: "帮我实现一个全栈音乐分享项目",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        expect(result.assistantReply).toBe("done");
         expect(vi.mocked(postLiteLLMChatCompletionsStream)).toHaveBeenCalledTimes(2);
+    });
+
+    it("removes pseudo tool JSON transcripts from retry history", async () => {
+        const pseudoTranscript =
+            "{\"relative_path\":\"apps/api/src/index.ts\",\"start_line\":1,\"end_line\":200}" +
+            "{\"ok\":false,\"error\":\"read_file failed: no such file or directory\"}";
+
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-pseudo-history-1",
+                choices: [{
+                    message: {
+                        role: "assistant",
+                        content: pseudoTranscript,
+                    },
+                }],
+                usage: { prompt_tokens: 4, completion_tokens: 2 },
+            }),
+        }).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-pseudo-history-2",
+                choices: [{ message: { role: "assistant", content: "done" } }],
+                usage: { prompt_tokens: 5, completion_tokens: 2 },
+            }),
+        });
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            if (command === "list_workspace_files") {
+                return [];
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const result = await runPlanningSession({
+            prompt: "帮我实现一个全栈音乐分享项目",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        expect(result.assistantReply).toBe("done");
+        const secondCall = vi.mocked(createGatewayRequestBody).mock.calls[1];
+        const secondMessages = (secondCall?.[0] ?? []) as Array<{ content?: string }>;
+        expect(secondMessages.some((message) => message.content?.includes(pseudoTranscript))).toBe(false);
+    });
+
+    it("retries once when the model dumps tool JSON in plain text without native tool_calls", async () => {
+        vi.mocked(resolveAgentRuntime).mockImplementationOnce(() => ({
+            agentId: "agent-default",
+            enabledTools: ["propose_shell"],
+            toolPermissions: {
+                list_files: "auto",
+                read_file: "auto",
+                grep: "auto",
+                glob: "auto",
+                git_status: "auto",
+                git_diff: "auto",
+                propose_file_edit: "ask",
+                propose_apply_patch: "ask",
+                propose_shell: "ask",
+                diagnostics: "auto",
+                fetch: "ask",
+            },
+            allowedSubAgents: [],
+            vendorProtocol: "openai-responses",
+            modelRef: "test-model",
+        }) as any);
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/responses",
+            body: JSON.stringify({
+                id: "resp-pseudo-json-1",
+                choices: [{
+                    message: {
+                        role: "assistant",
+                        content:
+                            "{\"shell\":\"pnpm test\",\"timeout_ms\":120000}{\"ok\":false,\"error\":\"propose_shell failed: command not found\"}",
+                    },
+                }],
+                usage: { prompt_tokens: 4, completion_tokens: 2 },
+            }),
+        }).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/responses",
+            body: JSON.stringify({
+                id: "resp-pseudo-json-2",
+                choices: [{ message: { role: "assistant", content: "done" } }],
+                usage: { prompt_tokens: 5, completion_tokens: 2 },
+            }),
+        });
+
+        const result = await runPlanningSession({
+            prompt: "Describe the shell tool contract",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        expect(result.assistantReply).toBe("done");
+        expect(vi.mocked(postLiteLLMChatCompletionsStream)).toHaveBeenCalledTimes(2);
+    });
+
+    it("returns a compatibility diagnostic when pseudo tool JSON persists after repair", async () => {
+        vi.mocked(resolveAgentRuntime).mockImplementationOnce(() => ({
+            agentId: "agent-default",
+            enabledTools: ["propose_shell"],
+            toolPermissions: {
+                list_files: "auto",
+                read_file: "auto",
+                grep: "auto",
+                glob: "auto",
+                git_status: "auto",
+                git_diff: "auto",
+                propose_file_edit: "ask",
+                propose_apply_patch: "ask",
+                propose_shell: "ask",
+                diagnostics: "auto",
+                fetch: "ask",
+            },
+            allowedSubAgents: [],
+            vendorProtocol: "openai-responses",
+            modelRef: "test-model",
+        }) as any);
+        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+            status: 200,
+            endpoint: "http://localhost:4000/responses",
+            body: JSON.stringify({
+                id: "resp-pseudo-json-repeat",
+                choices: [{
+                    message: {
+                        role: "assistant",
+                        content:
+                            "{\"shell\":\"pnpm test\",\"timeout_ms\":120000}{\"ok\":false,\"error\":\"propose_shell failed: command not found\"}",
+                    },
+                }],
+                usage: { prompt_tokens: 4, completion_tokens: 2 },
+            }),
+        });
+
+        const result = await runPlanningSession({
+            prompt: "Describe the shell tool contract",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        expect(result.assistantReply).toContain("OpenAI Responses");
+        expect(result.assistantReply).toContain("OpenAI Chat Completions");
+        expect(result.assistantReply).not.toContain("{\"shell\"");
+        expect(vi.mocked(postLiteLLMChatCompletionsStream).mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
     it("falls back to non-streaming when the streamed response assembles to empty text without tool calls", async () => {
@@ -443,7 +633,7 @@ describe("planningService approval-flow repair", () => {
             }),
         });
         vi.mocked(invoke).mockImplementation(async (command: string) => {
-            if (command === "list_files") {
+            if (command === "list_workspace_files") {
                 return [];
             }
             throw new Error(`Unexpected invoke: ${command}`);
@@ -1322,6 +1512,102 @@ describe("planningService approval-flow repair", () => {
         expect(result.toolTrace.length).toBeGreaterThanOrEqual(1);
         expect(result.toolTrace[0]?.status).toBe("pending_approval");
     });
+
+    it("does not force-stop exploration tasks after 25 tool turns", async () => {
+        vi.mocked(classifyTaskType).mockReturnValue("exploration");
+        vi.mocked(resolveAgentRuntime).mockReturnValue({
+            agentId: "agent-default",
+            enabledTools: ["list_files"],
+            toolPermissions: {
+                list_files: "auto",
+                read_file: "auto",
+                grep: "auto",
+                glob: "auto",
+                git_status: "auto",
+                git_diff: "auto",
+                propose_file_edit: "ask",
+                propose_apply_patch: "ask",
+                propose_shell: "ask",
+                diagnostics: "auto",
+                fetch: "ask",
+            },
+            allowedSubAgents: [],
+        } as any);
+
+        let llmCallCount = 0;
+        vi.mocked(postLiteLLMChatCompletions).mockImplementation(async () => {
+            llmCallCount += 1;
+            if (llmCallCount <= 26) {
+                return {
+                    status: 200,
+                    endpoint: "http://localhost:4000/chat/completions",
+                    body: JSON.stringify({
+                        id: `chatcmpl-${llmCallCount}`,
+                        choices: [
+                            {
+                                message: {
+                                    role: "assistant",
+                                    content: "",
+                                    tool_calls: [
+                                        {
+                                            id: `call-list-${llmCallCount}`,
+                                            type: "function",
+                                            function: {
+                                                name: "list_files",
+                                                arguments: JSON.stringify({ relative_path: "src" }),
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                        ],
+                        usage: {
+                            prompt_tokens: 12,
+                            completion_tokens: 8,
+                        },
+                    }),
+                } as any;
+            }
+
+            return {
+                status: 200,
+                endpoint: "http://localhost:4000/chat/completions",
+                body: JSON.stringify({
+                    id: "chatcmpl-final",
+                    choices: [
+                        {
+                            message: {
+                                role: "assistant",
+                                content: "探索完成",
+                            },
+                        },
+                    ],
+                    usage: {
+                        prompt_tokens: 12,
+                        completion_tokens: 8,
+                    },
+                }),
+            } as any;
+        });
+
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            if (command === "list_workspace_files") {
+                return [];
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const result = await runPlanningSession({
+            prompt: "查找这个项目里和多 agent 调度相关的代码入口",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        expect(llmCallCount).toBe(27);
+        expect(result.toolTrace).toHaveLength(26);
+        expect(result.assistantReply).toContain("探索完成");
+        expect(result.assistantReply).not.toContain("工具调用预算");
+    }, 15000);
 
     it("classifies review task type correctly", async () => {
         const actual = await vi.importActual<typeof import("../agents/promptAssembly")>(

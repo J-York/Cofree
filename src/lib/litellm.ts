@@ -456,9 +456,11 @@ function summarizeRequestMessages(
     const input = Array.isArray(body.input) ? body.input : [];
     return {
       messageCount: input.length,
-      systemPresent: input.some(
-        (item) => isRecord(item) && item.type === "message" && item.role === "system"
-      ),
+      systemPresent:
+        (typeof body.instructions === "string" && body.instructions.trim().length > 0) ||
+        input.some(
+          (item) => isRecord(item) && item.type === "message" && item.role === "system"
+        ),
       recentMessages: input
         .slice(-LLM_DEBUG_RECENT_ITEMS)
         .map(summarizeResponsesInputItem)
@@ -949,14 +951,45 @@ function toOpenAIChatMessages(messages: LiteLLMMessage[]): LiteLLMMessage[] {
   return messages;
 }
 
-function toOpenAIResponsesInput(messages: LiteLLMMessage[]): unknown[] {
+function appendOpenAIResponsesUserText(items: unknown[], text: string): void {
+  const normalized = text.trim();
+  if (!normalized) {
+    return;
+  }
+  items.push({
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: normalized }],
+  });
+}
+
+function toOpenAIResponsesPayload(
+  messages: LiteLLMMessage[]
+): { instructions?: string; input: unknown[] } {
   const items: unknown[] = [];
+  const instructions: string[] = [];
+  let seenNonSystem = false;
 
   for (const message of messages) {
-    if (message.role === "system" || message.role === "user") {
+    if (message.role === "system") {
+      const normalized = message.content.trim();
+      if (!normalized) {
+        continue;
+      }
+      if (!seenNonSystem) {
+        instructions.push(normalized);
+      } else {
+        appendOpenAIResponsesUserText(items, `[System] ${normalized}`);
+      }
+      continue;
+    }
+
+    seenNonSystem = true;
+
+    if (message.role === "user") {
       items.push({
         type: "message",
-        role: message.role,
+        role: "user",
         content: [{ type: "input_text", text: message.content }],
       });
       continue;
@@ -986,7 +1019,10 @@ function toOpenAIResponsesInput(messages: LiteLLMMessage[]): unknown[] {
     }
   }
 
-  return items;
+  return {
+    instructions: instructions.length ? instructions.join("\n\n") : undefined,
+    input: items,
+  };
 }
 
 /**
@@ -1152,12 +1188,16 @@ function createOpenAIResponsesRequestBody(
   }
 ): Record<string, unknown> {
   const metaSettings = getActiveModelMetaSettings(settings);
+  const responsesPayload = toOpenAIResponsesPayload(messages);
   const body: Record<string, unknown> = {
     model: getModelName(settings),
-    input: toOpenAIResponsesInput(messages),
+    input: responsesPayload.input,
     temperature: options?.temperature ?? metaSettings.temperature ?? 0.2,
     stream: options?.stream ?? false,
   };
+  if (responsesPayload.instructions) {
+    body.instructions = responsesPayload.instructions;
+  }
   const thinkingLevel = getActiveModelThinkingLevel(settings);
 
   if (thinkingLevel) {
@@ -1170,7 +1210,6 @@ function createOpenAIResponsesRequestBody(
       name: tool.function.name,
       description: tool.function.description,
       parameters: tool.function.parameters,
-      strict: true,
     }));
     body.tool_choice = normalizeToolChoice(
       options.toolChoice,

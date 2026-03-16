@@ -32,6 +32,7 @@ keyring = { version = "3", features = ["windows-native", "apple-native", "linux-
 ring = "0.17"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-clipboard-manager = "2.1.0-beta.7"
 
 [features]
 default = ["custom-protocol"]

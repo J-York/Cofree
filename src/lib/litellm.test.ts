@@ -168,6 +168,73 @@ describe("Anthropic normalization for tool-calling replies", () => {
 
 });
 
+describe("OpenAI Responses normalization for tool-calling replies", () => {
+  it("preserves tool_calls when responses returns a function_call-only output", async () => {
+    const settings = createSettings({
+      protocol: "openai-responses",
+      supportsThinking: false,
+      modelName: "gpt-4.1",
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            id: "resp_123",
+            output: [
+              {
+                type: "function_call",
+                call_id: "call_123",
+                name: "read_file",
+                arguments: JSON.stringify({ relative_path: "src/App.tsx" }),
+              },
+            ],
+            usage: {
+              input_tokens: 12,
+              output_tokens: 7,
+              total_tokens: 19,
+            },
+          }),
+      }),
+    );
+
+    const response = await postLiteLLMChatCompletions(settings, {
+      model: "gpt-4.1",
+      input: [],
+      stream: false,
+    });
+    const payload = JSON.parse(response.body) as {
+      choices: Array<{
+        message: {
+          role: string;
+          content: string;
+          tool_calls?: Array<{
+            id: string;
+            type: string;
+            function: { name: string; arguments: string };
+          }>;
+        };
+      }>;
+    };
+
+    expect(payload.choices[0]?.message.role).toBe("assistant");
+    expect(payload.choices[0]?.message.content).toBe("");
+    expect(payload.choices[0]?.message.tool_calls).toEqual([
+      {
+        id: "call_123",
+        type: "function",
+        function: {
+          name: "read_file",
+          arguments: JSON.stringify({ relative_path: "src/App.tsx" }),
+        },
+      },
+    ]);
+  });
+});
+
 describe("streaming tool-call events", () => {
   it("forwards tool-call deltas before the final streamed response resolves", async () => {
     const settings = createSettings({
@@ -391,6 +458,88 @@ describe("createLiteLLMRequestBody thinking integration", () => {
     const body = createLiteLLMRequestBody(BASE_MESSAGES, settings, { stream: false });
 
     expect(body.reasoning).toEqual({ effort: "low" });
+  });
+
+  it("moves leading system messages to instructions for openai responses", () => {
+    const settings = createSettings({
+      protocol: "openai-responses",
+      supportsThinking: false,
+    });
+    const messages: LiteLLMMessage[] = [
+      { role: "system", content: "你是一个代码助手。" },
+      { role: "system", content: "优先使用工具。" },
+      { role: "user", content: "检查这个仓库" },
+      { role: "system", content: "这是一条中途系统提示" },
+      { role: "assistant", content: "收到" },
+    ];
+
+    const body = createLiteLLMRequestBody(messages, settings, { stream: false });
+
+    expect(body.instructions).toBe("你是一个代码助手。\n\n优先使用工具。");
+    expect(body.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "检查这个仓库" }],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "[System] 这是一条中途系统提示" }],
+      },
+      {
+        role: "assistant",
+        content: "收到",
+      },
+    ]);
+    expect(
+      (body.input as Array<{ role?: string; type?: string }>).some(
+        (item) => item.role === "system",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not force strict tool schemas for openai responses", () => {
+    const settings = createSettings({
+      protocol: "openai-responses",
+      supportsThinking: false,
+    });
+
+    const body = createLiteLLMRequestBody(BASE_MESSAGES, settings, {
+      stream: false,
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "list_files",
+            description: "List files",
+            parameters: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                relative_path: { type: "string" },
+              },
+            },
+          },
+        },
+      ],
+      toolChoice: "auto",
+    });
+
+    expect(body.tools).toEqual([
+      {
+        type: "function",
+        name: "list_files",
+        description: "List files",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            relative_path: { type: "string" },
+          },
+        },
+      },
+    ]);
   });
 
   it("uses anthropic effort mode for effort-capable anthropic models", () => {

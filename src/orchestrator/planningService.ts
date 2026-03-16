@@ -223,7 +223,7 @@ const MAX_CREATE_HINT_REPAIR_ROUNDS = 1;
 const MAX_SHELL_DIALECT_REPAIR_ROUNDS = 1;
 const MAX_SEARCH_NOT_FOUND_REPAIR_ROUNDS = 2;
 const MAX_MULTI_ARTIFACT_REMINDER_ROUNDS = 2;
-const MAX_PSEUDO_TOOL_CALL_REPAIR_ROUNDS = 1;
+const MAX_PSEUDO_TOOL_CALL_REPAIR_ROUNDS = 3;
 const MAX_PROPOSED_ACTIONS_PER_BATCH = 5;
 
 const MAX_TOOL_NOT_FOUND_STRIKES = 3;
@@ -235,15 +235,6 @@ const LLM_RETRY_MAX_DELAY_MS = 15000;
 
 const INCREMENTAL_CHECKPOINT_INTERVAL = 10;
 const MAX_ABSOLUTE_TURNS = 150;
-
-const TASK_TYPE_TURN_LIMITS: Record<string, number> = {
-  review: 20,
-  information: 15,
-  exploration: 25,
-  shell_ops: MAX_ABSOLUTE_TURNS,
-  code_edit: MAX_ABSOLUTE_TURNS,
-  mixed: MAX_ABSOLUTE_TURNS,
-};
 
 const MAX_CONSECUTIVE_READ_ONLY_TURNS = 8;
 const DEDUP_TURN_WINDOW = 10;
@@ -1849,6 +1840,18 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function formatVendorProtocolLabel(protocol: string): string {
+  switch (protocol) {
+    case "openai-responses":
+      return "OpenAI Responses";
+    case "anthropic-messages":
+      return "Anthropic Messages";
+    case "openai-chat-completions":
+    default:
+      return "OpenAI Chat Completions";
+  }
+}
+
 function detectPseudoToolCallNarration(
   content: string,
   availableToolNames: string[],
@@ -1887,6 +1890,57 @@ function detectPseudoToolCallNarration(
 
   const matched = pseudoPatterns.find(({ pattern }) => pattern.test(normalized));
   return matched ? `${matched.reason}:${mentionedTool}` : null;
+}
+
+function detectPseudoToolJsonTranscript(content: string): string | null {
+  const normalized = content.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const looksJsonish =
+    normalized.startsWith("{") ||
+    normalized.startsWith("[") ||
+    /}\s*,?\s*\{/.test(normalized);
+
+  const toolArgumentPatterns = [
+    /"relative_path"\s*:/i,
+    /"start_line"\s*:/i,
+    /"end_line"\s*:/i,
+    /"include_glob"\s*:/i,
+    /"pattern"\s*:/i,
+    /"shell"\s*:/i,
+    /"patch"\s*:/i,
+    /"url"\s*:/i,
+    /"question"\s*:/i,
+    /"step_id"\s*:/i,
+    /"operation"\s*:/i,
+  ];
+  const toolResultPatterns = [
+    /"ok"\s*:\s*(?:true|false)/i,
+    /"error"\s*:/i,
+    /"content_preview"\s*:/i,
+    /"showing_lines"\s*:/i,
+    /"approval_required"\s*:/i,
+    /\b(?:read_file|list_files|grep|glob|git_status|git_diff|propose_file_edit|propose_apply_patch|propose_shell|fetch|ask_user)\s+failed\b/i,
+  ];
+
+  const hasToolArguments = toolArgumentPatterns.some((pattern) => pattern.test(normalized));
+  const hasToolResults = toolResultPatterns.some((pattern) => pattern.test(normalized));
+
+  if (looksJsonish && hasToolArguments && hasToolResults) {
+    return "json_tool_io_transcript";
+  }
+  if (looksJsonish && hasToolArguments) {
+    return "json_tool_arguments";
+  }
+  if (looksJsonish && hasToolResults) {
+    return "json_tool_results";
+  }
+  if (hasToolArguments && hasToolResults) {
+    return "tool_io_transcript";
+  }
+  return null;
 }
 
 
@@ -5832,17 +5886,6 @@ async function runNativeToolCallingLoop(
       };
     }
 
-    // --- 任务类型轮次预算 ---
-    const taskTypeTurnLimit = TASK_TYPE_TURN_LIMITS[taskType] ?? MAX_ABSOLUTE_TURNS;
-    if (turn >= taskTypeTurnLimit && taskTypeTurnLimit < MAX_ABSOLUTE_TURNS) {
-      console.log(`[Loop] 任务类型 "${taskType}" 达到轮次预算 (${taskTypeTurnLimit})，强制总结`);
-      messages.push({
-        role: "system",
-        content: `你已达到当前任务类型（${taskType}）的工具调用预算（${taskTypeTurnLimit} 轮）。请立即基于已收集的所有信息给出完整的总结性回答。不要再调用任何工具。`,
-      });
-      toolChoiceOverride = "none";
-    }
-
     // Incremental checkpoint: persist partial progress every N turns
     if (turn > 0 && turn % INCREMENTAL_CHECKPOINT_INTERVAL === 0 && onLoopCheckpoint) {
       try {
@@ -6069,6 +6112,7 @@ async function runNativeToolCallingLoop(
     if (!completion.toolCalls.length) {
       if (completion.droppedToolCalls > 0) {
         console.warn(`[Loop] Turn ${turn + 1}: ${completion.droppedToolCalls} 个工具调用因格式畸形被丢弃，要求模型重试`);
+        messages.pop();
         messages.push({
           role: "system",
           content: [
@@ -6081,9 +6125,11 @@ async function runNativeToolCallingLoop(
       }
 
       const pseudoToolCallReason = toolChoiceOverride !== "none"
-        ? detectPseudoToolCallNarration(
-          completion.assistantMessage.content,
-          enabledToolNames,
+        ? (
+          detectPseudoToolCallNarration(
+            completion.assistantMessage.content,
+            enabledToolNames,
+          ) ?? detectPseudoToolJsonTranscript(completion.assistantMessage.content)
         )
         : null;
       if (
@@ -6091,19 +6137,44 @@ async function runNativeToolCallingLoop(
         pseudoToolCallRepairRounds < MAX_PSEUDO_TOOL_CALL_REPAIR_ROUNDS
       ) {
         pseudoToolCallRepairRounds += 1;
+        messages.pop();
         console.warn(
           `[Loop] Turn ${turn + 1}: detected pseudo tool-call narration without native tool_calls (${pseudoToolCallReason}), requesting retry`,
         );
         messages.push({
           role: "system",
           content: [
-            "系统提示：你刚才在普通文本里描述了“将调用工具/准备调用工具”，但并没有发送原生 tool_calls，所以系统无法执行。",
+            "系统提示：你刚才在普通文本里描述、转储了工具调用，或直接输出了工具参数/工具结果，但并没有发送原生 tool_calls，所以系统无法执行。",
             `本轮可用工具: [${enabledToolNames.join(", ")}]`,
-            "如果需要继续使用工具，请直接发送原生工具调用，不要输出任何类似“我将调用 read_file / let's call ... / tool call now”的描述文本。",
+            "如果需要继续使用工具，请直接发送原生工具调用，不要输出任何类似“我将调用 read_file / let's call ... / tool call now”的描述文本，也不要把 JSON 参数对象或工具错误结果直接打到聊天内容里。",
             "如果任务其实已经完成且不需要工具，请直接给出最终答案。",
           ].join("\n"),
         });
         continue;
+      }
+
+      if (pseudoToolCallReason) {
+        const protocol = (runtime.vendorProtocol || "openai-chat-completions");
+        const protocolLabel = formatVendorProtocolLabel(protocol);
+        const providerHint = protocol === "openai-responses"
+          ? "如果你正在使用 OpenAI Responses 兼容端点，建议优先切回 OpenAI Chat Completions 再试。"
+          : "建议切换到对原生工具调用支持更稳定的协议或模型后重试。";
+        console.warn(
+          `[Loop] Turn ${turn + 1}: pseudo tool-call output persisted after repair (${pseudoToolCallReason}); returning compatibility diagnostic`,
+        );
+        return {
+          assistantReply: [
+            `当前模型在 ${protocolLabel} 协议下连续把工具调用写成了普通文本或 JSON，而不是原生 tool_calls。`,
+            `Cofree 无法把这些文本当成真实工具调用执行，所以本轮已停止自动继续，避免把伪造的工具参数/结果直接当最终工作产物。`,
+            providerHint,
+          ].join("\n"),
+          requestRecords,
+          proposedActions,
+          planState,
+          toolTrace,
+          assistantToolCalls:
+            completion.assistantMessage.tool_calls ?? lastAssistantToolCalls,
+        };
       }
 
       console.log(`[Loop] Turn ${turn + 1} 结束: 模型返回文本回复 (无工具调用)`);
