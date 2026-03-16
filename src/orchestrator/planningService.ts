@@ -7417,6 +7417,10 @@ export const planningServiceTestUtils = {
   buildProposedActions,
   reconcileAssistantReply,
   summarizeToolArgs,
+  sanitizeMessagesForToolCalling,
+  pruneStaleSystemMessages,
+  detectPseudoToolCallNarration,
+  detectPseudoToolJsonTranscript,
 };
 
 function assertLocalOnlyPolicy(settings: AppSettings): void {

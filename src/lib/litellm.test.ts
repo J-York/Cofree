@@ -753,3 +753,81 @@ describe("createLiteLLMRequestBody thinking integration", () => {
     expect(anthropicBody).not.toHaveProperty("output_config");
   });
 });
+
+describe("OpenAI Responses payload: system messages between tool calls", () => {
+  it("defers system messages between function_call and function_call_output items", () => {
+    const messages: LiteLLMMessage[] = [
+      { role: "system", content: "System prompt" },
+      { role: "user", content: "Do something" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "call_1", type: "function", function: { name: "read_file", arguments: '{"path":"a.ts"}' } },
+        ],
+      },
+      { role: "system", content: "Progress update" },
+      { role: "tool", tool_call_id: "call_1", content: '{"ok":true}' },
+    ];
+
+    const responsesSettings = createSettings({
+      protocol: "openai-responses",
+      supportsThinking: false,
+      modelName: "gpt-4o",
+    });
+    const body = createLiteLLMRequestBody(messages, responsesSettings, { stream: false });
+
+    const input = body.input as Array<Record<string, unknown>>;
+
+    const fcIndex = input.findIndex(
+      (item) => item.type === "function_call"
+    );
+    expect(fcIndex).toBeGreaterThan(-1);
+
+    const nextItem = input[fcIndex + 1];
+    expect(nextItem).toBeDefined();
+    expect(nextItem.type).toBe("function_call_output");
+    expect(nextItem.call_id).toBe("call_1");
+
+    const systemUserIdx = input.findIndex(
+      (item, idx) => idx > fcIndex + 1 && item.role === "user" && typeof item.content === "object"
+    );
+    if (systemUserIdx !== -1) {
+      expect(systemUserIdx).toBeGreaterThan(fcIndex + 1);
+    }
+  });
+
+  it("keeps system messages outside tool blocks as user messages", () => {
+    const messages: LiteLLMMessage[] = [
+      { role: "system", content: "System prompt" },
+      { role: "user", content: "Hello" },
+      { role: "assistant", content: "Hi there!" },
+      { role: "system", content: "Mid-conversation hint" },
+      { role: "user", content: "Do something else" },
+    ];
+
+    const responsesSettings = createSettings({
+      protocol: "openai-responses",
+      supportsThinking: false,
+      modelName: "gpt-4o",
+    });
+    const body = createLiteLLMRequestBody(messages, responsesSettings, { stream: false });
+
+    const input = body.input as Array<Record<string, unknown>>;
+    const instructions = body.instructions as string | undefined;
+
+    expect(instructions).toContain("System prompt");
+
+    const hintItem = input.find(
+      (item) => {
+        if (item.role !== "user") return false;
+        const content = item.content;
+        if (Array.isArray(content)) {
+          return content.some((c: Record<string, unknown>) => typeof c.text === "string" && (c.text as string).includes("Mid-conversation hint"));
+        }
+        return typeof content === "string" && content.includes("Mid-conversation hint");
+      }
+    );
+    expect(hintItem).toBeDefined();
+  });
+});

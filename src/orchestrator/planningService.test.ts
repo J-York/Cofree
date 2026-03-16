@@ -2406,3 +2406,163 @@ describe("P0-2: task(team=...) role whitelist enforcement", () => {
         expect(payload.error).toContain("未授权角色");
     });
 });
+
+// ---------------------------------------------------------------------------
+// Message sanitization tests
+// ---------------------------------------------------------------------------
+
+describe("sanitizeMessagesForToolCalling", () => {
+    const { sanitizeMessagesForToolCalling } = planningServiceTestUtils;
+
+    it("moves interleaved system messages after tool result block", () => {
+        const messages: LiteLLMMessage[] = [
+            { role: "system", content: "You are a helpful assistant." },
+            { role: "user", content: "Fix the bug." },
+            {
+                role: "assistant",
+                content: "",
+                tool_calls: [
+                    { id: "tc1", type: "function", function: { name: "read_file", arguments: '{"relative_path":"a.ts"}' } },
+                    { id: "tc2", type: "function", function: { name: "read_file", arguments: '{"relative_path":"b.ts"}' } },
+                ],
+            },
+            { role: "tool", tool_call_id: "tc1", content: '{"ok":true}' },
+            { role: "system", content: "Dedup reminder" },
+            { role: "tool", tool_call_id: "tc2", content: '{"ok":true}' },
+        ];
+
+        const sanitized = sanitizeMessagesForToolCalling(messages);
+        expect(sanitized).toHaveLength(6);
+        // Tool results should be consecutive after the assistant message
+        expect(sanitized[2].role).toBe("assistant");
+        expect(sanitized[3].role).toBe("tool");
+        expect(sanitized[3].tool_call_id).toBe("tc1");
+        expect(sanitized[4].role).toBe("tool");
+        expect(sanitized[4].tool_call_id).toBe("tc2");
+        // System message should come after tool results
+        expect(sanitized[5].role).toBe("system");
+        expect(sanitized[5].content).toContain("Dedup reminder");
+    });
+
+    it("preserves order when no system messages are interleaved", () => {
+        const messages: LiteLLMMessage[] = [
+            { role: "system", content: "System prompt." },
+            { role: "user", content: "Hello" },
+            {
+                role: "assistant",
+                content: "",
+                tool_calls: [
+                    { id: "tc1", type: "function", function: { name: "list_files", arguments: '{}' } },
+                ],
+            },
+            { role: "tool", tool_call_id: "tc1", content: '{"ok":true}' },
+            { role: "assistant", content: "Done!" },
+        ];
+
+        const sanitized = sanitizeMessagesForToolCalling(messages);
+        expect(sanitized).toEqual(messages);
+    });
+
+    it("consolidates multiple interleaved system messages into one", () => {
+        const messages: LiteLLMMessage[] = [
+            { role: "user", content: "Do something" },
+            {
+                role: "assistant",
+                content: "",
+                tool_calls: [
+                    { id: "tc1", type: "function", function: { name: "read_file", arguments: '{}' } },
+                ],
+            },
+            { role: "system", content: "Progress update 1" },
+            { role: "system", content: "Progress update 2" },
+            { role: "tool", tool_call_id: "tc1", content: '{"ok":true}' },
+        ];
+
+        const sanitized = sanitizeMessagesForToolCalling(messages);
+        // assistant + tool + consolidated system = 4 messages (user + assistant + tool + system)
+        expect(sanitized).toHaveLength(4);
+        expect(sanitized[2].role).toBe("tool");
+        expect(sanitized[3].role).toBe("system");
+        expect(sanitized[3].content).toContain("Progress update 1");
+        expect(sanitized[3].content).toContain("Progress update 2");
+    });
+});
+
+describe("pruneStaleSystemMessages", () => {
+    const { pruneStaleSystemMessages } = planningServiceTestUtils;
+
+    it("removes oldest interstitial system messages when exceeding limit", () => {
+        const messages: LiteLLMMessage[] = [
+            { role: "system", content: "Pinned system prompt" },
+            { role: "user", content: "Hello" },
+            { role: "system", content: "Old hint 1" },
+            { role: "assistant", content: "Thinking..." },
+            { role: "system", content: "Old hint 2" },
+            { role: "system", content: "Recent hint 1" },
+            { role: "system", content: "Recent hint 2" },
+        ];
+
+        const pruned = pruneStaleSystemMessages(messages, 1, 2);
+        // Should keep only the 2 most recent system messages (Recent hint 1 & 2)
+        expect(pruned).toHaveLength(5);
+        const sysContents = pruned.filter(m => m.role === "system").map(m => m.content);
+        expect(sysContents).toContain("Pinned system prompt");
+        expect(sysContents).toContain("Recent hint 1");
+        expect(sysContents).toContain("Recent hint 2");
+        expect(sysContents).not.toContain("Old hint 1");
+        expect(sysContents).not.toContain("Old hint 2");
+    });
+
+    it("does not remove messages when under the limit", () => {
+        const messages: LiteLLMMessage[] = [
+            { role: "system", content: "Pinned" },
+            { role: "user", content: "Hello" },
+            { role: "system", content: "Hint 1" },
+        ];
+
+        const pruned = pruneStaleSystemMessages(messages, 1, 5);
+        expect(pruned).toEqual(messages);
+    });
+});
+
+describe("detectPseudoToolCallNarration (enhanced patterns)", () => {
+    const { detectPseudoToolCallNarration } = planningServiceTestUtils;
+    const tools = ["read_file", "grep", "propose_file_edit", "list_files"];
+
+    it("detects 'I am going to call read_file' pattern", () => {
+        const result = detectPseudoToolCallNarration(
+            "I am going to call read_file to check the contents.",
+            tools,
+        );
+        expect(result).not.toBeNull();
+    });
+
+    it("detects code block with tool call JSON", () => {
+        const result = detectPseudoToolCallNarration(
+            '```json\n{"name": "read_file", "arguments": {"relative_path": "src/app.ts"}}\n```',
+            tools,
+        );
+        expect(result).not.toBeNull();
+    });
+
+    it("detects 'calling the tool' pattern", () => {
+        const result = detectPseudoToolCallNarration(
+            "I am calling the tool read_file now to get the contents.",
+            tools,
+        );
+        expect(result).not.toBeNull();
+    });
+
+    it("returns null for normal assistant text without tool mention patterns", () => {
+        const result = detectPseudoToolCallNarration(
+            "The file contains a function called processData that handles validation.",
+            tools,
+        );
+        expect(result).toBeNull();
+    });
+
+    it("returns null for empty content", () => {
+        const result = detectPseudoToolCallNarration("", tools);
+        expect(result).toBeNull();
+    });
+});
