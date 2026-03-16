@@ -383,7 +383,23 @@ function ActionPayloadFields({
     const meta = action.executionResult?.metadata as
       | Record<string, unknown>
       | undefined;
-    const hasShellOutput = action.executionResult && meta?.stdout !== undefined;
+    const hasShellOutput = Boolean(
+      action.executionResult &&
+      (
+        meta?.stdout !== undefined ||
+        meta?.stderr !== undefined ||
+        meta?.stdoutTotalBytes !== undefined ||
+        meta?.stdout_total_bytes !== undefined ||
+        meta?.stderrTotalBytes !== undefined ||
+        meta?.stderr_total_bytes !== undefined
+      ),
+    );
+    const statusLabel =
+      action.status === "running"
+        ? "RUNNING"
+        : action.status === "background"
+          ? "BACKGROUND"
+          : undefined;
     return (
       <div className="action-grid">
         <div className="action-field action-wide">
@@ -400,6 +416,11 @@ function ActionPayloadFields({
               stdout={String(meta?.stdout ?? "")}
               stderr={String(meta?.stderr ?? "")}
               timedOut={Boolean(meta?.timedOut ?? meta?.timed_out)}
+              stdoutTruncated={Boolean(meta?.stdoutTruncated ?? meta?.stdout_truncated)}
+              stderrTruncated={Boolean(meta?.stderrTruncated ?? meta?.stderr_truncated)}
+              stdoutTotalBytes={Number(meta?.stdoutTotalBytes ?? meta?.stdout_total_bytes ?? 0)}
+              stderrTotalBytes={Number(meta?.stderrTotalBytes ?? meta?.stderr_total_bytes ?? 0)}
+              statusLabel={statusLabel}
             />
           </div>
         )}

@@ -1,6 +1,9 @@
 export type ShellExecutionMode = "foreground" | "background";
 
 export const DEFAULT_BACKGROUND_READY_TIMEOUT_MS = 20_000;
+export const DEFAULT_SHELL_OUTPUT_PREVIEW_CHARS = 12_000;
+export const DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES = 16_384;
+export const DEFAULT_SHELL_OUTPUT_FLUSH_INTERVAL_MS = 250;
 
 const LOCAL_URL_PATTERN =
   /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d{2,5}(?:\/[^\s'"]*)?/i;

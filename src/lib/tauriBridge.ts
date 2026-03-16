@@ -4,6 +4,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
   AppHealth,
   CheckpointRecord,
@@ -18,6 +19,7 @@ import type {
   ProxySettings,
   ReadFileResult,
   RecoveryResult,
+  ShellCommandEvent,
   ShellCommandStartResult,
   SnapshotResult,
   WorkspaceInfo,
@@ -169,11 +171,13 @@ export function runShellCommand(params: {
   workspacePath: string;
   shell: string;
   timeoutMs?: number;
+  maxOutputBytes?: number;
 }): Promise<CommandExecutionResult> {
   return invoke<CommandExecutionResult>("run_shell_command", {
     workspacePath: params.workspacePath,
     shell: params.shell,
     timeoutMs: params.timeoutMs,
+    maxOutputBytes: params.maxOutputBytes,
   });
 }
 
@@ -182,17 +186,129 @@ export function startShellCommand(params: {
   shell: string;
   timeoutMs?: number;
   detached?: boolean;
+  maxOutputBytes?: number;
 }): Promise<ShellCommandStartResult> {
   return invoke<ShellCommandStartResult>("start_shell_command", {
     workspacePath: params.workspacePath,
     shell: params.shell,
     timeoutMs: params.timeoutMs,
     detached: params.detached,
+    maxOutputBytes: params.maxOutputBytes,
   });
 }
 
 export function cancelShellCommand(jobId: string): Promise<boolean> {
   return invoke<boolean>("cancel_shell_command", { jobId });
+}
+
+/**
+ * Non-blocking shell execution that returns a Promise resolving on completion.
+ *
+ * Uses `start_shell_command` + `shell-command-event` listener internally so the
+ * JS event loop stays free while the command runs.  Supports `AbortSignal` for
+ * cancellation and an optional streaming output callback.
+ */
+export async function awaitShellCommand(params: {
+  workspacePath: string;
+  shell: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+  signal?: AbortSignal;
+  onOutput?: (stream: "stdout" | "stderr", chunk: string) => void;
+}): Promise<CommandExecutionResult> {
+  if (params.signal?.aborted) {
+    throw new DOMException("Shell command aborted", "AbortError");
+  }
+
+  let resolveResult!: (result: CommandExecutionResult) => void;
+  const resultPromise = new Promise<CommandExecutionResult>((resolve) => {
+    resolveResult = resolve;
+  });
+
+  let jobId: string | null = null;
+  let settled = false;
+  let abortHandler: (() => void) | null = null;
+  const bufferedEvents: ShellCommandEvent[] = [];
+
+  const buildResult = (p: ShellCommandEvent): CommandExecutionResult => ({
+    success: Boolean(p.success),
+    command: p.command,
+    timed_out: Boolean(p.timed_out),
+    status: Number(p.status ?? -1),
+    stdout: String(p.stdout ?? ""),
+    stderr: String(p.stderr ?? ""),
+    cancelled: Boolean(p.cancelled),
+    stdout_truncated: Boolean(p.stdout_truncated),
+    stderr_truncated: Boolean(p.stderr_truncated),
+    stdout_total_bytes: Number(p.stdout_total_bytes ?? 0),
+    stderr_total_bytes: Number(p.stderr_total_bytes ?? 0),
+    output_limit_bytes: Number(p.output_limit_bytes ?? 0),
+  });
+
+  const handleEvent = (payload: ShellCommandEvent) => {
+    if (settled) return;
+    if (
+      payload.event_type === "output" &&
+      params.onOutput &&
+      payload.chunk &&
+      payload.stream
+    ) {
+      params.onOutput(payload.stream, payload.chunk);
+    }
+    if (payload.event_type === "completed") {
+      settled = true;
+      resolveResult(buildResult(payload));
+    }
+  };
+
+  // Register listener BEFORE starting the command to avoid race conditions.
+  const unlisten = await listen<ShellCommandEvent>(
+    "shell-command-event",
+    (event) => {
+      const payload = event.payload;
+      if (jobId === null) {
+        bufferedEvents.push(payload);
+        return;
+      }
+      if (payload.job_id !== jobId) return;
+      handleEvent(payload);
+    },
+  );
+
+  try {
+    const started = await startShellCommand({
+      workspacePath: params.workspacePath,
+      shell: params.shell,
+      timeoutMs: params.timeoutMs,
+      detached: false,
+      maxOutputBytes: params.maxOutputBytes,
+    });
+    jobId = started.job_id;
+
+    // Drain any events that arrived between listener registration and now.
+    for (const evt of bufferedEvents) {
+      if (evt.job_id === jobId) handleEvent(evt);
+    }
+    bufferedEvents.length = 0;
+
+    if (params.signal && !settled) {
+      abortHandler = () => {
+        if (jobId && !settled) cancelShellCommand(jobId).catch(() => {});
+      };
+      if (params.signal.aborted) {
+        abortHandler();
+      } else {
+        params.signal.addEventListener("abort", abortHandler, { once: true });
+      }
+    }
+
+    return await resultPromise;
+  } finally {
+    unlisten();
+    if (abortHandler && params.signal) {
+      params.signal.removeEventListener("abort", abortHandler);
+    }
+  }
 }
 
 // ── Checkpoint ───────────────────────────────────────────────────────────────

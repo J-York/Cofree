@@ -11,6 +11,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { DEFAULT_AGENTS } from "../agents/defaultAgents";
+import { awaitShellCommand } from "../lib/tauriBridge";
 import { recordLLMAudit } from "../lib/auditLog";
 import {
   createLiteLLMRequestBody,
@@ -82,13 +83,16 @@ import type { ChatContextAttachment } from "../lib/contextAttachments";
 import {
   collectRelevantFilePaths,
   createWorkingMemory,
+  restoreWorkingMemory,
   extractFileKnowledge,
   addDiscoveredFact,
   recordSubAgentExecution,
   recordTaskProgress,
   formatTaskProgressBlock,
   serializeWorkingMemory,
+  snapshotWorkingMemory,
   type WorkingMemory,
+  type WorkingMemorySnapshot,
 } from "./workingMemory";
 import { buildMatchedContextRuleNote } from "./explicitContextService";
 import {
@@ -107,6 +111,7 @@ import {
   globalMetricsTracker,
 } from "../lib/performanceMetrics";
 import {
+  DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
   resolveShellExecutionMode,
   resolveShellReadyTimeoutMs,
   resolveShellReadyUrl,
@@ -207,6 +212,7 @@ const MAX_GREP_PREVIEW_MATCHES = 30;
 const MAX_GREP_PREVIEW_CHARS = 8000;
 const MAX_GLOB_PREVIEW_FILES = 60;
 const MAX_GLOB_PREVIEW_CHARS = 6000;
+const MAX_SHELL_TOOL_PREVIEW_CHARS = 6000;
 // (reserved) diagnostics preview is already aggregated server-side; keep only a hard char cap.
 // const MAX_DIAGNOSTICS_PREVIEW_ENTRIES = 30;
 // const MAX_DIAGNOSTICS_MESSAGE_CHARS = 240;
@@ -495,13 +501,20 @@ export type ToolExecutionStatus = "success" | "failed" | "pending_approval" | "w
 
 interface ToolExecutionResult {
   content: string;
+  /** @deprecated Use proposedActions[] instead. Kept for backward compat during transition. */
   proposedAction?: ActionProposal;
+  /** P1-1: Array of proposed actions from sub-agent/team execution. */
+  proposedActions?: ActionProposal[];
   errorCategory?: ToolErrorCategory;
   errorMessage?: string;
   success?: boolean;
+  /** P1-3: Completion status of sub-agent / team execution, richer than boolean success. */
+  completionStatus?: SubAgentCompletionStatus;
   traceStatus?: ToolExecutionStatus;
   fromCache?: boolean;
 }
+
+type SensitiveWriteAutoExecutionPolicy = "allow" | "disabled";
 
 const INTERNAL_TOOL_NAMES = ["update_plan"] as const;
 
@@ -1355,14 +1368,17 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
       name: "ask_user",
       description:
         "Ask the user a question and wait for their response. Use this when you need human input, clarification, or decision-making that cannot be inferred from context.\n\n" +
-        "The tool will pause execution until the user provides an answer. The user's response will be returned as a string.\n\n" +
+        "The tool will pause execution until the user provides an answer. The user's response will be returned as a string (single-select / free text) or a JSON array of strings (multi-select).\n\n" +
+        "An '其他' (Other) option is always appended automatically when options are provided; if the user picks it, they can type a free-form answer.\n\n" +
         "Best practices:\n" +
         "- Ask clear, specific questions\n" +
         "- Provide context to help the user understand why you're asking\n" +
         "- Use options for multiple-choice questions to make it easier for users\n" +
+        "- Set allow_multiple=true when the user may choose more than one option\n" +
         "- Mark questions as optional (required=false) when appropriate\n\n" +
         "Examples:\n" +
         "- ask_user(question='Which database should I use?', options=['PostgreSQL', 'MongoDB', 'SQLite'])\n" +
+        "- ask_user(question='Which features should I implement?', options=['Auth', 'Search', 'Notifications'], allow_multiple=true)\n" +
         "- ask_user(question='What should the API endpoint be named?', context='Creating a new user registration endpoint')\n" +
         "- ask_user(question='Should I proceed with this approach?', required=false)",
       parameters: {
@@ -1382,7 +1398,11 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           options: {
             type: "array",
             items: { type: "string" },
-            description: "Optional list of predefined answer choices for the user to select from.",
+            description: "Optional list of predefined answer choices for the user to select from. An '其他' (Other) option is always appended automatically.",
+          },
+          allow_multiple: {
+            type: "boolean",
+            description: "Whether the user can select multiple options. Defaults to false. When true, the response will be a JSON array of selected values.",
           },
           required: {
             type: "boolean",
@@ -1712,6 +1732,8 @@ export interface RunPlanningSessionInput {
     planState: TodoPlanState;
     toolTrace: ToolExecutionTrace[];
     assistantReply: string;
+    /** P3-1: Working memory snapshot for checkpoint persistence. */
+    workingMemorySnapshot?: import("./workingMemory").WorkingMemorySnapshot;
   }) => void;
   /** Called when the plan state (todo list) or proposed actions list changes during the tool loop. */
   onPlanStateUpdate?: (
@@ -1722,6 +1744,8 @@ export interface RunPlanningSessionInput {
   sessionId?: string;
   /** Called when the AI invokes the ask_user tool. The UI should show a dialog and call submitUserResponse when done. */
   onAskUserRequest?: (request: AskUserRequest) => void;
+  /** P3-2: Restored working memory snapshot from a previous checkpoint. */
+  restoredWorkingMemory?: WorkingMemorySnapshot;
 }
 
 export interface PlanningSessionResult {
@@ -2758,6 +2782,20 @@ function buildAutoApprovalMeta(
   };
 }
 
+function resolveSensitiveActionAutoApprovalSource(params: {
+  permissionLevel: "auto" | "ask";
+  matchedRule?: ApprovalRule | null;
+  autoExecutionPolicy: SensitiveWriteAutoExecutionPolicy;
+}): "tool_permission" | "workspace_rule" | null {
+  if (params.autoExecutionPolicy === "disabled") {
+    return null;
+  }
+  if (params.permissionLevel === "auto") {
+    return "tool_permission";
+  }
+  return params.matchedRule ? "workspace_rule" : null;
+}
+
 async function autoExecutePatchProposal(params: {
   workspacePath: string;
   patch: string;
@@ -2819,18 +2857,14 @@ async function autoExecuteShellProposal(params: {
   shell: string;
   timeoutMs: number;
   autoApprovalMeta?: Record<string, unknown>;
+  signal?: AbortSignal;
 }): Promise<ToolExecutionResult> {
-  const cmdResult = await invoke<{
-    success: boolean;
-    command: string;
-    timed_out: boolean;
-    status: number;
-    stdout: string;
-    stderr: string;
-  }>("run_shell_command", {
+  const cmdResult = await awaitShellCommand({
     workspacePath: params.workspacePath,
     shell: params.shell,
     timeoutMs: params.timeoutMs,
+    maxOutputBytes: DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
+    signal: params.signal,
   });
 
   // Invalidate cache for git operations
@@ -2846,6 +2880,11 @@ async function autoExecuteShellProposal(params: {
       shell: params.shell,
       stdout: cmdResult.stdout,
       stderr: cmdResult.stderr,
+      stdout_truncated: cmdResult.stdout_truncated ?? false,
+      stderr_truncated: cmdResult.stderr_truncated ?? false,
+      stdout_total_bytes: cmdResult.stdout_total_bytes ?? cmdResult.stdout.length,
+      stderr_total_bytes: cmdResult.stderr_total_bytes ?? cmdResult.stderr.length,
+      output_limit_bytes: cmdResult.output_limit_bytes ?? DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
       exit_code: cmdResult.status,
       timed_out: cmdResult.timed_out,
       ...(params.autoApprovalMeta ?? {}),
@@ -3078,6 +3117,21 @@ function trimToolContentForContext(toolName: string, jsonText: string): string {
       }
     }
 
+    if (toolName === "propose_shell") {
+      if (typeof obj.stdout === "string") {
+        obj.stdout = limitJsonField(
+          obj.stdout,
+          MAX_SHELL_TOOL_PREVIEW_CHARS
+        );
+      }
+      if (typeof obj.stderr === "string") {
+        obj.stderr = limitJsonField(
+          obj.stderr,
+          MAX_SHELL_TOOL_PREVIEW_CHARS
+        );
+      }
+    }
+
     const stringified = JSON.stringify(obj);
     if (stringified.length <= MAX_TOOL_OUTPUT_CHARS) {
       return stringified;
@@ -3245,6 +3299,15 @@ export async function executeSubAgentTask(
   let subToolNotFoundStrikes = 0;
   let subConsecutiveFailureTurns = 0;
 
+  // P2-1: Force propose-only mode for sub-agents — never auto-execute write operations.
+  // All write side effects must bubble back to the parent for approval.
+  const subAgentToolPermissions: ToolPermissions = {
+    ...toolPermissions,
+    propose_file_edit: "ask",
+    propose_apply_patch: "ask",
+    propose_shell: "ask",
+  };
+
   // P0-2: Include tool definition overhead for sub-agent.
   const subToolDefTokens = estimateTokensForToolDefinitions(subAgentTools);
   const compressionPolicy = {
@@ -3356,7 +3419,7 @@ export async function executeSubAgentTask(
       const { result: toolResult, trace } = await executeToolCallWithRetry(
         toolCall,
         workspacePath,
-        toolPermissions,
+        subAgentToolPermissions,
         settings,
         undefined,
         [],
@@ -3367,6 +3430,9 @@ export async function executeSubAgentTask(
         signal,
         turn,
         inferredFocusedPaths,
+        undefined,
+        undefined,
+        "disabled",
       );
       const subToolDurationMs = performance.now() - subToolT0;
       const subToolMs = subToolDurationMs.toFixed(0);
@@ -3583,6 +3649,7 @@ async function executeToolCall(
   focusedPaths?: string[],
   sessionId?: string,
   onAskUserRequest?: (request: AskUserRequest) => void,
+  autoExecutionPolicy: SensitiveWriteAutoExecutionPolicy = "allow",
 ): Promise<ToolExecutionResult> {
   const safeWorkspace = workspacePath.trim();
   if (!safeWorkspace) {
@@ -4109,12 +4176,11 @@ async function executeToolCall(
         fingerprint: actionFingerprint(actionBase),
       };
       const matchedRule = findMatchingApprovalRule(safeWorkspace, action);
-      const autoApprovalSource =
-        toolPermissions.propose_apply_patch === "auto"
-          ? "tool_permission"
-          : matchedRule
-            ? "workspace_rule"
-            : null;
+      const autoApprovalSource = resolveSensitiveActionAutoApprovalSource({
+        permissionLevel: toolPermissions.propose_apply_patch,
+        matchedRule,
+        autoExecutionPolicy,
+      });
       if (autoApprovalSource) {
         return autoExecutePatchProposal({
           workspacePath: safeWorkspace,
@@ -4508,12 +4574,11 @@ async function executeToolCall(
       };
       action.fingerprint = actionFingerprint(action);
       const matchedRule = findMatchingApprovalRule(safeWorkspace, action);
-      const autoApprovalSource =
-        toolPermissions.propose_file_edit === "auto"
-          ? "tool_permission"
-          : matchedRule
-            ? "workspace_rule"
-            : null;
+      const autoApprovalSource = resolveSensitiveActionAutoApprovalSource({
+        permissionLevel: toolPermissions.propose_file_edit,
+        matchedRule,
+        autoExecutionPolicy,
+      });
       if (autoApprovalSource) {
         return autoExecutePatchProposal({
           workspacePath: safeWorkspace,
@@ -4595,18 +4660,18 @@ async function executeToolCall(
       };
       action.fingerprint = actionFingerprint(action);
       const matchedRule = findMatchingApprovalRule(safeWorkspace, action);
-      const autoApprovalSource =
-        toolPermissions.propose_shell === "auto"
-          ? "tool_permission"
-          : matchedRule
-            ? "workspace_rule"
-            : null;
+      const autoApprovalSource = resolveSensitiveActionAutoApprovalSource({
+        permissionLevel: toolPermissions.propose_shell,
+        matchedRule,
+        autoExecutionPolicy,
+      });
       if (autoApprovalSource && executionMode === "foreground") {
         return autoExecuteShellProposal({
           workspacePath: safeWorkspace,
           shell,
           timeoutMs: timeout,
           autoApprovalMeta: buildAutoApprovalMeta(autoApprovalSource, matchedRule),
+          signal,
         });
       }
       return {
@@ -4669,6 +4734,24 @@ async function executeToolCall(
             errorMessage: message,
           };
         }
+        // P0-2: Validate all team stage roles against allowedSubAgents
+        if (allowedSubAgents !== undefined) {
+          const allowedSet = new Set<string>(allowedSubAgents);
+          const unauthorizedRoles = teamDef.pipeline
+            .map((stage) => stage.agentRole)
+            .filter((role) => !allowedSet.has(role));
+          if (unauthorizedRoles.length > 0) {
+            const message = `Team "${teamId}" 包含未授权角色: [${[...new Set(unauthorizedRoles)].join(", ")}]。` +
+              `当前 Agent 的允许角色: [${allowedSubAgents.join(", ")}]`;
+            console.warn(`[Planning][P0-2] ${message}`);
+            return {
+              content: JSON.stringify({ error: message }),
+              success: false,
+              errorCategory: "permission",
+              errorMessage: message,
+            };
+          }
+        }
         if (!settings) {
           const message = "task 工具需要 settings 上下文，当前调用缺少 settings";
           return {
@@ -4697,17 +4780,59 @@ async function executeToolCall(
           signal
         });
 
+        // P1-2 & P1-3: Return full team execution details with correct success/failure mapping
+        const teamIsSuccess = teamResult.status === "completed" || teamResult.status === "partial";
+        const allTeamActions: ActionProposal[] = [];
+        const allTeamToolTraces: ToolExecutionTrace[] = [];
+        const teamStructuredOutputs: Record<string, unknown> = {};
+        const teamFeedbackEntries: Record<string, unknown> = {};
+
+        for (const [stageLabel, stageRes] of Object.entries(teamResult.stageResults)) {
+          if (stageRes.proposedActions?.length) {
+            allTeamActions.push(...stageRes.proposedActions);
+          }
+          if (stageRes.toolTrace?.length) {
+            allTeamToolTraces.push(...stageRes.toolTrace);
+          }
+          if (stageRes.structuredOutput) {
+            teamStructuredOutputs[stageLabel] = stageRes.structuredOutput;
+          }
+          if (stageRes.feedback) {
+            teamFeedbackEntries[stageLabel] = stageRes.feedback;
+          }
+        }
+
         const responsePayload: Record<string, unknown> = {
           ok: teamResult.status === "completed",
           action_type: "team_task",
           team: teamId,
           status: teamResult.status,
+          completionStatus: teamResult.status,
           reply: teamResult.finalReply,
+          stage_results: Object.fromEntries(
+            Object.entries(teamResult.stageResults).map(([k, v]) => [k, {
+              status: v.status,
+              reply: v.reply.slice(0, 500),
+              proposed_action_count: v.proposedActions?.length ?? 0,
+              tool_call_count: v.toolTrace?.length ?? 0,
+            }])
+          ),
+          child_action_count: allTeamActions.length,
+          child_failure_count: allTeamToolTraces.filter((t) => t.status === "failed").length,
+          structured_outputs: Object.keys(teamStructuredOutputs).length > 0 ? teamStructuredOutputs : null,
+          feedback: Object.keys(teamFeedbackEntries).length > 0 ? teamFeedbackEntries : null,
         };
         const result: ToolExecutionResult = {
           content: JSON.stringify(responsePayload),
-          success: true,
+          success: teamIsSuccess,
+          completionStatus: teamResult.status === "completed" ? "completed"
+            : teamResult.status === "partial" ? "partial" : "failed",
         };
+        // P1-1: Return all proposed actions from team stages
+        if (allTeamActions.length > 0) {
+          result.proposedActions = allTeamActions;
+          result.proposedAction = allTeamActions[0];
+        }
         return result;
       }
       const validRoles: string[] = allowedSubAgents !== undefined
@@ -4794,23 +4919,31 @@ async function executeToolCall(
         });
       }
 
+      // P1-1 & P1-3: Return full result with multi-action support and correct success mapping
+      const isSuccess = subResult.status === "completed" || subResult.status === "partial";
       const responsePayload: Record<string, unknown> = {
         ok: subResult.status === "completed",
         action_type: "sub_agent_task",
         role,
         status: subResult.status,
+        completionStatus: subResult.status,
         turn_count: subResult.turnCount,
         reply: subResult.reply,
         proposed_action_count: subResult.proposedActions.length,
         tool_call_count: subResult.toolTrace.length,
         structured_output: subResult.structuredOutput?.data ?? null,
         feedback: subResult.feedback ?? null,
+        child_action_count: subResult.proposedActions.length,
+        child_failure_count: subResult.toolTrace.filter((t) => t.status === "failed").length,
       };
       const result: ToolExecutionResult = {
         content: JSON.stringify(responsePayload),
-        success: true,
+        success: isSuccess,
+        completionStatus: subResult.status,
       };
+      // P1-1: Return all proposed actions, not just the first
       if (subResult.proposedActions.length > 0) {
+        result.proposedActions = subResult.proposedActions;
         result.proposedAction = subResult.proposedActions[0];
       }
       return result;
@@ -4940,6 +5073,7 @@ async function executeToolCall(
       const options = Array.isArray(args.options)
         ? (args.options as string[]).map((opt) => String(opt).trim()).filter(Boolean)
         : undefined;
+      const allowMultiple = args.allow_multiple !== undefined ? asBoolean(args.allow_multiple, false) : false;
       const required = args.required !== undefined ? asBoolean(args.required, true) : true;
 
       if (!sessionId) {
@@ -4957,6 +5091,7 @@ async function executeToolCall(
         question,
         context,
         options,
+        allowMultiple,
         required
       );
 
@@ -4967,6 +5102,7 @@ async function executeToolCall(
         question,
         context,
         options,
+        allowMultiple,
         required,
         timestamp: new Date().toISOString(),
       });
@@ -5036,6 +5172,7 @@ async function executeToolCallWithRetry(
   focusedPaths?: string[],
   sessionId?: string,
   onAskUserRequest?: (request: AskUserRequest) => void,
+  autoExecutionPolicy: SensitiveWriteAutoExecutionPolicy = "allow",
 ): Promise<{
   result: ToolExecutionResult;
   trace: ToolExecutionTrace;
@@ -5077,6 +5214,7 @@ async function executeToolCallWithRetry(
       focusedPaths,
       sessionId,
       onAskUserRequest,
+      autoExecutionPolicy,
     );
     const success = current.success !== false;
     const traceStatus: ToolExecutionStatus = success
@@ -5514,6 +5652,7 @@ async function runNativeToolCallingLoop(
   focusedPaths: string[] = [],
   sessionId?: string,
   onAskUserRequest?: (request: AskUserRequest) => void,
+  restoredWorkingMemory?: WorkingMemorySnapshot,
 ): Promise<{
   assistantReply: string;
   requestRecords: RequestRecord[];
@@ -5552,6 +5691,8 @@ async function runNativeToolCallingLoop(
   const blockedFingerprints = blockedActionFingerprints
     .map((value) => value.trim())
     .filter(Boolean);
+  // P0-1: Materialized set for O(1) lookups in processToolResult and sub-agent paths
+  const blockedFingerprintSet = new Set(blockedFingerprints);
 
   const messages: LiteLLMMessage[] = [
     { role: "system", content: agentSystemPrompt },
@@ -5584,6 +5725,9 @@ async function runNativeToolCallingLoop(
       ]
       : [{ role: "user" as const, content: prompt }]),
   ];
+  console.log(
+    `[Loop] 会话开始 | phase=${phase} | taskType=${taskType} | continuation=${isContinuation ? "yes" : "no"}`
+  );
   let lastTodoPlanPrompt = upsertTodoPlanContextMessage(messages, planState);
 
   const requestRecords: RequestRecord[] = [];
@@ -5612,12 +5756,20 @@ async function runNativeToolCallingLoop(
   const limitTokens = resolveEffectiveContextTokenLimit(settings);
 
   // --- Shared Working Memory for multi-agent collaboration ---
-  const workingMemory = createWorkingMemory({
-    maxTokenBudget: Math.floor(
-      Math.max(0, limitTokens - Math.min(8000, Math.max(512, Math.floor(limitTokens * 0.15)))) * 0.9 * 0.2
-    ),
-    projectContext: internalSystemNote?.slice(0, 500) ?? "",
-  });
+  // P3-2: Restore from checkpoint snapshot if available, otherwise create fresh
+  const workingMemory = restoredWorkingMemory
+    ? restoreWorkingMemory(restoredWorkingMemory)
+    : createWorkingMemory({
+        maxTokenBudget: Math.floor(
+          Math.max(0, limitTokens - Math.min(8000, Math.max(512, Math.floor(limitTokens * 0.15)))) * 0.9 * 0.2
+        ),
+        projectContext: internalSystemNote?.slice(0, 500) ?? "",
+      });
+  if (restoredWorkingMemory) {
+    console.log(
+      `[Loop] Working memory restored from checkpoint | files=${workingMemory.fileKnowledge.size} | facts=${workingMemory.discoveredFacts.length} | history=${workingMemory.subAgentHistory.length}`
+    );
+  }
   const outputBufferTokens = Math.min(
     8000,
     Math.max(512, Math.floor(limitTokens * 0.15))
@@ -5702,6 +5854,8 @@ async function runNativeToolCallingLoop(
           planState: clonePlanState(planState),
           toolTrace: [...toolTrace],
           assistantReply: lastReply,
+          // P3-1: Include working memory snapshot for checkpoint persistence
+          workingMemorySnapshot: workingMemory ? snapshotWorkingMemory(workingMemory) : undefined,
         });
         console.log(`[Loop] 增量检查点已保存 | turn=${turn} | actions=${proposedActions.length} | traces=${toolTrace.length}`);
       } catch (checkpointError) {
@@ -5768,7 +5922,9 @@ async function runNativeToolCallingLoop(
     const pinnedPrefixLen = initialSystemPrefixLength(messages);
 
     const estTokens = tokenTracker.update(messages);
-    console.log(`[Loop] ── Turn ${turn + 1} ── messages=${messages.length} | ~${estTokens} tokens`);
+    console.log(
+      `[Loop] ── Turn ${turn + 1} ── taskType=${taskType} | messages=${messages.length} | ~${estTokens} tokens`
+    );
 
     // Inject task progress summary every 5 turns or when failures accumulate
     const failedCount = workingMemory.taskProgress.filter((e) => e.status === "failed").length;
@@ -5881,14 +6037,16 @@ async function runNativeToolCallingLoop(
           const hasRetriesLeft = llmRetryAttempt + 1 < MAX_LLM_REQUEST_RETRIES;
           console.error(
             `[Loop][Failure] tool completion failed | turn=${turn + 1} | attempt=${llmRetryAttempt + 1}/${MAX_LLM_REQUEST_RETRIES}` +
-            ` | retriable=${retriable} | ~tokens=${currentTokens} | messages=${messages.length}` +
+            ` | taskType=${taskType} | retriable=${retriable} | ~tokens=${currentTokens} | messages=${messages.length}` +
             ` | model=${settings.model} | error=${errorMsg}`,
           );
           if (!retriable || !hasRetriesLeft) {
             throw error;
           }
           const delay = computeRetryDelay(llmRetryAttempt);
-          console.log(`[Loop][Retry] 等待 ${Math.round(delay)}ms 后重试 (attempt ${llmRetryAttempt + 2}/${MAX_LLM_REQUEST_RETRIES})`);
+          console.log(
+            `[Loop][Retry] taskType=${taskType} | 等待 ${Math.round(delay)}ms 后重试 (attempt ${llmRetryAttempt + 2}/${MAX_LLM_REQUEST_RETRIES})`
+          );
           await sleep(delay, signal);
         }
       }
@@ -5963,7 +6121,7 @@ async function runNativeToolCallingLoop(
 
     const toolNames = completion.toolCalls.map((tc) => tc.function.name);
     console.log(
-      `[Loop] Turn ${turn + 1} 收到 ${completion.toolCalls.length} 个工具调用: [${toolNames.join(", ")}]`
+      `[Loop] Turn ${turn + 1} | taskType=${taskType} | 收到 ${completion.toolCalls.length} 个工具调用: [${toolNames.join(", ")}]`
     );
 
     const actionCountBeforeTurn = proposedActions.length;
@@ -6163,8 +6321,34 @@ async function runNativeToolCallingLoop(
       if (shellRepairHint) {
         shellDialectRepairInstruction = shellRepairHint;
       }
-      if (toolResult.proposedAction) {
-        const linkedAction = attachActionToPlanStep(planState, toolResult.proposedAction);
+      // P0-1: Collect proposed actions from tool results, filtering blocked fingerprints
+      const incomingActions: ActionProposal[] = [];
+      if (toolResult.proposedActions && toolResult.proposedActions.length > 0) {
+        incomingActions.push(...toolResult.proposedActions);
+      } else if (toolResult.proposedAction) {
+        incomingActions.push(toolResult.proposedAction);
+      }
+      for (const action of incomingActions) {
+        const fp = action.fingerprint || actionFingerprint(action);
+        if (blockedFingerprintSet.has(fp)) {
+          console.warn(
+            `[Planning][ProcessToolResult] Suppressing blocked action in-loop | type=${action.type} | fingerprint=${fp}`
+          );
+          continue;
+        }
+        // P5-2: Mark action origin for audit trail
+        if (!action.origin) {
+          if (toolCall.function.name === "task") {
+            try {
+              const taskArgs = JSON.parse(toolCall.function.arguments || "{}");
+              action.origin = taskArgs.team ? "team_stage" : "sub_agent";
+              action.originDetail = taskArgs.team || taskArgs.role || undefined;
+            } catch { /* ignore */ }
+          } else {
+            action.origin = "main_agent";
+          }
+        }
+        const linkedAction = attachActionToPlanStep(planState, action);
         proposedActions.push(linkedAction);
       }
       messages.push({
@@ -6232,8 +6416,43 @@ async function runNativeToolCallingLoop(
       }
     }
 
-    // 3. Execute task calls in parallel (with concurrency limit)
-    if (taskCalls.length > 1) {
+    // 3. Execute task calls with handoffPolicy enforcement (P0-3)
+    const effectiveHandoffPolicy = runtime.handoffPolicy ?? "parallel";
+    if (effectiveHandoffPolicy === "none" && taskCalls.length > 0) {
+      // "none": forbid all task delegation in this turn
+      for (const tc of taskCalls) {
+        const msg = `当前 Agent 的 handoffPolicy 为 "none"，禁止使用 task 委派。`;
+        console.warn(`[Planning][P0-3] ${msg}`);
+        const trace: ToolExecutionTrace = {
+          callId: tc.id,
+          name: tc.function.name,
+          arguments: tc.function.arguments,
+          startedAt: nowIso(),
+          finishedAt: nowIso(),
+          attempts: 1,
+          status: "failed",
+          retried: false,
+          errorCategory: "permission",
+          errorMessage: msg,
+        };
+        processToolResult(tc, {
+          content: JSON.stringify({ error: msg }),
+          success: false,
+          errorCategory: "permission",
+          errorMessage: msg,
+        }, trace);
+      }
+    } else if (effectiveHandoffPolicy === "sequential" && taskCalls.length > 0) {
+      // "sequential": execute task calls one-by-one, no parallelism
+      for (const tc of taskCalls) {
+        const { toolCall, toolResult, trace } = await executeSingleToolCall(tc);
+        processToolResult(toolCall, toolResult, trace);
+        if (toolResult.proposedAction || (toolResult.proposedActions && toolResult.proposedActions.length > 0)) {
+          planMutatedThisTurn = true;
+        }
+      }
+    } else if (taskCalls.length > 1) {
+      // "parallel" (default): execute task calls in parallel with concurrency limit
       console.log(`[Orchestrator] 并行执行 ${taskCalls.length} 个 Sub-Agent 任务`);
       const parallelResults = await runWithConcurrencyLimit(
         taskCalls.map((tc) => () => executeSingleToolCall(tc)),
@@ -6243,7 +6462,7 @@ async function runNativeToolCallingLoop(
         if (settled.status === "fulfilled") {
           const { toolCall, toolResult, trace } = settled.value;
           processToolResult(toolCall, toolResult, trace);
-          if (toolResult.proposedAction) {
+          if (toolResult.proposedAction || (toolResult.proposedActions && toolResult.proposedActions.length > 0)) {
             planMutatedThisTurn = true;
           }
         } else {
@@ -6253,7 +6472,7 @@ async function runNativeToolCallingLoop(
     } else if (taskCalls.length === 1) {
       const { toolCall, toolResult, trace } = await executeSingleToolCall(taskCalls[0]);
       processToolResult(toolCall, toolResult, trace);
-      if (toolResult.proposedAction) {
+      if (toolResult.proposedAction || (toolResult.proposedActions && toolResult.proposedActions.length > 0)) {
         planMutatedThisTurn = true;
       }
     }
@@ -7185,6 +7404,8 @@ export async function runPlanningSession(
       sessionFocusedPaths,
       input.sessionId,
       input.onAskUserRequest,
+      // P3-2: Pass restored working memory from checkpoint
+      input.restoredWorkingMemory,
     );
 
     // Filter out internal tools from the final `assistantToolCalls` so that
@@ -7293,36 +7514,7 @@ export async function runPlanningSession(
     const debugText = debugInfo.join('\n');
     
     console.error('[Planning] 完整错误信息:', debugText);
-    
-    const fallbackPlan = initializePlan(
-      normalizedPrompt,
-      input.settings,
-      [],
-      initialPlanSeed,
-    );
-    return {
-      assistantReply: `服务员暂时无法完成本轮工具调用，请稍后重试。
 
-**错误信息**：
-${errorMessage}
-
-**调试信息**（请复制以下内容用于排查）：
-\`\`\`
-模型: ${modelName}
-协议: ${protocol}
-端点: ${baseUrl}
-时间: ${new Date().toISOString()}
-\`\`\`
-
-💡 **排查建议**：
-1. 检查控制台（开发者工具）中的 [LLM][Error] 日志，查看完整的请求详情
-2. 确认网络连接正常，可以访问 ${baseUrl}
-3. 检查 API Key 是否有效
-4. 如果使用代理，确认代理配置正确`,
-      plan: fallbackPlan,
-      toolTrace: [],
-      assistantToolCalls: undefined,
-      tokenUsage: { inputTokens: 0, outputTokens: 0 },
-    };
+    throw error;
   }
 }

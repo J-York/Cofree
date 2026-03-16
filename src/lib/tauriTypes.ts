@@ -62,6 +62,12 @@ export interface CommandExecutionResult {
   status: number;
   stdout: string;
   stderr: string;
+  cancelled?: boolean;
+  stdout_truncated?: boolean;
+  stderr_truncated?: boolean;
+  stdout_total_bytes?: number;
+  stderr_total_bytes?: number;
+  output_limit_bytes?: number;
 }
 
 export interface ShellCommandStartResult {
@@ -81,6 +87,11 @@ export interface ShellCommandEvent {
   status?: number;
   stdout?: string;
   stderr?: string;
+  stdout_truncated?: boolean;
+  stderr_truncated?: boolean;
+  stdout_total_bytes?: number;
+  stderr_total_bytes?: number;
+  output_limit_bytes?: number;
 }
 
 // ── Grep / Glob ──────────────────────────────────────────────────────────────

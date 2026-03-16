@@ -32,6 +32,90 @@ struct ShellJobHandle {
     cancel_requested: AtomicBool,
 }
 
+struct ShellOutputCapture {
+    preview: String,
+    total_bytes: usize,
+    truncated: bool,
+    limit_bytes: Option<usize>,
+}
+
+impl ShellOutputCapture {
+    fn new(limit_bytes: Option<usize>) -> Self {
+        Self {
+            preview: String::new(),
+            total_bytes: 0,
+            truncated: false,
+            limit_bytes,
+        }
+    }
+
+    fn push_chunk(&mut self, chunk: &str) {
+        self.total_bytes = self.total_bytes.saturating_add(chunk.as_bytes().len());
+        self.preview.push_str(chunk);
+        if let Some(limit_bytes) = self.limit_bytes {
+            if self.preview.len() > limit_bytes {
+                self.truncated = true;
+                trim_string_to_tail(&mut self.preview, limit_bytes);
+            }
+        }
+    }
+
+    fn snapshot(&self) -> (String, u64, bool, Option<u64>) {
+        (
+            self.preview.clone(),
+            self.total_bytes as u64,
+            self.truncated,
+            self.limit_bytes.map(|value| value as u64),
+        )
+    }
+}
+
+fn clamp_shell_output_limit(max_output_bytes: Option<u64>) -> Option<usize> {
+    max_output_bytes
+        .and_then(|value| usize::try_from(value).ok())
+        .map(|value| value.clamp(1024, 1024 * 1024))
+}
+
+/// Keep the longest valid UTF-8 suffix whose byte length is <= `limit_bytes`.
+///
+/// If the cut point lands in the middle of a multi-byte code point, the result
+/// may be shorter than `limit_bytes`; that is intentional, because any longer
+/// suffix would exceed the byte cap once the full code point is included.
+fn trim_string_to_tail(value: &mut String, limit_bytes: usize) {
+    if value.len() <= limit_bytes {
+        return;
+    }
+    let mut start = value.len().saturating_sub(limit_bytes);
+    while start < value.len() && !value.is_char_boundary(start) {
+        start += 1;
+    }
+    value.drain(..start);
+}
+
+fn append_command_result_stderr(payload: &mut CommandExecutionResult, message: &str) {
+    if message.trim().is_empty() {
+        return;
+    }
+    let mut suffix = String::new();
+    if !payload.stderr.ends_with('\n') && !payload.stderr.is_empty() {
+        suffix.push('\n');
+    }
+    suffix.push_str(message);
+    payload.stderr_total_bytes = payload
+        .stderr_total_bytes
+        .saturating_add(suffix.as_bytes().len() as u64);
+    payload.stderr.push_str(&suffix);
+    if let Some(limit_bytes) = payload
+        .output_limit_bytes
+        .and_then(|value| usize::try_from(value).ok())
+    {
+        if payload.stderr.len() > limit_bytes {
+            payload.stderr_truncated = true;
+            trim_string_to_tail(&mut payload.stderr, limit_bytes);
+        }
+    }
+}
+
 fn parse_patch_files(patch: &str) -> Vec<String> {
     let mut files = BTreeSet::new();
     for line in patch.lines() {
@@ -914,6 +998,7 @@ pub fn run_shell_command(
     workspace_path: String,
     shell: String,
     timeout_ms: Option<u64>,
+    max_output_bytes: Option<u64>,
 ) -> Result<CommandExecutionResult, String> {
     let workspace = canonicalize_workspace_root(&workspace_path).map_err(|e| e.to_string())?;
     let shell_trimmed = shell.trim().to_string();
@@ -926,7 +1011,14 @@ pub fn run_shell_command(
         .clamp(config::SHELL_TIMEOUT_MIN_MS, config::SHELL_TIMEOUT_MAX_MS);
     let timeout = Some(Duration::from_millis(max_timeout));
     let child = spawn_shell_child(&workspace, &shell_trimmed)?;
-    collect_shell_command_result(child, &shell_trimmed, timeout, None, None)
+    collect_shell_command_result(
+        child,
+        &shell_trimmed,
+        timeout,
+        None,
+        None,
+        clamp_shell_output_limit(max_output_bytes),
+    )
 }
 
 #[tauri::command]
@@ -937,6 +1029,7 @@ pub fn start_shell_command(
     shell: String,
     timeout_ms: Option<u64>,
     detached: Option<bool>,
+    max_output_bytes: Option<u64>,
 ) -> Result<ShellCommandStartResult, String> {
     let workspace = canonicalize_workspace_root(&workspace_path).map_err(|e| e.to_string())?;
     let shell_trimmed = shell.trim().to_string();
@@ -953,6 +1046,7 @@ pub fn start_shell_command(
         Some(Duration::from_millis(max_timeout))
     };
     let child = spawn_shell_child(&workspace, &shell_trimmed)?;
+    let output_limit = clamp_shell_output_limit(max_output_bytes);
     let job_id = generate_id("shelljob");
     let job_handle = Arc::new(ShellJobHandle {
         child: Mutex::new(Some(child)),
@@ -983,6 +1077,11 @@ pub fn start_shell_command(
                 status: None,
                 stdout: None,
                 stderr: None,
+                stdout_truncated: None,
+                stderr_truncated: None,
+                stdout_total_bytes: None,
+                stderr_total_bytes: None,
+                output_limit_bytes: output_limit.map(|value| value as u64),
             },
         );
 
@@ -992,16 +1091,14 @@ pub fn start_shell_command(
             timeout,
             Some(app_handle.clone()),
             Some(job_id_for_thread.clone()),
+            output_limit,
         );
 
         let cancelled = job_handle.cancel_requested.load(Ordering::SeqCst);
         let final_result = match result {
             Ok(mut payload) => {
                 if cancelled && !payload.success {
-                    if !payload.stderr.ends_with('\n') && !payload.stderr.is_empty() {
-                        payload.stderr.push('\n');
-                    }
-                    payload.stderr.push_str("Command cancelled");
+                    append_command_result_stderr(&mut payload, "Command cancelled");
                 }
                 payload
             }
@@ -1011,7 +1108,12 @@ pub fn start_shell_command(
                 timed_out: false,
                 status: -1,
                 stdout: String::new(),
+                stderr_total_bytes: error.as_bytes().len() as u64,
                 stderr: error,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_total_bytes: 0,
+                output_limit_bytes: output_limit.map(|value| value as u64),
             },
         };
 
@@ -1029,6 +1131,11 @@ pub fn start_shell_command(
                 status: Some(final_result.status),
                 stdout: Some(final_result.stdout),
                 stderr: Some(final_result.stderr),
+                stdout_truncated: Some(final_result.stdout_truncated),
+                stderr_truncated: Some(final_result.stderr_truncated),
+                stdout_total_bytes: Some(final_result.stdout_total_bytes),
+                stderr_total_bytes: Some(final_result.stderr_total_bytes),
+                output_limit_bytes: final_result.output_limit_bytes,
             },
         );
 
@@ -1099,7 +1206,7 @@ fn emit_shell_command_event(app: &AppHandle, event: ShellCommandEvent) {
 
 fn spawn_pipe_reader<R: Read + Send + 'static>(
     mut reader: R,
-    sink: Arc<Mutex<String>>,
+    sink: Arc<Mutex<ShellOutputCapture>>,
     app: Option<AppHandle>,
     job_id: Option<String>,
     command: String,
@@ -1113,7 +1220,7 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
                 Ok(n) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
                     if let Ok(mut output) = sink.lock() {
-                        output.push_str(&chunk);
+                        output.push_chunk(&chunk);
                     }
                     if let (Some(app_handle), Some(job_id_value)) = (&app, &job_id) {
                         emit_shell_command_event(
@@ -1130,6 +1237,11 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
                                 status: None,
                                 stdout: None,
                                 stderr: None,
+                                stdout_truncated: None,
+                                stderr_truncated: None,
+                                stdout_total_bytes: None,
+                                stderr_total_bytes: None,
+                                output_limit_bytes: None,
                             },
                         );
                     }
@@ -1146,6 +1258,7 @@ fn collect_shell_command_result(
     timeout: Option<Duration>,
     app: Option<AppHandle>,
     job_id: Option<String>,
+    output_limit: Option<usize>,
 ) -> Result<CommandExecutionResult, String> {
     let stdout_pipe = child
         .stdout
@@ -1155,8 +1268,8 @@ fn collect_shell_command_result(
         .stderr
         .take()
         .ok_or_else(|| "读取 stderr 失败".to_string())?;
-    let stdout = Arc::new(Mutex::new(String::new()));
-    let stderr = Arc::new(Mutex::new(String::new()));
+    let stdout = Arc::new(Mutex::new(ShellOutputCapture::new(output_limit)));
+    let stderr = Arc::new(Mutex::new(ShellOutputCapture::new(output_limit)));
     let stdout_handle = spawn_pipe_reader(
         stdout_pipe,
         Arc::clone(&stdout),
@@ -1196,30 +1309,32 @@ fn collect_shell_command_result(
     let _ = stdout_handle.join();
     let _ = stderr_handle.join();
 
-    let mut stdout_value = stdout
+    let (stdout_value, stdout_total_bytes, stdout_truncated, output_limit_bytes) = stdout
         .lock()
         .map_err(|_| "读取 stdout 失败".to_string())?
-        .clone();
-    let mut stderr_value = stderr
+        .snapshot();
+    let (stderr_value, stderr_total_bytes, stderr_truncated, _) = stderr
         .lock()
         .map_err(|_| "读取 stderr 失败".to_string())?
-        .clone();
+        .snapshot();
 
-    if timed_out {
-        if !stderr_value.ends_with('\n') && !stderr_value.is_empty() {
-            stderr_value.push('\n');
-        }
-        stderr_value.push_str("Command timed out");
-    }
-
-    Ok(CommandExecutionResult {
+    let mut payload = CommandExecutionResult {
         success: exit_status.success() && !timed_out,
         command: shell_trimmed.to_string(),
         timed_out,
         status: exit_status.code().unwrap_or(-1),
-        stdout: std::mem::take(&mut stdout_value),
-        stderr: std::mem::take(&mut stderr_value),
-    })
+        stdout: stdout_value,
+        stderr: stderr_value,
+        stdout_truncated,
+        stderr_truncated,
+        stdout_total_bytes,
+        stderr_total_bytes,
+        output_limit_bytes,
+    };
+    if timed_out {
+        append_command_result_stderr(&mut payload, "Command timed out");
+    }
+    Ok(payload)
 }
 
 fn collect_shell_job_result(
@@ -1228,6 +1343,7 @@ fn collect_shell_job_result(
     timeout: Option<Duration>,
     app: Option<AppHandle>,
     job_id: Option<String>,
+    output_limit: Option<usize>,
 ) -> Result<CommandExecutionResult, String> {
     let (stdout_pipe, stderr_pipe) = {
         let mut guard = job_handle
@@ -1248,8 +1364,8 @@ fn collect_shell_job_result(
         (stdout_pipe, stderr_pipe)
     };
 
-    let stdout = Arc::new(Mutex::new(String::new()));
-    let stderr = Arc::new(Mutex::new(String::new()));
+    let stdout = Arc::new(Mutex::new(ShellOutputCapture::new(output_limit)));
+    let stderr = Arc::new(Mutex::new(ShellOutputCapture::new(output_limit)));
     let stdout_handle = spawn_pipe_reader(
         stdout_pipe,
         Arc::clone(&stdout),
@@ -1307,30 +1423,32 @@ fn collect_shell_job_result(
     let _ = stdout_handle.join();
     let _ = stderr_handle.join();
 
-    let stdout_value = stdout
+    let (stdout_value, stdout_total_bytes, stdout_truncated, output_limit_bytes) = stdout
         .lock()
         .map_err(|_| "读取 stdout 失败".to_string())?
-        .clone();
-    let mut stderr_value = stderr
+        .snapshot();
+    let (stderr_value, stderr_total_bytes, stderr_truncated, _) = stderr
         .lock()
         .map_err(|_| "读取 stderr 失败".to_string())?
-        .clone();
+        .snapshot();
 
-    if timed_out {
-        if !stderr_value.ends_with('\n') && !stderr_value.is_empty() {
-            stderr_value.push('\n');
-        }
-        stderr_value.push_str("Command timed out");
-    }
-
-    Ok(CommandExecutionResult {
+    let mut payload = CommandExecutionResult {
         success: exit_status.success() && !timed_out,
         command: shell_trimmed.to_string(),
         timed_out,
         status: exit_status.code().unwrap_or(-1),
         stdout: stdout_value,
         stderr: stderr_value,
-    })
+        stdout_truncated,
+        stderr_truncated,
+        stdout_total_bytes,
+        stderr_total_bytes,
+        output_limit_bytes,
+    };
+    if timed_out {
+        append_command_result_stderr(&mut payload, "Command timed out");
+    }
+    Ok(payload)
 }
 
 // ---------------------------------------------------------------------------
@@ -1547,7 +1665,7 @@ pub fn scan_workspace_structure(
 
 #[cfg(test)]
 mod tests {
-    use super::build_workspace_edit_patch;
+    use super::{build_workspace_edit_patch, trim_string_to_tail};
 
     #[test]
     fn build_workspace_edit_patch_generates_minimal_hunk() {
@@ -1566,5 +1684,21 @@ mod tests {
         assert!(!patch.contains("\n-alpha\n"));
         assert!(!patch.contains("\n-beta\n"));
         assert!(!patch.contains("\n-gamma\n"));
+    }
+
+    #[test]
+    fn trim_string_to_tail_keeps_exact_byte_budget_when_boundary_aligns() {
+        let mut value = "a中x".to_string();
+        trim_string_to_tail(&mut value, 4);
+        assert_eq!(value, "中x");
+        assert_eq!(value.len(), 4);
+    }
+
+    #[test]
+    fn trim_string_to_tail_keeps_longest_valid_utf8_suffix_within_limit() {
+        let mut value = "中ab".to_string();
+        trim_string_to_tail(&mut value, 4);
+        assert_eq!(value, "ab");
+        assert_eq!(value.len(), 2);
     }
 }

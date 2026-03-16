@@ -32,6 +32,7 @@ export interface AskUserRequest {
   question: string;
   context?: string;
   options?: string[];
+  allowMultiple?: boolean;
   required?: boolean;
   timestamp: string;
 }
@@ -121,6 +122,7 @@ export function createAskUserRequest(
   question: string,
   context?: string,
   options?: string[],
+  allowMultiple: boolean = false,
   required: boolean = true,
 ): string {
   const state = getOrCreateState(sessionId);
@@ -147,6 +149,7 @@ export function createAskUserRequest(
     question,
     context,
     options,
+    allowMultiple,
     required,
     timestamp: new Date().toISOString(),
   };
@@ -159,6 +162,7 @@ export function createAskUserRequest(
     question,
     hasContext: !!context,
     hasOptions: !!options?.length,
+    allowMultiple,
     required,
   });
 
