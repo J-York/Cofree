@@ -368,19 +368,28 @@ fn merge_openai_chat_tool_call_snapshot(tool_calls_json: &mut Vec<Value>, tool_c
 }
 
 fn retain_valid_tool_calls(tool_calls_json: &mut Vec<Value>) {
-    tool_calls_json.retain(|entry| {
+    tool_calls_json.retain_mut(|entry| {
         let function = entry.get("function");
         let name_ok = function
             .and_then(|f| f.get("name"))
             .and_then(Value::as_str)
             .map(|name| !name.trim().is_empty())
             .unwrap_or(false);
-        let args_ok = function
-            .and_then(|f| f.get("arguments"))
-            .and_then(Value::as_str)
-            .map(|args| !args.trim().is_empty())
-            .unwrap_or(false);
-        name_ok && args_ok
+        if !name_ok {
+            return false;
+        }
+
+        if let Some(function_obj) = entry.get_mut("function").and_then(Value::as_object_mut) {
+            let normalized_args = match function_obj.get("arguments") {
+                Some(Value::String(text)) if !text.trim().is_empty() => text.to_string(),
+                Some(Value::String(_)) => "{}".to_string(),
+                Some(other) => serde_json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
+                None => "{}".to_string(),
+            };
+            function_obj.insert("arguments".to_string(), Value::String(normalized_args));
+        }
+
+        true
     });
 }
 
@@ -392,14 +401,39 @@ fn build_synthetic_stream_body(
 ) -> String {
     let mut message = serde_json::json!({ "role": "assistant", "content": full_content });
     retain_valid_tool_calls(&mut tool_calls_json);
+    let effective_finish_reason = finish_reason.unwrap_or_else(|| {
+        if tool_calls_json.is_empty() {
+            "stop".to_string()
+        } else {
+            "tool_calls".to_string()
+        }
+    });
     if !tool_calls_json.is_empty() {
         message["tool_calls"] = Value::Array(tool_calls_json);
     }
     let synthetic_response = serde_json::json!({
-        "choices": [{ "message": message, "finish_reason": finish_reason.unwrap_or_else(|| "stop".to_string()) }],
+        "choices": [{ "message": message, "finish_reason": effective_finish_reason }],
         "usage": usage_info,
     });
     serde_json::to_string(&synthetic_response).unwrap_or_default()
+}
+
+fn map_openai_responses_status_to_finish_reason(
+    status: Option<&str>,
+    has_tool_calls: bool,
+) -> Option<String> {
+    match status.map(|value| value.trim().to_lowercase()) {
+        Some(status) if status == "completed" => Some(if has_tool_calls {
+            "tool_calls".to_string()
+        } else {
+            "stop".to_string()
+        }),
+        Some(status) if status == "requires_action" => Some("tool_calls".to_string()),
+        Some(status) if status == "incomplete" => Some("length".to_string()),
+        Some(status) if status == "failed" || status == "cancelled" => Some("stop".to_string()),
+        Some(status) if !status.is_empty() => Some(status),
+        _ => None,
+    }
 }
 
 fn zero_usage() -> Value {
@@ -1013,10 +1047,11 @@ async fn parse_openai_responses_stream(
                                         "total_tokens": prompt_tokens + completion_tokens,
                                     });
                                 }
-                                finish_reason = response_obj
-                                    .get("status")
-                                    .and_then(Value::as_str)
-                                    .map(|status| status.to_string());
+                                finish_reason = map_openai_responses_status_to_finish_reason(
+                                    response_obj.get("status").and_then(Value::as_str),
+                                    !tool_calls_json.is_empty(),
+                                )
+                                .or_else(|| finish_reason.clone());
                             }
                         }
                         _ => {}
@@ -1131,10 +1166,11 @@ async fn parse_openai_responses_stream(
                                     "total_tokens": prompt_tokens + completion_tokens,
                                 });
                             }
-                            finish_reason = response_obj
-                                .get("status")
-                                .and_then(Value::as_str)
-                                .map(|status| status.to_string());
+                            finish_reason = map_openai_responses_status_to_finish_reason(
+                                response_obj.get("status").and_then(Value::as_str),
+                                !tool_calls_json.is_empty(),
+                            )
+                            .or_else(|| finish_reason.clone());
                         }
                     }
                     _ => {}
@@ -1751,6 +1787,62 @@ mod tests {
         assert_eq!(
             entry["function"]["arguments"],
             Value::String("{\"relative_path\":\"\"}".to_string())
+        );
+    }
+
+    #[test]
+    fn retain_valid_tool_calls_keeps_empty_arguments_and_defaults_to_empty_object() {
+        let payload: Value = serde_json::from_str(&build_synthetic_stream_body(
+            String::new(),
+            None,
+            vec![serde_json::json!({
+                "id": "call_empty_args",
+                "type": "function",
+                "function": {
+                    "name": "list_files",
+                    "arguments": ""
+                }
+            })],
+            zero_usage(),
+        ))
+        .expect("synthetic payload should be valid JSON");
+
+        assert_eq!(
+            payload["choices"][0]["message"]["tool_calls"],
+            serde_json::json!([
+                {
+                    "id": "call_empty_args",
+                    "type": "function",
+                    "function": {
+                        "name": "list_files",
+                        "arguments": "{}"
+                    }
+                }
+            ])
+        );
+        assert_eq!(
+            payload["choices"][0]["finish_reason"],
+            Value::String("tool_calls".to_string())
+        );
+    }
+
+    #[test]
+    fn maps_openai_responses_status_to_openai_finish_reason() {
+        assert_eq!(
+            map_openai_responses_status_to_finish_reason(Some("completed"), false),
+            Some("stop".to_string())
+        );
+        assert_eq!(
+            map_openai_responses_status_to_finish_reason(Some("completed"), true),
+            Some("tool_calls".to_string())
+        );
+        assert_eq!(
+            map_openai_responses_status_to_finish_reason(Some("incomplete"), false),
+            Some("length".to_string())
+        );
+        assert_eq!(
+            map_openai_responses_status_to_finish_reason(Some("requires_action"), false),
+            Some("tool_calls".to_string())
         );
     }
 }

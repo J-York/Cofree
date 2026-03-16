@@ -1207,6 +1207,7 @@ function createOpenAIResponsesRequestBody(
     frequencyPenalty?: number;
     presencePenalty?: number;
     tools?: LiteLLMToolDefinition[];
+    parallelToolCalls?: boolean;
     toolChoice?:
     | "auto"
     | "none"
@@ -1242,6 +1243,9 @@ function createOpenAIResponsesRequestBody(
       options.toolChoice,
       "openai-responses"
     );
+    if (options.parallelToolCalls !== undefined) {
+      body.parallel_tool_calls = options.parallelToolCalls;
+    }
   }
 
   if (options?.responseFormat) {
@@ -1526,6 +1530,7 @@ export function createLiteLLMRequestBody(
     frequencyPenalty?: number;
     presencePenalty?: number;
     tools?: LiteLLMToolDefinition[];
+    parallelToolCalls?: boolean;
     toolChoice?:
     | "auto"
     | "none"
@@ -1582,6 +1587,9 @@ export function createLiteLLMRequestBody(
   if (options?.tools?.length) {
     body.tools = options.tools;
     body.tool_choice = options.toolChoice ?? "auto";
+    if (options.parallelToolCalls !== undefined) {
+      body.parallel_tool_calls = options.parallelToolCalls;
+    }
   }
 
   // Add seed parameter for better caching and deterministic outputs
@@ -1652,6 +1660,29 @@ function normalizeOpenAIResponsesBody(raw: string): string {
   const usage: Record<string, unknown> = isRecord(payload.usage)
     ? payload.usage
     : {};
+  const status =
+    typeof payload.status === "string" ? payload.status.trim().toLowerCase() : "";
+  const incompleteReason =
+    isRecord(payload.incomplete_details) &&
+    typeof payload.incomplete_details.reason === "string"
+      ? payload.incomplete_details.reason.trim().toLowerCase()
+      : "";
+  const finishReason = (() => {
+    if (status === "completed") {
+      return toolCalls.length > 0 ? "tool_calls" : "stop";
+    }
+    if (status === "requires_action") {
+      return "tool_calls";
+    }
+    if (status === "incomplete") {
+      return incompleteReason === "max_output_tokens" ? "length" : "stop";
+    }
+    if (status === "failed" || status === "cancelled") {
+      return "stop";
+    }
+    return toolCalls.length > 0 ? "tool_calls" : "stop";
+  })();
+
   return JSON.stringify({
     id: payload.id,
     choices: [
@@ -1661,6 +1692,7 @@ function normalizeOpenAIResponsesBody(raw: string): string {
           content: textParts.join(""),
           tool_calls: toolCalls.length ? toolCalls : undefined,
         },
+        finish_reason: finishReason,
       },
     ],
     usage: {

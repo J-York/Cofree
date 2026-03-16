@@ -2486,6 +2486,34 @@ describe("sanitizeMessagesForToolCalling", () => {
         expect(sanitized[3].content).toContain("Progress update 1");
         expect(sanitized[3].content).toContain("Progress update 2");
     });
+
+    it("strips assistant think blocks before sending to tool loop", () => {
+        const messages: LiteLLMMessage[] = [
+            { role: "user", content: "继续执行" },
+            {
+                role: "assistant",
+                content: "<think>先反思上轮调用</think>我将继续处理。",
+            },
+            {
+                role: "assistant",
+                content: "<think>只保留工具调用，不要反思</think>",
+                tool_calls: [
+                    { id: "tc-think", type: "function", function: { name: "read_file", arguments: "{}" } },
+                ],
+            },
+            { role: "tool", tool_call_id: "tc-think", content: "{\"ok\":true}" },
+        ];
+
+        const sanitized = sanitizeMessagesForToolCalling(messages);
+        expect(sanitized[1]).toMatchObject({
+            role: "assistant",
+            content: "我将继续处理。",
+        });
+        expect(sanitized[2]).toMatchObject({
+            role: "assistant",
+            content: "",
+        });
+    });
 });
 
 describe("pruneStaleSystemMessages", () => {

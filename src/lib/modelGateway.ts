@@ -108,12 +108,18 @@ export function createGatewayRequestBody(
     ...options,
     temperature: options?.temperature ?? (hasModelTemperature ? undefined : adapted.temperature),
     toolChoice: options?.toolChoice ?? adapted.toolChoice,
+    parallelToolCalls: hasTools ? adapted.parallelToolCalls : undefined,
   };
 
   const body = createLiteLLMRequestBody(messages, effectiveSettings, adaptedOptions);
 
-  // Inject parallel_tool_calls if the model supports it (OpenAI-specific)
-  if (adapted.parallelToolCalls !== undefined && hasTools && protocol === "openai-chat-completions") {
+  // Keep a defensive fallback in case lower-layer builders omit this field.
+  if (
+    adapted.parallelToolCalls !== undefined &&
+    hasTools &&
+    (protocol === "openai-chat-completions" || protocol === "openai-responses") &&
+    body.parallel_tool_calls === undefined
+  ) {
     body.parallel_tool_calls = adapted.parallelToolCalls;
   }
 

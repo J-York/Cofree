@@ -148,6 +148,7 @@ describe("Anthropic normalization for tool-calling replies", () => {
             function: { name: string; arguments: string };
           }>;
         };
+        finish_reason?: string;
       }>;
     };
 
@@ -217,6 +218,7 @@ describe("OpenAI Responses normalization for tool-calling replies", () => {
             function: { name: string; arguments: string };
           }>;
         };
+        finish_reason?: string;
       }>;
     };
 
@@ -232,6 +234,49 @@ describe("OpenAI Responses normalization for tool-calling replies", () => {
         },
       },
     ]);
+    expect(payload.choices[0]?.finish_reason).toBe("tool_calls");
+  });
+
+  it("maps incomplete status to finish_reason=length", async () => {
+    const settings = createSettings({
+      protocol: "openai-responses",
+      supportsThinking: false,
+      modelName: "gpt-4.1",
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            id: "resp_456",
+            status: "incomplete",
+            incomplete_details: {
+              reason: "max_output_tokens",
+            },
+            output: [],
+            output_text: "",
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              total_tokens: 15,
+            },
+          }),
+      }),
+    );
+
+    const response = await postLiteLLMChatCompletions(settings, {
+      model: "gpt-4.1",
+      input: [],
+      stream: false,
+    });
+    const payload = JSON.parse(response.body) as {
+      choices: Array<{ finish_reason?: string }>;
+    };
+
+    expect(payload.choices[0]?.finish_reason).toBe("length");
   });
 });
 
@@ -540,6 +585,36 @@ describe("createLiteLLMRequestBody thinking integration", () => {
         },
       },
     ]);
+  });
+
+  it("passes parallel_tool_calls to openai responses when configured", () => {
+    const settings = createSettings({
+      protocol: "openai-responses",
+      supportsThinking: false,
+    });
+
+    const body = createLiteLLMRequestBody(BASE_MESSAGES, settings, {
+      stream: false,
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "read_file",
+            description: "Read file",
+            parameters: {
+              type: "object",
+              properties: {
+                relative_path: { type: "string" },
+              },
+            },
+          },
+        },
+      ],
+      toolChoice: "auto",
+      parallelToolCalls: true,
+    });
+
+    expect(body.parallel_tool_calls).toBe(true);
   });
 
   it("uses anthropic effort mode for effort-capable anthropic models", () => {
