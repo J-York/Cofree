@@ -40,6 +40,62 @@
   font-size: 13px;
 }
 
+/* ── Code block with highlight + copy ───────────────────── */
+.chat-code-block-wrapper {
+  margin: 8px 0;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--surface-0);
+}
+
+.chat-code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 6px 12px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-1);
+  gap: 8px;
+}
+
+.chat-code-block-lang {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.chat-code-block-copy {
+  font-size: 12px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--r-xs);
+  background: var(--surface-0);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+.chat-code-block-copy:hover {
+  background: var(--border-1);
+  color: var(--text-1);
+}
+
+.chat-code-block-copy:active {
+  background: var(--surface-2);
+}
+
+.chat-code-block-wrapper pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+
+.chat-code-block-inner {
+  font-family: var(--font-mono) !important;
+}
+
 .chat-markdown blockquote {
   border-left: 2px solid var(--accent-solid);
   margin: 0.5em 0;

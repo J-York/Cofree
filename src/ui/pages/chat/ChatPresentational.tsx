@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { Children, memo, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import oneDark from "react-syntax-highlighter/dist/esm/styles/prism/one-dark";
 import { DiffViewer } from "../../components/DiffViewer";
 import { ShellResultDisplay } from "../../components/ShellResultDisplay";
 import {
@@ -24,7 +26,96 @@ import type {
 } from "../../../orchestrator/types";
 import type { LiveToolCall, SubAgentStatusItem } from "./types";
 import type { ChatMessageRecord } from "../../../lib/chatHistoryStore";
+import { copyTextToClipboard } from "../../../lib/clipboard";
 import { formatToolName } from "./helpers";
+
+function CodeBlockWithCopy({
+  code,
+  language,
+}: {
+  code: string;
+  language: string;
+}) {
+  const [copyState, setCopyState] = useState<"idle" | "success" | "error">("idle");
+
+  useEffect(() => {
+    if (copyState === "idle") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setCopyState("idle"), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
+
+  const copy = async () => {
+    try {
+      await copyTextToClipboard(code);
+      setCopyState("success");
+    } catch {
+      setCopyState("error");
+    }
+  };
+
+  const copyLabel =
+    copyState === "success"
+      ? "已复制"
+      : copyState === "error"
+        ? "复制失败"
+        : "复制";
+
+  return (
+    <div className="chat-code-block-wrapper">
+      <div className="chat-code-block-header">
+        <span className="chat-code-block-lang">{language || "plaintext"}</span>
+        <button
+          type="button"
+          className="chat-code-block-copy"
+          onClick={copy}
+          aria-label={copyLabel}
+          title={copyLabel}
+        >
+          {copyLabel}
+        </button>
+      </div>
+      <SyntaxHighlighter
+        language={language || "text"}
+        style={oneDark}
+        PreTag="div"
+        codeTagProps={{ className: "chat-code-block-inner" }}
+        showLineNumbers={false}
+        customStyle={{
+          margin: 0,
+          padding: "12px 14px",
+          background: "var(--surface-0)",
+          borderRadius: "0 0 var(--r-sm) var(--r-sm)",
+          fontSize: "13px",
+        }}
+      >
+        {code}
+      </SyntaxHighlighter>
+    </div>
+  );
+}
+
+function getMarkdownCodeBlockComponents(): import("react-markdown").Components {
+  return {
+    pre({ children }) {
+      const child = Children.only(children) as React.ReactElement<{
+        className?: string;
+        children?: React.ReactNode;
+      }>;
+      const className = child?.props?.className ?? "";
+      const match = /language-(\w+)/.exec(className);
+      const language = match ? match[1] : "text";
+      const code = String(child?.props?.children ?? "").replace(/\n$/, "");
+      return (
+        <CodeBlockWithCopy code={code} language={language} />
+      );
+    },
+  };
+}
+
+const markdownCodeBlockComponents = getMarkdownCodeBlockComponents();
 
 export function ContextAttachmentPills({
   attachments,
@@ -64,7 +155,7 @@ export function ContextAttachmentPills({
   );
 }
 
-export function MessageContent({
+export const MessageContent = memo(function MessageContent({
   content,
   isStreaming,
   role,
@@ -150,18 +241,28 @@ export function MessageContent({
           <details key={i} className="think-block" open={part.streaming}>
             <summary className="think-summary">思考过程</summary>
             <div className="think-content">
-              <Markdown remarkPlugins={[remarkGfm]}>{part.content}</Markdown>
+              <Markdown
+                remarkPlugins={[remarkGfm]}
+                components={markdownCodeBlockComponents}
+              >
+                {part.content}
+              </Markdown>
             </div>
           </details>
         ) : (
           <div key={i} className="chat-markdown">
-            <Markdown remarkPlugins={[remarkGfm]}>{part.content}</Markdown>
+            <Markdown
+              remarkPlugins={[remarkGfm]}
+              components={markdownCodeBlockComponents}
+            >
+              {part.content}
+            </Markdown>
           </div>
         ),
       )}
     </>
   );
-}
+});
 
 export function LiveToolStatus({ calls }: { calls: LiveToolCall[] }) {
   if (calls.length === 0) return null;

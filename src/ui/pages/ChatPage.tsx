@@ -1,4 +1,12 @@
-import { type ReactElement, useEffect, useRef, useState } from "react";
+import {
+  memo,
+  type ReactElement,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   clearChatHistory,
@@ -29,6 +37,7 @@ import {
   dedupeContextAttachments,
   type ChatContextAttachment,
 } from "../../lib/contextAttachments";
+import { copyTextToClipboard } from "../../lib/clipboard";
 import { ConversationSidebar } from "../components/ConversationSidebar";
 import { IconTrash } from "../components/Icons";
 import { getActiveManagedModel, isActiveModelLocal, resolveManagedModelSelection } from "../../lib/settingsStore";
@@ -202,6 +211,472 @@ const DEBUG_LOG_MAX_CONTENT_CHARS = 2000;
 const DEBUG_LOG_HISTORY_LIMIT = 18;
 const DEBUG_EXPORT_HISTORY_LIMIT = 200;
 const shellOutputTextEncoder = new TextEncoder();
+const EMPTY_LIVE_TOOL_CALLS: LiveToolCall[] = [];
+const EMPTY_SUB_AGENT_STATUS: SubAgentStatusItem[] = [];
+const EMPTY_SHELL_ACTION_IDS: string[] = [];
+const DEFAULT_CHAT_SUGGESTIONS = [
+  { prompt: "帮我分析一下这个项目的代码结构", label: "分析代码结构" },
+  { prompt: "帮我查找并修复代码中的问题", label: "查找问题" },
+  { prompt: "帮我写一个新功能", label: "新功能开发" },
+  { prompt: "帮我优化这个项目的性能", label: "性能优化" },
+];
+
+interface ChatMessageRowProps {
+  message: ChatMessageRecord;
+  assistantDisplayName: string;
+  debugMode: boolean;
+  showStreamingStatus: boolean;
+  liveToolCalls: LiveToolCall[];
+  subAgentStatus: SubAgentStatusItem[];
+  executingActionId: string;
+  getActiveShellActionIds: (messageId: string) => string[];
+  onPlanUpdate: (
+    messageId: string,
+    updater: (plan: OrchestrationPlan) => OrchestrationPlan,
+  ) => void;
+  onApprove: (
+    messageId: string,
+    actionId: string,
+    plan: OrchestrationPlan,
+    rememberOption?: ApprovalRuleOption,
+  ) => Promise<void>;
+  onRetry: (
+    messageId: string,
+    actionId: string,
+    plan: OrchestrationPlan,
+  ) => Promise<void>;
+  onReject: (messageId: string, actionId: string) => void;
+  onComment: (messageId: string, actionId: string) => void;
+  onCancel: (messageId: string, actionId: string) => Promise<void>;
+  onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
+  onRejectAll: (messageId: string) => void;
+}
+
+const ChatMessageRow = memo(function ChatMessageRow({
+  message,
+  assistantDisplayName,
+  debugMode,
+  showStreamingStatus,
+  liveToolCalls,
+  subAgentStatus,
+  executingActionId,
+  getActiveShellActionIds,
+  onPlanUpdate,
+  onApprove,
+  onRetry,
+  onReject,
+  onComment,
+  onCancel,
+  onApproveAll,
+  onRejectAll,
+}: ChatMessageRowProps): ReactElement {
+  const activeShellActionIds = message.plan
+    ? getActiveShellActionIds(message.id)
+    : EMPTY_SHELL_ACTION_IDS;
+  const hasPlan =
+    message.plan !== null &&
+    (message.plan.proposedActions.length > 0 || message.plan.steps.length > 0);
+
+  return (
+    <div className={`chat-row ${message.role}`}>
+      <div className={`chat-avatar ${message.role}`}>
+        {message.role === "user" ? "U" : assistantDisplayName.charAt(0)}
+      </div>
+      <div className="chat-bubble-wrap">
+        <p className="chat-meta">
+          {message.role === "user" ? "你" : assistantDisplayName}
+          {formatTime(message.createdAt) ? ` · ${formatTime(message.createdAt)}` : ""}
+        </p>
+        {message.role === "assistant" && debugMode && (
+          <AssistantToolCalls toolCalls={message.tool_calls} />
+        )}
+        {message.role === "assistant" &&
+          showStreamingStatus &&
+          liveToolCalls.length > 0 && (
+            <LiveToolStatus calls={liveToolCalls} />
+          )}
+        {message.role === "assistant" &&
+          showStreamingStatus &&
+          subAgentStatus.length > 0 && (
+            <SubAgentStatusPanel items={subAgentStatus} />
+          )}
+        {message.role === "assistant" && (message.toolTrace?.length ?? 0) > 0 && (
+          <ToolTracePanel traces={message.toolTrace!} />
+        )}
+        {hasPlan && message.plan && (
+          <InlinePlan
+            plan={message.plan}
+            messageId={message.id}
+            executingActionId={executingActionId}
+            activeShellActionIds={activeShellActionIds}
+            onPlanUpdate={onPlanUpdate}
+            onApprove={onApprove}
+            onRetry={onRetry}
+            onReject={onReject}
+            onComment={onComment}
+            onCancel={onCancel}
+            onApproveAll={onApproveAll}
+            onRejectAll={onRejectAll}
+          />
+        )}
+        <div className={`chat-bubble ${message.role}`}>
+          {message.role === "user" && (
+            <ContextAttachmentPills
+              attachments={message.contextAttachments ?? []}
+              compact
+            />
+          )}
+          <MessageContent
+            content={message.content}
+            isStreaming={
+              showStreamingStatus &&
+              message.content === "" &&
+              message.role === "assistant"
+            }
+            role={message.role}
+          />
+        </div>
+      </div>
+    </div>
+  );
+});
+
+interface ChatThreadSectionProps {
+  threadRef: RefObject<HTMLDivElement | null>;
+  messages: ChatMessageRecord[];
+  assistantDisplayName: string;
+  assistantDescription: string;
+  debugMode: boolean;
+  isStreaming: boolean;
+  liveToolCalls: LiveToolCall[];
+  subAgentStatus: SubAgentStatusItem[];
+  executingActionId: string;
+  getActiveShellActionIds: (messageId: string) => string[];
+  onPlanUpdate: (
+    messageId: string,
+    updater: (plan: OrchestrationPlan) => OrchestrationPlan,
+  ) => void;
+  onApprove: (
+    messageId: string,
+    actionId: string,
+    plan: OrchestrationPlan,
+    rememberOption?: ApprovalRuleOption,
+  ) => Promise<void>;
+  onRetry: (
+    messageId: string,
+    actionId: string,
+    plan: OrchestrationPlan,
+  ) => Promise<void>;
+  onReject: (messageId: string, actionId: string) => void;
+  onComment: (messageId: string, actionId: string) => void;
+  onCancel: (messageId: string, actionId: string) => Promise<void>;
+  onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
+  onRejectAll: (messageId: string) => void;
+  onSuggestionClick: (text: string) => void;
+}
+
+const ChatThreadSection = memo(function ChatThreadSection({
+  threadRef,
+  messages,
+  assistantDisplayName,
+  assistantDescription,
+  debugMode,
+  isStreaming,
+  liveToolCalls,
+  subAgentStatus,
+  executingActionId,
+  getActiveShellActionIds,
+  onPlanUpdate,
+  onApprove,
+  onRetry,
+  onReject,
+  onComment,
+  onCancel,
+  onApproveAll,
+  onRejectAll,
+  onSuggestionClick,
+}: ChatThreadSectionProps): ReactElement {
+  const visibleMessages = messages.filter((message) => message.role !== "tool");
+  const lastMessage = messages[messages.length - 1];
+
+  return (
+    <div className="chat-thread" ref={threadRef}>
+      {visibleMessages.length === 0 ? (
+        <div className="chat-empty">
+          <p className="chat-empty-text">你好，我是{assistantDisplayName}</p>
+          <p className="chat-empty-subtext">{assistantDescription}</p>
+          <div className="chat-suggestions">
+            {DEFAULT_CHAT_SUGGESTIONS.map((suggestion) => (
+              <button
+                key={suggestion.prompt}
+                className="chat-suggestion-chip"
+                onClick={() => onSuggestionClick(suggestion.prompt)}
+                type="button"
+              >
+                {suggestion.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        visibleMessages.map((message) => {
+          const showStreamingStatus =
+            isStreaming &&
+            message.role === "assistant" &&
+            message === lastMessage;
+
+          return (
+            <ChatMessageRow
+              key={message.id}
+              message={message}
+              assistantDisplayName={assistantDisplayName}
+              debugMode={debugMode}
+              showStreamingStatus={showStreamingStatus}
+              liveToolCalls={showStreamingStatus ? liveToolCalls : EMPTY_LIVE_TOOL_CALLS}
+              subAgentStatus={showStreamingStatus ? subAgentStatus : EMPTY_SUB_AGENT_STATUS}
+              executingActionId={message.plan ? executingActionId : ""}
+              getActiveShellActionIds={getActiveShellActionIds}
+              onPlanUpdate={onPlanUpdate}
+              onApprove={onApprove}
+              onRetry={onRetry}
+              onReject={onReject}
+              onComment={onComment}
+              onCancel={onCancel}
+              onApproveAll={onApproveAll}
+              onRejectAll={onRejectAll}
+            />
+          );
+        })
+      )}
+    </div>
+  );
+});
+
+interface ChatComposerSectionProps {
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
+  prompt: string;
+  chatBlocked: boolean;
+  composerAttachments: ChatContextAttachment[];
+  onRemoveComposerAttachment: (attachmentId: string) => void;
+  activeMention: ActiveMention | null;
+  mentionSuggestions: MentionSuggestion[];
+  mentionSelectionIndex: number;
+  onPromptChange: (nextText: string, caretIndex?: number) => void;
+  onMentionSync: (nextText: string, caretIndex?: number) => void;
+  onMentionSuggestionSelect: (suggestion: MentionSuggestion) => void;
+  onSelectNextMention: (maxIndex: number) => void;
+  onSelectPreviousMention: () => void;
+  onClearMentionUi: () => void;
+  onSubmit: () => void | Promise<void>;
+  liveContextTokens: number | null;
+  maxContextTokens: number;
+  isStreaming: boolean;
+  executingActionId: string;
+  messagesCount: number;
+  onClearHistory: () => void;
+  debugMode: boolean;
+  isExportingDebugBundle: boolean;
+  hasDebugBundleTarget: boolean;
+  onDownloadConversationDebugBundle: () => void;
+  onCancel: () => void;
+}
+
+function ChatComposerSection({
+  textareaRef,
+  prompt,
+  chatBlocked,
+  composerAttachments,
+  onRemoveComposerAttachment,
+  activeMention,
+  mentionSuggestions,
+  mentionSelectionIndex,
+  onPromptChange,
+  onMentionSync,
+  onMentionSuggestionSelect,
+  onSelectNextMention,
+  onSelectPreviousMention,
+  onClearMentionUi,
+  onSubmit,
+  liveContextTokens,
+  maxContextTokens,
+  isStreaming,
+  executingActionId,
+  messagesCount,
+  onClearHistory,
+  debugMode,
+  isExportingDebugBundle,
+  hasDebugBundleTarget,
+  onDownloadConversationDebugBundle,
+  onCancel,
+}: ChatComposerSectionProps): ReactElement {
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, [prompt, textareaRef]);
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        void onSubmit();
+      }}
+    >
+      <div className="chat-input-box">
+        <ContextAttachmentPills
+          attachments={composerAttachments}
+          onRemove={onRemoveComposerAttachment}
+        />
+        {activeMention && mentionSuggestions.length > 0 && (
+          <div className="chat-mention-menu" role="listbox" aria-label="@ 文件候选">
+            {mentionSuggestions.map((suggestion, index) => (
+              <button
+                key={suggestion.relativePath}
+                type="button"
+                className={`chat-mention-item${index === mentionSelectionIndex ? " active" : ""}`}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  onMentionSuggestionSelect(suggestion);
+                }}
+              >
+                <span className="chat-mention-item-name">
+                  {suggestion.displayName}
+                  {suggestion.kind === "folder" ? "/" : ""}
+                </span>
+                <span className="chat-mention-item-path">
+                  {suggestion.kind === "folder" ? "目录" : "文件"} · {suggestion.relativePath}
+                  {suggestion.kind === "folder" ? "/" : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+        <textarea
+          ref={textareaRef}
+          className="chat-textarea"
+          value={prompt}
+          disabled={chatBlocked}
+          onChange={(event) =>
+            onPromptChange(
+              event.target.value,
+              event.target.selectionStart ?? event.target.value.length,
+            )
+          }
+          onKeyDown={(event) => {
+            if (activeMention && mentionSuggestions.length > 0) {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                onSelectNextMention(mentionSuggestions.length - 1);
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                onSelectPreviousMention();
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onClearMentionUi();
+                return;
+              }
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                onMentionSuggestionSelect(
+                  mentionSuggestions[mentionSelectionIndex] ?? mentionSuggestions[0],
+                );
+                return;
+              }
+            }
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void onSubmit();
+            }
+          }}
+          onClick={(event) =>
+            onMentionSync(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart ?? event.currentTarget.value.length,
+            )
+          }
+          onKeyUp={(event) =>
+            onMentionSync(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart ?? event.currentTarget.value.length,
+            )
+          }
+          placeholder={
+            chatBlocked
+              ? "请先完成设置…"
+              : "描述你的编码任务…  输入 @ 搜索文件或目录，Enter 发送，Shift+Enter 换行"
+          }
+          rows={1}
+        />
+        <div className="chat-input-footer">
+          <div className="chat-input-meta">
+            {liveContextTokens !== null && (
+              <TokenUsageRing
+                used={liveContextTokens}
+                max={maxContextTokens}
+                isStreaming={isStreaming}
+              />
+            )}
+            <button
+              className="btn btn-ghost"
+              style={{
+                padding: "4px",
+                height: "22px",
+                width: "22px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              disabled={isStreaming || Boolean(executingActionId) || messagesCount === 0}
+              onClick={onClearHistory}
+              type="button"
+              title="清空当前对话"
+            >
+              <IconTrash size={14} />
+            </button>
+          </div>
+          <div className="chat-input-actions">
+            {debugMode && (
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={isExportingDebugBundle || !hasDebugBundleTarget}
+                onClick={onDownloadConversationDebugBundle}
+                type="button"
+              >
+                {isExportingDebugBundle ? "导出中…" : "下载日志"}
+              </button>
+            )}
+            {isStreaming && (
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={onCancel}
+                type="button"
+              >
+                停止
+              </button>
+            )}
+            <button
+              className="btn btn-primary btn-sm"
+              disabled={
+                isStreaming ||
+                Boolean(executingActionId) ||
+                (!prompt.trim() && composerAttachments.length === 0) ||
+                chatBlocked
+              }
+              type="submit"
+            >
+              发送
+            </button>
+          </div>
+        </div>
+      </div>
+    </form>
+  );
+}
 
 function truncateDebugLogText(text: string, maxChars = DEBUG_LOG_MAX_CONTENT_CHARS): string {
   if (text.length <= maxChars) return text;
@@ -412,6 +887,33 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   const completeBackgroundShellStartupRef = useRef<(jobId: string) => Promise<void>>(null!);
   const monitorBackgroundShellJobRef = useRef<(jobId: string) => Promise<void>>(null!);
   const conversationDebugEntriesRef = useRef(new Map<string, ConversationDebugEntry[]>());
+  const handleApproveActionThreadRef = useRef<
+    (
+      messageId: string,
+      actionId: string,
+      plan: OrchestrationPlan,
+      rememberOption?: ApprovalRuleOption,
+    ) => Promise<void>
+  >(async () => {});
+  const handleRetryActionThreadRef = useRef<
+    (messageId: string, actionId: string, plan: OrchestrationPlan) => Promise<void>
+  >(async () => {});
+  const handleRejectActionThreadRef = useRef<
+    (messageId: string, actionId: string) => void
+  >(() => {});
+  const handleCommentActionThreadRef = useRef<
+    (messageId: string, actionId: string) => void
+  >(() => {});
+  const handleCancelActionThreadRef = useRef<
+    (messageId: string, actionId: string) => Promise<void>
+  >(async () => {});
+  const handleApproveAllActionsThreadRef = useRef<
+    (messageId: string, plan: OrchestrationPlan) => Promise<void>
+  >(async () => {});
+  const handleRejectAllActionsThreadRef = useRef<(messageId: string) => void>(
+    () => {},
+  );
+  const handleSuggestionClickThreadRef = useRef<(text: string) => void>(() => {});
 
   const activeManagedModel = getActiveManagedModel(settings);
   const activeModelLabel = activeManagedModel?.name || settings.model;
@@ -419,16 +921,79 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     !settings.allowCloudModels && !isActiveModelLocal(settings);
   const noWorkspaceSelected = !settings.workspacePath;
   const chatBlocked = localOnlyBlocked || noWorkspaceSelected;
+  const getActiveShellActionIdsForThread = useCallback((messageId: string): string[] => {
+    return Array.from(runningShellJobsRef.current.values())
+      .filter((meta) => meta.messageId === messageId)
+      .map((meta) => meta.actionId);
+  }, []);
+  const handlePlanUpdateForThread = useCallback(
+    (
+      messageId: string,
+      updater: (plan: OrchestrationPlan) => OrchestrationPlan,
+    ): void => {
+      handlePlanUpdateRef.current(messageId, updater);
+    },
+    [],
+  );
+  const handleApproveActionForThread = useCallback(
+    (
+      messageId: string,
+      actionId: string,
+      plan: OrchestrationPlan,
+      rememberOption?: ApprovalRuleOption,
+    ): Promise<void> =>
+      handleApproveActionThreadRef.current(
+        messageId,
+        actionId,
+        plan,
+        rememberOption,
+      ),
+    [],
+  );
+  const handleRetryActionForThread = useCallback(
+    (
+      messageId: string,
+      actionId: string,
+      plan: OrchestrationPlan,
+    ): Promise<void> =>
+      handleRetryActionThreadRef.current(messageId, actionId, plan),
+    [],
+  );
+  const handleRejectActionForThread = useCallback(
+    (messageId: string, actionId: string): void => {
+      handleRejectActionThreadRef.current(messageId, actionId);
+    },
+    [],
+  );
+  const handleCommentActionForThread = useCallback(
+    (messageId: string, actionId: string): void => {
+      handleCommentActionThreadRef.current(messageId, actionId);
+    },
+    [],
+  );
+  const handleCancelActionForThread = useCallback(
+    (messageId: string, actionId: string): Promise<void> =>
+      handleCancelActionThreadRef.current(messageId, actionId),
+    [],
+  );
+  const handleApproveAllActionsForThread = useCallback(
+    (messageId: string, plan: OrchestrationPlan): Promise<void> =>
+      handleApproveAllActionsThreadRef.current(messageId, plan),
+    [],
+  );
+  const handleRejectAllActionsForThread = useCallback((messageId: string): void => {
+    handleRejectAllActionsThreadRef.current(messageId);
+  }, []);
+  const handleSuggestionClickForThread = useCallback((text: string): void => {
+    handleSuggestionClickThreadRef.current(text);
+  }, []);
 
   const handleCopyFailedRequestLog = async (): Promise<void> => {
     if (!failedLlmRequestLog) {
       return;
     }
     try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-        throw new Error("当前环境不支持剪贴板写入");
-      }
-      await navigator.clipboard.writeText(failedLlmRequestLog);
+      await copyTextToClipboard(failedLlmRequestLog);
       setSessionNote("已复制本次请求日志到剪贴板");
     } catch (error) {
       setSessionNote(
@@ -902,14 +1467,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       threadRef.current.scrollTop = threadRef.current.scrollHeight;
     }
   }, [isVisible]);
-
-  /* Auto-resize textarea */
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
-  }, [prompt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2733,6 +3290,31 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     });
   };
 
+  handleApproveActionThreadRef.current = handleApproveAction;
+  handleRetryActionThreadRef.current = handleRetryAction;
+  handleRejectActionThreadRef.current = handleRejectAction;
+  handleCommentActionThreadRef.current = handleCommentAction;
+  handleCancelActionThreadRef.current = handleCancelAction;
+  handleApproveAllActionsThreadRef.current = handleApproveAllActions;
+  handleRejectAllActionsThreadRef.current = handleRejectAllActions;
+  handleSuggestionClickThreadRef.current = handleSuggestionClick;
+
+  const handlePromptChange = (nextText: string, caretIndex?: number): void => {
+    setPrompt(nextText);
+    syncActiveMention(nextText, caretIndex);
+  };
+
+  const handleSelectNextMention = (maxIndex: number): void => {
+    setMentionSelectionIndex((prev) => Math.min(prev + 1, maxIndex));
+  };
+
+  const handleSelectPreviousMention = (): void => {
+    setMentionSelectionIndex((prev) => Math.max(prev - 1, 0));
+  };
+
+  const assistantDisplayName =
+    currentConversation?.agentBinding?.agentNameSnapshot ?? activeAgent.name;
+
   // Listen for global new-conversation shortcut
   useEffect(() => {
     const handler = () => handleNewConversation();
@@ -2780,109 +3362,27 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           )}
 
           {/* ── Thread ── */}
-          <div className="chat-thread" ref={threadRef}>
-            {messages.length === 0 ? (
-              <div className="chat-empty">
-                <p className="chat-empty-text">你好，我是{activeAgent.name}</p>
-                <p className="chat-empty-subtext">{activeAgent.description}</p>
-                <div className="chat-suggestions">
-                  <button className="chat-suggestion-chip" onClick={() => handleSuggestionClick("帮我分析一下这个项目的代码结构")} type="button">
-                    分析代码结构
-                  </button>
-                  <button className="chat-suggestion-chip" onClick={() => handleSuggestionClick("帮我查找并修复代码中的问题")} type="button">
-                    查找问题
-                  </button>
-                  <button className="chat-suggestion-chip" onClick={() => handleSuggestionClick("帮我写一个新功能")} type="button">
-                    新功能开发
-                  </button>
-                  <button className="chat-suggestion-chip" onClick={() => handleSuggestionClick("帮我优化这个项目的性能")} type="button">
-                    性能优化
-                  </button>
-                </div>
-              </div>
-            ) : (
-              messages
-                .filter((message) => message.role !== "tool")
-                .map((message) => (
-                  <div key={message.id} className={`chat-row ${message.role}`}>
-                    <div className={`chat-avatar ${message.role}`}>
-                      {message.role === "user" ? "U" : (currentConversation?.agentBinding?.agentNameSnapshot ?? activeAgent.name).charAt(0)}
-                    </div>
-                    <div className="chat-bubble-wrap">
-                      <p className="chat-meta">
-                        {message.role === "user" ? "你" : (currentConversation?.agentBinding?.agentNameSnapshot ?? activeAgent.name)}
-                        {formatTime(message.createdAt)
-                          ? ` · ${formatTime(message.createdAt)}`
-                          : ""}
-                      </p>
-                      {message.role === "assistant" && settings.debugMode && (
-                        <AssistantToolCalls toolCalls={message.tool_calls} />
-                      )}
-                      {message.role === "assistant" &&
-                        isStreaming &&
-                        message === messages[messages.length - 1] &&
-                        liveToolCalls.length > 0 && (
-                          <LiveToolStatus calls={liveToolCalls} />
-                        )}
-                      {message.role === "assistant" &&
-                        isStreaming &&
-                        message === messages[messages.length - 1] &&
-                        subAgentStatus.length > 0 && (
-                          <SubAgentStatusPanel items={subAgentStatus} />
-                        )}
-                      {message.role === "assistant" &&
-                        (message.toolTrace?.length ?? 0) > 0 && (
-                          <ToolTracePanel traces={message.toolTrace!} />
-                        )}
-                      {message.plan &&
-                        (message.plan.proposedActions.length > 0 ||
-                          message.plan.steps.length > 0) && (
-                          (() => {
-                            const activeShellActionIds = Array.from(
-                              runningShellJobsRef.current.values(),
-                            )
-                              .filter((meta) => meta.messageId === message.id)
-                              .map((meta) => meta.actionId);
-                            return (
-                              <InlinePlan
-                                plan={message.plan}
-                                messageId={message.id}
-                                executingActionId={executingActionId}
-                                activeShellActionIds={activeShellActionIds}
-                                onPlanUpdate={handlePlanUpdate}
-                                onApprove={handleApproveAction}
-                                onRetry={handleRetryAction}
-                                onReject={handleRejectAction}
-                                onComment={handleCommentAction}
-                                onCancel={handleCancelAction}
-                                onApproveAll={handleApproveAllActions}
-                                onRejectAll={handleRejectAllActions}
-                              />
-                            );
-                          })()
-                        )}
-                      <div className={`chat-bubble ${message.role}`}>
-                        {message.role === "user" && (
-                          <ContextAttachmentPills
-                            attachments={message.contextAttachments ?? []}
-                            compact
-                          />
-                        )}
-                        <MessageContent
-                          content={message.content}
-                          isStreaming={
-                            isStreaming &&
-                            message.content === "" &&
-                            message.role === "assistant"
-                          }
-                          role={message.role}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))
-            )}
-          </div>
+          <ChatThreadSection
+            threadRef={threadRef}
+            messages={messages}
+            assistantDisplayName={assistantDisplayName}
+            assistantDescription={activeAgent.description}
+            debugMode={settings.debugMode}
+            isStreaming={isStreaming}
+            liveToolCalls={liveToolCalls}
+            subAgentStatus={subAgentStatus}
+            executingActionId={executingActionId}
+            getActiveShellActionIds={getActiveShellActionIdsForThread}
+            onPlanUpdate={handlePlanUpdateForThread}
+            onApprove={handleApproveActionForThread}
+            onRetry={handleRetryActionForThread}
+            onReject={handleRejectActionForThread}
+            onComment={handleCommentActionForThread}
+            onCancel={handleCancelActionForThread}
+            onApproveAll={handleApproveAllActionsForThread}
+            onRejectAll={handleRejectAllActionsForThread}
+            onSuggestionClick={handleSuggestionClickForThread}
+          />
 
           {/* ── Input ── */}
           <div className="chat-input-area">
@@ -2918,174 +3418,38 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                 }}
               />
             )}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                void handleSubmit();
+            <ChatComposerSection
+              textareaRef={textareaRef}
+              prompt={prompt}
+              chatBlocked={chatBlocked}
+              composerAttachments={composerAttachments}
+              onRemoveComposerAttachment={handleRemoveComposerAttachment}
+              activeMention={activeMention}
+              mentionSuggestions={mentionSuggestions}
+              mentionSelectionIndex={mentionSelectionIndex}
+              onPromptChange={handlePromptChange}
+              onMentionSync={syncActiveMention}
+              onMentionSuggestionSelect={handleMentionSuggestionSelect}
+              onSelectNextMention={handleSelectNextMention}
+              onSelectPreviousMention={handleSelectPreviousMention}
+              onClearMentionUi={clearMentionUi}
+              onSubmit={handleSubmit}
+              liveContextTokens={liveContextTokens}
+              maxContextTokens={
+                settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000
+              }
+              isStreaming={isStreaming}
+              executingActionId={executingActionId}
+              messagesCount={messages.length}
+              onClearHistory={handleClearHistory}
+              debugMode={settings.debugMode}
+              isExportingDebugBundle={isExportingDebugBundle}
+              hasDebugBundleTarget={Boolean(currentConversation) || messages.length > 0}
+              onDownloadConversationDebugBundle={() => {
+                void handleDownloadConversationDebugBundle();
               }}
-            >
-              <div className="chat-input-box">
-                <ContextAttachmentPills
-                  attachments={composerAttachments}
-                  onRemove={handleRemoveComposerAttachment}
-                />
-                {activeMention && mentionSuggestions.length > 0 && (
-                  <div className="chat-mention-menu" role="listbox" aria-label="@ 文件候选">
-                    {mentionSuggestions.map((suggestion, index) => (
-                      <button
-                        key={suggestion.relativePath}
-                        type="button"
-                        className={`chat-mention-item${index === mentionSelectionIndex ? " active" : ""}`}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          handleMentionSuggestionSelect(suggestion);
-                        }}
-                      >
-                        <span className="chat-mention-item-name">
-                          {suggestion.displayName}
-                          {suggestion.kind === "folder" ? "/" : ""}
-                        </span>
-                        <span className="chat-mention-item-path">
-                          {suggestion.kind === "folder" ? "目录" : "文件"} · {suggestion.relativePath}
-                          {suggestion.kind === "folder" ? "/" : ""}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <textarea
-                  ref={textareaRef}
-                  className="chat-textarea"
-                  value={prompt}
-                  disabled={chatBlocked}
-                  onChange={(e) => {
-                    const nextText = e.target.value;
-                    setPrompt(nextText);
-                    syncActiveMention(nextText, e.target.selectionStart ?? nextText.length);
-                  }}
-                  onKeyDown={(e) => {
-                    if (activeMention && mentionSuggestions.length > 0) {
-                      if (e.key === "ArrowDown") {
-                        e.preventDefault();
-                        setMentionSelectionIndex((prev) =>
-                          Math.min(prev + 1, mentionSuggestions.length - 1),
-                        );
-                        return;
-                      }
-                      if (e.key === "ArrowUp") {
-                        e.preventDefault();
-                        setMentionSelectionIndex((prev) => Math.max(prev - 1, 0));
-                        return;
-                      }
-                      if (e.key === "Escape") {
-                        e.preventDefault();
-                        clearMentionUi();
-                        return;
-                      }
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        handleMentionSuggestionSelect(
-                          mentionSuggestions[mentionSelectionIndex] ?? mentionSuggestions[0],
-                        );
-                        return;
-                      }
-                    }
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      void handleSubmit();
-                    }
-                  }}
-                  onClick={(e) =>
-                    syncActiveMention(
-                      e.currentTarget.value,
-                      e.currentTarget.selectionStart ?? e.currentTarget.value.length,
-                    )
-                  }
-                  onKeyUp={(e) =>
-                    syncActiveMention(
-                      e.currentTarget.value,
-                      e.currentTarget.selectionStart ?? e.currentTarget.value.length,
-                    )
-                  }
-                  placeholder={
-                    chatBlocked
-                      ? "请先完成设置…"
-                      : "描述你的编码任务…  输入 @ 搜索文件或目录，Enter 发送，Shift+Enter 换行"
-                  }
-                  rows={1}
-                />
-                <div className="chat-input-footer">
-                  <div className="chat-input-meta">
-                    {liveContextTokens !== null && (
-                      <TokenUsageRing
-                        used={liveContextTokens}
-                        max={settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000}
-                        isStreaming={isStreaming}
-                      />
-                    )}
-                    <button
-                      className="btn btn-ghost"
-                      style={{
-                        padding: "4px",
-                        height: "22px",
-                        width: "22px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center"
-                      }}
-                      disabled={
-                        isStreaming ||
-                        Boolean(executingActionId) ||
-                        messages.length === 0
-                      }
-                      onClick={handleClearHistory}
-                      type="button"
-                      title="清空当前对话"
-                    >
-                      <IconTrash size={14} />
-                    </button>
-                  </div>
-                  <div className="chat-input-actions">
-                    {settings.debugMode && (
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        disabled={
-                          isExportingDebugBundle ||
-                          (!currentConversation && messages.length === 0)
-                        }
-                        onClick={() => {
-                          void handleDownloadConversationDebugBundle();
-                        }}
-                        type="button"
-                      >
-                        {isExportingDebugBundle ? "导出中…" : "下载日志"}
-                      </button>
-                    )}
-                    {isStreaming && (
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={handleCancel}
-                        type="button"
-                      >
-                        停止
-                      </button>
-                    )}
-                    <button
-                      className="btn btn-primary btn-sm"
-                      disabled={
-                        isStreaming ||
-                        Boolean(executingActionId) ||
-                        (!prompt.trim() && composerAttachments.length === 0) ||
-                        chatBlocked
-                      }
-                      type="submit"
-                    >
-                      发送
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </form>
+              onCancel={handleCancel}
+            />
           </div>
         </div>
       </div>
