@@ -218,6 +218,7 @@ describe("OpenAI Responses normalization for tool-calling replies", () => {
             function: { name: string; arguments: string };
           }>;
         };
+        finish_reason?: string;
       }>;
     };
 
