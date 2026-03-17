@@ -14,7 +14,8 @@ mod secure_store;
 
 use crate::commands::workspace::ShellJobStore;
 use crate::commands::{
-    apply_workspace_patch, build_workspace_edit_patch, cancel_shell_command, check_workspace_patch,
+    apply_workspace_patch, build_workspace_edit_patch, cancel_shell_command, check_shell_job,
+    check_workspace_patch,
     create_workspace_snapshot, delete_secure_api_key, fetch_litellm_models, fetch_url,
     get_workspace_diagnostics, get_workspace_info, git_diff_workspace, git_status_workspace,
     glob_workspace_files, grep_workspace_files, healthcheck, list_workspace_files,
@@ -68,6 +69,7 @@ pub fn run() {
             run_shell_command,
             start_shell_command,
             cancel_shell_command,
+            check_shell_job,
             grep_workspace_files,
             glob_workspace_files,
             save_workflow_checkpoint,
