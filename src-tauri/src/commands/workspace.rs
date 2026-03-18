@@ -25,11 +25,27 @@ use tauri::{AppHandle, Emitter, State};
 #[derive(Default)]
 pub struct ShellJobStore {
     jobs: Arc<Mutex<HashMap<String, Arc<ShellJobHandle>>>>,
+    /// Retains the final result of completed/cancelled jobs so that
+    /// check_shell_job can still report exit_code / stdout / stderr after the
+    /// active entry is removed.  Entries are written just before removal from
+    /// `jobs` and kept until the store is dropped.
+    completed: Arc<Mutex<HashMap<String, CompletedJobResult>>>,
 }
 
 struct ShellJobHandle {
     child: Mutex<Option<Child>>,
     cancel_requested: AtomicBool,
+}
+
+/// Snapshot of a completed shell job retained for polling by check_shell_job.
+#[derive(Clone, serde::Serialize)]
+pub struct CompletedJobResult {
+    pub success: bool,
+    pub exit_code: i32,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 struct ShellOutputCapture {
@@ -1062,6 +1078,7 @@ pub fn start_shell_command(
     let job_id_for_thread = job_id.clone();
     let command_for_thread = shell_trimmed.clone();
     let jobs_for_thread = Arc::clone(&jobs.inner().jobs);
+    let completed_for_thread = Arc::clone(&jobs.inner().completed);
     thread::spawn(move || {
         emit_shell_command_event(
             &app_handle,
@@ -1082,6 +1099,7 @@ pub fn start_shell_command(
                 stdout_total_bytes: None,
                 stderr_total_bytes: None,
                 output_limit_bytes: output_limit.map(|value| value as u64),
+                prompt_text: None,
             },
         );
 
@@ -1129,15 +1147,31 @@ pub fn start_shell_command(
                 timed_out: Some(final_result.timed_out),
                 cancelled: Some(cancelled),
                 status: Some(final_result.status),
-                stdout: Some(final_result.stdout),
-                stderr: Some(final_result.stderr),
+                stdout: Some(final_result.stdout.clone()),
+                stderr: Some(final_result.stderr.clone()),
                 stdout_truncated: Some(final_result.stdout_truncated),
                 stderr_truncated: Some(final_result.stderr_truncated),
                 stdout_total_bytes: Some(final_result.stdout_total_bytes),
                 stderr_total_bytes: Some(final_result.stderr_total_bytes),
                 output_limit_bytes: final_result.output_limit_bytes,
+                prompt_text: None,
             },
         );
+
+        // Store the completed result BEFORE removing from the active registry
+        // so that check_shell_job can retrieve it even if polled immediately
+        // after the completion event.
+        let completed_entry = CompletedJobResult {
+            success: final_result.success,
+            exit_code: final_result.status,
+            timed_out: final_result.timed_out,
+            cancelled,
+            stdout: final_result.stdout,
+            stderr: final_result.stderr,
+        };
+        if let Ok(mut guard) = completed_for_thread.lock() {
+            guard.insert(job_id_for_thread.clone(), completed_entry);
+        }
 
         if let Ok(mut guard) = jobs_for_thread.lock() {
             guard.remove(&job_id_for_thread);
@@ -1180,21 +1214,104 @@ pub fn cancel_shell_command(
     Ok(false)
 }
 
+#[tauri::command]
+pub fn check_shell_job(
+    jobs: State<'_, ShellJobStore>,
+    job_id: String,
+) -> Result<serde_json::Value, String> {
+    let job_id_trimmed = job_id.trim().to_string();
+
+    // Check active jobs first.
+    let active_job = {
+        let guard = jobs
+            .jobs
+            .lock()
+            .map_err(|_| "shell job store lock poisoned".to_string())?;
+        guard.get(&job_id_trimmed).cloned()
+    };
+
+    if let Some(job) = active_job {
+        // Try to check exit status without blocking
+        let running = {
+            let mut guard = job
+                .child
+                .lock()
+                .map_err(|_| "shell job lock poisoned".to_string())?;
+            match guard.as_mut() {
+                None => false,
+                Some(child) => match child.try_wait() {
+                    Ok(Some(_)) => false, // exited
+                    Ok(None) => true,     // still running
+                    Err(_) => false,
+                },
+            }
+        };
+
+        return Ok(serde_json::json!({
+            "running": running,
+            "found": true,
+            "completed": false,
+            "cancelled": job.cancel_requested.load(Ordering::SeqCst),
+        }));
+    }
+
+    // Not in active registry — check the completed results store.
+    let completed = {
+        let guard = jobs
+            .completed
+            .lock()
+            .map_err(|_| "completed job store lock poisoned".to_string())?;
+        guard.get(&job_id_trimmed).cloned()
+    };
+
+    if let Some(result) = completed {
+        return Ok(serde_json::json!({
+            "running": false,
+            "found": true,
+            "completed": true,
+            "cancelled": result.cancelled,
+            "success": result.success,
+            "exit_code": result.exit_code,
+            "timed_out": result.timed_out,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }));
+    }
+
+    // Job not found in either store — never existed or predates this session.
+    Ok(serde_json::json!({
+        "running": false,
+        "found": false,
+        "completed": false,
+    }))
+}
+
 fn spawn_shell_child(workspace: &Path, shell_trimmed: &str) -> Result<Child, String> {
     if cfg!(target_os = "windows") {
         Command::new("powershell")
             .args(["-NoProfile", "-Command", shell_trimmed])
             .current_dir(workspace)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .env("CI", "true")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("PAGER", "cat")
+            .env("CLICOLOR", "0")
             .spawn()
             .map_err(|e| format!("启动 powershell 失败: {}", e))
     } else {
         Command::new("sh")
             .args(["-c", shell_trimmed])
             .current_dir(workspace)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .env("CI", "true")
+            .env("DEBIAN_FRONTEND", "noninteractive")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("PAGER", "cat")
+            .env("CLICOLOR", "0")
             .spawn()
             .map_err(|e| format!("启动 sh 失败: {}", e))
     }
@@ -1230,7 +1347,7 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
                                 event_type: "output".to_string(),
                                 command: command.clone(),
                                 stream: Some(stream.to_string()),
-                                chunk: Some(chunk),
+                                chunk: Some(chunk.clone()),
                                 success: None,
                                 timed_out: None,
                                 cancelled: None,
@@ -1242,8 +1359,42 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
                                 stdout_total_bytes: None,
                                 stderr_total_bytes: None,
                                 output_limit_bytes: None,
+                                prompt_text: None,
                             },
                         );
+
+                        // Detect interactive prompts and emit a warning event.
+                        // Since stdin is /dev/null the process will get EOF and
+                        // likely fail, but the event helps the Agent understand
+                        // why and retry with non-interactive flags (--yes, -y).
+                        let chunk_lower = chunk.to_lowercase();
+                        if let Some(pattern) = config::INTERACTIVE_PROMPT_PATTERNS
+                            .iter()
+                            .find(|&&p| chunk_lower.contains(p))
+                        {
+                            emit_shell_command_event(
+                                app_handle,
+                                ShellCommandEvent {
+                                    job_id: job_id_value.clone(),
+                                    event_type: "waiting_for_input".to_string(),
+                                    command: command.clone(),
+                                    stream: Some(stream.to_string()),
+                                    chunk: None,
+                                    success: None,
+                                    timed_out: None,
+                                    cancelled: None,
+                                    status: None,
+                                    stdout: None,
+                                    stderr: None,
+                                    stdout_truncated: None,
+                                    stderr_truncated: None,
+                                    stdout_total_bytes: None,
+                                    stderr_total_bytes: None,
+                                    output_limit_bytes: None,
+                                    prompt_text: Some(pattern.to_string()),
+                                },
+                            );
+                        }
                     }
                 }
                 Err(_) => break,

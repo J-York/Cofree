@@ -10,7 +10,7 @@
 
 import type { ResolvedAgentRuntime, SubAgentRole } from "./types";
 import type { ToolPermissionLevel } from "../lib/settingsStore";
-import type { LiteLLMToolDefinition } from "../lib/litellm";
+import type { LiteLLMToolDefinition } from "../lib/piAiBridge";
 
 export interface AgentToolContext {
   visibleToolDefs: LiteLLMToolDefinition[];

@@ -56,3 +56,29 @@ pub const SHELL_BLOCKED_PATTERNS: &[&str] = &[
     "reboot",
     ":(){:|:&};:",
 ];
+
+/// 交互式提示检测模式（在输出块中做子串匹配，不区分大小写）
+/// 当检测到这些模式时，会触发 waiting_for_input 事件通知前端和 Agent。
+/// 注意：stdin 已设为 /dev/null，读取会得到 EOF，但检测可帮助 Agent 
+/// 理解为何命令失败并改用 --yes 等非交互参数。
+pub const INTERACTIVE_PROMPT_PATTERNS: &[&str] = &[
+    "(y/n)",
+    "(y/n/a)",
+    "(yes/no)",
+    "[y/n]",
+    "[y/n/a]",
+    "[yes/no]",
+    "proceed?",
+    "continue?",
+    "are you sure",
+    "do you want to continue",
+    "do you want to proceed",
+    "password:",
+    "passphrase:",
+    "press any key",
+    "press enter",
+    "press return",
+    "hit enter",
+    "type 'yes'",
+    "type \"yes\"",
+];

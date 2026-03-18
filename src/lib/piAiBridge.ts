@@ -1,0 +1,770 @@
+/**
+ * Cofree - AI Programming Cafe
+ * File: src/lib/piAiBridge.ts
+ * Description: Adapter layer between Cofree's internal types and @mariozechner/pi-ai.
+ *
+ * This module translates Cofree's LiteLLMMessage / LiteLLMToolDefinition into
+ * pi-ai's Context / Tool types, executes LLM calls via pi-ai's unified API,
+ * and converts pi-ai's AssistantMessage back into the OpenAI-normalized
+ * response format that planningService.ts expects.
+ */
+
+import {
+  stream as piStream,
+  complete as piComplete,
+  getProviders as piGetProviders,
+  getModels as piGetModels,
+  type Model,
+  type Api,
+  type Context,
+  type Tool,
+  type Message,
+  type AssistantMessage,
+  type ToolCall,
+} from "@mariozechner/pi-ai";
+
+import {
+  getActiveVendor,
+  getActiveManagedModel,
+  type VendorProtocol,
+  type VendorConfig,
+  type ManagedModel,
+  type AppSettings,
+  type ManagedModelThinkingLevel,
+} from "./settingsStore";
+
+// ── Re-exported Cofree internal types ────────────────────────────────────────
+// These remain unchanged so existing consumers (planningService, contextBudget,
+// toolPolicy, etc.) keep compiling without modification.
+
+export interface LiteLLMMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: {
+      name: string;
+      arguments: string;
+    };
+  }>;
+}
+
+export interface LiteLLMToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export interface LiteLLMHttpResponse {
+  status: number;
+  body: string;
+  endpoint: string;
+}
+
+export interface StreamToolCallEvent {
+  callId: string;
+  toolName: string;
+  arguments: string;
+}
+
+export interface StreamChunkEvent {
+  request_id: string;
+  content: string;
+  done: boolean;
+  finish_reason: string | null;
+  event_type?: "text_delta" | "tool_call" | "done";
+  tool_call_id?: string | null;
+  tool_name?: string | null;
+  tool_arguments?: string | null;
+}
+
+// ── Protocol / vendor helpers ────────────────────────────────────────────────
+
+export interface VendorProtocolOption {
+  id: VendorProtocol;
+  label: string;
+  piAiApi: string;
+}
+
+export const VENDOR_PROTOCOLS: VendorProtocolOption[] = [
+  { id: "openai-chat-completions", label: "OpenAI Chat Completions", piAiApi: "openai-completions" },
+  { id: "openai-responses",        label: "OpenAI Responses",        piAiApi: "openai-responses" },
+  { id: "anthropic-messages",      label: "Anthropic Messages",      piAiApi: "anthropic-messages" },
+];
+
+export function getProtocolLabel(protocol: VendorProtocol): string {
+  return VENDOR_PROTOCOLS.find((p) => p.id === protocol)?.label ?? protocol;
+}
+
+function mapProtocolToPiAiApi(protocol: VendorProtocol): string {
+  return VENDOR_PROTOCOLS.find((p) => p.id === protocol)?.piAiApi ?? "openai-completions";
+}
+
+// ── Model construction ───────────────────────────────────────────────────────
+
+/**
+ * Build a pi-ai Model object from Cofree's vendor + managed-model config.
+ * This produces a "custom model" that pi-ai can use with any supported API.
+ */
+export function buildPiAiModel(
+  vendor: VendorConfig,
+  managedModel: ManagedModel,
+): Model<Api> {
+  const api = mapProtocolToPiAiApi(vendor.protocol);
+  let baseUrl = vendor.baseUrl.replace(/\/+$/, "");
+  if (baseUrl.endsWith("#")) {
+    baseUrl = baseUrl.slice(0, -1).trim();
+  }
+  if (!baseUrl.endsWith("/v1") && api !== "anthropic-messages" && api !== "google-generative-ai") {
+    baseUrl = baseUrl.replace(/\/+$/, "");
+  }
+  return {
+    id: managedModel.name,
+    name: managedModel.name,
+    api,
+    provider: vendor.name.toLowerCase().replace(/\s+/g, "-"),
+    baseUrl,
+    reasoning: managedModel.supportsThinking,
+    input: ["text"] as ("text" | "image")[],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: managedModel.metaSettings.contextWindowTokens || 128_000,
+    maxTokens: managedModel.metaSettings.maxOutputTokens || 16_384,
+  } as Model<Api>;
+}
+
+// ── Message conversion: Cofree → pi-ai ───────────────────────────────────────
+
+function buildToolNameMap(messages: LiteLLMMessage[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const msg of messages) {
+    if (msg.role === "assistant" && msg.tool_calls) {
+      for (const tc of msg.tool_calls) {
+        map.set(tc.id, tc.function.name);
+      }
+    }
+  }
+  return map;
+}
+
+export function toPiAiContext(
+  messages: LiteLLMMessage[],
+  tools?: LiteLLMToolDefinition[],
+): Context {
+  const systemParts: string[] = [];
+  const piMessages: Message[] = [];
+  let seenNonSystem = false;
+  const toolNameMap = buildToolNameMap(messages);
+
+  const now = Date.now();
+
+  for (const msg of messages) {
+    if (msg.role === "system") {
+      if (msg.content.trim()) {
+        if (!seenNonSystem) {
+          systemParts.push(msg.content.trim());
+        } else {
+          piMessages.push({
+            role: "user",
+            content: `[System] ${msg.content.trim()}`,
+            timestamp: now,
+          } satisfies Message);
+        }
+      }
+      continue;
+    }
+
+    seenNonSystem = true;
+
+    if (msg.role === "user") {
+      piMessages.push({ role: "user", content: msg.content, timestamp: now } satisfies Message);
+      continue;
+    }
+
+    if (msg.role === "assistant") {
+      const contentBlocks: (AssistantMessage["content"][number])[] = [];
+      if (msg.content.trim()) {
+        contentBlocks.push({ type: "text", text: msg.content });
+      }
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          let parsedArgs: Record<string, unknown> = {};
+          try {
+            parsedArgs = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+          } catch {
+            parsedArgs = { _raw: tc.function.arguments };
+          }
+          contentBlocks.push({
+            type: "toolCall",
+            id: tc.id,
+            name: tc.function.name,
+            arguments: parsedArgs,
+          } as ToolCall);
+        }
+      }
+      piMessages.push({
+        role: "assistant",
+        content: contentBlocks,
+        api: "openai-completions",
+        provider: "cofree-replay",
+        model: "",
+        stopReason: msg.tool_calls?.length ? "toolUse" : "stop",
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        timestamp: now,
+      } satisfies AssistantMessage);
+      continue;
+    }
+
+    if (msg.role === "tool" && msg.tool_call_id) {
+      piMessages.push({
+        role: "toolResult",
+        toolCallId: msg.tool_call_id,
+        toolName: msg.name || toolNameMap.get(msg.tool_call_id) || "unknown",
+        content: [{ type: "text", text: msg.content }],
+        isError: false,
+        timestamp: now,
+      } satisfies Message);
+    }
+  }
+
+  const piTools: Tool[] | undefined = tools?.map((t) => ({
+    name: t.function.name,
+    description: t.function.description ?? "",
+    parameters: t.function.parameters,
+  })) as unknown as Tool[] | undefined;
+
+  return {
+    systemPrompt: systemParts.length ? systemParts.join("\n\n") : undefined,
+    messages: piMessages,
+    tools: piTools,
+  };
+}
+
+// ── Response conversion: pi-ai → Cofree normalized format ────────────────────
+
+function mapStopReason(reason: AssistantMessage["stopReason"]): string {
+  switch (reason) {
+    case "stop": return "stop";
+    case "toolUse": return "tool_calls";
+    case "length": return "length";
+    case "error": return "stop";
+    case "aborted": return "stop";
+    default: return "stop";
+  }
+}
+
+function assistantMessageToNormalizedBody(msg: AssistantMessage): string {
+  const textParts: string[] = [];
+  const toolCalls: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }> = [];
+
+  for (const block of msg.content) {
+    if (block.type === "text") {
+      textParts.push(block.text);
+    } else if (block.type === "toolCall") {
+      const tc = block as ToolCall;
+      toolCalls.push({
+        id: tc.id,
+        type: "function",
+        function: {
+          name: tc.name,
+          arguments: JSON.stringify(tc.arguments),
+        },
+      });
+    }
+  }
+
+  return JSON.stringify({
+    choices: [{
+      message: {
+        role: "assistant",
+        content: textParts.join(""),
+        tool_calls: toolCalls.length ? toolCalls : undefined,
+      },
+      finish_reason: mapStopReason(msg.stopReason),
+    }],
+    usage: {
+      prompt_tokens: msg.usage.input,
+      completion_tokens: msg.usage.output,
+      total_tokens: msg.usage.input + msg.usage.output,
+    },
+  });
+}
+
+// ── Core LLM execution ──────────────────────────────────────────────────────
+
+export async function piAiChatComplete(
+  model: Model<Api>,
+  messages: LiteLLMMessage[],
+  apiKey: string,
+  options?: {
+    tools?: LiteLLMToolDefinition[];
+    toolChoice?: "auto" | "none" | { type: "function"; function: { name: string } };
+    temperature?: number;
+    signal?: AbortSignal;
+  },
+): Promise<LiteLLMHttpResponse> {
+  const context = toPiAiContext(messages, options?.tools);
+
+  try {
+    const result = await piComplete(model, context, {
+      apiKey,
+      signal: options?.signal,
+    });
+
+    return {
+      status: result.stopReason === "error" ? 500 : 200,
+      body: assistantMessageToNormalizedBody(result),
+      endpoint: `pi-ai://${model.provider}/${model.id}`,
+    };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    return {
+      status: 500,
+      body: JSON.stringify({ error: { message: errorMsg } }),
+      endpoint: `pi-ai://${model.provider}/${model.id}`,
+    };
+  }
+}
+
+export async function piAiChatStream(
+  model: Model<Api>,
+  messages: LiteLLMMessage[],
+  apiKey: string,
+  onChunk: (content: string) => void,
+  onToolCall?: (event: StreamToolCallEvent) => void,
+  options?: {
+    tools?: LiteLLMToolDefinition[];
+    toolChoice?: "auto" | "none" | { type: "function"; function: { name: string } };
+    temperature?: number;
+    signal?: AbortSignal;
+  },
+): Promise<LiteLLMHttpResponse> {
+  const context = toPiAiContext(messages, options?.tools);
+
+  try {
+    const s = piStream(model, context, {
+      apiKey,
+      signal: options?.signal,
+    });
+
+    for await (const event of s) {
+      switch (event.type) {
+        case "text_delta":
+          onChunk(event.delta);
+          break;
+        case "toolcall_end": {
+          const tc = event.toolCall;
+          onToolCall?.({
+            callId: tc.id,
+            toolName: tc.name,
+            arguments: JSON.stringify(tc.arguments),
+          });
+          break;
+        }
+      }
+    }
+
+    const result = await s.result();
+    return {
+      status: result.stopReason === "error" ? 500 : 200,
+      body: assistantMessageToNormalizedBody(result),
+      endpoint: `pi-ai://${model.provider}/${model.id}`,
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
+    }
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    return {
+      status: 500,
+      body: JSON.stringify({ error: { message: errorMsg } }),
+      endpoint: `pi-ai://${model.provider}/${model.id}`,
+    };
+  }
+}
+
+// ── Model discovery ──────────────────────────────────────────────────────────
+
+export function getPiAiProviders(): string[] {
+  return piGetProviders();
+}
+
+export function getPiAiModels(provider: string): Array<{ id: string; name: string; contextWindow: number; reasoning: boolean }> {
+  try {
+    const models = piGetModels(provider as Parameters<typeof piGetModels>[0]);
+    return models.map((m) => ({
+      id: m.id,
+      name: m.name,
+      contextWindow: m.contextWindow,
+      reasoning: m.reasoning,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// ── Legacy format helpers (used by ModelTab, SettingsPage) ────────────────────
+
+export function formatModelRef(providerId: string, model: string): string {
+  return providerId ? `${providerId}/${model}` : model;
+}
+
+export function parseModelRef(modelRef: string): { provider: string; model: string } {
+  const trimmed = modelRef.trim();
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex > 0) {
+    return {
+      provider: trimmed.substring(0, slashIndex),
+      model: trimmed.substring(slashIndex + 1),
+    };
+  }
+  return { provider: "", model: trimmed };
+}
+
+/**
+ * Fetch model IDs for a vendor. For vendors that correspond to a known pi-ai
+ * provider we return models from the in-memory registry (instant). Otherwise
+ * we fall back to an HTTP fetch via the Tauri `fetch_litellm_models` command
+ * for backwards compatibility with self-hosted LiteLLM proxies.
+ */
+export async function fetchVendorModelIds(params: {
+  baseUrl: string;
+  apiKey: string;
+  protocol: VendorProtocol;
+  piAiProvider?: string;
+  proxy?: unknown;
+}): Promise<string[]> {
+  if (params.piAiProvider) {
+    const models = getPiAiModels(params.piAiProvider);
+    if (models.length) {
+      return models.map((m) => m.id);
+    }
+  }
+
+  // Fallback: HTTP fetch for custom / LiteLLM proxy endpoints
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    const ids = await invoke<string[]>("fetch_litellm_models", {
+      baseUrl: params.baseUrl,
+      apiKey: params.apiKey,
+      protocol: params.protocol,
+      proxy: params.proxy,
+    });
+    return Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean))).sort();
+  } catch (error) {
+    throw new Error(`拉取模型失败: ${error}`);
+  }
+}
+
+// ── Anthropic model detection (kept for backward compat) ─────────────────────
+
+export function isAnthropicModelName(modelName: string): boolean {
+  const normalized = modelName.trim().toLowerCase();
+  return normalized.includes("claude") || normalized.startsWith("anthropic/");
+}
+
+export function isHighRiskToolCallingModelCombo(
+  protocol: VendorProtocol,
+  modelName: string,
+): boolean {
+  return protocol === "openai-chat-completions" && isAnthropicModelName(modelName);
+}
+
+// ── LiteLLMClientConfig compat (used by SettingsPage UI) ─────────────────────
+
+export interface LiteLLMClientConfig {
+  endpoint: string;
+  headers: Record<string, string>;
+  modelRef: string;
+  protocol: VendorProtocol;
+}
+
+export function createLiteLLMClientConfig(settings: AppSettings): LiteLLMClientConfig {
+  const activeVendor = getActiveVendor(settings);
+  const activeModel = getActiveManagedModel(settings);
+  const protocol = activeVendor?.protocol ?? "openai-chat-completions";
+  const modelRef = activeModel?.name || settings.model;
+  const baseUrl = activeVendor?.baseUrl || settings.liteLLMBaseUrl;
+
+  return {
+    endpoint: `${baseUrl.replace(/\/+$/, "")} (via pi-ai)`,
+    headers: {},
+    modelRef,
+    protocol,
+  };
+}
+
+// ── Gateway-level wrappers ───────────────────────────────────────────────────
+// These replace the two-step "build body → post body" pattern. They accept the
+// same high-level inputs that planningService.ts already has (messages, settings,
+// runtime, options) and internally route through pi-ai.
+
+import type { ResolvedAgentRuntime } from "../agents/types";
+import {
+  adaptRequestParams,
+  getModelCapabilities,
+  type ModelCapabilities,
+} from "./modelCapabilities";
+
+/**
+ * Re-export getGatewayModelCapabilities so orchestrator can query model
+ * capabilities without importing modelCapabilities.ts directly.
+ */
+export function getGatewayModelCapabilities(
+  runtime: ResolvedAgentRuntime | null,
+  settings: AppSettings,
+): ModelCapabilities {
+  const modelRef = runtime?.modelRef || settings.model;
+  const protocol = (runtime?.vendorProtocol || "openai-chat-completions") as VendorProtocol;
+  return getModelCapabilities(modelRef, protocol);
+}
+
+function resolveModelFromSettings(
+  settings: AppSettings,
+  runtime: ResolvedAgentRuntime | null,
+): { model: Model<Api>; apiKey: string; protocol: VendorProtocol } {
+  const effectiveVendorId = runtime?.vendorId || settings.activeVendorId;
+  const effectiveModelId = runtime?.modelId || settings.activeModelId;
+
+  const vendor = effectiveVendorId
+    ? settings.vendors.find((v) => v.id === effectiveVendorId)
+    : getActiveVendor(settings);
+  const managedModel = effectiveModelId
+    ? settings.managedModels.find((m) => m.id === effectiveModelId)
+    : getActiveManagedModel(settings);
+
+  const protocol = (vendor?.protocol || runtime?.vendorProtocol || "openai-chat-completions") as VendorProtocol;
+  const apiKey = runtime?.apiKey || settings.apiKey;
+
+  if (vendor && managedModel) {
+    return { model: buildPiAiModel(vendor, managedModel), apiKey, protocol };
+  }
+
+  const modelName = runtime?.modelRef || settings.model;
+  const baseUrl = runtime?.baseUrl || vendor?.baseUrl || settings.liteLLMBaseUrl;
+  const api = mapProtocolToPiAiApi(protocol);
+
+  return {
+    model: {
+      id: modelName,
+      name: modelName,
+      api,
+      provider: "custom",
+      baseUrl: baseUrl.replace(/\/+$/, ""),
+      reasoning: false,
+      input: ["text"] as ("text" | "image")[],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 16_384,
+    } as Model<Api>,
+    apiKey,
+    protocol,
+  };
+}
+
+const THINKING_LEVEL_MAP: Record<ManagedModelThinkingLevel, string> = {
+  low: "low",
+  medium: "medium",
+  high: "high",
+};
+
+function resolveThinkingLevel(
+  settings: AppSettings,
+  runtime: ResolvedAgentRuntime | null,
+): string | undefined {
+  const effectiveModelId = runtime?.modelId || settings.activeModelId;
+  const managedModel = effectiveModelId
+    ? settings.managedModels.find((m) => m.id === effectiveModelId)
+    : getActiveManagedModel(settings);
+  if (!managedModel?.supportsThinking) return undefined;
+  return THINKING_LEVEL_MAP[managedModel.thinkingLevel] ?? undefined;
+}
+
+export interface GatewayRequestOptions {
+  stream?: boolean;
+  temperature?: number;
+  tools?: LiteLLMToolDefinition[];
+  toolChoice?: "auto" | "none" | { type: "function"; function: { name: string } };
+  signal?: AbortSignal;
+}
+
+/**
+ * Non-streaming LLM call via pi-ai gateway.
+ * Replaces: createGatewayRequestBody() + postLiteLLMChatCompletions()
+ */
+export async function gatewayComplete(
+  messages: LiteLLMMessage[],
+  settings: AppSettings,
+  runtime: ResolvedAgentRuntime | null,
+  options?: GatewayRequestOptions,
+): Promise<LiteLLMHttpResponse> {
+  const { model, apiKey, protocol } = resolveModelFromSettings(settings, runtime);
+  const modelRef = runtime?.modelRef || settings.model;
+  const hasTools = (options?.tools?.length ?? 0) > 0;
+  const adapted = adaptRequestParams(modelRef, protocol, hasTools, options?.temperature);
+
+  const activeManagedModel = settings.managedModels.find(
+    (m) => m.id === (runtime?.modelId || settings.activeModelId),
+  );
+  const hasModelTemperature =
+    activeManagedModel?.metaSettings.temperature !== null &&
+    activeManagedModel?.metaSettings.temperature !== undefined;
+
+  const effectiveTemp = options?.temperature ?? (hasModelTemperature ? undefined : adapted.temperature);
+  const effectiveToolChoice = options?.toolChoice ?? adapted.toolChoice;
+  const thinking = resolveThinkingLevel(settings, runtime);
+
+  const context = toPiAiContext(messages, hasTools ? options?.tools : undefined);
+
+  try {
+    const result = await piComplete(model, context, {
+      apiKey,
+      temperature: effectiveTemp,
+      maxTokens: adapted.maxTokens,
+      signal: options?.signal,
+      reasoning: thinking as Parameters<typeof piComplete>[2] extends { reasoning?: infer R } ? R : never,
+      onPayload: (payload: unknown) => {
+        if (payload && typeof payload === "object") {
+          const p = payload as Record<string, unknown>;
+          if (effectiveToolChoice !== undefined && hasTools) {
+            if (protocol === "anthropic-messages") {
+              p.tool_choice = effectiveToolChoice === "auto" ? { type: "auto" } :
+                effectiveToolChoice === "none" ? { type: "none" } :
+                  typeof effectiveToolChoice === "object" ? { type: "tool", name: effectiveToolChoice.function.name } :
+                    { type: "auto" };
+            } else {
+              p.tool_choice = effectiveToolChoice;
+            }
+          }
+          if (adapted.parallelToolCalls !== undefined && hasTools && protocol === "openai-chat-completions") {
+            p.parallel_tool_calls = adapted.parallelToolCalls;
+          }
+        }
+        return undefined;
+      },
+    });
+
+    return {
+      status: result.stopReason === "error" ? 500 : 200,
+      body: assistantMessageToNormalizedBody(result),
+      endpoint: `pi-ai://${model.provider}/${model.id}`,
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    return {
+      status: 500,
+      body: JSON.stringify({ error: { message: errorMsg } }),
+      endpoint: `pi-ai://${model.provider}/${model.id}`,
+    };
+  }
+}
+
+/**
+ * Streaming LLM call via pi-ai gateway.
+ * Replaces: createGatewayRequestBody() + postLiteLLMChatCompletionsStream()
+ */
+export async function gatewayStream(
+  messages: LiteLLMMessage[],
+  settings: AppSettings,
+  runtime: ResolvedAgentRuntime | null,
+  options: GatewayRequestOptions | undefined,
+  onChunk: (content: string) => void,
+  onToolCall?: (event: StreamToolCallEvent) => void,
+): Promise<LiteLLMHttpResponse> {
+  const { model, apiKey, protocol } = resolveModelFromSettings(settings, runtime);
+  const modelRef = runtime?.modelRef || settings.model;
+  const hasTools = (options?.tools?.length ?? 0) > 0;
+  const adapted = adaptRequestParams(modelRef, protocol, hasTools, options?.temperature);
+
+  const activeManagedModel = settings.managedModels.find(
+    (m) => m.id === (runtime?.modelId || settings.activeModelId),
+  );
+  const hasModelTemperature =
+    activeManagedModel?.metaSettings.temperature !== null &&
+    activeManagedModel?.metaSettings.temperature !== undefined;
+
+  const effectiveTemp = options?.temperature ?? (hasModelTemperature ? undefined : adapted.temperature);
+  const effectiveToolChoice = options?.toolChoice ?? adapted.toolChoice;
+  const thinking = resolveThinkingLevel(settings, runtime);
+
+  const context = toPiAiContext(messages, hasTools ? options?.tools : undefined);
+
+  try {
+    const s = piStream(model, context, {
+      apiKey,
+      temperature: effectiveTemp,
+      maxTokens: adapted.maxTokens,
+      signal: options?.signal,
+      reasoning: thinking as Parameters<typeof piStream>[2] extends { reasoning?: infer R } ? R : never,
+      onPayload: (payload: unknown) => {
+        if (payload && typeof payload === "object") {
+          const p = payload as Record<string, unknown>;
+          if (effectiveToolChoice !== undefined && hasTools) {
+            if (protocol === "anthropic-messages") {
+              p.tool_choice = effectiveToolChoice === "auto" ? { type: "auto" } :
+                effectiveToolChoice === "none" ? { type: "none" } :
+                  typeof effectiveToolChoice === "object" ? { type: "tool", name: effectiveToolChoice.function.name } :
+                    { type: "auto" };
+            } else {
+              p.tool_choice = effectiveToolChoice;
+            }
+          }
+          if (adapted.parallelToolCalls !== undefined && hasTools && protocol === "openai-chat-completions") {
+            p.parallel_tool_calls = adapted.parallelToolCalls;
+          }
+        }
+        return undefined;
+      },
+    });
+
+    for await (const event of s) {
+      if (event.type === "text_delta") {
+        onChunk(event.delta);
+      } else if (event.type === "toolcall_end") {
+        const tc = event as { type: "toolcall_end"; toolCall: { id: string; name: string; arguments: Record<string, unknown> }; [k: string]: unknown };
+        onToolCall?.({
+          callId: tc.toolCall.id,
+          toolName: tc.toolCall.name,
+          arguments: JSON.stringify(tc.toolCall.arguments),
+        });
+      }
+    }
+
+    const result = await s.result();
+    return {
+      status: result.stopReason === "error" ? 500 : 200,
+      body: assistantMessageToNormalizedBody(result),
+      endpoint: `pi-ai://${model.provider}/${model.id}`,
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    return {
+      status: 500,
+      body: JSON.stringify({ error: { message: errorMsg } }),
+      endpoint: `pi-ai://${model.provider}/${model.id}`,
+    };
+  }
+}
+
+/**
+ * Lightweight non-streaming call for internal summarization (no tools, no
+ * runtime). Replaces: createLiteLLMRequestBody({}) + postLiteLLMChatCompletions()
+ * for the summarization call in planningService.ts.
+ */
+export async function gatewaySummarize(
+  messages: LiteLLMMessage[],
+  settings: AppSettings,
+): Promise<LiteLLMHttpResponse> {
+  return gatewayComplete(messages, settings, null, {});
+}

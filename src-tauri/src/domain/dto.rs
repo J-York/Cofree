@@ -32,13 +32,6 @@ pub struct GitStatus {
 }
 
 #[derive(Clone, Serialize)]
-pub struct LiteLLMHttpResponse {
-    pub status: u16,
-    pub body: String,
-    pub endpoint: String,
-}
-
-#[derive(Clone, Serialize)]
 pub struct PatchApplyResult {
     pub success: bool,
     pub message: String,
@@ -84,6 +77,8 @@ pub struct ShellCommandEvent {
     pub stdout_total_bytes: Option<u64>,
     pub stderr_total_bytes: Option<u64>,
     pub output_limit_bytes: Option<u64>,
+    /// Detected interactive prompt text (only set for waiting_for_input events)
+    pub prompt_text: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -148,18 +143,6 @@ pub struct ReadFileResult {
     pub total_lines: usize,
     pub start_line: usize,
     pub end_line: usize,
-}
-
-#[derive(Clone, Serialize)]
-pub struct StreamChunkEvent {
-    pub request_id: String,
-    pub content: String,
-    pub done: bool,
-    pub finish_reason: Option<String>,
-    pub event_type: String,
-    pub tool_call_id: Option<String>,
-    pub tool_name: Option<String>,
-    pub tool_arguments: Option<String>,
 }
 
 #[derive(Clone, Serialize)]

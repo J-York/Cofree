@@ -29,6 +29,7 @@ const baseSettings: AppSettings = {
     propose_file_edit: "ask",
     propose_apply_patch: "ask",
     propose_shell: "ask",
+    check_shell_job: "auto",
     diagnostics: "auto",
     fetch: "ask",
   },

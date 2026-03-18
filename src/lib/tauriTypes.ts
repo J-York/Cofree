@@ -77,7 +77,7 @@ export interface ShellCommandStartResult {
 
 export interface ShellCommandEvent {
   job_id: string;
-  event_type: "started" | "output" | "completed";
+  event_type: "started" | "output" | "completed" | "waiting_for_input";
   command: string;
   stream?: "stdout" | "stderr";
   chunk?: string;
@@ -92,6 +92,8 @@ export interface ShellCommandEvent {
   stdout_total_bytes?: number;
   stderr_total_bytes?: number;
   output_limit_bytes?: number;
+  /** Detected interactive prompt text (only set for waiting_for_input events) */
+  prompt_text?: string;
 }
 
 // ── Grep / Glob ──────────────────────────────────────────────────────────────
@@ -128,25 +130,6 @@ export interface CheckpointRecord {
 export interface RecoveryResult {
   found: boolean;
   checkpoint: CheckpointRecord | null;
-}
-
-// ── LiteLLM ──────────────────────────────────────────────────────────────────
-
-export interface LiteLLMHttpResponse {
-  status: number;
-  body: string;
-  endpoint: string;
-}
-
-export interface StreamChunkEvent {
-  request_id: string;
-  content: string;
-  done: boolean;
-  finish_reason: string | null;
-  event_type?: "text_delta" | "tool_call" | "done";
-  tool_call_id?: string | null;
-  tool_name?: string | null;
-  tool_arguments?: string | null;
 }
 
 export interface ProxySettings {

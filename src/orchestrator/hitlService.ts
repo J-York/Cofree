@@ -11,11 +11,14 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { recordSensitiveActionAudit } from "../lib/auditLog";
-import { awaitShellCommand } from "../lib/tauriBridge";
+import { awaitShellCommandWithDeadline } from "../lib/tauriBridge";
 import type { CommandExecutionResult } from "../lib/tauriTypes";
 import {
   DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
   DEFAULT_SHELL_OUTPUT_PREVIEW_CHARS,
+  inferBlockUntilMs,
+  INSTALL_BUILD_BLOCK_UNTIL_MS,
+  INSTALL_BUILD_TIMEOUT_MS,
 } from "../lib/shellCommand";
 import type {
   ActionExecutionResult,
@@ -773,18 +776,27 @@ export function updateActionPayload(
     }
 
     if (action.type === "shell") {
+      const patchedShell =
+        typeof payloadPatch.shell === "string"
+          ? payloadPatch.shell
+          : action.payload.shell;
+      const patchedTimeoutMs =
+        typeof payloadPatch.timeoutMs === "number"
+          ? payloadPatch.timeoutMs
+          : action.payload.timeoutMs;
+      // Re-infer blockUntilMs when the shell command changes; preserve
+      // any explicitly stored value if only timeoutMs was patched.
+      const patchedBlockUntilMs =
+        typeof payloadPatch.shell === "string"
+          ? inferBlockUntilMs(patchedShell)
+          : action.payload.blockUntilMs;
       const nextAction: ActionProposal = {
         ...action,
         payload: {
           ...action.payload,
-          shell:
-            typeof payloadPatch.shell === "string"
-              ? payloadPatch.shell
-              : action.payload.shell,
-          timeoutMs:
-            typeof payloadPatch.timeoutMs === "number"
-              ? payloadPatch.timeoutMs
-              : action.payload.timeoutMs,
+          shell: patchedShell,
+          timeoutMs: patchedTimeoutMs,
+          blockUntilMs: patchedBlockUntilMs,
         },
       };
       return {
@@ -1180,16 +1192,60 @@ export async function approveAction(
       }
     }
   } else {
-    const payload = await awaitShellCommand({
+    const blockUntilMs =
+      action.payload.blockUntilMs ??
+      inferBlockUntilMs(action.payload.shell);
+    // Raise hard timeout so the deadline can fire before the Rust kill.
+    const effectiveTimeoutMs =
+      blockUntilMs === INSTALL_BUILD_BLOCK_UNTIL_MS &&
+      action.payload.timeoutMs <= INSTALL_BUILD_BLOCK_UNTIL_MS
+        ? INSTALL_BUILD_TIMEOUT_MS
+        : Math.max(action.payload.timeoutMs, blockUntilMs + 5_000);
+
+    const deadlineResult = await awaitShellCommandWithDeadline({
       workspacePath,
       shell: action.payload.shell,
-      timeoutMs: action.payload.timeoutMs,
+      timeoutMs: effectiveTimeoutMs,
+      blockUntilMs,
       maxOutputBytes: DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
     });
+
+    let payload: CommandExecutionResult;
+    if (deadlineResult.moved_to_background) {
+      // Command moved to background — treat as successful start for foreground approval flow.
+      // The shell action will be marked completed with background metadata.
+      payload = {
+        success: true,
+        command: action.payload.shell,
+        timed_out: false,
+        status: 0,
+        stdout: deadlineResult.partial_stdout,
+        stderr: deadlineResult.partial_stderr,
+        cancelled: false,
+        stdout_truncated: false,
+        stderr_truncated: false,
+        stdout_total_bytes: deadlineResult.partial_stdout.length,
+        stderr_total_bytes: deadlineResult.partial_stderr.length,
+        output_limit_bytes: DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
+      };
+    } else {
+      payload = deadlineResult.result;
+    }
+
     result = buildShellExecutionResult({
       ...payload,
       command: action.payload.shell,
     });
+    if (deadlineResult.moved_to_background) {
+      result = {
+        ...result,
+        metadata: {
+          ...(result.metadata ?? {}),
+          moved_to_background: true,
+          job_id: deadlineResult.job_id,
+        },
+      };
+    }
     result = {
       ...result,
       metadata: {

@@ -176,6 +176,7 @@ export const ALL_AGENT_TOOL_NAMES = [
   "list_files", "read_file", "grep", "glob",
   "git_status", "git_diff",
   "propose_file_edit", "propose_apply_patch", "propose_shell",
+  "check_shell_job",
   "diagnostics", "fetch", "task",
 ] as const;
 
@@ -191,6 +192,7 @@ export const AGENT_TOOL_CATALOG: ReadonlyArray<{
   { name: "git_status", label: "Git 状态", category: "read" },
   { name: "git_diff", label: "Git 差异", category: "read" },
   { name: "diagnostics", label: "诊断", category: "read" },
+  { name: "check_shell_job", label: "查询后台进程", category: "read" },
   { name: "propose_file_edit", label: "编辑文件", category: "write" },
   { name: "propose_apply_patch", label: "应用补丁", category: "write" },
   { name: "propose_shell", label: "执行命令", category: "write" },

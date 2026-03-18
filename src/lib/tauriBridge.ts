@@ -14,7 +14,7 @@ import type {
   FileEntry,
   GlobEntry,
   GrepResult,
-  LiteLLMHttpResponse,
+
   PatchApplyResult,
   ProxySettings,
   ReadFileResult,
@@ -201,6 +201,21 @@ export function cancelShellCommand(jobId: string): Promise<boolean> {
   return invoke<boolean>("cancel_shell_command", { jobId });
 }
 
+export function checkShellJob(jobId: string): Promise<{
+  running: boolean;
+  found: boolean;
+  completed: boolean;
+  cancelled?: boolean;
+  /** Only present when completed === true */
+  success?: boolean;
+  exit_code?: number;
+  timed_out?: boolean;
+  stdout?: string;
+  stderr?: string;
+}> {
+  return invoke("check_shell_job", { jobId });
+}
+
 /**
  * Non-blocking shell execution that returns a Promise resolving on completion.
  *
@@ -311,6 +326,167 @@ export async function awaitShellCommand(params: {
   }
 }
 
+/**
+ * Shell execution with a deadline (block_until_ms).
+ *
+ * Starts the command and waits up to `blockUntilMs` for it to complete.
+ * If the deadline fires before completion, the command continues running
+ * in the background and the function returns immediately with:
+ *   - moved_to_background: true
+ *   - job_id: the background job id (can be used to cancel/check later)
+ *   - partial_stdout / partial_stderr: output collected so far
+ *
+ * This prevents foreground commands that never exit (e.g. `npm run dev`)
+ * from blocking the Agent tool-calling loop indefinitely.
+ */
+export async function awaitShellCommandWithDeadline(params: {
+  workspacePath: string;
+  shell: string;
+  blockUntilMs: number;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+  signal?: AbortSignal;
+  onOutput?: (stream: "stdout" | "stderr", chunk: string) => void;
+}): Promise<
+  | { moved_to_background: false; result: CommandExecutionResult }
+  | { moved_to_background: true; job_id: string; partial_stdout: string; partial_stderr: string }
+> {
+  if (params.signal?.aborted) {
+    throw new DOMException("Shell command aborted", "AbortError");
+  }
+
+  let jobId: string | null = null;
+  let settled = false;
+  let abortHandler: (() => void) | null = null;
+  const bufferedEvents: ShellCommandEvent[] = [];
+  let partialStdout = "";
+  let partialStderr = "";
+
+  let resolveCompleted!: (result: CommandExecutionResult) => void;
+
+  const completedPromise = new Promise<CommandExecutionResult>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  let deadlineTimer: ReturnType<typeof setTimeout>;
+  const deadlinePromise = new Promise<"deadline">((resolve) => {
+    deadlineTimer = setTimeout(() => resolve("deadline"), params.blockUntilMs);
+  });
+  // Suppress unhandled rejection if deadline fires first
+  void deadlinePromise.catch(() => {});
+
+  const buildResult = (p: ShellCommandEvent): CommandExecutionResult => ({
+    success: Boolean(p.success),
+    command: p.command,
+    timed_out: Boolean(p.timed_out),
+    status: Number(p.status ?? -1),
+    stdout: String(p.stdout ?? ""),
+    stderr: String(p.stderr ?? ""),
+    cancelled: Boolean(p.cancelled),
+    stdout_truncated: Boolean(p.stdout_truncated),
+    stderr_truncated: Boolean(p.stderr_truncated),
+    stdout_total_bytes: Number(p.stdout_total_bytes ?? 0),
+    stderr_total_bytes: Number(p.stderr_total_bytes ?? 0),
+    output_limit_bytes: Number(p.output_limit_bytes ?? 0),
+  });
+
+  const handleEvent = (payload: ShellCommandEvent) => {
+    if (settled) return;
+    if (payload.event_type === "output" && payload.chunk) {
+      if (payload.stream === "stdout") {
+        partialStdout += payload.chunk;
+        // Trim to keep only the tail within the byte cap so the partial buffer
+        // doesn't grow without bound for verbose commands (e.g. dev servers).
+        if (params.maxOutputBytes && partialStdout.length > params.maxOutputBytes) {
+          partialStdout = partialStdout.slice(-params.maxOutputBytes);
+        }
+      } else if (payload.stream === "stderr") {
+        partialStderr += payload.chunk;
+        if (params.maxOutputBytes && partialStderr.length > params.maxOutputBytes) {
+          partialStderr = partialStderr.slice(-params.maxOutputBytes);
+        }
+      }
+      if (params.onOutput && payload.stream) {
+        params.onOutput(payload.stream, payload.chunk);
+      }
+    }
+    if (payload.event_type === "completed") {
+      settled = true;
+      resolveCompleted(buildResult(payload));
+    }
+  };
+
+  const unlisten = await listen<ShellCommandEvent>(
+    "shell-command-event",
+    (event) => {
+      const payload = event.payload;
+      if (jobId === null) {
+        bufferedEvents.push(payload);
+        return;
+      }
+      if (payload.job_id !== jobId) return;
+      handleEvent(payload);
+    },
+  );
+
+  try {
+    const started = await startShellCommand({
+      workspacePath: params.workspacePath,
+      shell: params.shell,
+      timeoutMs: params.timeoutMs,
+      detached: false,
+      maxOutputBytes: params.maxOutputBytes,
+    });
+    jobId = started.job_id;
+
+    for (const evt of bufferedEvents) {
+      if (evt.job_id === jobId) handleEvent(evt);
+    }
+    bufferedEvents.length = 0;
+
+    if (params.signal && !settled) {
+      abortHandler = () => {
+        if (jobId && !settled) cancelShellCommand(jobId).catch(() => {});
+      };
+      if (params.signal.aborted) {
+        abortHandler();
+      } else {
+        params.signal.addEventListener("abort", abortHandler, { once: true });
+      }
+    }
+
+    const winner = await Promise.race([completedPromise, deadlinePromise]);
+
+    if (winner === "deadline") {
+      // Command is still running — leave it running, return partial output
+      return {
+        moved_to_background: true,
+        job_id: jobId,
+        partial_stdout: partialStdout,
+        partial_stderr: partialStderr,
+      };
+    }
+
+    // Command completed before deadline — clear the timer
+    clearTimeout(deadlineTimer!);
+
+    // Command completed before deadline
+    return { moved_to_background: false, result: winner as CommandExecutionResult };
+  } finally {
+    // Only stop listening if the command completed; if moved to background we
+    // must NOT unlisten — the ChatPage shell-command-event listener will continue
+    // to receive output events for this job.
+    if (settled) {
+      unlisten();
+    } else {
+      // moved to background: unregister our local listener (ChatPage has its own)
+      unlisten();
+    }
+    if (abortHandler && params.signal) {
+      params.signal.removeEventListener("abort", abortHandler);
+    }
+  }
+}
+
 // ── Checkpoint ───────────────────────────────────────────────────────────────
 
 export function saveWorkflowCheckpoint(params: {
@@ -347,40 +523,6 @@ export function fetchLitellmModels(params: {
     baseUrl: params.baseUrl,
     apiKey: params.apiKey,
     protocol: params.protocol,
-    proxy: params.proxy,
-  });
-}
-
-export function postLitellmChatCompletions(params: {
-  baseUrl: string;
-  apiKey: string;
-  protocol: "openai-chat-completions" | "openai-responses" | "anthropic-messages";
-  body: unknown;
-  proxy?: ProxySettings;
-}): Promise<LiteLLMHttpResponse> {
-  return invoke<LiteLLMHttpResponse>("post_litellm_chat_completions", {
-    baseUrl: params.baseUrl,
-    apiKey: params.apiKey,
-    protocol: params.protocol,
-    body: params.body,
-    proxy: params.proxy,
-  });
-}
-
-export function postLitellmChatCompletionsStream(params: {
-  baseUrl: string;
-  apiKey: string;
-  protocol?: string;
-  body: unknown;
-  requestId: string;
-  proxy?: ProxySettings;
-}): Promise<LiteLLMHttpResponse> {
-  return invoke<LiteLLMHttpResponse>("post_litellm_chat_completions_stream", {
-    baseUrl: params.baseUrl,
-    apiKey: params.apiKey,
-    protocol: params.protocol,
-    body: params.body,
-    requestId: params.requestId,
     proxy: params.proxy,
   });
 }

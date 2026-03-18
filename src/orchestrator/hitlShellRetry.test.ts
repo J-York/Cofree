@@ -4,7 +4,15 @@ vi.mock("@tauri-apps/api/core", () => ({
     invoke: vi.fn(),
 }));
 
-import { invoke } from "@tauri-apps/api/core";
+vi.mock("../lib/tauriBridge", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../lib/tauriBridge")>();
+    return {
+        ...actual,
+        awaitShellCommandWithDeadline: vi.fn(),
+    };
+});
+
+import { awaitShellCommandWithDeadline } from "../lib/tauriBridge";
 import {
     approveAction,
     retryFailedShellAction,
@@ -53,13 +61,22 @@ describe("HITL shell retry flow", () => {
     });
 
     it("prefers stderr for failed shell execution messages while preserving metadata", async () => {
-        vi.mocked(invoke).mockResolvedValue({
-            success: false,
-            command: "npm test",
-            timed_out: false,
-            status: 2,
-            stdout: "stdout text",
-            stderr: "meaningful stderr",
+        vi.mocked(awaitShellCommandWithDeadline).mockResolvedValue({
+            moved_to_background: false,
+            result: {
+                success: false,
+                command: "npm test",
+                timed_out: false,
+                status: 2,
+                stdout: "stdout text",
+                stderr: "meaningful stderr",
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_total_bytes: 11,
+                stderr_total_bytes: 16,
+                output_limit_bytes: 16384,
+            },
         });
 
         const nextPlan = await approveAction(createShellPlan(), "shell-1", "workspace");
@@ -81,13 +98,22 @@ describe("HITL shell retry flow", () => {
     });
 
     it("records remembered workspace-rule approvals in execution metadata", async () => {
-        vi.mocked(invoke).mockResolvedValue({
-            success: true,
-            command: "npm test",
-            timed_out: false,
-            status: 0,
-            stdout: "passed",
-            stderr: "",
+        vi.mocked(awaitShellCommandWithDeadline).mockResolvedValue({
+            moved_to_background: false,
+            result: {
+                success: true,
+                command: "npm test",
+                timed_out: false,
+                status: 0,
+                stdout: "passed",
+                stderr: "",
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_total_bytes: 6,
+                stderr_total_bytes: 0,
+                output_limit_bytes: 16384,
+            },
         });
 
         const nextPlan = await approveAction(

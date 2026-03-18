@@ -11,17 +11,16 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { DEFAULT_AGENTS } from "../agents/defaultAgents";
-import { awaitShellCommand } from "../lib/tauriBridge";
+import { awaitShellCommandWithDeadline, checkShellJob } from "../lib/tauriBridge";
 import { recordLLMAudit } from "../lib/auditLog";
 import {
-  createLiteLLMRequestBody,
+  gatewayComplete,
+  gatewayStream,
+  gatewaySummarize,
   isHighRiskToolCallingModelCombo,
-  postLiteLLMChatCompletions,
-  postLiteLLMChatCompletionsStream,
   type LiteLLMMessage,
   type LiteLLMToolDefinition,
-} from "../lib/litellm";
-import { createGatewayRequestBody } from "../lib/modelGateway";
+} from "../lib/piAiBridge";
 import {
   DEFAULT_TOOL_PERMISSIONS,
   isActiveModelLocal,
@@ -115,6 +114,9 @@ import {
   resolveShellExecutionMode,
   resolveShellReadyTimeoutMs,
   resolveShellReadyUrl,
+  inferBlockUntilMs,
+  INSTALL_BUILD_BLOCK_UNTIL_MS,
+  INSTALL_BUILD_TIMEOUT_MS,
 } from "../lib/shellCommand";
 
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
@@ -1288,7 +1290,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "propose_shell",
       description:
-        "Propose a shell command execution action for HITL approval (does not execute). Match the command to the real executor: on Windows this runs via PowerShell (`powershell -NoProfile -Command`), while on Unix it runs via `sh -c`. Supports pipes, redirects, and chaining within that shell dialect.\n\nExamples:\n- propose_shell(shell='npm install; npm test')\n- propose_shell(shell='New-Item -ItemType Directory -Force logs')\n- propose_shell(shell='Remove-Item -Recurse -Force old_dir')\n- propose_shell(shell='git add .; git commit -m \"Update\"')\n- propose_shell(shell='cargo build --release')\n\nFor long-running dev servers or watch processes, set execution_mode='background' so Cofree launches the command asynchronously instead of waiting for process exit. If the port or URL is known, also pass ready_url for readiness checks.\n\nIf propose_shell is auto-executed, the command runs immediately in the real shell only for foreground commands. Read stderr carefully and retry with corrected syntax instead of repeating the same failing command.\n\nThe command will be shown to the user for approval before execution when approval is required.",
+        "Propose a shell command execution action for HITL approval (does not execute). Match the command to the real executor: on Windows this runs via PowerShell (`powershell -NoProfile -Command`), while on Unix it runs via `sh -c`. Supports pipes, redirects, and chaining within that shell dialect.\n\nExamples:\n- propose_shell(shell='npm install; npm test')\n- propose_shell(shell='New-Item -ItemType Directory -Force logs')\n- propose_shell(shell='Remove-Item -Recurse -Force old_dir')\n- propose_shell(shell='git add .; git commit -m \"Update\"')\n- propose_shell(shell='cargo build --release')\n\nFor long-running dev servers or watch processes, set execution_mode='background' so Cofree launches the command asynchronously instead of waiting for process exit. If the port or URL is known, also pass ready_url for readiness checks.\n\nAll commands run non-interactively (stdin is /dev/null, CI=true). Commands that prompt for input (y/n, password) will receive EOF and either use defaults or fail — split interactive steps into separate commands or use flags like --yes / -y to suppress prompts.\n\nIf propose_shell is auto-executed, it waits up to block_until_ms for the command to finish. If the command is still running after that deadline (e.g. a dev server), it is automatically moved to the background and partial output is returned immediately. You do NOT need to set execution_mode='background' for known server commands — the runtime detects them automatically.\n\nRead stderr carefully and retry with corrected syntax instead of repeating the same failing command.\n\nThe command will be shown to the user for approval before execution when approval is required.",
       parameters: {
         type: "object",
         required: ["shell"],
@@ -1305,13 +1307,20 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
             minimum: 1000,
             maximum: 600000,
             description:
-              "Optional execution timeout in milliseconds. Defaults to 120000 (2 minutes).",
+              "Optional hard execution timeout in milliseconds. The process is killed after this time. Defaults to 120000 (2 minutes).",
+          },
+          block_until_ms: {
+            type: "number",
+            minimum: 1000,
+            maximum: 600000,
+            description:
+              "Maximum time (ms) to wait for the command to complete before returning. If the command is still running after this deadline it is automatically moved to the background and partial output is returned. Defaults are inferred by command type: install/build commands get 120000, server/dev commands get 15000, others get 30000. Only set this explicitly if you need different behavior.",
           },
           execution_mode: {
             type: "string",
             enum: ["foreground", "background"],
             description:
-              "Use 'background' for long-running services such as dev servers, watchers, and local HTTP servers. Foreground waits for process exit.",
+              "Use 'background' for long-running services such as dev servers, watchers, and local HTTP servers. Foreground waits for process exit up to block_until_ms then moves to background automatically. You generally do NOT need to set this — it is auto-detected from the command.",
           },
           ready_url: {
             type: "string",
@@ -1328,6 +1337,25 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           description: {
             type: "string",
             description: "Optional short description for reviewers.",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "check_shell_job",
+      description:
+        "Check whether a background shell job (started via propose_shell that moved to background) is still running. Returns running status and whether the job was found in the active job registry.\n\nWhen the job has completed (completed=true), the result also includes success, exit_code, timed_out, stdout, and stderr so you can determine whether a build or install succeeded without needing to re-run it.\n\nWhen the job is still running (running=true), you can poll again later. When found=false the job was never registered or predates the current app session.",
+      parameters: {
+        type: "object",
+        required: ["job_id"],
+        additionalProperties: false,
+        properties: {
+          job_id: {
+            type: "string",
+            description: "The job_id returned by the propose_shell result when moved_to_background was true.",
           },
         },
       },
@@ -2151,8 +2179,7 @@ async function summarizeSingleChunk(
   ];
 
   try {
-    const requestBody = createLiteLLMRequestBody(messages, settings, {});
-    const response = await postLiteLLMChatCompletions(settings, requestBody);
+    const response = await gatewaySummarize(messages, settings);
     const payload = JSON.parse(response.body) as {
       choices?: Array<{ message?: { content?: string } }>;
     };
@@ -3037,16 +3064,50 @@ async function autoExecuteShellProposal(params: {
   workspacePath: string;
   shell: string;
   timeoutMs: number;
+  blockUntilMs: number;
   autoApprovalMeta?: Record<string, unknown>;
   signal?: AbortSignal;
 }): Promise<ToolExecutionResult> {
-  const cmdResult = await awaitShellCommand({
+  // For install/build commands the default blockUntilMs is 90 000 ms.
+  // If the caller left timeoutMs at the default (120 000), the JS deadline and
+  // the Rust hard-kill would fire almost simultaneously. Raise the hard timeout
+  // so the command keeps running in the background after the deadline.
+  const effectiveTimeoutMs =
+    params.blockUntilMs === INSTALL_BUILD_BLOCK_UNTIL_MS &&
+    params.timeoutMs <= INSTALL_BUILD_BLOCK_UNTIL_MS
+      ? INSTALL_BUILD_TIMEOUT_MS
+      : Math.max(params.timeoutMs, params.blockUntilMs + 5_000);
+
+  const deadlineResult = await awaitShellCommandWithDeadline({
     workspacePath: params.workspacePath,
     shell: params.shell,
-    timeoutMs: params.timeoutMs,
+    timeoutMs: effectiveTimeoutMs,
+    blockUntilMs: params.blockUntilMs,
     maxOutputBytes: DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
     signal: params.signal,
   });
+
+  if (deadlineResult.moved_to_background) {
+    return {
+      content: JSON.stringify({
+        ok: true,
+        action_type: "shell",
+        auto_executed: true,
+        shell: params.shell,
+        moved_to_background: true,
+        job_id: deadlineResult.job_id,
+        stdout: deadlineResult.partial_stdout,
+        stderr: deadlineResult.partial_stderr,
+        exit_code: null,
+        timed_out: false,
+        message: `命令在 ${params.blockUntilMs}ms 内未完成，已自动转为后台运行。如需检查进程状态，可使用 propose_shell(shell='kill -0 <pid>') 或重新运行相关命令。`,
+        ...(params.autoApprovalMeta ?? {}),
+      }),
+      success: true,
+    };
+  }
+
+  const cmdResult = deadlineResult.result;
 
   // Invalidate cache for git operations
   if (cmdResult.success && params.shell.trim().startsWith("git ")) {
@@ -4806,6 +4867,7 @@ async function executeToolCall(
           errorMessage: message,
         };
       }
+      const blockUntilMs = inferBlockUntilMs(shell, args.block_until_ms);
       const executionMode = resolveShellExecutionMode(shell, args.execution_mode);
       const readyUrl = resolveShellReadyUrl({
         shell,
@@ -4834,6 +4896,7 @@ async function executeToolCall(
         payload: {
           shell,
           timeoutMs: timeout,
+          blockUntilMs,
           executionMode,
           readyUrl,
           readyTimeoutMs,
@@ -4851,6 +4914,7 @@ async function executeToolCall(
           workspacePath: safeWorkspace,
           shell,
           timeoutMs: timeout,
+          blockUntilMs,
           autoApprovalMeta: buildAutoApprovalMeta(autoApprovalSource, matchedRule),
           signal,
         });
@@ -4878,6 +4942,58 @@ async function executeToolCall(
         traceStatus: "pending_approval",
         proposedAction: action,
       };
+    }
+
+    if (call.function.name === "check_shell_job") {
+      const jobId = asString(args.job_id).trim();
+      if (!jobId) {
+        return {
+          content: JSON.stringify({ error: "job_id 不能为空" }),
+          success: false,
+          errorCategory: "validation" as const,
+          errorMessage: "job_id 不能为空",
+        };
+      }
+      try {
+        const status = await checkShellJob(jobId);
+        const message = !status.found
+          ? "该 job 未找到（从未存在或早于当前会话）"
+          : status.completed
+          ? status.success
+            ? `进程已完成（exit_code=${status.exit_code ?? 0}）`
+            : `进程已失败（exit_code=${status.exit_code ?? -1}，timed_out=${status.timed_out ?? false}）`
+          : status.running
+          ? "进程仍在运行中"
+          : "进程已退出（结果尚未记录）";
+        return {
+          content: JSON.stringify({
+            job_id: jobId,
+            running: status.running,
+            found: status.found,
+            completed: status.completed,
+            cancelled: status.cancelled ?? false,
+            ...(status.completed
+              ? {
+                  success: status.success,
+                  exit_code: status.exit_code,
+                  timed_out: status.timed_out ?? false,
+                  stdout: status.stdout ?? "",
+                  stderr: status.stderr ?? "",
+                }
+              : {}),
+            message,
+          }),
+          success: true,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: JSON.stringify({ error: msg }),
+          success: false,
+          errorCategory: "validation" as const,
+          errorMessage: msg,
+        };
+      }
     }
 
     if (call.function.name === "task") {
@@ -5496,7 +5612,14 @@ export async function requestToolCompletion(
 
   const sanitizedMessages = sanitizeMessagesForToolCalling(messages);
   const effectiveToolChoice = toolChoiceOverride ?? "model-adapted";
-  const body = createGatewayRequestBody(sanitizedMessages, settings, runtime ?? null, {
+  const requestModel = runtime?.modelRef || settings.model;
+
+  const t0 = performance.now();
+  console.log(
+    `[LLM] 发送请求 (非流式) | model=${requestModel} | messages=${sanitizedMessages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
+  );
+
+  const response = await gatewayComplete(sanitizedMessages, settings, runtime ?? null, {
     stream: false,
     temperature: 0.1,
     tools: effectiveToolChoice === "none" ? undefined : activeTools,
@@ -5504,15 +5627,8 @@ export async function requestToolCompletion(
       toolChoiceOverride === undefined || toolChoiceOverride === "none"
         ? undefined
         : toolChoiceOverride,
+    signal,
   });
-  const requestModel = typeof body.model === "string" ? body.model : settings.model;
-
-  const t0 = performance.now();
-  console.log(
-    `[LLM] 发送请求 (非流式) | model=${requestModel} | messages=${sanitizedMessages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
-  );
-
-  const response = await postLiteLLMChatCompletions(settings, body);
   const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
 
   if (response.status < 200 || response.status >= 300) {
@@ -5596,25 +5712,27 @@ async function requestToolCompletionWithStream(
 
   const sanitizedMessages = sanitizeMessagesForToolCalling(messages);
   const effectiveToolChoice = toolChoiceOverride ?? "model-adapted";
-  const body = createGatewayRequestBody(sanitizedMessages, settings, runtime ?? null, {
-    stream: true,
-    temperature: 0.1,
-    tools: effectiveToolChoice === "none" ? undefined : activeTools,
-    toolChoice:
-      toolChoiceOverride === undefined || toolChoiceOverride === "none"
-        ? undefined
-        : toolChoiceOverride,
-  });
-  const requestModel = typeof body.model === "string" ? body.model : settings.model;
+  const requestModel = runtime?.modelRef || settings.model;
 
   const t0 = performance.now();
   console.log(
     `[LLM] 发送请求 (流式) | model=${requestModel} | messages=${sanitizedMessages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
   );
 
-  const response = await postLiteLLMChatCompletionsStream(
+  const response = await gatewayStream(
+    sanitizedMessages,
     settings,
-    body,
+    runtime ?? null,
+    {
+      stream: true,
+      temperature: 0.1,
+      tools: effectiveToolChoice === "none" ? undefined : activeTools,
+      toolChoice:
+        toolChoiceOverride === undefined || toolChoiceOverride === "none"
+          ? undefined
+          : toolChoiceOverride,
+      signal,
+    },
     (content) => {
       onChunk?.(content);
     },
@@ -5780,7 +5898,11 @@ async function executeToolCompletionForTurn(
   if (hasPreviousAssistantToolCalls(messages)) {
     highRiskReasons.push("previous_assistant_tool_calls");
   }
-  if (isHighRiskToolCallingModelCombo(settings)) {
+  const activeVendor = getActiveVendor(settings);
+  if (isHighRiskToolCallingModelCombo(
+    (activeVendor?.protocol || runtime.vendorProtocol || "openai-chat-completions") as import("../lib/settingsStore").VendorProtocol,
+    runtime.modelRef || settings.model,
+  )) {
     highRiskReasons.push("anthropic_openai_chat_compat");
   }
   const highRisk = highRiskReasons.length > 0;
@@ -6660,6 +6782,7 @@ async function runNativeToolCallingLoop(
       "read_file", "grep", "glob", "list_files",
       "git_status", "git_diff", "diagnostics",
       "web_search", "web_fetch",
+      "check_shell_job",
     ]);
     const MAX_PARALLEL_READ_TOOLS = perfConfig.maxParallelReadTools; // Was 5, now 15
 

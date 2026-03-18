@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactElement } from "react";
-import { VENDOR_PROTOCOLS, getProtocolLabel } from "../../lib/litellm";
+import { VENDOR_PROTOCOLS, getProtocolLabel } from "../../lib/piAiBridge";
 import { maskApiKey } from "../../lib/settingsStore";
 import { VendorModelRow as SettingsVendorModelRow } from "./VendorModelRow";
 import type { ModelTabProps } from "./settingsTypes";

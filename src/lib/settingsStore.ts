@@ -40,6 +40,7 @@ export interface ToolPermissions {
   propose_file_edit: ToolPermissionLevel;
   propose_apply_patch: ToolPermissionLevel;
   propose_shell: ToolPermissionLevel;
+  check_shell_job: ToolPermissionLevel;
   diagnostics: ToolPermissionLevel;
   fetch: ToolPermissionLevel;
 }
@@ -54,6 +55,7 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = {
   propose_file_edit: "ask",
   propose_apply_patch: "ask",
   propose_shell: "ask",
+  check_shell_job: "auto",
   diagnostics: "auto",
   fetch: "ask",
 };

@@ -3,7 +3,7 @@ import { Suspense, type ReactElement, lazy, useEffect, useState } from "react";
 import {
   createLiteLLMClientConfig,
   fetchVendorModelIds,
-} from "../../lib/litellm";
+} from "../../lib/piAiBridge";
 import {
   type AppSettings,
   type VendorConfig,

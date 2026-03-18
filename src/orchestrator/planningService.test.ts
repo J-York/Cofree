@@ -6,7 +6,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("../lib/tauriBridge", async (importOriginal) => {
     const actual = await importOriginal<typeof import("../lib/tauriBridge")>();
-    return { ...actual, awaitShellCommand: vi.fn() };
+    return {
+        ...actual,
+        awaitShellCommand: vi.fn(),
+        awaitShellCommandWithDeadline: vi.fn(),
+        checkShellJob: vi.fn(),
+    };
 });
 
 vi.mock("../lib/cofreerc", () => ({
@@ -61,43 +66,29 @@ vi.mock("../agents/toolPolicy", () => ({
     })),
 }));
 
-vi.mock("../lib/modelGateway", () => ({
-    createGatewayRequestBody: vi.fn((messages, _settings, runtime, options) => ({
-        model: runtime?.modelRef ?? "test-model",
-        messages,
-        stream: options?.stream ?? false,
-        tools: options?.tools,
-        tool_choice: options?.toolChoice,
-        temperature: options?.temperature,
-    })),
-}));
-
-vi.mock("../lib/litellm", () => ({
-    createLiteLLMRequestBody: vi.fn((messages, _settings, options) => ({
-        model: "test-model",
-        messages,
-        stream: options?.stream ?? false,
-        tools: options?.tools,
-        tool_choice: options?.toolChoice,
-    })),
-    isHighRiskToolCallingModelCombo: vi.fn(() => true),
-    postLiteLLMChatCompletions: vi.fn(),
-    postLiteLLMChatCompletionsStream: vi.fn(),
-}));
+vi.mock("../lib/piAiBridge", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../lib/piAiBridge")>();
+    return {
+        ...actual,
+        gatewayComplete: vi.fn(),
+        gatewayStream: vi.fn(),
+        gatewaySummarize: vi.fn(),
+        isHighRiskToolCallingModelCombo: vi.fn(() => true),
+    };
+});
 
 import { invoke } from "@tauri-apps/api/core";
-import { awaitShellCommand } from "../lib/tauriBridge";
+import { awaitShellCommandWithDeadline } from "../lib/tauriBridge";
 import { addWorkspaceApprovalRule } from "../lib/approvalRuleStore";
 import {
-    postLiteLLMChatCompletions,
-    postLiteLLMChatCompletionsStream,
+    gatewayComplete,
+    gatewayStream,
     type LiteLLMMessage,
-} from "../lib/litellm";
+} from "../lib/piAiBridge";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { assembleRuntimeContext, classifyTaskType } from "../agents/promptAssembly";
 import { DEFAULT_SETTINGS, type AppSettings } from "../lib/settingsStore";
 import { createFileContextAttachment } from "../lib/contextAttachments";
-import { createGatewayRequestBody } from "../lib/modelGateway";
 import { loadCofreeRc, resolveMatchingContextRules } from "../lib/cofreerc";
 import { generateRepoMap } from "./repoMapService";
 import {
@@ -150,11 +141,13 @@ class MemoryStorage implements Storage {
 describe("planningService approval-flow repair", () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        vi.mocked(postLiteLLMChatCompletionsStream).mockImplementation(
-            async (settings: any, body: any, onChunk?: (content: string) => void) => {
-                const response = await vi.mocked(postLiteLLMChatCompletions)(
+        vi.mocked(gatewayStream).mockImplementation(
+            async (messages: any, settings: any, runtime: any, options: any, onChunk?: (content: string) => void) => {
+                const response = await vi.mocked(gatewayComplete)(
+                    messages,
                     settings,
-                    body,
+                    runtime,
+                    options,
                 );
                 if (response?.body) {
                     try {
@@ -234,7 +227,7 @@ describe("planningService approval-flow repair", () => {
     });
 
     it("passes update_plan as an internal tool to assembleRuntimeContext so it appears in 本轮可用工具", async () => {
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+        vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -259,7 +252,7 @@ describe("planningService approval-flow repair", () => {
     });
 
     it("builds tool-loop request bodies through modelGateway", async () => {
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+        vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -275,14 +268,14 @@ describe("planningService approval-flow repair", () => {
             conversationHistory: [],
         });
 
-        expect(vi.mocked(createGatewayRequestBody)).toHaveBeenCalled();
-        const firstCall = vi.mocked(createGatewayRequestBody).mock.calls[0];
+        expect(vi.mocked(gatewayStream)).toHaveBeenCalled();
+        const firstCall = vi.mocked(gatewayStream).mock.calls[0];
         expect(firstCall?.[2]).toMatchObject({ agentId: "agent-default" });
-        expect(firstCall?.[3]).toMatchObject({ stream: true, temperature: 0.1 });
+        expect(firstCall?.[3]).toMatchObject({ temperature: 0.1 });
     });
 
     it("retries once when the model narrates a tool call in plain text without native tool_calls", async () => {
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValueOnce({
+        vi.mocked(gatewayComplete).mockResolvedValueOnce({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -318,11 +311,11 @@ describe("planningService approval-flow repair", () => {
         });
 
         expect(result.assistantReply).toBe("done");
-        expect(vi.mocked(postLiteLLMChatCompletionsStream).mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(vi.mocked(gatewayStream).mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
     it("retries once when the model dumps tool JSON transcripts in plain text without native tool_calls", async () => {
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValueOnce({
+        vi.mocked(gatewayComplete).mockResolvedValueOnce({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -358,7 +351,7 @@ describe("planningService approval-flow repair", () => {
         });
 
         expect(result.assistantReply).toBe("done");
-        expect(vi.mocked(postLiteLLMChatCompletionsStream)).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(gatewayStream)).toHaveBeenCalledTimes(2);
     });
 
     it("removes pseudo tool JSON transcripts from retry history", async () => {
@@ -366,7 +359,7 @@ describe("planningService approval-flow repair", () => {
             "{\"relative_path\":\"apps/api/src/index.ts\",\"start_line\":1,\"end_line\":200}" +
             "{\"ok\":false,\"error\":\"read_file failed: no such file or directory\"}";
 
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValueOnce({
+        vi.mocked(gatewayComplete).mockResolvedValueOnce({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -402,7 +395,7 @@ describe("planningService approval-flow repair", () => {
         });
 
         expect(result.assistantReply).toBe("done");
-        const secondCall = vi.mocked(createGatewayRequestBody).mock.calls[1];
+        const secondCall = vi.mocked(gatewayStream).mock.calls[1];
         const secondMessages = (secondCall?.[0] ?? []) as Array<{ content?: string }>;
         expect(secondMessages.some((message) => message.content?.includes(pseudoTranscript))).toBe(false);
     });
@@ -428,7 +421,7 @@ describe("planningService approval-flow repair", () => {
             vendorProtocol: "openai-responses",
             modelRef: "test-model",
         }) as any);
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValueOnce({
+        vi.mocked(gatewayComplete).mockResolvedValueOnce({
             status: 200,
             endpoint: "http://localhost:4000/responses",
             body: JSON.stringify({
@@ -459,7 +452,7 @@ describe("planningService approval-flow repair", () => {
         });
 
         expect(result.assistantReply).toBe("done");
-        expect(vi.mocked(postLiteLLMChatCompletionsStream)).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(gatewayStream)).toHaveBeenCalledTimes(2);
     });
 
     it("returns a compatibility diagnostic when pseudo tool JSON persists after repair", async () => {
@@ -483,7 +476,7 @@ describe("planningService approval-flow repair", () => {
             vendorProtocol: "openai-responses",
             modelRef: "test-model",
         }) as any);
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+        vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
             endpoint: "http://localhost:4000/responses",
             body: JSON.stringify({
@@ -508,11 +501,11 @@ describe("planningService approval-flow repair", () => {
         expect(result.assistantReply).toContain("OpenAI Responses");
         expect(result.assistantReply).toContain("OpenAI Chat Completions");
         expect(result.assistantReply).not.toContain("{\"shell\"");
-        expect(vi.mocked(postLiteLLMChatCompletionsStream).mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(vi.mocked(gatewayStream).mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
     it("falls back to non-streaming when the streamed response assembles to empty text without tool calls", async () => {
-        vi.mocked(postLiteLLMChatCompletionsStream).mockResolvedValueOnce({
+        vi.mocked(gatewayStream).mockResolvedValueOnce({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -533,7 +526,7 @@ describe("planningService approval-flow repair", () => {
                 },
             }),
         } as any);
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValueOnce({
+        vi.mocked(gatewayComplete).mockResolvedValueOnce({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -561,12 +554,12 @@ describe("planningService approval-flow repair", () => {
         });
 
         expect(result.assistantReply).toBe("来自非流式回退的正常回复");
-        expect(vi.mocked(postLiteLLMChatCompletionsStream)).toHaveBeenCalledTimes(1);
-        expect(vi.mocked(postLiteLLMChatCompletions)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(gatewayStream)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(gatewayComplete)).toHaveBeenCalledTimes(1);
     });
 
     it("preserves reasoning_content as a think block in the final assistant reply", async () => {
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+        vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -613,7 +606,7 @@ describe("planningService approval-flow repair", () => {
     });
 
     it("exposes PowerShell-aware propose_shell tool definitions in planning requests", async () => {
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+        vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -645,8 +638,8 @@ describe("planningService approval-flow repair", () => {
             conversationHistory: [],
         });
 
-        const firstRequestBody = vi.mocked(postLiteLLMChatCompletions).mock.calls[0]?.[1] as {
-            tools: Array<{
+        const firstRequestOptions = vi.mocked(gatewayComplete).mock.calls[0]?.[3] as {
+            tools?: Array<{
                 function: {
                     name: string;
                     description: string;
@@ -659,12 +652,12 @@ describe("planningService approval-flow repair", () => {
                     };
                 };
             }>;
-        };
-        const shellTool = firstRequestBody.tools.find(
+        } | undefined;
+        const shellTool = firstRequestOptions?.tools?.find(
             (tool) => tool.function.name === "propose_shell",
         );
-        const planTool = firstRequestBody.tools.find(
-            (tool) => tool.function.name === "update_plan",
+        const planTool = firstRequestOptions?.tools?.find(
+            (tool: any) => tool.function.name === "update_plan",
         );
 
         expect(shellTool?.function.description).toContain("PowerShell");
@@ -677,7 +670,7 @@ describe("planningService approval-flow repair", () => {
     });
 
     it("passes task description and focused paths into repo-map generation on first turn", async () => {
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+        vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -741,7 +734,7 @@ describe("planningService approval-flow repair", () => {
                 contextFiles: ["docs/ARCHITECTURE.md"],
             },
         ]);
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+        vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -783,10 +776,8 @@ describe("planningService approval-flow repair", () => {
             undefined,
         );
 
-        const firstRequestBody = vi.mocked(postLiteLLMChatCompletions).mock.calls[0]?.[1] as {
-            messages: Array<{ role: string; content: string }>;
-        };
-        const systemPrompt = firstRequestBody?.messages?.[0]?.content ?? "";
+        const firstMessages = (vi.mocked(gatewayComplete).mock.calls[0]?.[0] ?? []) as Array<{ role: string; content: string }>;
+        const systemPrompt = firstMessages?.[0]?.content ?? "";
 
         expect(systemPrompt).toContain("[命中的项目规则]");
         expect(systemPrompt).toContain("auth-ui");
@@ -814,7 +805,7 @@ describe("planningService approval-flow repair", () => {
                 contextFiles: ["docs/ARCHITECTURE.md"],
             },
         ]);
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+        vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -857,10 +848,8 @@ describe("planningService approval-flow repair", () => {
             ["src/auth/login.ts"],
         );
 
-        const firstRequestBody = vi.mocked(postLiteLLMChatCompletions).mock.calls[0]?.[1] as {
-            messages: Array<{ role: string; content: string }>;
-        };
-        const systemPrompt = firstRequestBody?.messages?.[0]?.content ?? "";
+        const firstMessages = (vi.mocked(gatewayComplete).mock.calls[0]?.[0] ?? []) as Array<{ role: string; content: string }>;
+        const systemPrompt = firstMessages?.[0]?.content ?? "";
 
         expect(systemPrompt).toContain("[命中的项目规则]");
         expect(systemPrompt).toContain("auth-ui");
@@ -873,7 +862,7 @@ describe("planningService approval-flow repair", () => {
             kind: "shell_command_prefix",
             commandTokens: ["npm", "install"],
         });
-        vi.mocked(postLiteLLMChatCompletions)
+        vi.mocked(gatewayComplete)
             .mockResolvedValueOnce({
                 status: 200,
                 endpoint: "http://localhost:4000/chat/completions",
@@ -962,7 +951,7 @@ describe("planningService approval-flow repair", () => {
                 contextFiles: ["docs/ARCHITECTURE.md"],
             },
         ]);
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+        vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -1019,10 +1008,8 @@ describe("planningService approval-flow repair", () => {
             ["src/auth/login.ts"],
         );
 
-        const firstRequestBody = vi.mocked(postLiteLLMChatCompletions).mock.calls[0]?.[1] as {
-            messages: Array<{ role: string; content: string }>;
-        };
-        const systemPrompt = firstRequestBody?.messages?.[0]?.content ?? "";
+        const firstMessages = (vi.mocked(gatewayComplete).mock.calls[0]?.[0] ?? []) as Array<{ role: string; content: string }>;
+        const systemPrompt = firstMessages?.[0]?.content ?? "";
 
         expect(systemPrompt).toContain("[命中的项目规则]");
         expect(systemPrompt).toContain("auth-ui");
@@ -1084,7 +1071,7 @@ describe("planningService approval-flow repair", () => {
     });
 
     it("refreshes the todo system prompt after update_plan before the next turn", async () => {
-        vi.mocked(postLiteLLMChatCompletions)
+        vi.mocked(gatewayComplete)
             .mockResolvedValueOnce({
                 status: 200,
                 endpoint: "http://localhost:4000/chat/completions",
@@ -1168,10 +1155,8 @@ describe("planningService approval-flow repair", () => {
             },
         });
 
-        const secondRequestBody = vi.mocked(postLiteLLMChatCompletions).mock.calls[1]?.[1] as {
-            messages: Array<{ role: string; content: string }>;
-        };
-        const todoMessages = (secondRequestBody?.messages ?? []).filter(
+        const secondMessages = (vi.mocked(gatewayComplete).mock.calls[1]?.[0] ?? []) as Array<{ role: string; content: string }>;
+        const todoMessages = secondMessages.filter(
             (message) => message.role === "system" && message.content.startsWith("[Todo Plan]"),
         );
 
@@ -1234,19 +1219,22 @@ describe("planningService approval-flow repair", () => {
             kind: "shell_command_prefix",
             commandTokens: ["git", "add"],
         });
-        vi.mocked(awaitShellCommand).mockImplementation(async (params) => {
+        vi.mocked(awaitShellCommandWithDeadline).mockImplementation(async (params) => {
             expect(params).toMatchObject({
                 workspacePath: "d:/Code/cofree",
                 shell: "git add src/app.ts",
                 timeoutMs: 120000,
             });
             return {
-                success: true,
-                command: "git add src/app.ts",
-                timed_out: false,
-                status: 0,
-                stdout: "ok",
-                stderr: "",
+                moved_to_background: false,
+                result: {
+                    success: true,
+                    command: "git add src/app.ts",
+                    timed_out: false,
+                    status: 0,
+                    stdout: "ok",
+                    stderr: "",
+                },
             };
         });
 
@@ -1399,7 +1387,7 @@ describe("planningService approval-flow repair", () => {
     });
 
     it("keeps pending shell proposals visible in the full planning pipeline", async () => {
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+        vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -1457,7 +1445,7 @@ describe("planningService approval-flow repair", () => {
     });
 
     it("suppresses a blocked pending shell proposal during continuation planning", async () => {
-        vi.mocked(postLiteLLMChatCompletions).mockResolvedValue({
+        vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
             endpoint: "http://localhost:4000/chat/completions",
             body: JSON.stringify({
@@ -1535,7 +1523,7 @@ describe("planningService approval-flow repair", () => {
         } as any);
 
         let llmCallCount = 0;
-        vi.mocked(postLiteLLMChatCompletions).mockImplementation(async () => {
+        vi.mocked(gatewayComplete).mockImplementation(async () => {
             llmCallCount += 1;
             if (llmCallCount <= 26) {
                 return {
@@ -1766,7 +1754,7 @@ describe("planningService approval-flow repair", () => {
             allowedSubAgents: [],
         } as any);
 
-        vi.mocked(postLiteLLMChatCompletions)
+        vi.mocked(gatewayComplete)
             .mockResolvedValueOnce({
                 status: 200,
                 endpoint: "http://localhost:4000/chat/completions",
@@ -1855,30 +1843,36 @@ describe("planningService approval-flow repair", () => {
             }
             throw new Error(`Unexpected invoke: ${command}`);
         });
-        vi.mocked(awaitShellCommand).mockImplementation(async (params) => {
+        vi.mocked(awaitShellCommandWithDeadline).mockImplementation(async (params) => {
             const shell = params.shell;
             if (shell === "mkdir -p logs && npm test") {
                 return {
-                    success: false,
-                    command: shell,
-                    timed_out: false,
-                    status: 1,
-                    stdout: "",
-                    stderr:
-                        "ParserError: The token '&&' is not a valid statement separator in this version.\nCategoryInfo : ParserError\nFullyQualifiedErrorId : InvalidEndOfLine",
+                    moved_to_background: false,
+                    result: {
+                        success: false,
+                        command: shell,
+                        timed_out: false,
+                        status: 1,
+                        stdout: "",
+                        stderr:
+                            "ParserError: The token '&&' is not a valid statement separator in this version.\nCategoryInfo : ParserError\nFullyQualifiedErrorId : InvalidEndOfLine",
+                    },
                 };
             }
             if (shell === "New-Item -ItemType Directory -Force logs; npm test") {
                 return {
-                    success: true,
-                    command: shell,
-                    timed_out: false,
-                    status: 0,
-                    stdout: "ok",
-                    stderr: "",
+                    moved_to_background: false,
+                    result: {
+                        success: true,
+                        command: shell,
+                        timed_out: false,
+                        status: 0,
+                        stdout: "ok",
+                        stderr: "",
+                    },
                 };
             }
-            throw new Error(`Unexpected awaitShellCommand: ${shell}`);
+            throw new Error(`Unexpected awaitShellCommandWithDeadline: ${shell}`);
         });
 
         const result = await runPlanningSession({
@@ -1887,17 +1881,15 @@ describe("planningService approval-flow repair", () => {
             conversationHistory: [],
         });
 
-        const secondRequestBody = vi.mocked(postLiteLLMChatCompletions).mock.calls[1]?.[1] as {
-            messages: Array<{ role: string; content: string }>;
-        };
-        const repairMessage = [...(secondRequestBody?.messages ?? [])]
+        const secondMessages2 = (vi.mocked(gatewayComplete).mock.calls[1]?.[0] ?? []) as Array<{ role: string; content: string }>;
+        const repairMessage = [...secondMessages2]
             .reverse()
             .find(
                 (message) =>
                     message.role === "system" &&
                     message.content.includes("shell 方言不匹配"),
             );
-        const shellCalls = vi.mocked(awaitShellCommand).mock.calls;
+        const shellCalls = vi.mocked(awaitShellCommandWithDeadline).mock.calls;
 
         expect(shellCalls).toHaveLength(2);
         expect(shellCalls[0]?.[0]).toMatchObject({

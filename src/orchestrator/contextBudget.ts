@@ -1,4 +1,4 @@
-import type { LiteLLMMessage, LiteLLMToolDefinition } from "../lib/litellm";
+import type { LiteLLMMessage, LiteLLMToolDefinition } from "../lib/piAiBridge";
 
 // ---------------------------------------------------------------------------
 // P0-1: Multi-script token estimation

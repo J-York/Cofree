@@ -11,12 +11,11 @@ pub use app::{
 };
 pub use diagnostics::get_workspace_diagnostics;
 pub use http::fetch_url;
-pub use litellm::{
-    fetch_litellm_models, post_litellm_chat_completions, post_litellm_chat_completions_stream,
-};
+pub use litellm::fetch_litellm_models;
 pub use secure_store::{delete_secure_api_key, load_secure_api_key, save_secure_api_key};
 pub use workspace::{
-    apply_workspace_patch, build_workspace_edit_patch, cancel_shell_command, check_workspace_patch,
+    apply_workspace_patch, build_workspace_edit_patch, cancel_shell_command, check_shell_job,
+    check_workspace_patch,
     create_workspace_snapshot, git_diff_workspace, git_status_workspace, glob_workspace_files,
     grep_workspace_files, list_workspace_files, read_workspace_file, restore_workspace_snapshot,
     run_shell_command, scan_workspace_structure, start_shell_command,
