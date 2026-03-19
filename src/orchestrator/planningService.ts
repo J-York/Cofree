@@ -5901,6 +5901,22 @@ function shouldFallbackToNonStreamingForToolTurn(error: unknown): boolean {
     return true;
   }
 
+  // Network / transport errors from browser-side streaming fetches. In the
+  // desktop app, non-streaming uses the Rust HTTP bridge and is often able to
+  // recover from these transport-specific failures.
+  if (
+    normalized.includes("connection error") ||
+    normalized.includes("network error") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("failed to fetch") ||
+    normalized.includes("econn") ||
+    normalized.includes("socket") ||
+    normalized.includes("tls") ||
+    normalized.includes("dns")
+  ) {
+    return true;
+  }
+
   // JSON parse errors from streamed response assembly
   if (
     normalized.includes("json") ||

@@ -867,11 +867,11 @@ export async function gatewayComplete(
         return undefined;
       },
     }), settings.proxy);
-
     return resultToHttpResponse(result, model);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     const errorMsg = error instanceof Error ? error.message : String(error);
+
     console.error(`[piAiBridge] gatewayComplete threw: ${errorMsg}`);
     return {
       status: 500,
@@ -912,51 +912,55 @@ export async function gatewayStream(
   const context = toPiAiContext(messages, hasTools ? options?.tools : undefined);
 
   try {
-    const s = piStream(model, context, {
-      apiKey,
-      temperature: effectiveTemp,
-      maxTokens: adapted.maxTokens,
-      signal: options?.signal,
-      reasoning: thinking as Parameters<typeof piStream>[2] extends { reasoning?: infer R } ? R : never,
-      onPayload: (payload: unknown) => {
-        if (payload && typeof payload === "object") {
-          const p = payload as Record<string, unknown>;
-          if (effectiveToolChoice !== undefined && hasTools) {
-            if (protocol === "anthropic-messages") {
-              p.tool_choice = effectiveToolChoice === "auto" ? { type: "auto" } :
-                effectiveToolChoice === "none" ? { type: "none" } :
-                  typeof effectiveToolChoice === "object" ? { type: "tool", name: effectiveToolChoice.function.name } :
-                    { type: "auto" };
-            } else {
-              p.tool_choice = effectiveToolChoice;
+    const result = await withTauriHttpFetch(async () => {
+      const s = piStream(model, context, {
+        apiKey,
+        temperature: effectiveTemp,
+        maxTokens: adapted.maxTokens,
+        signal: options?.signal,
+        reasoning: thinking as Parameters<typeof piStream>[2] extends { reasoning?: infer R } ? R : never,
+        onPayload: (payload: unknown) => {
+          if (payload && typeof payload === "object") {
+            const p = payload as Record<string, unknown>;
+            if (effectiveToolChoice !== undefined && hasTools) {
+              if (protocol === "anthropic-messages") {
+                p.tool_choice = effectiveToolChoice === "auto" ? { type: "auto" } :
+                  effectiveToolChoice === "none" ? { type: "none" } :
+                    typeof effectiveToolChoice === "object" ? { type: "tool", name: effectiveToolChoice.function.name } :
+                      { type: "auto" };
+              } else {
+                p.tool_choice = effectiveToolChoice;
+              }
+            }
+            if (adapted.parallelToolCalls !== undefined && hasTools && protocol === "openai-chat-completions") {
+              p.parallel_tool_calls = adapted.parallelToolCalls;
             }
           }
-          if (adapted.parallelToolCalls !== undefined && hasTools && protocol === "openai-chat-completions") {
-            p.parallel_tool_calls = adapted.parallelToolCalls;
-          }
+          return undefined;
+        },
+      });
+
+      for await (const event of s) {
+        if (event.type === "text_delta") {
+          onChunk(event.delta);
+        } else if (event.type === "toolcall_end") {
+          const tc = event as { type: "toolcall_end"; toolCall: { id: string; name: string; arguments: Record<string, unknown> }; [k: string]: unknown };
+          onToolCall?.({
+            callId: tc.toolCall.id,
+            toolName: tc.toolCall.name,
+            arguments: JSON.stringify(tc.toolCall.arguments),
+          });
         }
-        return undefined;
-      },
-    });
-
-    for await (const event of s) {
-      if (event.type === "text_delta") {
-        onChunk(event.delta);
-      } else if (event.type === "toolcall_end") {
-        const tc = event as { type: "toolcall_end"; toolCall: { id: string; name: string; arguments: Record<string, unknown> }; [k: string]: unknown };
-        onToolCall?.({
-          callId: tc.toolCall.id,
-          toolName: tc.toolCall.name,
-          arguments: JSON.stringify(tc.toolCall.arguments),
-        });
       }
-    }
 
-    const result = await s.result();
+      return s.result();
+    }, settings.proxy);
+
     return resultToHttpResponse(result, model);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     const errorMsg = error instanceof Error ? error.message : String(error);
+
     console.error(`[piAiBridge] gatewayStream threw: ${errorMsg}`);
     return {
       status: 500,

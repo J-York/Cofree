@@ -2109,6 +2109,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         return;
       }
       const classifiedError = classifyError(error);
+
       guardedSetError(classifiedError);
       let debugLog: string | null = null;
       if (isActive()) {

@@ -602,6 +602,48 @@ describe("planningService approval-flow repair", () => {
         expect(vi.mocked(gatewayComplete)).toHaveBeenCalledTimes(1);
     });
 
+    it("falls back to non-streaming when streaming fails with a connection error", async () => {
+        vi.mocked(gatewayStream).mockResolvedValueOnce({
+            status: 500,
+            endpoint: "http://localhost:4000/responses",
+            body: JSON.stringify({
+                error: {
+                    message: "Connection error.",
+                },
+            }),
+        } as any);
+        vi.mocked(gatewayComplete).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/responses",
+            body: JSON.stringify({
+                id: "resp-nonstream-after-connection-error",
+                choices: [
+                    {
+                        message: {
+                            role: "assistant",
+                            content: "来自非流式回退的连接恢复回复",
+                        },
+                    },
+                ],
+                usage: {
+                    prompt_tokens: 7,
+                    completion_tokens: 12,
+                    total_tokens: 19,
+                },
+            }),
+        });
+
+        const result = await runPlanningSession({
+            prompt: "帮我检查一下当前问题",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        expect(result.assistantReply).toBe("来自非流式回退的连接恢复回复");
+        expect(vi.mocked(gatewayStream)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(gatewayComplete)).toHaveBeenCalledTimes(1);
+    });
+
     it("preserves reasoning_content as a think block in the final assistant reply", async () => {
         vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,

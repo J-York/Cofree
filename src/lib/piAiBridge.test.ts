@@ -166,6 +166,13 @@ describe("piAiBridge tauri runtime regressions", () => {
 
     const nativeFetch = vi.fn(async () => new Response("ok", { status: 200 }));
     globalThis.fetch = nativeFetch as unknown as typeof fetch;
+    performHttpRequestMock.mockResolvedValue({
+      status: 200,
+      status_text: "OK",
+      url: "https://example.com/stream-check",
+      headers: [],
+      body: "ok",
+    });
 
     const stream = {
       async *[Symbol.asyncIterator]() {
@@ -182,8 +189,12 @@ describe("piAiBridge tauri runtime regressions", () => {
 
     expect(streamMock).toHaveBeenCalledTimes(1);
     expect(completeMock).not.toHaveBeenCalled();
-    expect(nativeFetch).toHaveBeenCalledTimes(1);
-    expect(performHttpRequestMock).not.toHaveBeenCalled();
+    expect(nativeFetch).not.toHaveBeenCalledWith("https://example.com/stream-check");
+    expect(performHttpRequestMock).toHaveBeenCalledTimes(1);
+    expect(performHttpRequestMock).toHaveBeenCalledWith(expect.objectContaining({
+      method: "GET",
+      url: "https://example.com/stream-check",
+    }));
     expect(onChunk).toHaveBeenCalledWith("chunk");
   });
 });
