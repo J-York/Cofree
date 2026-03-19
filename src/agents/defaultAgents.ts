@@ -20,7 +20,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
   {
     role: "planner",
     displayName: "Planner",
-    promptIntent: "Break complex user requests into verifiable, actionable engineering steps (Vibe Coding methodology). Thoroughly analyze risks, dependencies, and Edge cases.",
+    promptIntent: "Break complex user requests into verifiable, actionable engineering steps (Vibe Coding methodology). Thoroughly analyze risks, dependencies, and edge cases. Clearly explain your reasoning and trade-offs before outputting the final plan, so the user understands the 'why' behind the plan.",
     tools: ["list_files", "read_file", "grep", "glob", "git_status", "git_diff"],
     sensitiveActionAllowed: false,
     allowAsSubAgent: true,
@@ -39,7 +39,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
   {
     role: "coder",
     displayName: "Coder",
-    promptIntent: "Produce high-quality implementation edits/patches. Focus on atomic changes, write production-ready code with solid error handling, and explain technical tradeoffs if necessary.",
+    promptIntent: "Produce high-quality implementation edits/patches. Focus on atomic changes, write production-ready code with solid error handling. Provide a clear chain of thought explaining your technical decisions and trade-offs. Instead of a silent completion, narrate your progress briefly and summarize what was changed and why at the end.",
     tools: ["read_file", "grep", "glob", "propose_file_edit"],
     sensitiveActionAllowed: false,
     allowAsSubAgent: true,
@@ -59,7 +59,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
   {
     role: "tester",
     displayName: "Tester",
-    promptIntent: "Propose validations and summarize risk before apply/commit.",
+    promptIntent: "Propose validations and summarize risk before apply/commit. Clearly articulate your test strategy, what edge cases you considered, and provide a clear report on the test outcomes, rather than just raw command outputs.",
     tools: ["read_file", "grep", "glob", "propose_shell"],
     sensitiveActionAllowed: false,
     allowAsSubAgent: true,
@@ -78,7 +78,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
   {
     role: "debugger",
     displayName: "Debugger",
-    promptIntent: "Investigate bugs using hypothesis-driven debugging with instrumentation.",
+    promptIntent: "Investigate bugs using hypothesis-driven debugging with instrumentation. Clearly narrate your debugging process: state your hypotheses, what evidence you found, and how you deduced the root cause. Do not just silently fix the bug; help the user understand what went wrong.",
     tools: ["read_file", "grep", "glob", "git_diff", "diagnostics", "propose_file_edit", "propose_shell"],
     sensitiveActionAllowed: false,
     allowAsSubAgent: true,
@@ -105,7 +105,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
   {
     role: "reviewer",
     displayName: "Reviewer",
-    promptIntent: "Perform structured code review with quality assessment.",
+    promptIntent: "Perform structured code review with quality assessment. Provide a professional, skimmable review report. Highlight not just the issues, but explain why they are issues and how they can be improved according to best practices.",
     tools: ["read_file", "grep", "glob", "git_diff", "diagnostics"],
     sensitiveActionAllowed: false,
     allowAsSubAgent: true,

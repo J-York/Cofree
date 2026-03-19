@@ -226,6 +226,50 @@ describe("planningService approval-flow repair", () => {
         expect(prompt).toContain("通过 read_file、grep 结果或已有会话上下文获得精确上下文");
     });
 
+    it("uses conditional completion-summary wording for review tasks", async () => {
+        const actual = await vi.importActual<typeof import("../agents/promptAssembly")>(
+            "../agents/promptAssembly",
+        );
+
+        const prompt = actual.assembleSystemPrompt({
+            agentId: "agent-default",
+            systemPrompt: "system prompt",
+            enabledTools: ["read_file", "grep"],
+            modelRef: "gpt-4o-mini",
+            toolPermissions: {
+                ...DEFAULT_SETTINGS.toolPermissions,
+                read_file: "auto",
+                grep: "auto",
+            },
+            allowedSubAgents: [],
+        } as any, "review");
+
+        expect(prompt).toContain("若本轮包含代码或文件修改");
+        expect(prompt).toContain("若本轮是审查/信息类任务且没有文件变更");
+        expect(prompt).not.toContain("明确告诉用户：你修改了哪些文件");
+    });
+
+    it("keeps brevity completion hints truthful for no-edit tasks", async () => {
+        const actual = await vi.importActual<typeof import("../agents/promptAssembly")>(
+            "../agents/promptAssembly",
+        );
+
+        const prompt = actual.assembleSystemPrompt({
+            agentId: "agent-default",
+            systemPrompt: "system prompt",
+            enabledTools: ["read_file", "grep"],
+            modelRef: "gpt-3.5-turbo",
+            toolPermissions: {
+                ...DEFAULT_SETTINGS.toolPermissions,
+                read_file: "auto",
+                grep: "auto",
+            },
+            allowedSubAgents: [],
+        } as any, "review");
+
+        expect(prompt).toContain("有修改则列出修改项与验证方式；无修改则列出结论、依据和建议的后续验证方式");
+    });
+
     it("passes update_plan as an internal tool to assembleRuntimeContext so it appears in 本轮可用工具", async () => {
         vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
@@ -1386,6 +1430,40 @@ describe("planningService approval-flow repair", () => {
         expect(reply).toContain("审批卡片未能保留");
     });
 
+    it("does not present carried-forward tool calls as a fresh request when the final reply is empty", () => {
+        const reply = planningServiceTestUtils.reconcileAssistantReply({
+            assistantReply: "",
+            proposedActions: [],
+            assistantToolCallsFromFinalTurn: false,
+            assistantToolCalls: [
+                {
+                    id: "call-1",
+                    type: "function",
+                    function: {
+                        name: "list_files",
+                        arguments: JSON.stringify({ relative_path: "src" }),
+                    },
+                },
+            ],
+            toolTrace: [
+                {
+                    callId: "call-1",
+                    name: "list_files",
+                    arguments: JSON.stringify({ relative_path: "src" }),
+                    startedAt: "2026-03-08T00:00:00.000Z",
+                    finishedAt: "2026-03-08T00:00:01.000Z",
+                    attempts: 1,
+                    status: "success",
+                    retried: false,
+                    resultPreview: "preview",
+                } satisfies ToolExecutionTrace,
+            ],
+        });
+
+        expect(reply).toBe("已完成工具调用。");
+        expect(reply).not.toContain("模型已请求工具调用");
+    });
+
     it("keeps pending shell proposals visible in the full planning pipeline", async () => {
         vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
@@ -1499,6 +1577,108 @@ describe("planningService approval-flow repair", () => {
         // pending_approval for the blocked tool.
         expect(result.toolTrace.length).toBeGreaterThanOrEqual(1);
         expect(result.toolTrace[0]?.status).toBe("pending_approval");
+    });
+
+    it("keeps carried-forward tool details without showing a fresh tool-request placeholder", async () => {
+        vi.mocked(resolveAgentRuntime).mockReturnValue({
+            agentId: "agent-default",
+            enabledTools: ["list_files"],
+            toolPermissions: {
+                ...DEFAULT_SETTINGS.toolPermissions,
+                list_files: "auto",
+            },
+            allowedSubAgents: [],
+        } as any);
+
+        vi.mocked(gatewayStream).mockReset();
+        vi.mocked(gatewayStream)
+            .mockResolvedValueOnce({
+                status: 200,
+                endpoint: "http://localhost:4000/chat/completions",
+                body: JSON.stringify({
+                    id: "chatcmpl-empty-final-1",
+                    choices: [
+                        {
+                            message: {
+                                role: "assistant",
+                                content: "",
+                                tool_calls: [
+                                    {
+                                        id: "call-list-1",
+                                        type: "function",
+                                        function: {
+                                            name: "list_files",
+                                            arguments: JSON.stringify({ relative_path: "src" }),
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                    usage: {
+                        prompt_tokens: 12,
+                        completion_tokens: 8,
+                    },
+                }),
+            })
+            .mockResolvedValueOnce({
+                status: 200,
+                endpoint: "http://localhost:4000/chat/completions",
+                body: JSON.stringify({
+                    id: "chatcmpl-empty-final-2",
+                    choices: [
+                        {
+                            message: {
+                                role: "assistant",
+                                content: "",
+                            },
+                        },
+                    ],
+                    usage: {
+                        prompt_tokens: 10,
+                        completion_tokens: 2,
+                    },
+                }),
+            });
+        vi.mocked(gatewayComplete).mockReset();
+        vi.mocked(gatewayComplete).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: JSON.stringify({
+                id: "chatcmpl-empty-final-fallback",
+                choices: [
+                    {
+                        message: {
+                            role: "assistant",
+                            content: "",
+                        },
+                    },
+                ],
+                usage: {
+                    prompt_tokens: 10,
+                    completion_tokens: 2,
+                },
+            }),
+        });
+
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            if (command === "list_workspace_files") {
+                return [];
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const result = await runPlanningSession({
+            prompt: "看看项目里有哪些目录",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        expect(result.toolTrace.length).toBeGreaterThanOrEqual(1);
+        expect(result.toolTrace.some((trace) => trace.name === "list_files")).toBe(true);
+        expect(result.assistantToolCalls).toHaveLength(1);
+        expect(result.assistantReply).toBe("已完成工具调用。");
+        expect(result.assistantReply).not.toContain("模型已请求工具调用");
     });
 
     it("does not force-stop exploration tasks after 25 tool turns", async () => {
@@ -2399,6 +2579,42 @@ describe("P0-2: task(team=...) role whitelist enforcement", () => {
     });
 });
 
+
+describe("evaluateCompressionSafeZone", () => {
+    const { evaluateCompressionSafeZone } = planningServiceTestUtils;
+
+    it("uses the latest token estimate when deciding compression safe-zone bypass", () => {
+        const tokenTracker = {
+            update: vi.fn()
+                .mockReturnValueOnce(120)
+                .mockReturnValueOnce(820),
+        } as any;
+
+        const messages: LiteLLMMessage[] = [
+            { role: "user", content: "start" },
+        ];
+
+        // Simulate the turn-start estimate that is now stale after system-note injection.
+        const turnStartTokens = tokenTracker.update(messages);
+        expect(turnStartTokens).toBe(120);
+
+        messages.push({
+            role: "system",
+            content: "late injected system message that increases token usage",
+        });
+
+        const evaluation = evaluateCompressionSafeZone({
+            tokenTracker,
+            messages,
+            promptBudgetTarget: 1000,
+            safeZoneRatio: 0.7,
+        });
+
+        expect(tokenTracker.update).toHaveBeenCalledTimes(2);
+        expect(evaluation.currentTokens).toBe(820);
+        expect(evaluation.skipCompression).toBe(false);
+    });
+});
 // ---------------------------------------------------------------------------
 // Message sanitization tests
 // ---------------------------------------------------------------------------

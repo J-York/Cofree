@@ -2,7 +2,7 @@ use crate::commands::http::{
     apply_protocol_headers, build_protocol_endpoints, build_reqwest_client_with_proxy,
 };
 use crate::domain::ProxySettings;
-use serde_json::Value;
+use serde_json::{Value};
 
 fn extract_error_message(payload: &Value) -> Option<String> {
     if let Some(message) = payload.get("message").and_then(Value::as_str) {

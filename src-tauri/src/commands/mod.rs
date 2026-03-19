@@ -10,7 +10,7 @@ pub use app::{
     save_workflow_checkpoint, select_workspace_folder, validate_git_repo,
 };
 pub use diagnostics::get_workspace_diagnostics;
-pub use http::fetch_url;
+pub use http::{cancel_http_request, fetch_url, perform_http_request};
 pub use litellm::fetch_litellm_models;
 pub use secure_store::{delete_secure_api_key, load_secure_api_key, save_secure_api_key};
 pub use workspace::{

@@ -14,6 +14,7 @@ import type {
   FileEntry,
   GlobEntry,
   GrepResult,
+  HttpResponsePayload,
 
   PatchApplyResult,
   ProxySettings,
@@ -579,4 +580,26 @@ export function fetchUrl(params: {
     maxSize: params.maxSize,
     proxy: params.proxy,
   });
+}
+
+export function performHttpRequest(params: {
+  requestId?: string;
+  method: string;
+  url: string;
+  headers: Array<[string, string]>;
+  body?: string | null;
+  proxy?: ProxySettings;
+}): Promise<HttpResponsePayload> {
+  return invoke<HttpResponsePayload>("perform_http_request", {
+    requestId: params.requestId,
+    method: params.method,
+    url: params.url,
+    headers: params.headers,
+    body: params.body,
+    proxy: params.proxy,
+  });
+}
+
+export function cancelHttpRequest(requestId: string): Promise<boolean> {
+  return invoke<boolean>("cancel_http_request", { requestId });
 }

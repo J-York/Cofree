@@ -32,6 +32,149 @@ import {
   type AppSettings,
   type ManagedModelThinkingLevel,
 } from "./settingsStore";
+import { cancelHttpRequest, performHttpRequest } from "./tauriBridge";
+
+function resolveFetchUrl(input: RequestInfo | URL): string {
+  if (typeof input === "string") {
+    return input;
+  }
+  if (typeof URL !== "undefined" && input instanceof URL) {
+    return input.toString();
+  }
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    return input.url;
+  }
+  return String(input);
+}
+
+function shouldBypassTauriHttpForUrl(url: string): boolean {
+  return url.startsWith("ipc://");
+}
+
+function sanitizeSdkFingerprintHeaders(headers: Headers): Headers {
+  const sanitized = new Headers();
+
+  for (const [name, value] of headers.entries()) {
+    const lowerName = name.toLowerCase();
+    const isOpenAiSdkUserAgent =
+      lowerName === "user-agent" && /^OpenAI\/JS\b/i.test(value);
+    const isStainlessHeader = lowerName.startsWith("x-stainless-");
+
+    if (isOpenAiSdkUserAgent || isStainlessHeader) {
+      continue;
+    }
+    sanitized.append(name, value);
+  }
+
+  return sanitized;
+}
+
+function createAbortError(message = "The operation was aborted."): DOMException {
+  return new DOMException(message, "AbortError");
+}
+
+function stringifyError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return String(error);
+}
+
+function isRustHttpCancellationError(error: unknown): boolean {
+  const message = stringifyError(error);
+  return (
+    message.includes("请求已取消") ||
+    /\babort(ed)?\b/i.test(message) ||
+    /\bcancel(l?ed|lation)?\b/i.test(message)
+  );
+}
+
+function createHttpRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `pi-http-${crypto.randomUUID()}`;
+  }
+  return `pi-http-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function performRustBackedFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  proxy?: AppSettings["proxy"],
+): Promise<Response> {
+  const headers = init?.headers
+    ? init.headers instanceof Headers
+      ? init.headers
+      : new Headers(init.headers)
+    : new Headers();
+  const req = new Request(input, init);
+  const requestId = createHttpRequestId();
+
+  let cancelIssued = false;
+  const issueCancel = () => {
+    if (cancelIssued) {
+      return;
+    }
+    cancelIssued = true;
+    void cancelHttpRequest(requestId).catch(() => {});
+  };
+
+  if (req.signal.aborted) {
+    issueCancel();
+    throw createAbortError();
+  }
+
+  const abortHandler = () => {
+    issueCancel();
+  };
+  req.signal.addEventListener("abort", abortHandler, { once: true });
+
+  try {
+    const buffer = await req.arrayBuffer();
+    const body =
+      buffer.byteLength !== 0 ? new TextDecoder().decode(new Uint8Array(buffer)) : null;
+
+    // Preserve browser-normalized headers like content-type when Request adds them.
+    for (const [key, value] of req.headers) {
+      if (!headers.get(key)) {
+        headers.set(key, value);
+      }
+    }
+
+    const sanitizedHeaders = sanitizeSdkFingerprintHeaders(headers);
+    const response = await performHttpRequest({
+      requestId,
+      method: req.method,
+      url: req.url,
+      headers: Array.from(sanitizedHeaders.entries()),
+      body,
+      proxy,
+    });
+
+    if (req.signal.aborted) {
+      throw createAbortError();
+    }
+
+    const res = new Response(response.body, {
+      status: response.status,
+      statusText: response.status_text,
+    });
+    Object.defineProperty(res, "url", { value: response.url });
+    Object.defineProperty(res, "headers", {
+      value: new Headers(response.headers),
+    });
+    return res;
+  } catch (error) {
+    if (req.signal.aborted || isRustHttpCancellationError(error)) {
+      throw createAbortError();
+    }
+    throw error;
+  } finally {
+    req.signal.removeEventListener("abort", abortHandler);
+  }
+}
 
 // ── Re-exported Cofree internal types ────────────────────────────────────────
 // These remain unchanged so existing consumers (planningService, contextBudget,
@@ -109,6 +252,31 @@ function mapProtocolToPiAiApi(protocol: VendorProtocol): string {
 // ── Model construction ───────────────────────────────────────────────────────
 
 /**
+ * Normalize a vendor base URL for pi-ai consumption.
+ * - OpenAI-compatible APIs (openai-completions, openai-responses, mistral):
+ *   The OpenAI SDK appends `/chat/completions` to `baseURL`, so the URL must
+ *   end with `/v1` (e.g. `https://api.openai.com/v1`).
+ * - Anthropic / Google APIs: pi-ai handles these internally; no `/v1` suffix.
+ */
+function normalizeBaseUrl(rawUrl: string, piAiApi: string): string {
+  let url = rawUrl.replace(/\/+$/, "").trim();
+  if (url.endsWith("#")) {
+    url = url.slice(0, -1).trim();
+  }
+
+  const needsV1Suffix =
+    piAiApi === "openai-completions" ||
+    piAiApi === "openai-responses" ||
+    piAiApi === "mistral-conversations";
+
+  if (needsV1Suffix && !url.endsWith("/v1")) {
+    url = `${url}/v1`;
+  }
+
+  return url;
+}
+
+/**
  * Build a pi-ai Model object from Cofree's vendor + managed-model config.
  * This produces a "custom model" that pi-ai can use with any supported API.
  */
@@ -117,13 +285,7 @@ export function buildPiAiModel(
   managedModel: ManagedModel,
 ): Model<Api> {
   const api = mapProtocolToPiAiApi(vendor.protocol);
-  let baseUrl = vendor.baseUrl.replace(/\/+$/, "");
-  if (baseUrl.endsWith("#")) {
-    baseUrl = baseUrl.slice(0, -1).trim();
-  }
-  if (!baseUrl.endsWith("/v1") && api !== "anthropic-messages" && api !== "google-generative-ai") {
-    baseUrl = baseUrl.replace(/\/+$/, "");
-  }
+  let baseUrl = normalizeBaseUrl(vendor.baseUrl, api);
   return {
     id: managedModel.name,
     name: managedModel.name,
@@ -252,10 +414,35 @@ function mapStopReason(reason: AssistantMessage["stopReason"]): string {
     case "stop": return "stop";
     case "toolUse": return "tool_calls";
     case "length": return "length";
-    case "error": return "stop";
+    case "error": return "error";
     case "aborted": return "stop";
     default: return "stop";
   }
+}
+
+/**
+ * Convert a pi-ai result into an LiteLLMHttpResponse.
+ * When stopReason is "error", return a proper `{ error: { message } }` body
+ * so that planningService.parseErrorMessage can extract it.
+ */
+function resultToHttpResponse(
+  result: AssistantMessage,
+  model: Model<Api>,
+): LiteLLMHttpResponse {
+  if (result.stopReason === "error" || result.stopReason === "aborted") {
+    const errMsg = result.errorMessage || `LLM request failed (${result.stopReason})`;
+    console.error(`[piAiBridge] LLM error: ${errMsg}`);
+    return {
+      status: 500,
+      body: JSON.stringify({ error: { message: errMsg } }),
+      endpoint: `pi-ai://${model.provider}/${model.id}`,
+    };
+  }
+  return {
+    status: 200,
+    body: assistantMessageToNormalizedBody(result),
+    endpoint: `pi-ai://${model.provider}/${model.id}`,
+  };
 }
 
 function assistantMessageToNormalizedBody(msg: AssistantMessage): string {
@@ -299,6 +486,40 @@ function assistantMessageToNormalizedBody(msg: AssistantMessage): string {
   });
 }
 
+
+function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && Boolean((window as unknown as Record<string, unknown>).__TAURI_INTERNALS__);
+}
+
+async function withTauriHttpFetch<T>(
+  operation: () => Promise<T>,
+  proxy?: AppSettings["proxy"],
+): Promise<T> {
+  if (!isTauriRuntime()) {
+    return operation();
+  }
+
+  const originalFetch = globalThis.fetch;
+  const tauriFetch: typeof fetch = (async (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ) => {
+    const url = resolveFetchUrl(input);
+    const bypassTauriHttp = shouldBypassTauriHttpForUrl(url);
+    if (bypassTauriHttp && typeof originalFetch === "function") {
+      return originalFetch.bind(globalThis)(input, init);
+    }
+    return performRustBackedFetch(input, init, proxy);
+  }) as typeof fetch;
+
+  try {
+    globalThis.fetch = tauriFetch;
+    return await operation();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 // ── Core LLM execution ──────────────────────────────────────────────────────
 
 export async function piAiChatComplete(
@@ -315,18 +536,15 @@ export async function piAiChatComplete(
   const context = toPiAiContext(messages, options?.tools);
 
   try {
-    const result = await piComplete(model, context, {
+    const result = await withTauriHttpFetch(() => piComplete(model, context, {
       apiKey,
       signal: options?.signal,
-    });
+    }));
 
-    return {
-      status: result.stopReason === "error" ? 500 : 200,
-      body: assistantMessageToNormalizedBody(result),
-      endpoint: `pi-ai://${model.provider}/${model.id}`,
-    };
+    return resultToHttpResponse(result, model);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[piAiBridge] piAiChatComplete threw: ${errorMsg}`);
     return {
       status: 500,
       body: JSON.stringify({ error: { message: errorMsg } }),
@@ -374,16 +592,13 @@ export async function piAiChatStream(
     }
 
     const result = await s.result();
-    return {
-      status: result.stopReason === "error" ? 500 : 200,
-      body: assistantMessageToNormalizedBody(result),
-      endpoint: `pi-ai://${model.provider}/${model.id}`,
-    };
+    return resultToHttpResponse(result, model);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw error;
     }
     const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[piAiBridge] piAiChatStream threw: ${errorMsg}`);
     return {
       status: 500,
       body: JSON.stringify({ error: { message: errorMsg } }),
@@ -550,7 +765,7 @@ function resolveModelFromSettings(
   }
 
   const modelName = runtime?.modelRef || settings.model;
-  const baseUrl = runtime?.baseUrl || vendor?.baseUrl || settings.liteLLMBaseUrl;
+  const rawBaseUrl = runtime?.baseUrl || vendor?.baseUrl || settings.liteLLMBaseUrl;
   const api = mapProtocolToPiAiApi(protocol);
 
   return {
@@ -559,7 +774,7 @@ function resolveModelFromSettings(
       name: modelName,
       api,
       provider: "custom",
-      baseUrl: baseUrl.replace(/\/+$/, ""),
+      baseUrl: normalizeBaseUrl(rawBaseUrl, api),
       reasoning: false,
       input: ["text"] as ("text" | "image")[],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -626,7 +841,7 @@ export async function gatewayComplete(
   const context = toPiAiContext(messages, hasTools ? options?.tools : undefined);
 
   try {
-    const result = await piComplete(model, context, {
+    const result = await withTauriHttpFetch(() => piComplete(model, context, {
       apiKey,
       temperature: effectiveTemp,
       maxTokens: adapted.maxTokens,
@@ -651,16 +866,13 @@ export async function gatewayComplete(
         }
         return undefined;
       },
-    });
+    }), settings.proxy);
 
-    return {
-      status: result.stopReason === "error" ? 500 : 200,
-      body: assistantMessageToNormalizedBody(result),
-      endpoint: `pi-ai://${model.provider}/${model.id}`,
-    };
+    return resultToHttpResponse(result, model);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[piAiBridge] gatewayComplete threw: ${errorMsg}`);
     return {
       status: 500,
       body: JSON.stringify({ error: { message: errorMsg } }),
@@ -741,14 +953,11 @@ export async function gatewayStream(
     }
 
     const result = await s.result();
-    return {
-      status: result.stopReason === "error" ? 500 : 200,
-      body: assistantMessageToNormalizedBody(result),
-      endpoint: `pi-ai://${model.provider}/${model.id}`,
-    };
+    return resultToHttpResponse(result, model);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[piAiBridge] gatewayStream threw: ${errorMsg}`);
     return {
       status: 500,
       body: JSON.stringify({ error: { message: errorMsg } }),

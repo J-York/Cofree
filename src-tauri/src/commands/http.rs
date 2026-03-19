@@ -1,7 +1,32 @@
 use crate::config;
-use crate::domain::ProxySettings;
+use crate::domain::{HttpResponsePayload, ProxySettings};
+use futures_util::future::{AbortHandle, Abortable};
 use reqwest::header::ACCEPT;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 120;
+
+fn http_request_abort_registry() -> &'static Mutex<HashMap<String, AbortHandle>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, AbortHandle>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_http_abort_handle(request_id: &str, handle: AbortHandle) -> Result<(), String> {
+    let mut registry = http_request_abort_registry()
+        .lock()
+        .map_err(|_| "HTTP 请求取消状态异常".to_string())?;
+    registry.insert(request_id.to_string(), handle);
+    Ok(())
+}
+
+fn remove_http_abort_handle(request_id: &str) -> Result<Option<AbortHandle>, String> {
+    let mut registry = http_request_abort_registry()
+        .lock()
+        .map_err(|_| "HTTP 请求取消状态异常".to_string())?;
+    Ok(registry.remove(request_id))
+}
 
 pub fn normalize_protocol(protocol: &str) -> &str {
     match protocol.trim() {
@@ -190,4 +215,104 @@ pub async fn fetch_url(
         truncated,
         error: None,
     })
+}
+
+#[tauri::command]
+pub async fn perform_http_request(
+    request_id: Option<String>,
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+    proxy: Option<ProxySettings>,
+) -> Result<HttpResponsePayload, String> {
+    let url_trimmed = url.trim();
+    if url_trimmed.is_empty() {
+        return Err("URL 不能为空".to_string());
+    }
+
+    let request_id = request_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+    let request_url = url_trimmed.to_string();
+
+    let (abort_handle, abort_registration) = AbortHandle::new_pair();
+    if let Some(active_request_id) = request_id.as_deref() {
+        register_http_abort_handle(active_request_id, abort_handle)?;
+    }
+
+    let request_task = async move {
+        let parsed_method = reqwest::Method::from_bytes(method.trim().as_bytes())
+            .map_err(|e| format!("HTTP 方法无效: {}", e))?;
+        let client =
+            build_reqwest_client_with_proxy(proxy, Some(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS))?;
+        let mut request = client.request(parsed_method, request_url);
+
+        for (name, value) in headers {
+            if name.eq_ignore_ascii_case("content-length") || name.eq_ignore_ascii_case("host") {
+                continue;
+            }
+            request = request.header(name, value);
+        }
+
+        if let Some(body) = body {
+            request = request.body(body);
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| format!("请求失败: {}", e))?;
+        let status = response.status();
+        let status_text = status.canonical_reason().unwrap_or("").to_string();
+        let response_url = response.url().to_string();
+        let response_headers = response
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|v| (name.as_str().to_string(), v.to_string()))
+            })
+            .collect::<Vec<_>>();
+        let response_body = response
+            .text()
+            .await
+            .map_err(|e| format!("读取响应失败: {}", e))?;
+
+        Ok(HttpResponsePayload {
+            status: status.as_u16(),
+            status_text,
+            url: response_url,
+            headers: response_headers,
+            body: response_body,
+        })
+    };
+
+    let result = Abortable::new(request_task, abort_registration).await;
+
+    if let Some(active_request_id) = request_id.as_deref() {
+        let _ = remove_http_abort_handle(active_request_id)?;
+    }
+
+    match result {
+        Ok(response) => response,
+        Err(_) => Err("请求已取消".to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn cancel_http_request(request_id: String) -> Result<bool, String> {
+    let request_id = request_id.trim();
+    if request_id.is_empty() {
+        return Ok(false);
+    }
+
+    let Some(abort_handle) = remove_http_abort_handle(request_id)? else {
+        return Ok(false);
+    };
+
+    abort_handle.abort();
+    Ok(true)
 }

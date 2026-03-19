@@ -132,18 +132,85 @@ const MAX_TOOL_RESULT_PREVIEW = 400;
 // --- Phase 4: Context management budgets ---
 const SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000;
 const SUMMARY_CACHE_MAX_ENTRIES = 100;
-const BASE_SUMMARY_COOLDOWN_MS = 60 * 1000;
+const BASE_SUMMARY_COOLDOWN_MS = 120 * 1000;
 
 const MIN_MESSAGES_TO_SUMMARIZE = 4;
-const MIN_RECENT_MESSAGES_TO_KEEP = 8;
-const RECENT_TOKENS_MIN_RATIO = 0.4;
-const TOOL_MESSAGE_MAX_CHARS = 3000;
 
-// --- Context Editing: proactive tool-use eviction ---
-const CONTEXT_EDIT_KEEP_RECENT_TURNS = 8;
+// --- Context Editing: proactive tool-use eviction (defaults for small windows) ---
 const CONTEXT_EDIT_CLEAR_AT_LEAST = 3;
-const CONTEXT_EDIT_TRIGGER_EVERY_N_TURNS = 8;
-const CONTEXT_EDIT_TRIGGER_TOKEN_RATIO = 0.85;
+
+// ---------------------------------------------------------------------------
+// Adaptive compression parameters based on model context window size.
+// Large-window models (>= 100k) can afford much more relaxed thresholds;
+// small-window models (<32k) need the aggressive defaults.
+// ---------------------------------------------------------------------------
+
+interface AdaptiveCompressionParams {
+  toolMessageMaxChars: number;
+  minRecentMessagesToKeep: number;
+  recentTokensMinRatio: number;
+  contextEditTriggerTokenRatio: number;
+  contextEditKeepRecentTurns: number;
+  contextEditTriggerEveryNTurns: number;
+  outputReserveRatio: number;
+  softBudgetRatio: number;
+  compressionSafeZoneRatio: number;
+}
+
+function computeAdaptiveCompressionParams(limitTokens: number): AdaptiveCompressionParams {
+  if (limitTokens >= 100_000) {
+    return {
+      toolMessageMaxChars: 8000,
+      minRecentMessagesToKeep: 20,
+      recentTokensMinRatio: 0.5,
+      contextEditTriggerTokenRatio: 0.92,
+      contextEditKeepRecentTurns: 16,
+      contextEditTriggerEveryNTurns: 16,
+      outputReserveRatio: 0.10,
+      softBudgetRatio: 0.95,
+      compressionSafeZoneRatio: 0.72,
+    };
+  }
+  if (limitTokens >= 32_000) {
+    return {
+      toolMessageMaxChars: 5000,
+      minRecentMessagesToKeep: 12,
+      recentTokensMinRatio: 0.45,
+      contextEditTriggerTokenRatio: 0.88,
+      contextEditKeepRecentTurns: 10,
+      contextEditTriggerEveryNTurns: 12,
+      outputReserveRatio: 0.12,
+      softBudgetRatio: 0.92,
+      compressionSafeZoneRatio: 0.68,
+    };
+  }
+  return {
+    toolMessageMaxChars: 3000,
+    minRecentMessagesToKeep: 8,
+    recentTokensMinRatio: 0.4,
+    contextEditTriggerTokenRatio: 0.85,
+    contextEditKeepRecentTurns: 8,
+    contextEditTriggerEveryNTurns: 8,
+    outputReserveRatio: 0.15,
+    softBudgetRatio: 0.9,
+    compressionSafeZoneRatio: 0.62,
+  };
+}
+
+function evaluateCompressionSafeZone(params: {
+  tokenTracker: MessageTokenTracker;
+  messages: LiteLLMMessage[];
+  promptBudgetTarget: number;
+  safeZoneRatio: number;
+}): { currentTokens: number; compressionSafeZone: number; skipCompression: boolean } {
+  const currentTokens = params.tokenTracker.update(params.messages);
+  const compressionSafeZone = params.promptBudgetTarget * params.safeZoneRatio;
+  return {
+    currentTokens,
+    compressionSafeZone,
+    skipCompression: currentTokens <= compressionSafeZone,
+  };
+}
 
 // P2-2: Dynamic cooldown state — tracks token growth to adjust cooldown.
 // Capped at MAX_TRACKED_WORKSPACES to prevent unbounded memory growth.
@@ -201,8 +268,8 @@ function computeDynamicCooldownMs(workspacePath: string | undefined, currentToke
 
   const growthRate = tokenDelta / (timeDelta / 1000);
 
-  if (growthRate > 500) return 15_000;
-  if (growthRate > 200) return 30_000;
+  if (growthRate > 500) return 45_000;
+  if (growthRate > 200) return 60_000;
   return BASE_SUMMARY_COOLDOWN_MS;
 }
 
@@ -3461,9 +3528,10 @@ export async function executeSubAgentTask(
 
   // Compute context budgets for sub-agent
   const limitTokens = resolveEffectiveContextTokenLimit(settings);
-  const outputBufferTokens = Math.min(8000, Math.max(512, Math.floor(limitTokens * 0.15)));
+  const adaptiveParams = computeAdaptiveCompressionParams(limitTokens);
+  const outputBufferTokens = Math.min(8000, Math.max(512, Math.floor(limitTokens * adaptiveParams.outputReserveRatio)));
   const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
-  const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
+  const softPromptBudget = Math.floor(hardPromptBudget * adaptiveParams.softBudgetRatio);
   const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
   const inferredFocusedPaths = collectSubAgentFocusedPaths(
     taskDescription,
@@ -3555,9 +3623,9 @@ export async function executeSubAgentTask(
   const compressionPolicy = {
     maxPromptTokens: promptBudgetTarget,
     minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
-    minRecentMessagesToKeep: MIN_RECENT_MESSAGES_TO_KEEP,
-    recentTokensMinRatio: RECENT_TOKENS_MIN_RATIO,
-    toolMessageMaxChars: TOOL_MESSAGE_MAX_CHARS,
+    minRecentMessagesToKeep: adaptiveParams.minRecentMessagesToKeep,
+    recentTokensMinRatio: adaptiveParams.recentTokensMinRatio,
+    toolMessageMaxChars: adaptiveParams.toolMessageMaxChars,
     mergeToolMessages: true,
     toolDefinitionTokens: subToolDefTokens,
   };
@@ -5986,6 +6054,7 @@ async function runNativeToolCallingLoop(
   planState: TodoPlanState;
   toolTrace: ToolExecutionTrace[];
   assistantToolCalls?: LiteLLMMessage["tool_calls"];
+  assistantToolCallsFromFinalTurn?: boolean;
 }> {
   const activeTools = buildAgentToolDefs(runtime);
   const enabledToolNames = [...runtime.enabledTools, ...INTERNAL_TOOL_NAMES];
@@ -6080,6 +6149,7 @@ async function runNativeToolCallingLoop(
 
   // --- Context window management ---
   const limitTokens = resolveEffectiveContextTokenLimit(settings);
+  const adaptiveParams = computeAdaptiveCompressionParams(limitTokens);
 
   // --- Shared Working Memory for multi-agent collaboration ---
   // P3-2: Restore from checkpoint snapshot if available, otherwise create fresh
@@ -6087,7 +6157,7 @@ async function runNativeToolCallingLoop(
     ? restoreWorkingMemory(restoredWorkingMemory)
     : createWorkingMemory({
         maxTokenBudget: Math.floor(
-          Math.max(0, limitTokens - Math.min(8000, Math.max(512, Math.floor(limitTokens * 0.15)))) * 0.9 * 0.2
+          Math.max(0, limitTokens - Math.min(8000, Math.max(512, Math.floor(limitTokens * adaptiveParams.outputReserveRatio)))) * adaptiveParams.softBudgetRatio * 0.2
         ),
         projectContext: internalSystemNote?.slice(0, 500) ?? "",
       });
@@ -6098,10 +6168,10 @@ async function runNativeToolCallingLoop(
   }
   const outputBufferTokens = Math.min(
     8000,
-    Math.max(512, Math.floor(limitTokens * 0.15))
+    Math.max(512, Math.floor(limitTokens * adaptiveParams.outputReserveRatio))
   );
   const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
-  const softPromptBudget = Math.floor(hardPromptBudget * 0.9);
+  const softPromptBudget = Math.floor(hardPromptBudget * adaptiveParams.softBudgetRatio);
   const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
 
   // P0-2: Pre-compute tool definition overhead and pass to compression policy.
@@ -6114,9 +6184,9 @@ async function runNativeToolCallingLoop(
   const compressionPolicy = {
     maxPromptTokens: promptBudgetTarget,
     minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
-    minRecentMessagesToKeep: MIN_RECENT_MESSAGES_TO_KEEP,
-    recentTokensMinRatio: RECENT_TOKENS_MIN_RATIO,
-    toolMessageMaxChars: TOOL_MESSAGE_MAX_CHARS,
+    minRecentMessagesToKeep: adaptiveParams.minRecentMessagesToKeep,
+    recentTokensMinRatio: adaptiveParams.recentTokensMinRatio,
+    toolMessageMaxChars: adaptiveParams.toolMessageMaxChars,
     mergeToolMessages: true,
     toolDefinitionTokens: toolDefTokens,
   };
@@ -6236,9 +6306,9 @@ async function runNativeToolCallingLoop(
 
     const pinnedPrefixLen = initialSystemPrefixLength(messages);
 
-    const estTokens = tokenTracker.update(messages);
+    const estTokensAtTurnStart = tokenTracker.update(messages);
     console.log(
-      `[Loop] ── Turn ${turn + 1} ── taskType=${taskType} | messages=${messages.length} | ~${estTokens} tokens`
+      `[Loop] ── Turn ${turn + 1} ── taskType=${taskType} | messages=${messages.length} | ~${estTokensAtTurnStart} tokens`
     );
 
     // Inject task progress summary every 5 turns or when failures accumulate
@@ -6301,13 +6371,14 @@ async function runNativeToolCallingLoop(
     }
 
     // --- Context Editing: 主动淘汰旧 tool-use 对 ---
-    const shouldEditByTurns = CONTEXT_EDIT_TRIGGER_EVERY_N_TURNS > 0
-      && turn > 0 && turn % CONTEXT_EDIT_TRIGGER_EVERY_N_TURNS === 0;
-    const shouldEditByTokens = estTokens > promptBudgetTarget * CONTEXT_EDIT_TRIGGER_TOKEN_RATIO;
+    const shouldEditByTurns = adaptiveParams.contextEditTriggerEveryNTurns > 0
+      && turn > 0 && turn % adaptiveParams.contextEditTriggerEveryNTurns === 0;
+    const shouldEditByTokens = tokenTracker.update(messages) >
+      promptBudgetTarget * adaptiveParams.contextEditTriggerTokenRatio;
 
     if (shouldEditByTurns || shouldEditByTokens) {
       const editResult = clearOldToolUses(messages, {
-        keepRecentTurns: CONTEXT_EDIT_KEEP_RECENT_TURNS,
+        keepRecentTurns: adaptiveParams.contextEditKeepRecentTurns,
         clearAtLeast: CONTEXT_EDIT_CLEAR_AT_LEAST,
         pinnedPrefixLen,
       });
@@ -6322,12 +6393,29 @@ async function runNativeToolCallingLoop(
     }
 
     // 现有的 compression pipeline 继续执行
-    const compression = await compressMessagesToFitBudget({
+    // 安全区：如果 token 用量低于预算的阈值，跳过压缩管道以避免不必要的截断
+    const safeZoneEval = evaluateCompressionSafeZone({
+      tokenTracker,
       messages,
-      policy: compressionPolicy,
-      summarizer,
-      pinnedPrefixLen,
+      promptBudgetTarget,
+      safeZoneRatio: adaptiveParams.compressionSafeZoneRatio,
     });
+    const compression = safeZoneEval.skipCompression
+      ? {
+        compressed: false,
+        messages,
+        usedSummary: false,
+        usedTruncation: false,
+        usedToolCompression: false,
+        estimatedTokensBefore: safeZoneEval.currentTokens,
+        estimatedTokensAfter: safeZoneEval.currentTokens,
+      }
+      : await compressMessagesToFitBudget({
+        messages,
+        policy: compressionPolicy,
+        summarizer,
+        pinnedPrefixLen,
+      });
     if (compression.compressed && compression.messages !== messages) {
       const beforeLen = messages.length;
       messages.splice(0, messages.length, ...compression.messages);
@@ -6352,7 +6440,8 @@ async function runNativeToolCallingLoop(
           "如需特定文件的详细内容，请使用 start_line/end_line 精确读取目标区域，而非重新全文读取。",
         ].join("\n"),
       });
-    }    onContextUpdate?.(tokenTracker.update(messages));
+    }
+    onContextUpdate?.(tokenTracker.update(messages));
 
     let completion;
     {
@@ -6514,6 +6603,8 @@ async function runNativeToolCallingLoop(
           toolTrace,
           assistantToolCalls:
             completion.assistantMessage.tool_calls ?? lastAssistantToolCalls,
+          assistantToolCallsFromFinalTurn:
+            (completion.assistantMessage.tool_calls?.length ?? 0) > 0,
         };
       }
 
@@ -6527,6 +6618,8 @@ async function runNativeToolCallingLoop(
         toolTrace,
         assistantToolCalls:
           completion.assistantMessage.tool_calls ?? lastAssistantToolCalls,
+        assistantToolCallsFromFinalTurn:
+          (completion.assistantMessage.tool_calls?.length ?? 0) > 0,
       };
     }
 
@@ -7442,14 +7535,23 @@ function reconcileAssistantReply(params: {
   proposedActions: ActionProposal[];
   toolTrace: ToolExecutionTrace[];
   assistantToolCalls?: LiteLLMMessage["tool_calls"];
+  assistantToolCallsFromFinalTurn?: boolean;
 }): string {
-  const { assistantReply, proposedActions, toolTrace, assistantToolCalls } = params;
+  const {
+    assistantReply,
+    proposedActions,
+    toolTrace,
+    assistantToolCalls,
+    assistantToolCallsFromFinalTurn,
+  } = params;
   const normalized = assistantReply.trim();
   const hasAssistantToolCalls = (assistantToolCalls?.length ?? 0) > 0;
+  const hasCurrentAssistantToolCalls =
+    hasAssistantToolCalls && (assistantToolCallsFromFinalTurn ?? true);
   const hasPendingApprovalToolCall = hasPendingApprovalTrace(toolTrace);
 
   if (!normalized) {
-    if (hasAssistantToolCalls) {
+    if (hasCurrentAssistantToolCalls) {
       if (proposedActions.length > 0) {
         return "模型已请求工具调用，并已生成待审批动作，请查看下方工具调用与审批卡片。";
       }
@@ -7493,7 +7595,7 @@ function reconcileAssistantReply(params: {
     if (cleaned) {
       return cleaned;
     }
-    if (hasAssistantToolCalls) {
+    if (hasCurrentAssistantToolCalls) {
       return "模型已请求工具调用，请查看下方工具调用详情。";
     }
     if (toolTrace.length > 0) {
@@ -7528,7 +7630,7 @@ function reconcileAssistantReply(params: {
     return MISSING_APPROVAL_CARD_MESSAGE;
   }
 
-  if (hasAssistantToolCalls) {
+  if (hasCurrentAssistantToolCalls) {
     return "模型已请求工具调用，请查看下方工具调用详情。";
   }
 
@@ -7544,6 +7646,7 @@ export const planningServiceTestUtils = {
   pruneStaleSystemMessages,
   detectPseudoToolCallNarration,
   detectPseudoToolJsonTranscript,
+  evaluateCompressionSafeZone,
 };
 
 function assertLocalOnlyPolicy(settings: AppSettings): void {
@@ -7887,6 +7990,8 @@ export async function runPlanningSession(
       proposedActions,
       toolTrace: loopResult.toolTrace,
       assistantToolCalls,
+      assistantToolCallsFromFinalTurn:
+        loopResult.assistantToolCallsFromFinalTurn,
     });
 
     return {

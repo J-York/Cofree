@@ -1293,7 +1293,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       };
       saveConversation(wsPath, updatedConversation);
       setCurrentConversation(updatedConversation);
-
       setConversations(loadConversationList(wsPath));
     }
   }, [messages, currentConversation?.id]);
