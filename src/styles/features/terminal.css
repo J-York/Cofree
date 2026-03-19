@@ -182,7 +182,7 @@
 }
 
 .terminal-entry-output-error {
-  color: #ffb8b2;
+  color: var(--color-error-text);
   border-color: rgba(248, 113, 113, 0.18);
   background: rgba(248, 113, 113, 0.07);
 }
@@ -232,4 +232,67 @@
 .terminal-composer-hint {
   font-size: 11px;
   color: var(--terminal-muted);
+}
+
+/* ── Terminal Light Mode ──────────────────────────────────── */
+[data-theme="light"] .terminal-shell {
+  --terminal-bg: #F8FAFB;
+  --terminal-surface: rgba(0, 0, 0, 0.03);
+  --terminal-border: rgba(0, 0, 0, 0.08);
+  --terminal-text: #1a1f26;
+  --terminal-muted: #5c6a7a;
+  --terminal-accent: #16A34A;
+}
+
+[data-theme="light"] .terminal-shell {
+  background:
+    radial-gradient(circle at top right, rgba(22, 163, 74, 0.08), transparent 26%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.01), transparent 22%),
+    var(--terminal-bg);
+}
+
+[data-theme="light"] .terminal-shell-header {
+  background: rgba(248, 250, 251, 0.85);
+}
+
+[data-theme="light"] .terminal-shell-close {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .terminal-shell-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .terminal-entry {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+[data-theme="light"] .terminal-entry-output {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .terminal-entry-output-error {
+  color: var(--color-error-text);
+  border-color: rgba(220, 38, 38, 0.18);
+  background: rgba(220, 38, 38, 0.06);
+}
+
+[data-theme="light"] .terminal-composer {
+  background: rgba(248, 250, 251, 0.88);
+}
+
+[data-theme="light"] .terminal-input {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .terminal-input:focus {
+  background: rgba(0, 0, 0, 0.02);
+  border-color: rgba(22, 163, 74, 0.4);
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12);
+}
+
+[data-theme="light"] .terminal-dock.open {
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.08);
 }

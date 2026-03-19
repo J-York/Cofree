@@ -5,43 +5,53 @@
 
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
 
-/* ── Tokens ─────────────────────────────────────────────── */
+/* ── Tokens (Dark Mode - Default) ─────────────────────────── */
 :root {
-  --surface-0: #121214;
-  --surface-1: #18181B;
-  --surface-2: #212125;
-  --surface-3: #2A2A30;
-  --surface-4: #33333A;
-  --surface-5: #3F3F46;
+  /* Surface hierarchy - refined gradient for better depth */
+  --surface-0: #0F0F11;
+  --surface-1: #161618;
+  --surface-2: #1E1E21;
+  --surface-3: #26262B;
+  --surface-4: #2E2E35;
+  --surface-5: #38383F;
 
+  /* Text hierarchy */
   --text-1: #F4F4F5;
   --text-2: #A1A1AA;
   --text-3: #71717A;
-  --text-link: #8FA6D0;
+  --text-link: #93B4E8;
 
+  /* Borders */
   --border-1: rgba(255,255,255,0.06);
-  --border-2: rgba(255,255,255,0.12);
-  --border-3: rgba(255,255,255,0.18);
-  --border-focus: rgba(143,166,208,0.40);
+  --border-2: rgba(255,255,255,0.10);
+  --border-3: rgba(255,255,255,0.16);
+  --border-focus: rgba(147,180,232,0.45);
 
-  --accent-solid: #8FA6D0;
-  --accent-muted: rgba(143,166,208,0.15);
+  /* Accent - more vibrant blue-gray */
+  --accent-solid: #93B4E8;
+  --accent-muted: rgba(147,180,232,0.15);
+  --accent-text: #0F0F11;
 
+  /* Semantic colors */
   --color-success: #4ADE80;
-  --color-success-bg: rgba(74,222,128,0.1);
+  --color-success-bg: rgba(74,222,128,0.10);
   --color-error: #F87171;
-  --color-error-bg: rgba(248,113,113,0.1);
+  --color-error-bg: rgba(248,113,113,0.10);
+  --color-error-text: #ffb8b2;
   --color-warning: #FACC15;
-  --color-warning-bg: rgba(250,204,21,0.1);
+  --color-warning-bg: rgba(250,204,21,0.10);
   --color-info: #60A5FA;
-  --color-info-bg: rgba(96,165,250,0.1);
+  --color-info-bg: rgba(96,165,250,0.10);
 
-  --user-bubble-bg: linear-gradient(135deg, #2D333B 0%, #252A30 100%);
+  /* User bubble */
+  --user-bubble-bg: linear-gradient(135deg, #2A3038 0%, #222830 100%);
   --user-bubble-border: rgba(255,255,255,0.08);
 
+  /* Typography */
   --font-sans: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
 
+  /* Radii */
   --r-xs: 6px;
   --r-sm: 10px;
   --r-md: 14px;
@@ -49,11 +59,13 @@
   --r-xl: 24px;
   --r-full: 9999px;
 
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.2), 0 1px 2px rgba(0,0,0,0.12);
-  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.3), 0 2px 4px -2px rgba(0,0,0,0.2);
-  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.4), 0 4px 6px -4px rgba(0,0,0,0.2);
-  --shadow-float: 0 20px 25px -5px rgba(0,0,0,0.5), 0 8px 10px -6px rgba(0,0,0,0.3), 0 0 0 1px var(--border-2);
+  /* Shadows - dark mode */
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.24), 0 1px 2px rgba(0,0,0,0.16);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.35), 0 2px 4px -2px rgba(0,0,0,0.24);
+  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.45), 0 4px 6px -4px rgba(0,0,0,0.25);
+  --shadow-float: 0 20px 25px -5px rgba(0,0,0,0.55), 0 8px 10px -6px rgba(0,0,0,0.35), 0 0 0 1px var(--border-2);
 
+  /* Transitions */
   --t-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
   --t-med: 250ms cubic-bezier(0.4, 0, 0.2, 1);
   --t-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -65,4 +77,56 @@
   line-height: 1.6;
   color: var(--text-1);
   -webkit-font-smoothing: antialiased;
+}
+
+/* ── Light Mode ───────────────────────────────────────────── */
+[data-theme="light"] {
+  /* Surface hierarchy - white to light gray */
+  --surface-0: #FFFFFF;
+  --surface-1: #FAFAFA;
+  --surface-2: #F5F5F6;
+  --surface-3: #EBEBED;
+  --surface-4: #E1E1E4;
+  --surface-5: #D4D4D8;
+
+  /* Text hierarchy */
+  --text-1: #18181B;
+  --text-2: #52525B;
+  --text-3: #71717A;
+  --text-link: #4B6A9B;
+
+  /* Borders - using black alpha */
+  --border-1: rgba(0,0,0,0.06);
+  --border-2: rgba(0,0,0,0.10);
+  --border-3: rgba(0,0,0,0.16);
+  --border-focus: rgba(75,106,155,0.40);
+
+  /* Accent - darker for light background */
+  --accent-solid: #4B6A9B;
+  --accent-muted: rgba(75,106,155,0.12);
+  --accent-text: #FFFFFF;
+
+  /* Semantic colors - adjusted for light mode */
+  --color-success: #16A34A;
+  --color-success-bg: rgba(22,163,74,0.10);
+  --color-error: #DC2626;
+  --color-error-bg: rgba(220,38,38,0.08);
+  --color-error-text: #B91C1C;
+  --color-warning: #CA8A04;
+  --color-warning-bg: rgba(202,138,4,0.10);
+  --color-info: #2563EB;
+  --color-info-bg: rgba(37,99,235,0.08);
+
+  /* User bubble - light mode */
+  --user-bubble-bg: linear-gradient(135deg, #EEF2F7 0%, #E8ECF2 100%);
+  --user-bubble-border: rgba(0,0,0,0.08);
+
+  /* Shadows - softer for light mode */
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.10), 0 2px 4px -2px rgba(0,0,0,0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.12), 0 4px 6px -4px rgba(0,0,0,0.08);
+  --shadow-float: 0 20px 25px -5px rgba(0,0,0,0.15), 0 8px 10px -6px rgba(0,0,0,0.10), 0 0 0 1px var(--border-2);
+
+  color-scheme: light;
+  color: var(--text-1);
 }

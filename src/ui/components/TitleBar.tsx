@@ -1,6 +1,7 @@
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { WindowControls } from "./WindowControls";
-import { IconSettings, IconTerminal, IconBranch, IconFolder } from "./Icons";
+import { IconSettings, IconTerminal, IconBranch, IconFolder, IconSun, IconMoon, IconMonitor } from "./Icons";
+import { useTheme, getThemeLabel, getNextTheme, type ThemeMode } from "../../hooks/useTheme";
 import type { ChatAgentDefinition } from "../../agents/types";
 
 interface TitleBarModelOption {
@@ -31,6 +32,37 @@ interface TitleBarProps {
 function getWorkspaceLabel(workspacePath: string): string {
   const parts = workspacePath.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || workspacePath;
+}
+
+function ThemeIcon({ theme }: { theme: ThemeMode }): ReactElement {
+  switch (theme) {
+    case "dark":
+      return <IconMoon size={14} />;
+    case "light":
+      return <IconSun size={14} />;
+    case "system":
+      return <IconMonitor size={14} />;
+  }
+}
+
+function ThemeToggleButton(): ReactElement {
+  const { theme, setTheme } = useTheme();
+  const label = getThemeLabel(theme);
+
+  const handleClick = () => {
+    setTheme(getNextTheme(theme));
+  };
+
+  return (
+    <button
+      className="titlebar-btn"
+      onClick={handleClick}
+      type="button"
+      title={`主题: ${label}`}
+    >
+      <ThemeIcon theme={theme} />
+    </button>
+  );
 }
 
 export function TitleBar({
@@ -263,6 +295,7 @@ export function TitleBar({
         >
           <IconTerminal size={14} />
         </button>
+        <ThemeToggleButton />
         <WindowControls />
       </div>
     </header>

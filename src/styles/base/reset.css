@@ -20,3 +20,7 @@ body {
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: var(--r-full); }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.10); }
 
+/* ── Scrollbar Light Mode ──────────────────────────────────── */
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.08); }
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.14); }
+

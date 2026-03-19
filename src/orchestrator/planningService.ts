@@ -1954,6 +1954,7 @@ export interface PlanningSessionResult {
   plan: OrchestrationPlan;
   toolTrace: ToolExecutionTrace[];
   assistantToolCalls?: LiteLLMMessage["tool_calls"];
+  workingMemorySnapshot?: WorkingMemorySnapshot;
   tokenUsage: {
     inputTokens: number;
     outputTokens: number;
@@ -5136,10 +5137,13 @@ async function executeToolCall(
           workingMemory,
           focusedPaths,
           onStageProgress: (stage, event) => {
+            const stageRole = teamDef.pipeline.find((candidate) => candidate.stageLabel === stage)?.agentRole;
             onSubAgentProgress?.({
               ...event,
-              kind: "summary",
-              message: `[${stage}] ${event.kind === "summary" ? event.message : event.kind}`
+              teamId,
+              stageLabel: stage,
+              agentRole: stageRole,
+              sourceLabel: `${teamId} · ${stage}`,
             });
           },
           signal
@@ -5154,7 +5158,13 @@ async function executeToolCall(
 
         for (const [stageLabel, stageRes] of Object.entries(teamResult.stageResults)) {
           if (stageRes.proposedActions?.length) {
-            allTeamActions.push(...stageRes.proposedActions);
+            allTeamActions.push(
+              ...stageRes.proposedActions.map((action) => ({
+                ...action,
+                origin: "team_stage" as const,
+                originDetail: `${teamId} / ${stageLabel}`,
+              })),
+            );
           }
           if (stageRes.toolTrace?.length) {
             allTeamToolTraces.push(...stageRes.toolTrace);
@@ -6071,6 +6081,7 @@ async function runNativeToolCallingLoop(
   toolTrace: ToolExecutionTrace[];
   assistantToolCalls?: LiteLLMMessage["tool_calls"];
   assistantToolCallsFromFinalTurn?: boolean;
+  workingMemorySnapshot?: WorkingMemorySnapshot;
 }> {
   const activeTools = buildAgentToolDefs(runtime);
   const enabledToolNames = [...runtime.enabledTools, ...INTERNAL_TOOL_NAMES];
@@ -6182,6 +6193,8 @@ async function runNativeToolCallingLoop(
       `[Loop] Working memory restored from checkpoint | files=${workingMemory.fileKnowledge.size} | facts=${workingMemory.discoveredFacts.length} | history=${workingMemory.subAgentHistory.length}`
     );
   }
+  const currentWorkingMemorySnapshot = (): WorkingMemorySnapshot | undefined =>
+    snapshotWorkingMemory(workingMemory);
   const outputBufferTokens = Math.min(
     8000,
     Math.max(512, Math.floor(limitTokens * adaptiveParams.outputReserveRatio))
@@ -6229,6 +6242,7 @@ async function runNativeToolCallingLoop(
         planState,
         toolTrace,
         assistantToolCalls: lastAssistantToolCalls,
+        workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
 
@@ -6241,6 +6255,7 @@ async function runNativeToolCallingLoop(
         planState,
         toolTrace,
         assistantToolCalls: lastAssistantToolCalls,
+        workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
 
@@ -6256,7 +6271,7 @@ async function runNativeToolCallingLoop(
           toolTrace: [...toolTrace],
           assistantReply: lastReply,
           // P3-1: Include working memory snapshot for checkpoint persistence
-          workingMemorySnapshot: workingMemory ? snapshotWorkingMemory(workingMemory) : undefined,
+          workingMemorySnapshot: currentWorkingMemorySnapshot(),
         });
         console.log(`[Loop] 增量检查点已保存 | turn=${turn} | actions=${proposedActions.length} | traces=${toolTrace.length}`);
       } catch (checkpointError) {
@@ -6621,6 +6636,7 @@ async function runNativeToolCallingLoop(
             completion.assistantMessage.tool_calls ?? lastAssistantToolCalls,
           assistantToolCallsFromFinalTurn:
             (completion.assistantMessage.tool_calls?.length ?? 0) > 0,
+          workingMemorySnapshot: currentWorkingMemorySnapshot(),
         };
       }
 
@@ -6636,6 +6652,7 @@ async function runNativeToolCallingLoop(
           completion.assistantMessage.tool_calls ?? lastAssistantToolCalls,
         assistantToolCallsFromFinalTurn:
           (completion.assistantMessage.tool_calls?.length ?? 0) > 0,
+        workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
 
@@ -6668,8 +6685,19 @@ async function runNativeToolCallingLoop(
       if (onSubAgentProgress && toolCall.function.name === "task") {
         try {
           const taskArgs = JSON.parse(toolCall.function.arguments || "{}");
-          const taskRole = String(taskArgs.role ?? "unknown");
-          progressForCall = (event: SubAgentProgressEvent) => onSubAgentProgress(taskRole, event);
+          const taskTeam = typeof taskArgs.team === "string" ? taskArgs.team : undefined;
+          const taskRole = String(taskArgs.role ?? taskTeam ?? "unknown");
+          progressForCall = (event: SubAgentProgressEvent) =>
+            onSubAgentProgress(taskRole, {
+              ...event,
+              teamId: taskTeam ?? event.teamId,
+              agentRole:
+                (typeof taskArgs.role === "string" ? taskArgs.role : undefined) ??
+                event.agentRole,
+              sourceLabel:
+                event.sourceLabel ??
+                (taskTeam ? `Team ${taskTeam}` : taskRole),
+            });
         } catch {
           // Ignore parse errors
         }
@@ -7068,6 +7096,7 @@ async function runNativeToolCallingLoop(
         proposedActions,
         planState,
         toolTrace,
+        workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
     if (toolNotFoundStrikes > 0 && toolNotFoundStrikes < MAX_TOOL_NOT_FOUND_STRIKES) {
@@ -7096,6 +7125,7 @@ async function runNativeToolCallingLoop(
         proposedActions,
         planState,
         toolTrace,
+        workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
 
@@ -7238,6 +7268,7 @@ async function runNativeToolCallingLoop(
         proposedActions,
         planState,
         toolTrace,
+        workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
   }
@@ -7249,6 +7280,7 @@ async function runNativeToolCallingLoop(
     proposedActions,
     planState,
     toolTrace,
+    workingMemorySnapshot: currentWorkingMemorySnapshot(),
   };
 }
 
@@ -8015,6 +8047,7 @@ export async function runPlanningSession(
       plan,
       toolTrace: loopResult.toolTrace,
       assistantToolCalls,
+      workingMemorySnapshot: loopResult.workingMemorySnapshot,
       tokenUsage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
     };
   } catch (error) {

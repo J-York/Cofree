@@ -64,7 +64,9 @@ const RULE_TOOL_SELECTION = [
   "- **propose_file_edit 的 relative_path 是必填参数**，所有操作都必须提供。",
   "- **replace 操作**必须提供 search（要替换的原文）或 start_line/end_line（行范围）。如果文件不存在，请改用 operation='create'。",
   "- 当工具调用失败时，仔细阅读错误信息并调整参数重试，而不是盲目切换工具。",
-  "",
+].join("\n");
+
+const RULE_SUB_AGENT_DELEGATION = [
   "## Sub-Agent 委派",
   "- 当任务可以拆分为独立子任务时，可使用 task 工具委派给专业 Sub-Agent。",
   "- Sub-Agent 会独立运行工具调用循环并返回结果摘要。",
@@ -295,8 +297,15 @@ export function assembleSystemPrompt(
   const protocol = (runtime.vendorProtocol || "openai-chat-completions") as VendorProtocol;
   const capabilities = getModelCapabilities(runtime.modelRef, protocol);
   const modelAdaptations = buildModelAdaptationBlock(capabilities);
+  const taskDelegationEnabled =
+    runtime.enabledTools.includes("task") &&
+    runtime.allowedSubAgents.length > 0 &&
+    runtime.handoffPolicy !== "none";
 
   const parts = [runtime.systemPrompt, rules];
+  if (taskDelegationEnabled) {
+    parts.push(RULE_SUB_AGENT_DELEGATION);
+  }
   if (modelAdaptations) {
     parts.push(modelAdaptations);
   }
@@ -406,6 +415,16 @@ export function assembleRuntimeContext(
   const askTools = Object.entries(runtime.toolPermissions)
     .filter(([, level]) => level === "ask")
     .map(([name]) => name);
+  const taskDelegationEnabled =
+    runtime.enabledTools.includes("task") &&
+    runtime.allowedSubAgents.length > 0 &&
+    runtime.handoffPolicy !== "none";
+  const handoffPolicyLabel =
+    runtime.handoffPolicy === "parallel"
+      ? "parallel（允许并发委派）"
+      : runtime.handoffPolicy === "sequential"
+        ? "sequential（顺序委派）"
+        : "none（禁用委派）";
 
   const allowedRoles: SubAgentRole[] = runtime.allowedSubAgents;
   const agentLines = DEFAULT_AGENTS
@@ -433,8 +452,16 @@ export function assembleRuntimeContext(
     enabledToolsLine,
     `自动执行工具（无需审批）: [${autoToolsWithInternal.join(", ")}]`,
     `需审批工具: [${askTools.join(", ")}]`,
+    `委派策略: ${handoffPolicyLabel}`,
     "当前阶段可按需读取事实或提出待审批动作。",
-    ...(agentLines.length > 0 ? ["可用 Sub-Agent 角色：", ...agentLines] : []),
+    ...(taskDelegationEnabled && agentLines.length > 0
+      ? ["可用 Sub-Agent 角色：", ...agentLines]
+      : allowedRoles.length > 0
+        ? [
+          "当前已禁用 Sub-Agent 委派，不要调用 task 工具。",
+          `如需启用委派，请先将 handoffPolicy 从 ${runtime.handoffPolicy} 调整为 sequential 或 parallel。`,
+        ]
+        : []),
     "权限说明：自动执行工具的调用结果会直接返回；需审批工具会生成待审批动作，由用户确认后执行。",
     "Git 工具说明：git_status 和 git_diff 在非 Git 仓库中会返回空结果，这是正常的。",
     "如需文件系统信息，必须通过已定义工具调用，不得臆测。",

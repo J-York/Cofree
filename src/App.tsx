@@ -17,6 +17,7 @@ import { TitleBar } from "./ui/components/TitleBar";
 import { TerminalPanel } from "./ui/components/TerminalPanel";
 import { UpdateBanner } from "./ui/components/UpdateBanner";
 import { useUpdater } from "./hooks/useUpdater";
+import { useTheme } from "./hooks/useTheme";
 import {
   SessionContext,
   initialSessionState,
@@ -45,6 +46,9 @@ export default function App(): ReactElement {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [sessionState, setSessionState] = useState<SessionState>(initialSessionState);
   const updater = useUpdater();
+  
+  // Initialize theme system
+  useTheme();
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);

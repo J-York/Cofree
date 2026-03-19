@@ -245,3 +245,29 @@ export function IconPanelBottom(props: IconProps) {
     </svg>
   );
 }
+
+export function IconSun(props: IconProps) {
+  return (
+    <svg {...defaults(props)}>
+      <circle cx="8" cy="8" r="3" />
+      <path d="M8 2v1M8 13v1M2 8h1M13 8h1M3.5 3.5l.7.7M11.8 11.8l.7.7M3.5 12.5l.7-.7M11.8 4.2l.7-.7" />
+    </svg>
+  );
+}
+
+export function IconMoon(props: IconProps) {
+  return (
+    <svg {...defaults(props)}>
+      <path d="M12 3a6 6 0 1 0 0 10 7 7 0 0 1 0-10z" />
+    </svg>
+  );
+}
+
+export function IconMonitor(props: IconProps) {
+  return (
+    <svg {...defaults(props)}>
+      <rect x="2" y="3" width="12" height="8" rx="1" />
+      <path d="M5 14h6M8 11v3" />
+    </svg>
+  );
+}

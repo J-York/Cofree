@@ -28,17 +28,23 @@ const ALL_TOOL_NAMES = [
   "diagnostics", "fetch", "ask_user", "task",
 ];
 
+function canDelegateWithTask(agent: ChatAgentDefinition): boolean {
+  return agent.allowedSubAgents.length > 0 && (agent.handoffPolicy ?? "none") !== "none";
+}
+
 function resolveEnabledTools(agent: ChatAgentDefinition): string[] {
   if (agent.toolPolicy.enabledTools && agent.toolPolicy.enabledTools.length > 0) {
     const base = new Set(agent.toolPolicy.enabledTools);
     // Keep human-in-the-loop clarification always available for top-level agents.
     base.add("ask_user");
-    if (agent.allowedSubAgents.length > 0) {
+    if (canDelegateWithTask(agent)) {
       base.add("task");
+    } else {
+      base.delete("task");
     }
     return ALL_TOOL_NAMES.filter((toolName) => base.has(toolName));
   }
-  return [...ALL_TOOL_NAMES];
+  return ALL_TOOL_NAMES.filter((toolName) => toolName !== "task" || canDelegateWithTask(agent));
 }
 
 function resolveToolPermissions(

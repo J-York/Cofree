@@ -57,6 +57,7 @@ import {
   type SettingsTab,
   type WorkspaceInfo,
 } from "./settingsTypes";
+import { useTheme, getThemeLabel, type ThemeMode } from "../../hooks/useTheme";
 
 const SettingsModelTab = lazy(() =>
   import("./ModelTab").then((module) => ({ default: module.ModelTab }))
@@ -783,219 +784,21 @@ export function SettingsPage({
           )}
 
           {activeTab === "advanced" && (
-            <>
-              <header className="settings-pane-header">
-                <h2 className="settings-pane-title">高级</h2>
-                <p className="settings-pane-desc">
-                  工作区、上下文和全局历史等高级设置。
-                </p>
-              </header>
-
-              <div className="settings-fields">
-                <div className="settings-card">
-                  <div className="settings-card-header">
-                    <div>
-                      <h3 className="settings-card-title">工作区</h3>
-                      <p className="settings-card-desc">
-                        Agent 只会读取和修改当前工作区中的文件。
-                      </p>
-                    </div>
-                  </div>
-                  <div className="field">
-                    <label className="field-label">工作区路径</label>
-                    <input
-                      className="input"
-                      value={draft.workspacePath}
-                      placeholder="请选择一个 Git 仓库文件夹"
-                      readOnly
-                      type="text"
-                    />
-                  </div>
-                  <div className="btn-row">
-                    <button
-                      className="btn btn-primary btn-sm"
-                      onClick={() => void handleSelectWorkspace()}
-                      type="button"
-                    >
-                      选择工作区
-                    </button>
-                  </div>
-                  {workspaceInfo?.git_branch && (
-                    <div className="settings-inline-feedback">
-                      当前仓库：{workspaceInfo.repo_name || "未命名仓库"} · 分支：
-                      {workspaceInfo.git_branch}
-                    </div>
-                  )}
-                  {workspaceError && (
-                    <div className="settings-empty-hint">{workspaceError}</div>
-                  )}
-                </div>
-
-                <div className="settings-card">
-                  <div className="settings-card-header">
-                    <div>
-                      <h3 className="settings-card-title">上下文限制</h3>
-                      <p className="settings-card-desc">
-                        控制自动读取时的片段大小和总体上下文预算。
-                      </p>
-                    </div>
-                  </div>
-                  <div className="grid-2">
-                    <div className="field">
-                      <label className="field-label">单次代码片段最大行数</label>
-                      <select
-                        className="select"
-                        value={draft.maxSnippetLines}
-                        onChange={(e) =>
-                          setDraft((current) =>
-                            updateContextSettings(current, {
-                              maxSnippetLines: Number(e.target.value) as AppSettings["maxSnippetLines"],
-                            }),
-                          )
-                        }
-                      >
-                        <option value={200}>200 行</option>
-                        <option value={500}>500 行</option>
-                        <option value={2000}>2000 行</option>
-                      </select>
-                    </div>
-                    <div className="field">
-                      <label className="field-label">上下文 Token 上限</label>
-                      <input
-                        className="input"
-                        value={draft.maxContextTokens}
-                        onChange={(e) =>
-                          setDraft((current) =>
-                            updateContextSettings(current, {
-                              maxContextTokens: Math.max(0, Number(e.target.value) || 0),
-                            }),
-                          )
-                        }
-                        type="number"
-                        min={0}
-                      />
-                    </div>
-                  </div>
-                  <label className="field-checkbox">
-                    <input
-                      checked={draft.sendRelativePathOnly}
-                      onChange={(e) =>
-                        setDraft((current) =>
-                          updateContextSettings(current, {
-                            sendRelativePathOnly: e.target.checked,
-                          }),
-                        )
-                      }
-                      type="checkbox"
-                    />
-                    <span>尽量只向模型发送相对路径，减少泄露绝对路径</span>
-                  </label>
-                </div>
-
-                <div className="settings-card">
-                  <div className="settings-card-header">
-                    <div>
-                      <h3 className="settings-card-title">云模型限制</h3>
-                      <p className="settings-card-desc">
-                        开启后可阻止非本地模型在当前环境中发送请求。
-                      </p>
-                    </div>
-                  </div>
-                  <label className="field-checkbox">
-                    <input
-                      checked={draft.allowCloudModels}
-                      onChange={(e) =>
-                        setDraft((current) => updateAllowCloudModels(current, e.target.checked))
-                      }
-                      type="checkbox"
-                    />
-                    <span>允许使用云端模型</span>
-                  </label>
-                </div>
-
-                <div className="settings-card">
-                  <div className="settings-card-header">
-                    <div>
-                      <h3 className="settings-card-title">调试视图</h3>
-                      <p className="settings-card-desc">
-                        控制聊天页是否显示模型原始工具请求等调试信息。
-                      </p>
-                    </div>
-                  </div>
-                  <label className="field-checkbox">
-                    <input
-                      checked={draft.debugMode}
-                      onChange={(e) =>
-                        setDraft((current) => ({
-                          ...current,
-                          debugMode: e.target.checked,
-                        }))
-                      }
-                      type="checkbox"
-                    />
-                    <span>启用调试模式</span>
-                  </label>
-                </div>
-
-                <div className="settings-card">
-                  <div className="settings-card-header">
-                    <div>
-                      <h3 className="settings-card-title">清空历史</h3>
-                      <p className="settings-card-desc">
-                        可按范围删除对话记录，以及你在审批时保存的本地信任规则。当前工作区清理只影响本工作区；全局清理会删除所有工作区记录。
-                      </p>
-                    </div>
-                  </div>
-                  <div className="field">
-                    <label className="field-label">清理范围</label>
-                    <select
-                      className="select"
-                      value={clearScope}
-                      onChange={(e) =>
-                        setClearScope(e.target.value as "workspace" | "all")
-                      }
-                    >
-                      <option value="workspace">当前工作区</option>
-                      <option value="all">所有工作区</option>
-                    </select>
-                  </div>
-                  {confirmClearScope === clearScope ? (
-                    <div className="btn-row">
-                      <button
-                        className="btn btn-danger btn-sm"
-                        onClick={() => {
-                          if (clearScope === "workspace") {
-                            handleClearWorkspaceHistory();
-                          } else {
-                            handleClearAllHistory();
-                          }
-                        }}
-                        type="button"
-                      >
-                        确认清空
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => setConfirmClearScope(null)}
-                        type="button"
-                      >
-                        取消
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      className="btn btn-danger btn-sm"
-                      onClick={() => setConfirmClearScope(clearScope)}
-                      type="button"
-                    >
-                      {clearScope === "workspace"
-                        ? "清空当前工作区数据"
-                        : "清空所有工作区数据"}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </>
+            <AdvancedTab
+              draft={draft}
+              setDraft={setDraft}
+              workspaceInfo={workspaceInfo}
+              workspaceError={workspaceError}
+              clearScope={clearScope}
+              setClearScope={setClearScope}
+              confirmClearScope={confirmClearScope}
+              setConfirmClearScope={setConfirmClearScope}
+              onSelectWorkspace={handleSelectWorkspace}
+              onClearWorkspaceHistory={handleClearWorkspaceHistory}
+              onClearAllHistory={handleClearAllHistory}
+              saveMessage={saveMessage}
+              setSaveMessage={setSaveMessage}
+            />
           )}
         </div>
 
@@ -1070,6 +873,8 @@ function AgentEditor({
   );
   const allToolsEnabled =
     !agent.toolPolicy.enabledTools || agent.toolPolicy.enabledTools.length === 0;
+  const handoffPolicy = agent.handoffPolicy ?? "none";
+  const delegationEnabled = handoffPolicy !== "none" && agent.allowedSubAgents.length > 0;
 
   const handleToolToggle = (toolName: string, checked: boolean) => {
     let next: string[];
@@ -1230,6 +1035,42 @@ function AgentEditor({
                 <span className="agent-tool-label">{tool.label}</span>
               </label>
             ))}
+          </div>
+          <div className="agent-field-hint">
+            `task` 的真实可用性由下面的“委派策略”和“可委派的子 Agent”共同决定；当策略为
+            `none` 时，运行时不会暴露 `task`。
+          </div>
+        </div>
+
+        <div className="field">
+          <label className="field-label">委派策略</label>
+          <select
+            className="input"
+            value={handoffPolicy}
+            onChange={(e) =>
+              onUpdate({
+                handoffPolicy:
+                  e.target.value === "parallel"
+                    ? "parallel"
+                    : e.target.value === "sequential"
+                      ? "sequential"
+                      : "none",
+              })
+            }
+          >
+            <option value="none">none: 禁用子 Agent / team 委派</option>
+            <option value="sequential">sequential: 允许委派，按顺序执行</option>
+            <option value="parallel">parallel: 允许并行委派（实验性）</option>
+          </select>
+          <div className="agent-field-hint">
+            当前内置 Agent 默认使用 `none`，这是为了避免在配置、恢复和审批可观测性尚未完全收口前误触发多 Agent 自动化。
+          </div>
+          <div className="agent-field-hint">
+            {delegationEnabled
+              ? `当前策略会暴露 task 工具；允许委派给 ${agent.allowedSubAgents.length} 个子 Agent 角色。`
+              : agent.allowedSubAgents.length === 0
+                ? "当前未选择任何可委派角色，即使切换到 sequential/parallel 也不会暴露 task。"
+                : "当前策略已禁用委派；如果需要启用多 Agent，请切换到 sequential 或 parallel。"}
           </div>
         </div>
 
@@ -1424,5 +1265,276 @@ function ModelPickerOverlay({
         </div>
       </div>
     </div>
+  );
+}
+
+interface AdvancedTabProps {
+  draft: AppSettings;
+  setDraft: React.Dispatch<React.SetStateAction<AppSettings>>;
+  workspaceInfo: WorkspaceInfo | null;
+  workspaceError: string;
+  clearScope: "workspace" | "all";
+  setClearScope: (scope: "workspace" | "all") => void;
+  confirmClearScope: "workspace" | "all" | null;
+  setConfirmClearScope: (scope: "workspace" | "all" | null) => void;
+  onSelectWorkspace: () => Promise<void>;
+  onClearWorkspaceHistory: () => void;
+  onClearAllHistory: () => void;
+  saveMessage: string;
+  setSaveMessage: (message: string) => void;
+}
+
+function AdvancedTab({
+  draft,
+  setDraft,
+  workspaceInfo,
+  workspaceError,
+  clearScope,
+  setClearScope,
+  confirmClearScope,
+  setConfirmClearScope,
+  onSelectWorkspace,
+  onClearWorkspaceHistory,
+  onClearAllHistory,
+}: AdvancedTabProps): ReactElement {
+  const { theme, setTheme } = useTheme();
+
+  return (
+    <>
+      <header className="settings-pane-header">
+        <h2 className="settings-pane-title">高级</h2>
+        <p className="settings-pane-desc">
+          工作区、上下文和全局历史等高级设置。
+        </p>
+      </header>
+
+      <div className="settings-fields">
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div>
+              <h3 className="settings-card-title">外观</h3>
+              <p className="settings-card-desc">
+                选择应用的主题外观。
+              </p>
+            </div>
+          </div>
+          <div className="field">
+            <label className="field-label">主题</label>
+            <select
+              className="select"
+              value={theme}
+              onChange={(e) => setTheme(e.target.value as ThemeMode)}
+            >
+              <option value="dark">{getThemeLabel("dark")}</option>
+              <option value="light">{getThemeLabel("light")}</option>
+              <option value="system">{getThemeLabel("system")}</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div>
+              <h3 className="settings-card-title">工作区</h3>
+              <p className="settings-card-desc">
+                Agent 只会读取和修改当前工作区中的文件。
+              </p>
+            </div>
+          </div>
+          <div className="field">
+            <label className="field-label">工作区路径</label>
+            <input
+              className="input"
+              value={draft.workspacePath}
+              placeholder="请选择一个 Git 仓库文件夹"
+              readOnly
+              type="text"
+            />
+          </div>
+          <div className="btn-row">
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => void onSelectWorkspace()}
+              type="button"
+            >
+              选择工作区
+            </button>
+          </div>
+          {workspaceInfo?.git_branch && (
+            <div className="settings-inline-feedback">
+              当前仓库：{workspaceInfo.repo_name || "未命名仓库"} · 分支：
+              {workspaceInfo.git_branch}
+            </div>
+          )}
+          {workspaceError && (
+            <div className="settings-empty-hint">{workspaceError}</div>
+          )}
+        </div>
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div>
+              <h3 className="settings-card-title">上下文限制</h3>
+              <p className="settings-card-desc">
+                控制自动读取时的片段大小和总体上下文预算。
+              </p>
+            </div>
+          </div>
+          <div className="grid-2">
+            <div className="field">
+              <label className="field-label">单次代码片段最大行数</label>
+              <select
+                className="select"
+                value={draft.maxSnippetLines}
+                onChange={(e) =>
+                  setDraft((current) =>
+                    updateContextSettings(current, {
+                      maxSnippetLines: Number(e.target.value) as AppSettings["maxSnippetLines"],
+                    }),
+                  )
+                }
+              >
+                <option value={200}>200 行</option>
+                <option value={500}>500 行</option>
+                <option value={2000}>2000 行</option>
+              </select>
+            </div>
+            <div className="field">
+              <label className="field-label">上下文 Token 上限</label>
+              <input
+                className="input"
+                value={draft.maxContextTokens}
+                onChange={(e) =>
+                  setDraft((current) =>
+                    updateContextSettings(current, {
+                      maxContextTokens: Math.max(0, Number(e.target.value) || 0),
+                    }),
+                  )
+                }
+                type="number"
+                min={0}
+              />
+            </div>
+          </div>
+          <label className="field-checkbox">
+            <input
+              checked={draft.sendRelativePathOnly}
+              onChange={(e) =>
+                setDraft((current) =>
+                  updateContextSettings(current, {
+                    sendRelativePathOnly: e.target.checked,
+                  }),
+                )
+              }
+              type="checkbox"
+            />
+            <span>尽量只向模型发送相对路径，减少泄露绝对路径</span>
+          </label>
+        </div>
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div>
+              <h3 className="settings-card-title">云模型限制</h3>
+              <p className="settings-card-desc">
+                开启后可阻止非本地模型在当前环境中发送请求。
+              </p>
+            </div>
+          </div>
+          <label className="field-checkbox">
+            <input
+              checked={draft.allowCloudModels}
+              onChange={(e) =>
+                setDraft((current) => updateAllowCloudModels(current, e.target.checked))
+              }
+              type="checkbox"
+            />
+            <span>允许使用云端模型</span>
+          </label>
+        </div>
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div>
+              <h3 className="settings-card-title">调试视图</h3>
+              <p className="settings-card-desc">
+                控制聊天页是否显示模型原始工具请求等调试信息。
+              </p>
+            </div>
+          </div>
+          <label className="field-checkbox">
+            <input
+              checked={draft.debugMode}
+              onChange={(e) =>
+                setDraft((current) => ({
+                  ...current,
+                  debugMode: e.target.checked,
+                }))
+              }
+              type="checkbox"
+            />
+            <span>启用调试模式</span>
+          </label>
+        </div>
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div>
+              <h3 className="settings-card-title">清空历史</h3>
+              <p className="settings-card-desc">
+                可按范围删除对话记录，以及你在审批时保存的本地信任规则。当前工作区清理只影响本工作区；全局清理会删除所有工作区记录。
+              </p>
+            </div>
+          </div>
+          <div className="field">
+            <label className="field-label">清理范围</label>
+            <select
+              className="select"
+              value={clearScope}
+              onChange={(e) =>
+                setClearScope(e.target.value as "workspace" | "all")
+              }
+            >
+              <option value="workspace">当前工作区</option>
+              <option value="all">所有工作区</option>
+            </select>
+          </div>
+          {confirmClearScope === clearScope ? (
+            <div className="btn-row">
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={() => {
+                  if (clearScope === "workspace") {
+                    onClearWorkspaceHistory();
+                  } else {
+                    onClearAllHistory();
+                  }
+                }}
+                type="button"
+              >
+                确认清空
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setConfirmClearScope(null)}
+                type="button"
+              >
+                取消
+              </button>
+            </div>
+          ) : (
+            <button
+              className="btn btn-danger btn-sm"
+              onClick={() => setConfirmClearScope(clearScope)}
+              type="button"
+            >
+              {clearScope === "workspace"
+                ? "清空当前工作区数据"
+                : "清空所有工作区数据"}
+            </button>
+          )}
+        </div>
+      </div>
+    </>
   );
 }

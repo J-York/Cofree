@@ -26,12 +26,12 @@
 
 .btn-primary {
   background: var(--accent-solid);
-  color: #121214; /* Dark text for contrast */
+  color: var(--accent-text);
   border: 1px solid transparent;
   font-weight: 600;
 }
 .btn-primary:hover:not(:disabled) {
-  background: #A3B8DE;
+  filter: brightness(1.1);
   box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--accent-muted);
 }
 
