@@ -60,4 +60,32 @@ describe("normalizeOrchestrationPlan", () => {
       planStepId: "step-2",
     });
   });
+
+  it("preserves action origin fields for restored approval context", () => {
+    const plan = normalizeOrchestrationPlan({
+      state: "human_review",
+      prompt: "恢复审批",
+      steps: [],
+      proposedActions: [
+        {
+          id: "action-1",
+          type: "apply_patch",
+          description: "修改 src/app.ts",
+          gateRequired: true,
+          status: "pending",
+          executed: false,
+          origin: "team_stage",
+          originDetail: "team-full-cycle / 代码实现",
+          payload: {
+            patch: "*** Begin Patch\n*** End Patch\n",
+          },
+        },
+      ],
+    });
+
+    expect(plan?.proposedActions[0]).toMatchObject({
+      origin: "team_stage",
+      originDetail: "team-full-cycle / 代码实现",
+    });
+  });
 });

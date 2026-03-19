@@ -28,6 +28,10 @@ vi.mock("./repoMapService", () => ({
     generateRepoMap: vi.fn(async () => ""),
 }));
 
+vi.mock("./teamExecutor", () => ({
+    executeAgentTeam: vi.fn(),
+}));
+
 vi.mock("../agents/resolveAgentRuntime", () => ({
     resolveAgentRuntime: vi.fn(() => ({
         agentId: "agent-default",
@@ -91,6 +95,7 @@ import { DEFAULT_SETTINGS, type AppSettings } from "../lib/settingsStore";
 import { createFileContextAttachment } from "../lib/contextAttachments";
 import { loadCofreeRc, resolveMatchingContextRules } from "../lib/cofreerc";
 import { generateRepoMap } from "./repoMapService";
+import { executeAgentTeam } from "./teamExecutor";
 import {
     executeSubAgentTask,
     planningServiceTestUtils,
@@ -2618,6 +2623,83 @@ describe("P0-2: task(team=...) role whitelist enforcement", () => {
         expect(result.errorCategory).toBe("permission");
         const payload = JSON.parse(result.content);
         expect(payload.error).toContain("未授权角色");
+    });
+});
+
+describe("P3: team progress and origin metadata", () => {
+    it("tags team child actions with stage origin and forwards stage progress details", async () => {
+        const progressEvents: any[] = [];
+        vi.mocked(executeAgentTeam).mockImplementation(async (params: any) => {
+            params.onStageProgress?.("代码实现", {
+                kind: "tool_start",
+                toolName: "read_file",
+                turn: 1,
+                maxTurns: 8,
+            });
+            return {
+                status: "completed",
+                finalReply: "done",
+                totalTurnsUsed: 1,
+                stageResults: {
+                    "代码实现": {
+                        status: "completed",
+                        turnCount: 1,
+                        reply: "done",
+                        proposedActions: [
+                            {
+                                id: "action-1",
+                                type: "shell",
+                                description: "运行测试",
+                                gateRequired: true,
+                                status: "pending",
+                                executed: false,
+                                payload: {
+                                    shell: "pnpm test",
+                                    timeoutMs: 120000,
+                                },
+                            },
+                        ],
+                        toolTrace: [],
+                    },
+                },
+            };
+        });
+
+        const result = await planningServiceTestUtils.executeToolCall(
+            {
+                id: "tool-team-meta-1",
+                type: "function",
+                function: {
+                    name: "task",
+                    arguments: JSON.stringify({
+                        team: "team-full-cycle",
+                        description: "Do a full dev cycle",
+                    }),
+                },
+            },
+            "d:/Code/cofree",
+            DEFAULT_SETTINGS.toolPermissions,
+            createSettings(),
+            undefined,
+            ["planner", "coder", "reviewer", "tester"] as any,
+            undefined,
+            undefined,
+            undefined,
+            (event) => progressEvents.push(event),
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.proposedActions?.[0]).toMatchObject({
+            origin: "team_stage",
+            originDetail: "team-full-cycle / 代码实现",
+        });
+        expect(progressEvents[0]).toMatchObject({
+            kind: "tool_start",
+            teamId: "team-full-cycle",
+            stageLabel: "代码实现",
+            sourceLabel: "team-full-cycle · 代码实现",
+            agentRole: "coder",
+        });
     });
 });
 

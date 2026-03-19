@@ -28,6 +28,8 @@ const BASE_CONVERSATION: Conversation = {
 
 const BASE_SUB_AGENT_STATUS: SubAgentStatusItem[] = [
   {
+    id: "reviewer",
+    label: "reviewer",
     role: "reviewer",
     lastEvent: {
       kind: "summary",

@@ -128,9 +128,17 @@ export interface OrchestrationPlan {
 // Sub-Agent progress events (Phase 5)
 // ---------------------------------------------------------------------------
 
-export type SubAgentProgressEvent =
+export interface SubAgentProgressMeta {
+  teamId?: string;
+  stageLabel?: string;
+  agentRole?: string;
+  sourceLabel?: string;
+}
+
+export type SubAgentProgressEvent = (
   | { kind: "tool_start"; toolName: string; turn: number; maxTurns: number }
   | { kind: "tool_complete"; toolName: string; success: boolean; durationMs: number }
   | { kind: "thinking"; partialContent: string }
   | { kind: "action_proposed"; actionType: SensitiveActionType; description: string }
-  | { kind: "summary"; message: string };
+  | { kind: "summary"; message: string }
+) & SubAgentProgressMeta;

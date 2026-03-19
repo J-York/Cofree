@@ -14,6 +14,7 @@ import {
 } from "./hitlContinuationMachine";
 import { saveWorkflowCheckpoint } from "./checkpointStore";
 import type { ToolExecutionTrace } from "./planningService";
+import type { WorkingMemorySnapshot } from "./workingMemory";
 
 const memoryBySession = new Map<string, HitlContinuationMemory>();
 
@@ -43,6 +44,7 @@ export async function advanceAfterHitl(params: {
   plan: OrchestrationPlan;
   toolTrace?: ToolExecutionTrace[];
   maxRoundsPerPrompt?: number;
+  workingMemorySnapshot?: WorkingMemorySnapshot;
 }): Promise<HitlContinuationDecision> {
   const sessionId = params.sessionId.trim();
   const messageId = params.messageId.trim();
@@ -62,7 +64,8 @@ export async function advanceAfterHitl(params: {
       messageId,
       params.plan,
       params.toolTrace ?? [],
-      decision.memory
+      decision.memory,
+      params.workingMemorySnapshot,
     );
   } catch (error) {
     console.warn(

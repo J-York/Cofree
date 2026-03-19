@@ -347,19 +347,22 @@ export function SubAgentStatusPanel({
         let label = "";
         let icon = "◐";
         if (event.kind === "tool_start") {
-          label = `${item.role}: ${event.toolName}...`;
+          label = `${item.label}: ${event.toolName} · ${event.turn}/${event.maxTurns}`;
         } else if (event.kind === "tool_complete") {
-          label = `${item.role}: ${event.toolName} ${event.success ? "✓" : "✕"} (${event.durationMs}ms)`;
+          label = `${item.label}: ${event.toolName} ${event.success ? "✓" : "✕"} (${event.durationMs}ms)`;
           icon = event.success ? "✓" : "✕";
         } else if (event.kind === "summary") {
-          label = `${item.role}: ${event.message}`;
+          label = `${item.label}: ${event.message}`;
           icon = "ℹ";
         } else if (event.kind === "action_proposed") {
-          label = `${item.role}: 提出 ${event.actionType}`;
+          label = `${item.label}: 提出 ${event.actionType}`;
           icon = "⚑";
+        } else if (event.kind === "thinking") {
+          label = `${item.label}: 正在思考…`;
+          icon = "…";
         }
         return (
-          <div key={item.role} className="live-tool-item running">
+          <div key={item.id} className="live-tool-item running">
             <span className="live-tool-icon">{icon}</span>
             <span className="live-tool-name">{label}</span>
           </div>
@@ -595,6 +598,36 @@ function ActionBatchMeta({ action }: { action: ActionProposal }) {
   );
 }
 
+function formatActionOrigin(action: ActionProposal): string | null {
+  if (action.origin === "team_stage") {
+    return action.originDetail
+      ? `Team Stage · ${action.originDetail}`
+      : "Team Stage";
+  }
+  if (action.origin === "sub_agent") {
+    return action.originDetail
+      ? `子 Agent · ${action.originDetail}`
+      : "子 Agent";
+  }
+  if (action.origin === "main_agent") {
+    return "主 Agent";
+  }
+  return null;
+}
+
+function ActionOriginMeta({ action }: { action: ActionProposal }) {
+  const originLabel = formatActionOrigin(action);
+  if (!originLabel && !action.toolName) {
+    return null;
+  }
+  return (
+    <div className="plan-action-meta">
+      {originLabel ? <span>审批来源：{originLabel}</span> : null}
+      {action.toolName ? <span>触发工具：{formatToolName(action.toolName)}</span> : null}
+    </div>
+  );
+}
+
 function PlanActionCard({
   action,
   plan,
@@ -650,6 +683,10 @@ function PlanActionCard({
         </span>
       </div>
 
+      <p className="status-note" style={{ marginTop: 8, marginBottom: 0 }}>
+        {action.description}
+      </p>
+      <ActionOriginMeta action={action} />
       <ActionBatchMeta action={action} />
 
       <ActionPayloadFields

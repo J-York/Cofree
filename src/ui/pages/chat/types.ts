@@ -12,6 +12,8 @@ export interface LiveToolCall {
 }
 
 export interface SubAgentStatusItem {
+  id: string;
+  label: string;
   role: string;
   lastEvent: SubAgentProgressEvent;
   updatedAt: number;

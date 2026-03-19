@@ -34,7 +34,8 @@
 - **控制台页**: 工作流状态监控、审计日志查看、数据导出
 
 #### 编排与Agent系统
-- **多Agent架构**: 主ChatAgent + 子Agent(planner/coder/tester)委派机制
+- **多Agent运行时**: 主ChatAgent + 子Agent(planner/coder/tester/debugger/reviewer)委派机制已落地
+- **Team Pipeline**: `task -> teamExecutor -> HITL -> continuation` 主链路可运行，但仍属于实验能力
 - **内置Agent角色**: 全栈工程师、代码审查员、架构师、QA工程师
 - **工具调用循环**: 原生实现，支持长对话压缩和上下文预算管理
 
@@ -51,8 +52,9 @@
 
 #### 可观察性与恢复
 - **审计日志**: LLM请求和敏感动作的本地持久化记录
-- **Checkpoint系统**: SQLite存储的工作流状态恢复机制
+- **Checkpoint系统**: SQLite存储的工作流状态恢复机制，已接通 scoped session 与 `workingMemory` 快照恢复
 - **文件快照**: patch失败时的自动回滚能力
+- **来源可观测性**: child action 的 `origin/originDetail`、team stage 进度与审批来源可保留并展示
 
 #### 模型与连接管理
 - **多协议支持**: OpenAI Chat Completions、OpenAI Responses、Anthropic Messages
@@ -90,6 +92,11 @@
 - **限制**: 工作区不强制要求是Git仓库
 - **边界**: 路径必须在选定工作区内
 
+#### 多 Agent / Team Pipeline
+- **已实现**: `handoffPolicy` 三态、team stage 执行、`workingMemory` checkpoint、HITL 续跑、`ask_user` 会话级排队
+- **限制**: 默认 Agent 仍以 `handoffPolicy: none` 为主，产品入口仍按实验能力开放
+- **边界**: 包含后台 shell 的批量审批仍采用保守策略，需要逐项批准
+
 ### 2.4 ❌ 未实现的功能
 
 #### 高级安全特性
@@ -104,7 +111,7 @@
 - 复杂分支管理界面
 
 #### 并发与扩展
-- 并行Sub-Agent编排
+- 默认开放的并行 team pipeline 产品化入口
 - 分布式任务执行
 - 插件系统
 
@@ -149,7 +156,7 @@
 - **关键测试**: approvalRuleStore、chatHistoryStore、cofreerc、hitlService等
 
 ### 5.2 ⚠️ 测试限制
-- **集成测试**: 主要是单元测试，缺少端到端测试
+- **集成测试**: 已补 `handoffPolicy`、team-origin、checkpoint restore、`ask_user` 排队等回归，但仍缺完整端到端测试
 - **UI测试**: 没有自动化UI测试
 - **性能测试**: 没有专门的性能测试套件
 
@@ -187,7 +194,7 @@
 
 ### 8.1 短期改进(1-2个版本)
 1. **完善测试覆盖**: 增加集成测试和UI测试
-2. **优化用户体验**: 改进错误提示和审批界面
+2. **优化多 Agent 产品化**: 增加实验开关、灰度入口与审批治理
 3. **增强Git支持**: 添加常用Git操作的快捷方式
 
 ### 8.2 中期规划(3-5个版本)  

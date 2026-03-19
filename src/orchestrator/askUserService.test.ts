@@ -87,8 +87,8 @@ describe("askUserService", () => {
       expect(pending!.options).toEqual(["Auth", "Search", "Notifications"]);
     });
 
-    it("should cancel existing request when creating new one", () => {
-      createAskUserRequest(
+    it("should queue existing request when creating a new one", () => {
+      const firstRequestId = createAskUserRequest(
         testSessionId,
         "First question"
       );
@@ -99,8 +99,12 @@ describe("askUserService", () => {
       );
 
       const pending = getPendingRequest(testSessionId);
-      expect(pending!.id).toBe(secondRequestId);
-      expect(pending!.question).toBe("Second question");
+      expect(pending!.id).toBe(firstRequestId);
+      expect(pending!.question).toBe("First question");
+
+      const firstAccepted = submitUserResponse(testSessionId, firstRequestId, "First answer");
+      expect(firstAccepted).toBe(true);
+      expect(getPendingRequest(testSessionId)?.id).toBe(secondRequestId);
     });
   });
 
@@ -177,17 +181,24 @@ describe("askUserService", () => {
   });
 
   describe("waitForUserResponse", () => {
-    it("should reject stale waiter when a newer request supersedes it", async () => {
+    it("should resolve queued waiters in order", async () => {
       const firstRequestId = createAskUserRequest(testSessionId, "First question");
       const firstWaiter = waitForUserResponse(firstRequestId);
 
       const secondRequestId = createAskUserRequest(testSessionId, "Second question");
       const secondWaiter = waitForUserResponse(secondRequestId);
 
-      await expect(firstWaiter).rejects.toThrow("superseded");
+      expect(getPendingRequest(testSessionId)?.id).toBe(firstRequestId);
 
-      const accepted = submitUserResponse(testSessionId, secondRequestId, "Second answer");
-      expect(accepted).toBe(true);
+      expect(submitUserResponse(testSessionId, firstRequestId, "First answer")).toBe(true);
+      await expect(firstWaiter).resolves.toMatchObject({
+        id: firstRequestId,
+        response: "First answer",
+        skipped: false,
+      });
+
+      expect(getPendingRequest(testSessionId)?.id).toBe(secondRequestId);
+      expect(submitUserResponse(testSessionId, secondRequestId, "Second answer")).toBe(true);
 
       await expect(secondWaiter).resolves.toMatchObject({
         id: secondRequestId,

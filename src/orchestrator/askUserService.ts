@@ -46,6 +46,7 @@ export interface AskUserResponse {
 
 export interface AskUserState {
   pending: AskUserRequest | null;
+  queue: AskUserRequest[];
   history: AskUserResponse[];
 }
 
@@ -87,6 +88,7 @@ function getOrCreateState(sessionId: string): AskUserState {
   if (!askUserState.has(sessionId)) {
     askUserState.set(sessionId, {
       pending: null,
+      queue: [],
       history: [],
     });
   }
@@ -97,16 +99,27 @@ function getOrCreateState(sessionId: string): AskUserState {
 
 function clearState(sessionId: string): void {
   const state = askUserState.get(sessionId);
-  if (state?.pending) {
-    const requestId = state.pending.id;
-    const resolver = pendingResolvers.get(requestId);
-    if (resolver) {
-      pendingResolvers.delete(requestId);
-      resolver.reject(new Error("ask_user request cancelled by session cleanup"));
+  if (state) {
+    const pendingIds = [
+      state.pending?.id,
+      ...state.queue.map((request) => request.id),
+    ].filter((value): value is string => Boolean(value));
+    for (const requestId of pendingIds) {
+      const resolver = pendingResolvers.get(requestId);
+      if (resolver) {
+        pendingResolvers.delete(requestId);
+        resolver.reject(new Error("ask_user request cancelled by session cleanup"));
+      }
     }
   }
   askUserState.delete(sessionId);
   sessionTimestamps.delete(sessionId);
+}
+
+function promoteNextQueuedRequest(state: AskUserState): AskUserRequest | null {
+  const next = state.queue.shift() ?? null;
+  state.pending = next;
+  return next;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,21 +139,6 @@ export function createAskUserRequest(
   required: boolean = true,
 ): string {
   const state = getOrCreateState(sessionId);
-  
-  // If there's already a pending request, cancel it
-  if (state.pending) {
-    const previousRequestId = state.pending.id;
-    logAskUserEvent("request_cancelled", {
-      sessionId,
-      requestId: previousRequestId,
-      reason: "superseded_by_new_request",
-    });
-    const resolver = pendingResolvers.get(previousRequestId);
-    if (resolver) {
-      pendingResolvers.delete(previousRequestId);
-      resolver.reject(new Error("ask_user request superseded by a newer request"));
-    }
-  }
 
   const requestId = `ask_user_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
   const request: AskUserRequest = {
@@ -154,7 +152,17 @@ export function createAskUserRequest(
     timestamp: new Date().toISOString(),
   };
 
-  state.pending = request;
+  if (state.pending) {
+    state.queue.push(request);
+    logAskUserEvent("request_queued", {
+      sessionId,
+      requestId,
+      pendingRequestId: state.pending.id,
+      queueLength: state.queue.length,
+    });
+  } else {
+    state.pending = request;
+  }
 
   logAskUserEvent("request_created", {
     sessionId,
@@ -199,7 +207,7 @@ export function submitUserResponse(
   };
 
   state.history.push(userResponse);
-  state.pending = null;
+  promoteNextQueuedRequest(state);
 
   logAskUserEvent("response_submitted", {
     sessionId,
@@ -228,12 +236,15 @@ export function cancelPendingRequest(sessionId: string): boolean {
   }
 
   const requestId = state.pending.id;
-  state.pending = null;
+  const cancelledRequest = state.pending;
+  promoteNextQueuedRequest(state);
 
   logAskUserEvent("request_cancelled", {
     sessionId,
     requestId,
     reason: "cancelled_by_system",
+    nextRequestId: state.pending?.id,
+    queueLength: state.queue.length,
   });
 
   // Reject the waiting promise if any
@@ -241,6 +252,10 @@ export function cancelPendingRequest(sessionId: string): boolean {
   if (resolver) {
     pendingResolvers.delete(requestId);
     resolver.reject(new Error("ask_user request cancelled by user"));
+  }
+
+  if (cancelledRequest) {
+    sessionTimestamps.set(sessionId, Date.now());
   }
 
   return true;
