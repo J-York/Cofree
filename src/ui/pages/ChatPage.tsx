@@ -61,7 +61,12 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { InputDialog } from "../components/InputDialog";
 import { AskUserDialog } from "../components/AskUserDialog";
 import type { AskUserRequest } from "../../orchestrator/askUserService";
-import { submitUserResponse, cancelPendingRequest } from "../../orchestrator/askUserService";
+import {
+  cancelPendingRequest,
+  getPendingRequest,
+  hasPendingRequest,
+  submitUserResponse,
+} from "../../orchestrator/askUserService";
 import {
   readLLMAuditRecords,
   readSensitiveActionAuditRecords,
@@ -85,7 +90,7 @@ import {
   type ManualApprovalContext,
 } from "../../orchestrator/hitlService";
 import {
-  getChatSessionId,
+  buildScopedSessionKey,
   loadLatestWorkflowCheckpoint,
   saveWorkflowCheckpoint,
 } from "../../orchestrator/checkpointStore";
@@ -101,6 +106,7 @@ import {
   initializePlan,
   type ToolCallEvent,
 } from "../../orchestrator/planningService";
+import type { WorkingMemorySnapshot } from "../../orchestrator/workingMemory";
 import type {
   OrchestrationPlan,
   SubAgentProgressEvent,
@@ -181,6 +187,8 @@ interface ChatPageProps {
   sidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
 }
+
+const CHAT_AUTO_SCROLL_THRESHOLD_PX = 48;
 
 interface RunningShellJobMeta {
   messageId: string;
@@ -343,6 +351,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
 
 interface ChatThreadSectionProps {
   threadRef: RefObject<HTMLDivElement | null>;
+  onThreadScroll: () => void;
   messages: ChatMessageRecord[];
   assistantDisplayName: string;
   assistantDescription: string;
@@ -377,6 +386,7 @@ interface ChatThreadSectionProps {
 
 const ChatThreadSection = memo(function ChatThreadSection({
   threadRef,
+  onThreadScroll,
   messages,
   assistantDisplayName,
   assistantDescription,
@@ -400,7 +410,7 @@ const ChatThreadSection = memo(function ChatThreadSection({
   const lastMessage = messages[messages.length - 1];
 
   return (
-    <div className="chat-thread" ref={threadRef}>
+    <div className="chat-thread" ref={threadRef} onScroll={onThreadScroll}>
       {visibleMessages.length === 0 ? (
         <div className="chat-empty">
           <p className="chat-empty-text">你好，我是{assistantDisplayName}</p>
@@ -865,7 +875,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   const lastPromptRef = useRef<string>("");
   const lastContextAttachmentsRef = useRef<ChatContextAttachment[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
-  const prevIsStreamingRef = useRef<boolean>(false);
+  const shouldStickThreadToBottomRef = useRef(true);
+  const forceThreadScrollRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
@@ -875,6 +886,9 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   const runningShellJobsRef = useRef(new Map<string, RunningShellJobMeta>());
   const pendingShellQueuesRef = useRef(new Map<string, PendingShellQueue>());
   const shellOutputBuffersRef = useRef(new Map<string, ShellOutputBuffer>());
+  const workingMemoryBySessionRef = useRef(
+    new Map<string, WorkingMemorySnapshot | null>(),
+  );
 
   // Refs to keep the latest versions of callbacks used inside the shell-command-event
   // useEffect (which has an empty dependency array). Without these refs the listener
@@ -914,6 +928,39 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     () => {},
   );
   const handleSuggestionClickThreadRef = useRef<(text: string) => void>(() => {});
+
+  const isThreadNearBottom = useCallback((thread: HTMLDivElement): boolean => {
+    const distanceFromBottom =
+      thread.scrollHeight - thread.scrollTop - thread.clientHeight;
+    return distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
+  }, []);
+
+  const syncThreadAutoScrollState = useCallback((): void => {
+    const thread = threadRef.current;
+    if (!thread) {
+      return;
+    }
+    shouldStickThreadToBottomRef.current = isThreadNearBottom(thread);
+  }, [isThreadNearBottom]);
+
+  const scrollThreadToBottom = useCallback((): void => {
+    const thread = threadRef.current;
+    if (!thread) {
+      return;
+    }
+    thread.scrollTop = thread.scrollHeight;
+    shouldStickThreadToBottomRef.current = true;
+    forceThreadScrollRef.current = false;
+  }, []);
+
+  const requestThreadScrollToBottom = useCallback((): void => {
+    shouldStickThreadToBottomRef.current = true;
+    forceThreadScrollRef.current = true;
+  }, []);
+
+  const handleThreadScroll = useCallback((): void => {
+    syncThreadAutoScrollState();
+  }, [syncThreadAutoScrollState]);
 
   const activeManagedModel = getActiveManagedModel(settings);
   const activeModelLabel = activeManagedModel?.name || settings.model;
@@ -1016,7 +1063,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     setIsExportingDebugBundle(true);
     setSessionNote("正在导出调试日志…");
     const exportedAt = new Date().toISOString();
-    const chatSessionId = getChatSessionId();
+    const chatSessionId = resolveScopedSessionId(currentConversation);
     const conversationSnapshot = currentConversation
       ? {
         ...currentConversation,
@@ -1132,7 +1179,24 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     activeConversationIdRef.current = activeConversationId;
   }, [activeConversationId]);
 
+  const resolveScopedSessionId = useCallback(
+    (
+      conversation?: Conversation | null,
+      agentId?: string | null,
+    ): string =>
+      buildScopedSessionKey(
+        conversation?.id,
+        agentId ?? conversation?.agentBinding?.agentId ?? activeAgent.id,
+      ),
+    [activeAgent.id],
+  );
+
+  const syncAskUserRequestForSession = useCallback((sessionId: string): void => {
+    setAskUserRequest(getPendingRequest(sessionId));
+  }, []);
+
   const applyChatViewState = (viewState: ChatViewState): void => {
+    requestThreadScrollToBottom();
     setMessages(viewState.messages);
     messagesRef.current = viewState.messages;
     setLiveContextTokens(viewState.liveContextTokens);
@@ -1441,31 +1505,68 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     []
   );
 
-  useEffect(() => {
-    const justFinished = prevIsStreamingRef.current && !isStreaming;
-    prevIsStreamingRef.current = isStreaming;
+  const visibleMessages = messages.filter((message) => message.role !== "tool");
+  const lastVisibleMessage = visibleMessages[visibleMessages.length - 1];
+  const lastVisiblePlanState = lastVisibleMessage?.plan?.state ?? "";
+  const lastVisibleActionStatuses =
+    lastVisibleMessage?.plan?.proposedActions
+      ?.map((action) => `${action.id}:${action.status}:${action.executed ? "1" : "0"}`)
+      .join("|") ?? "";
+  const lastVisibleStepStatuses =
+    lastVisibleMessage?.plan?.steps
+      ?.map((step) => `${step.id}:${step.status}`)
+      .join("|") ?? "";
+  const lastVisibleToolTraceStatuses =
+    lastVisibleMessage?.toolTrace
+      ?.map((trace) => `${trace.callId}:${trace.status}:${trace.retried ? "1" : "0"}`)
+      .join("|") ?? "";
+  const liveToolStatusKey = liveToolCalls
+    .map(
+      (call) =>
+        `${call.callId}:${call.status}:${call.argsPreview?.length ?? 0}:${call.resultPreview?.length ?? 0}`,
+    )
+    .join("|");
+  const subAgentStatusKey = subAgentStatus
+    .map(
+      (item) =>
+        `${item.id}:${item.updatedAt}:${item.lastEvent.kind}:${item.label}:${item.role}`,
+    )
+    .join("|");
 
-    if (justFinished && threadRef.current) {
-      // Streaming just ended — scroll back to the bottom of the last assistant message
-      // so the user sees the response text which is now correctly at the bottom.
-      const bubbles =
-        threadRef.current.querySelectorAll<HTMLElement>(".chat-bubble.assistant");
-      const lastBubble = bubbles[bubbles.length - 1];
-      if (lastBubble) {
-        lastBubble.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  useEffect(() => {
+    if (isVisible === false) {
+      return;
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      if (
+        !forceThreadScrollRef.current &&
+        !shouldStickThreadToBottomRef.current
+      ) {
         return;
       }
-    }
-    if (threadRef.current) {
-      threadRef.current.scrollTop = threadRef.current.scrollHeight;
-    }
-  }, [messages, isStreaming]);
+      scrollThreadToBottom();
+    });
 
-  useEffect(() => {
-    if (isVisible && threadRef.current) {
-      threadRef.current.scrollTop = threadRef.current.scrollHeight;
-    }
-  }, [isVisible]);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [
+    activeConversationId,
+    isStreaming,
+    isVisible,
+    lastVisibleActionStatuses,
+    lastVisibleMessage?.content,
+    lastVisibleMessage?.id,
+    lastVisibleMessage?.tool_calls?.length,
+    lastVisiblePlanState,
+    lastVisibleStepStatuses,
+    lastVisibleToolTraceStatuses,
+    liveToolStatusKey,
+    scrollThreadToBottom,
+    subAgentStatusKey,
+    visibleMessages.length,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1566,40 +1667,57 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   /* Restore checkpoint */
   useEffect(() => {
     let cancelled = false;
+    const conversation = currentConversation;
+    if (!conversation) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const sessionId = resolveScopedSessionId(conversation);
     const restore = async () => {
       try {
-        const sessionId = getChatSessionId();
         const latest = await loadLatestWorkflowCheckpoint(sessionId);
-        if (!latest || cancelled) return;
+        if (cancelled) return;
+        if (!latest) {
+          workingMemoryBySessionRef.current.delete(sessionId);
+          resetHitlContinuationMemory(sessionId);
+          return;
+        }
+        workingMemoryBySessionRef.current.set(
+          sessionId,
+          latest.payload.workingMemory ?? null,
+        );
         setMessages((prev) => {
           const idx = prev.findIndex((m) => m.id === latest.messageId);
-          if (idx >= 0) {
-            return prev.map((m, i) =>
-              i === idx
-                ? {
-                  ...m,
+          const next =
+            idx >= 0
+              ? prev.map((m, i) =>
+                i === idx
+                  ? {
+                    ...m,
+                    plan: latest.payload.plan,
+                    toolTrace: latest.payload.toolTrace ?? m.toolTrace,
+                    tool_calls: buildToolCallsFromPlan(latest.payload.plan),
+                  }
+                  : m
+              )
+              : [
+                ...prev,
+                {
+                  id: latest.messageId,
+                  role: "assistant",
+                  content: "已从审批点恢复上一轮工作流状态。",
+                  createdAt: new Date().toISOString(),
                   plan: latest.payload.plan,
-                  toolTrace: latest.payload.toolTrace ?? m.toolTrace,
+                  toolTrace: latest.payload.toolTrace ?? [],
                   tool_calls: buildToolCallsFromPlan(latest.payload.plan),
-                }
-                : m
-            );
-          }
-          const recovered: ChatMessageRecord = {
-            id: latest.messageId,
-            role: "assistant",
-            content: "已从审批点恢复上一轮工作流状态。",
-            createdAt: new Date().toISOString(),
-            plan: latest.payload.plan,
-            toolTrace: latest.payload.toolTrace ?? [],
-            tool_calls: buildToolCallsFromPlan(latest.payload.plan),
-          };
-          return [...prev, recovered].slice(-80);
+                  agentId: conversation.agentBinding?.agentId ?? activeAgent.id,
+                } satisfies ChatMessageRecord,
+              ].slice(-80);
+          messagesRef.current = next;
+          return next;
         });
-        hydrateHitlContinuationMemory(
-          getChatSessionId(),
-          latest.payload.continuationMemory
-        );
+        hydrateHitlContinuationMemory(sessionId, latest.payload.continuationMemory);
         setSessionNote("已从 checkpoint 恢复审批状态");
       } catch {
         /* non-fatal */
@@ -1609,20 +1727,34 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [
+    activeAgent.id,
+    currentConversation,
+    resolveScopedSessionId,
+  ]);
+
+  useEffect(() => {
+    if (!currentConversation) {
+      setAskUserRequest(null);
+      return;
+    }
+    syncAskUserRequestForSession(resolveScopedSessionId(currentConversation));
+  }, [currentConversation, resolveScopedSessionId, syncAskUserRequestForSession]);
 
   const continueAfterHitlIfNeeded = (
     messageId: string,
     plan: OrchestrationPlan
   ): void => {
-    const currentTrace =
-      messagesRef.current.find((m) => m.id === messageId)?.toolTrace ?? [];
+    const targetMessage = messagesRef.current.find((m) => m.id === messageId);
+    const currentTrace = targetMessage?.toolTrace ?? [];
+    const sessionId = resolveScopedSessionId(currentConversation, targetMessage?.agentId);
 
     void advanceAfterHitl({
-      sessionId: getChatSessionId(),
+      sessionId,
       messageId,
       plan,
       toolTrace: currentTrace,
+      workingMemorySnapshot: workingMemoryBySessionRef.current.get(sessionId) ?? undefined,
     })
       .then((decision) => {
         if (decision.kind === "stop") {
@@ -1708,9 +1840,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       options.contextAttachments ??
       (visibleUserMessage ? [] : getLatestUserContextAttachments()),
     );
-    if (visibleUserMessage) {
-      resetHitlContinuationMemory(getChatSessionId());
-    }
     const controller = new AbortController();
     abortControllersRef.current.set(streamConvId, controller);
     abortControllerRef.current = controller;
@@ -1725,7 +1854,18 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     });
     const assistantMessageId = createMessageId("assistant");
     const now = new Date().toISOString();
-    const chatSessionId = getChatSessionId();
+    const chatSessionId = resolveScopedSessionId(
+      conversationForRun,
+      convBinding?.agentId ?? activeAgent.id,
+    );
+    if (visibleUserMessage && !existingPlanForRun && options.isContinuation !== true) {
+      resetHitlContinuationMemory(chatSessionId);
+      workingMemoryBySessionRef.current.delete(chatSessionId);
+    }
+    const restoredWorkingMemory =
+      existingPlanForRun || options.isContinuation
+        ? workingMemoryBySessionRef.current.get(chatSessionId) ?? undefined
+        : undefined;
     const debugRequestId = `chatreq-${Date.now()}-${Math.random()
       .toString(16)
       .slice(2, 8)}`;
@@ -1741,6 +1881,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     let localStreamBuffer = "";
     let localRafId: number | null = null;
     const isActive = () => activeConversationIdRef.current === streamConvId;
+
+    if (visibleUserMessage && isActive()) {
+      requestThreadScrollToBottom();
+    }
 
     const guardedSetMessages = (
       updater: (prev: ChatMessageRecord[]) => ChatMessageRecord[]
@@ -1958,17 +2102,64 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           guardedSetTokens(estimatedTokens);
         },
         onSubAgentProgress: (role: string, event: SubAgentProgressEvent) => {
+          const statusId = event.teamId && event.stageLabel
+            ? `${event.teamId}:${event.stageLabel}`
+            : event.sourceLabel ?? role;
+          const statusLabel =
+            event.sourceLabel ??
+            (event.stageLabel ? `${role} · ${event.stageLabel}` : role);
           guardedSetSubAgentStatus((prev) => {
-            const existing = prev.find((status) => status.role === role);
+            const existing = prev.find((status) => status.id === statusId);
             if (existing) {
               return prev.map((status) =>
-                status.role === role
-                  ? { ...status, lastEvent: event, updatedAt: Date.now() }
+                status.id === statusId
+                  ? {
+                    ...status,
+                    label: statusLabel,
+                    role: event.agentRole ?? role,
+                    lastEvent: event,
+                    updatedAt: Date.now(),
+                  }
                   : status
               );
             }
-            return [...prev, { role, lastEvent: event, updatedAt: Date.now() }];
+            return [
+              ...prev,
+              {
+                id: statusId,
+                label: statusLabel,
+                role: event.agentRole ?? role,
+                lastEvent: event,
+                updatedAt: Date.now(),
+              },
+            ];
           });
+        },
+        onLoopCheckpoint: (checkpoint) => {
+          const checkpointPlan = initializePlan(
+            promptText,
+            executionSettings,
+            checkpoint.proposedActions,
+            checkpoint.planState,
+          );
+          if (checkpoint.workingMemorySnapshot) {
+            workingMemoryBySessionRef.current.set(
+              chatSessionId,
+              checkpoint.workingMemorySnapshot,
+            );
+          }
+          void saveWorkflowCheckpoint(
+            chatSessionId,
+            assistantMessageId,
+            checkpointPlan,
+            checkpoint.toolTrace,
+            getHitlContinuationMemory(chatSessionId),
+            checkpoint.workingMemorySnapshot,
+          ).catch((err) =>
+            guardedSetNote(
+              `增量 checkpoint 未保存：${err instanceof Error ? err.message : "未知错误"}`
+            )
+          );
         },
         onPlanStateUpdate: (planState, proposedActions) => {
           guardedSetMessages((prev) =>
@@ -1990,8 +2181,9 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         },
         sessionId: chatSessionId,
         onAskUserRequest: (request: AskUserRequest) => {
-          setAskUserRequest(request);
+          syncAskUserRequestForSession(request.sessionId ?? chatSessionId);
         },
+        restoredWorkingMemory,
       });
 
       if (localRafId !== null) {
@@ -2000,6 +2192,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       }
       localStreamBuffer = "";
 
+      if (result.workingMemorySnapshot) {
+        workingMemoryBySessionRef.current.set(
+          chatSessionId,
+          result.workingMemorySnapshot,
+        );
+      }
       guardedSetMessages((prev) =>
         prev.map((m) => {
           if (m.id === assistantMessageId) {
@@ -2071,7 +2269,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         assistantMessageId,
         result.plan,
         result.toolTrace,
-        getHitlContinuationMemory(chatSessionId)
+        getHitlContinuationMemory(chatSessionId),
+        result.workingMemorySnapshot,
       ).catch((err) =>
         guardedSetNote(
           `审批点未保存：${err instanceof Error ? err.message : "未知错误"}`
@@ -2261,12 +2460,14 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     });
 
     if (options?.persist !== false) {
+      const sessionId = resolveScopedSessionId(currentConversation, targetMessage.agentId);
       void saveWorkflowCheckpoint(
-        getChatSessionId(),
+        sessionId,
         messageId,
         updatedPlan,
         currentTrace,
-        getHitlContinuationMemory(getChatSessionId())
+        getHitlContinuationMemory(sessionId),
+        workingMemoryBySessionRef.current.get(sessionId) ?? undefined,
       ).catch((err) =>
         setSessionNote(
           `审批点未保存：${err instanceof Error ? err.message : "未知错误"}`
@@ -2800,13 +3001,37 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     };
   }, []);
 
+  const ensureApprovalInteractionAllowed = (
+    messageId: string,
+    plan?: OrchestrationPlan,
+  ): boolean => {
+    const targetMessage = messagesRef.current.find((message) => message.id === messageId);
+    const sessionId = resolveScopedSessionId(currentConversation, targetMessage?.agentId);
+    if (hasPendingRequest(sessionId)) {
+      setSessionNote("当前有待回答的问题，请先完成 ask_user 请求后再继续审批。");
+      syncAskUserRequestForSession(sessionId);
+      return false;
+    }
+    const pendingActions = plan?.proposedActions.filter((action) => action.status === "pending") ?? [];
+    const hasBackgroundPendingShell = pendingActions.some(
+      (action) =>
+        action.type === "shell" &&
+        resolveShellExecutionMode(action.payload.shell, action.payload.executionMode) === "background",
+    );
+    if (pendingActions.length > 1 && hasBackgroundPendingShell) {
+      setSessionNote("包含后台命令时暂不支持批量审批，请逐项批准相关动作。");
+      return false;
+    }
+    return true;
+  };
+
   const handleApproveAction = async (
     messageId: string,
     actionId: string,
     plan: OrchestrationPlan,
     rememberOption?: ApprovalRuleOption,
   ): Promise<void> => {
-    if (executingActionId) return;
+    if (executingActionId || !ensureApprovalInteractionAllowed(messageId)) return;
     setExecutingActionId(actionId);
     setCategorizedError(null);
     const targetAction = plan.proposedActions.find((action) => action.id === actionId);
@@ -2896,6 +3121,9 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   };
 
   const handleRejectAction = (messageId: string, actionId: string): void => {
+    if (!ensureApprovalInteractionAllowed(messageId)) {
+      return;
+    }
     setInputDialog({
       open: true,
       title: "请输入拒绝原因",
@@ -2923,6 +3151,9 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   };
 
   const handleCommentAction = (messageId: string, actionId: string): void => {
+    if (!ensureApprovalInteractionAllowed(messageId)) {
+      return;
+    }
     setInputDialog({
       open: true,
       title: "添加备注",
@@ -2940,7 +3171,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     messageId: string,
     plan: OrchestrationPlan
   ): Promise<void> => {
-    if (executingActionId) return;
+    if (executingActionId || !ensureApprovalInteractionAllowed(messageId, plan)) return;
     const pendingActions = plan.proposedActions.filter(
       (action) => action.status === "pending",
     );
@@ -3117,6 +3348,9 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   };
 
   const handleRejectAllActions = (messageId: string): void => {
+    if (!ensureApprovalInteractionAllowed(messageId)) {
+      return;
+    }
     setInputDialog({
       open: true,
       title: "批量拒绝所有待审批动作",
@@ -3364,6 +3598,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           {/* ── Thread ── */}
           <ChatThreadSection
             threadRef={threadRef}
+            onThreadScroll={handleThreadScroll}
             messages={messages}
             assistantDisplayName={assistantDisplayName}
             assistantDescription={activeAgent.description}
@@ -3467,15 +3702,17 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         request={askUserRequest}
         onResponse={(response, skipped) => {
           if (!askUserRequest) return;
-          const targetSessionId = askUserRequest.sessionId ?? getChatSessionId();
+          const targetSessionId =
+            askUserRequest.sessionId ?? resolveScopedSessionId(currentConversation);
           submitUserResponse(targetSessionId, askUserRequest.id, response, skipped);
-          setAskUserRequest(null);
+          syncAskUserRequestForSession(targetSessionId);
         }}
         onCancel={() => {
           if (!askUserRequest) return;
-          const targetSessionId = askUserRequest.sessionId ?? getChatSessionId();
+          const targetSessionId =
+            askUserRequest.sessionId ?? resolveScopedSessionId(currentConversation);
           cancelPendingRequest(targetSessionId);
-          setAskUserRequest(null);
+          syncAskUserRequestForSession(targetSessionId);
         }}
       />
     </div>
