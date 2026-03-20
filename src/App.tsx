@@ -249,6 +249,7 @@ export default function App(): ReactElement {
         <UpdateBanner
           {...updater}
           onInstall={updater.installUpdate}
+          onRetry={updater.retry}
           onDismiss={updater.dismiss}
         />
       </div>

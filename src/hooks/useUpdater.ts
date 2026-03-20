@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { classifyUpdateError } from "./updaterErrors";
 
 export type UpdateStatus =
   | "idle"
@@ -8,12 +9,15 @@ export type UpdateStatus =
   | "installing"
   | "error";
 
+export type UpdateErrorAction = "check" | "install" | null;
+
 export interface UpdateState {
   status: UpdateStatus;
   version: string;
   body: string;
   progress: number;
   error: string;
+  errorAction: UpdateErrorAction;
 }
 
 interface UpdateDownloadStartedEvent {
@@ -55,30 +59,13 @@ const INITIAL: UpdateState = {
   body: "",
   progress: 0,
   error: "",
+  errorAction: null,
 };
 
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const IS_DEV = import.meta.env.DEV;
 const UPDATER_PLUGIN_SPECIFIER = "@tauri-apps/plugin-updater";
 const PROCESS_PLUGIN_SPECIFIER = "@tauri-apps/plugin-process";
-
-function normalizeUpdateError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-
-  if (/cancel/i.test(message)) {
-    return "更新已取消。";
-  }
-
-  if (/signature|verify|pubkey/i.test(message)) {
-    return "更新包校验失败，请稍后重试或联系开发者检查发布签名。";
-  }
-
-  if (/install|extract|replace|mount|permission|os error 13/i.test(message)) {
-    return "更新包已下载，但安装失败。请关闭应用后手动安装，或稍后重试。";
-  }
-
-  return message;
-}
 
 async function importOptionalModule<T>(specifier: string): Promise<T | null> {
   try {
@@ -114,7 +101,7 @@ export function useUpdater() {
     }
 
     checkingRef.current = true;
-    setState((s) => ({ ...s, status: "checking", error: "" }));
+    setState((s) => ({ ...s, status: "checking", error: "", errorAction: null }));
 
     try {
       const updaterModule = await loadUpdaterModule();
@@ -137,19 +124,25 @@ export function useUpdater() {
           body: update.body ?? "",
           progress: 0,
           error: "",
+          errorAction: null,
         });
       } else {
         updateRef.current = null;
         setState(INITIAL);
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (/pubkey|signature|verify/i.test(msg)) {
-        console.warn("[updater] Signature verification failed — is pubkey configured?", msg);
-        setState(INITIAL);
-      } else {
-        setState((s) => ({ ...s, status: "error", error: normalizeUpdateError(e) }));
-      }
+      const classifiedError = classifyUpdateError(e);
+
+      // Signature and pubkey failures are operationally important. Treating them as
+      // "no update" hides broken releases from both operators and users.
+      console.error("[updater] Update check failed", e);
+      updateRef.current = null;
+      setState({
+        ...INITIAL,
+        status: "error",
+        error: classifiedError.message,
+        errorAction: "check",
+      });
     } finally {
       checkingRef.current = false;
     }
@@ -159,7 +152,7 @@ export function useUpdater() {
     const update = updateRef.current;
     if (!update) return;
 
-    setState((s) => ({ ...s, status: "downloading", progress: 0, error: "" }));
+    setState((s) => ({ ...s, status: "downloading", progress: 0, error: "", errorAction: null }));
 
     try {
       let totalLength = 0;
@@ -191,17 +184,35 @@ export function useUpdater() {
         await processModule.relaunch();
       }
     } catch (e) {
-      dismissedVersion.current = update.version;
-      setState((s) => ({
-        ...s,
+      const classifiedError = classifyUpdateError(e);
+
+      console.error("[updater] Update install failed", e);
+      setState({
         status: "error",
-        error: normalizeUpdateError(e),
-      }));
+        version: update.version,
+        body: update.body ?? "",
+        progress: 0,
+        error: classifiedError.message,
+        errorAction: "install",
+      });
     }
   }, []);
 
+  const retry = useCallback(async () => {
+    if (state.status !== "error") return;
+
+    if (state.errorAction === "install" && updateRef.current) {
+      await installUpdate();
+      return;
+    }
+
+    await checkForUpdate();
+  }, [checkForUpdate, installUpdate, state.errorAction, state.status]);
+
   const dismiss = useCallback(() => {
-    dismissedVersion.current = state.version;
+    if (state.version) {
+      dismissedVersion.current = state.version;
+    }
     setState(INITIAL);
   }, [state.version]);
 
@@ -231,6 +242,7 @@ export function useUpdater() {
       state.status === "error",
     checkForUpdate,
     installUpdate,
+    retry,
     dismiss,
   };
 }

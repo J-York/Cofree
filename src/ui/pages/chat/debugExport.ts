@@ -263,6 +263,12 @@ export function buildConversationDebugExport(params: {
         toolCallMessageCount: params.messages.filter(
           (message) => (message.tool_calls?.length ?? 0) > 0,
         ).length,
+        expertSpeakerMessageCount: params.messages.filter(
+          (message) => Boolean(message.assistantSpeaker),
+        ).length,
+        teamCheckpointStatusCount: params.subAgentStatus.filter(
+          (item) => item.lastEvent?.kind === "team_checkpoint",
+        ).length,
       },
       messages: params.messages,
     },

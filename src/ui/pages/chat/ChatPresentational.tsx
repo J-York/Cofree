@@ -341,7 +341,13 @@ export function SubAgentStatusPanel({
   if (items.length === 0) return null;
 
   return (
-    <div className="live-tool-status" style={{ marginBottom: 4 }}>
+    <div className="live-tool-status expert-panel-activity" style={{ marginBottom: 6 }}>
+      <p
+        className="tool-trace-label"
+        style={{ margin: "0 0 6px 0", fontSize: 11, opacity: 0.88 }}
+      >
+        专家组活动
+      </p>
       {items.map((item) => {
         const event = item.lastEvent;
         let label = "";
@@ -360,6 +366,12 @@ export function SubAgentStatusPanel({
         } else if (event.kind === "thinking") {
           label = `${item.label}: 正在思考…`;
           icon = "…";
+        } else if (event.kind === "stage_complete") {
+          label = `${item.label}: 阶段完成 (${event.stageStatus})`;
+          icon = "✓";
+        } else if (event.kind === "team_checkpoint") {
+          label = `${item.label}: ${event.message}`;
+          icon = "◇";
         }
         return (
           <div key={item.id} className="live-tool-item running">

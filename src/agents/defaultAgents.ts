@@ -73,6 +73,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
       '  "coverageGaps": ["..."]',
       "}",
       "```",
+      "要求：每个 testCase 必须给出布尔值 passed；未执行到的用例标为 passed:false 并在 actualResult 说明原因。",
     ].join("\n"),
   },
   {
@@ -128,6 +129,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
       '  "summary": "..."',
       "}",
       "```",
+      "要求：若需要作者改代码才能合入，请设 overallAssessment 为 request_changes 并在 issues 中列出需改项；无问题时 issues 可为 [] 且 overallAssessment 为 approve。",
     ].join("\n"),
   },
 ];

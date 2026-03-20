@@ -1,6 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { executeAgentTeam } from "../src/orchestrator/teamExecutor";
-import type { AgentTeamDefinition } from "../src/agents/agentTeam";
+import {
+  type AgentTeamDefinition,
+  isTeamAllowedForRoles,
+  listTeamIdsAllowedForRoles,
+  BUILTIN_TEAMS,
+} from "../src/agents/agentTeam";
 import * as planningService from "../src/orchestrator/planningService";
 import {
   addDiscoveredFact,
@@ -38,12 +43,46 @@ function makeSubAgentResult(overrides?: Partial<planningService.SubAgentResult>)
   };
 }
 
+describe("agentTeam helpers", () => {
+  it("listTeamIdsAllowedForRoles excludes teams with unauthorized roles", () => {
+    expect(listTeamIdsAllowedForRoles(["planner"])).toEqual([]);
+    const team = BUILTIN_TEAMS.find((t) => t.id === "team-expert-panel");
+    expect(team).toBeDefined();
+    expect(isTeamAllowedForRoles(team!, ["planner", "coder", "reviewer"])).toBe(true);
+    expect(listTeamIdsAllowedForRoles(["planner", "coder", "reviewer"])).toContain(
+      "team-expert-panel",
+    );
+    expect(listTeamIdsAllowedForRoles(["planner", "coder", "reviewer", "tester"])).toContain(
+      "team-expert-panel-v2",
+    );
+  });
+});
+
 describe("agentTeam executor", () => {
   const mockSettings: any = {};
   const mockToolPerms: any = {};
 
   beforeEach(() => {
     vi.resetAllMocks();
+  });
+
+  it("emits stage_complete after each finished stage", async () => {
+    const teamDef = makeTeam();
+    const mock = vi.mocked(planningService.executeSubAgentTask);
+    mock.mockResolvedValueOnce(makeSubAgentResult({ reply: "Plan ok" }));
+    mock.mockResolvedValueOnce(makeSubAgentResult({ reply: "Code ok" }));
+    const progress: { kind: string; teamId?: string }[] = [];
+    await executeAgentTeam({
+      team: teamDef,
+      taskDescription: "Do a task",
+      workspacePath: "/test",
+      settings: mockSettings,
+      toolPermissions: mockToolPerms,
+      onStageProgress: (_stage, ev) => progress.push(ev),
+    });
+    const completes = progress.filter((e) => e.kind === "stage_complete");
+    expect(completes).toHaveLength(2);
+    expect(completes[0].teamId).toBe("test");
   });
 
   it("executes sequential stages and aborts on failure when policy is stop", async () => {
@@ -158,6 +197,8 @@ describe("agentTeam executor", () => {
     expect(result.stageResults["code"]).toBeDefined();
     expect(result.stageResults["test"]).toBeUndefined();
     expect(result.totalTurnsUsed).toBe(6);
+    expect(result.stopReason).toBe("budget_exhausted");
+    expect(result.status).toBe("partial");
   });
 
   // --- P4-3: Skipped stages due to condition ---
@@ -185,6 +226,7 @@ describe("agentTeam executor", () => {
     expect(mock).toHaveBeenCalledTimes(1);
     expect(result.stageResults["plan"].status).toBe("partial");
     expect(result.stageResults["code"]).toBeDefined();
+    expect(result.stageResults["code"].status).toBe("skipped");
     expect(result.stageResults["code"].reply).toContain("skipped");
   });
 
@@ -316,5 +358,177 @@ describe("agentTeam executor", () => {
     expect(seenMemories[0]).not.toBe(seenMemories[1]);
     expect(parentMemory.discoveredFacts).toHaveLength(1);
     expect(parentMemory.discoveredFacts[0]?.content).toBe("Parent-only fact");
+  });
+
+  it("runs repair stage when reviewer structured output has issues", async () => {
+    const teamDef = makeTeam({
+      pipeline: [
+        { agentRole: "planner", stageLabel: "plan" },
+        { agentRole: "coder", stageLabel: "code", condition: { type: "if_previous_succeeded" } },
+        { agentRole: "reviewer", stageLabel: "review", condition: { type: "if_previous_succeeded" } },
+        {
+          agentRole: "coder",
+          stageLabel: "fix_review",
+          condition: { type: "if_issues_from_stage", refStageLabel: "review" },
+        },
+      ],
+      config: { maxTotalTurns: 30, failurePolicy: "stop", sharedWorkingMemory: true },
+    });
+
+    const mock = vi.mocked(planningService.executeSubAgentTask);
+    mock.mockResolvedValueOnce(makeSubAgentResult({ reply: "Planned" }));
+    mock.mockResolvedValueOnce(makeSubAgentResult({ reply: "Coded" }));
+    mock.mockResolvedValueOnce(
+      makeSubAgentResult({
+        reply: "Issues",
+        status: "partial",
+        structuredOutput: {
+          role: "reviewer",
+          data: {
+            issues: [{ severity: "warning" as const, file: "a.ts", line: 1, message: "fix me" }],
+            overallAssessment: "request_changes",
+            summary: "needs work",
+          },
+        } as any,
+      }),
+    );
+    mock.mockResolvedValueOnce(makeSubAgentResult({ reply: "Fixed" }));
+
+    const result = await executeAgentTeam({
+      team: teamDef,
+      taskDescription: "Task",
+      workspacePath: "/test",
+      settings: mockSettings,
+      toolPermissions: mockToolPerms,
+    });
+
+    expect(mock).toHaveBeenCalledTimes(4);
+    expect(result.stageResults["fix_review"]).toBeDefined();
+    expect(result.stageResults["fix_review"].status).toBe("completed");
+    expect(result.stopReason).toBe("completed_normal");
+  });
+
+  it("runs retest only when test-fix stage executed", async () => {
+    const teamDef = makeTeam({
+      pipeline: [
+        { agentRole: "tester", stageLabel: "test1" },
+        {
+          agentRole: "coder",
+          stageLabel: "fix_test",
+          condition: { type: "if_issues_from_stage", refStageLabel: "test1" },
+        },
+        {
+          agentRole: "tester",
+          stageLabel: "test2",
+          condition: { type: "if_stage_executed", refStageLabel: "fix_test" },
+        },
+      ],
+      config: { maxTotalTurns: 20, failurePolicy: "stop", sharedWorkingMemory: true },
+    });
+
+    const mock = vi.mocked(planningService.executeSubAgentTask);
+    mock.mockResolvedValueOnce(
+      makeSubAgentResult({
+        reply: "t1",
+        status: "partial",
+        structuredOutput: {
+          role: "tester",
+          data: {
+            testPlan: [
+              {
+                testCase: "x",
+                steps: ["s"],
+                expectedResult: "ok",
+                passed: false,
+              },
+            ],
+            riskLevel: "high",
+          },
+        } as any,
+      }),
+    );
+    mock.mockResolvedValueOnce(makeSubAgentResult({ reply: "fixed" }));
+    mock.mockResolvedValueOnce(
+      makeSubAgentResult({
+        reply: "t2",
+        structuredOutput: {
+          role: "tester",
+          data: {
+            testPlan: [
+              {
+                testCase: "x",
+                steps: ["s"],
+                expectedResult: "ok",
+                passed: true,
+              },
+            ],
+            riskLevel: "low",
+          },
+        } as any,
+      }),
+    );
+
+    const result = await executeAgentTeam({
+      team: teamDef,
+      taskDescription: "Task",
+      workspacePath: "/test",
+      settings: mockSettings,
+      toolPermissions: mockToolPerms,
+    });
+
+    expect(mock).toHaveBeenCalledTimes(3);
+    expect(result.stageResults["test2"]).toBeDefined();
+  });
+
+  it("skips retest when test-fix stage skipped", async () => {
+    const teamDef = makeTeam({
+      pipeline: [
+        { agentRole: "tester", stageLabel: "test1" },
+        {
+          agentRole: "coder",
+          stageLabel: "fix_test",
+          condition: { type: "if_issues_from_stage", refStageLabel: "test1" },
+        },
+        {
+          agentRole: "tester",
+          stageLabel: "test2",
+          condition: { type: "if_stage_executed", refStageLabel: "fix_test" },
+        },
+      ],
+      config: { maxTotalTurns: 20, failurePolicy: "stop", sharedWorkingMemory: true },
+    });
+
+    const mock = vi.mocked(planningService.executeSubAgentTask);
+    mock.mockResolvedValueOnce(
+      makeSubAgentResult({
+        reply: "t1",
+        structuredOutput: {
+          role: "tester",
+          data: {
+            testPlan: [
+              {
+                testCase: "x",
+                steps: ["s"],
+                expectedResult: "ok",
+                passed: true,
+              },
+            ],
+            riskLevel: "low",
+          },
+        } as any,
+      }),
+    );
+
+    const result = await executeAgentTeam({
+      team: teamDef,
+      taskDescription: "Task",
+      workspacePath: "/test",
+      settings: mockSettings,
+      toolPermissions: mockToolPerms,
+    });
+
+    expect(mock).toHaveBeenCalledTimes(1);
+    expect(result.stageResults["fix_test"]?.status).toBe("skipped");
+    expect(result.stageResults["test2"]?.status).toBe("skipped");
   });
 });

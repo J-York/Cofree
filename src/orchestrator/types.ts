@@ -10,6 +10,7 @@
  */
 
 import type { AgentRole } from "../agents/defaultAgents";
+import type { SubAgentCompletionStatus } from "../agents/types";
 
 export type WorkflowState = "planning" | "executing" | "human_review" | "done";
 
@@ -141,4 +142,14 @@ export type SubAgentProgressEvent = (
   | { kind: "thinking"; partialContent: string }
   | { kind: "action_proposed"; actionType: SensitiveActionType; description: string }
   | { kind: "summary"; message: string }
+  /** Soft milestone after planner stage; does not pause execution (see team config `emitPlanCheckpoint`). */
+  | { kind: "team_checkpoint"; checkpointId: string; message: string }
+  /** Emitted when an Agent Team stage finishes; used for expert-panel timeline + debug export. */
+  | {
+      kind: "stage_complete";
+      stageLabel: string;
+      agentRole: string;
+      summary: string;
+      stageStatus: SubAgentCompletionStatus;
+    }
 ) & SubAgentProgressMeta;

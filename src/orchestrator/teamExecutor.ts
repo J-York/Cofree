@@ -13,12 +13,22 @@ import type {
   AgentTeamStageCondition,
 } from "../agents/agentTeam";
 
+export type TeamStopReason =
+  | "completed_normal"
+  | "budget_exhausted"
+  | "aborted"
+  | "stage_failed";
+
 export interface TeamExecutionResult {
   status: "completed" | "failed" | "partial" | "blocked";
   stageResults: Record<string, SubAgentResult>;
   finalReply: string;
   /** P4-1: Total turns consumed across all stages. */
   totalTurnsUsed: number;
+  /** Why the team run ended (for UI, logs, and parent `task` tool payload). */
+  stopReason: TeamStopReason;
+  /** Optional hint for the concierge / user (e.g. after budget or partial completion). */
+  nextRecommendedAction?: string;
 }
 
 type TeamStageFailureStatus = Extract<SubAgentResult["status"], "failed" | "blocked">;
@@ -36,10 +46,11 @@ interface TeamAggregationSummary {
  * Team stage condition semantics (P4-3 — centralized and documented):
  *
  * - always: unconditionally run this stage.
- * - if_previous_succeeded: run only when ALL previously executed stages are "completed".
- *   "partial" is treated as NOT succeeded (conservative). "blocked"/"failed" are also NOT succeeded.
- * - if_issues_found: run when a previously executed reviewer/tester stage reported issues/failures.
- *   A stage that failed or was blocked does NOT count as "issues found" — it must produce structured output.
+ * - if_previous_succeeded: run only when ALL previously recorded stages are "completed" or synthetic "skipped".
+ *   "partial"/"blocked"/"failed" block progression. Skipped stages do not block (they were not applicable).
+ * - if_issues_found: run when any prior reviewer/tester structured output reports issues/failures.
+ * - if_issues_from_stage: same as issues check but only for the named `refStageLabel` stage result.
+ * - if_stage_executed: true when the named stage exists and was not synthetic-skipped.
  */
 function evaluateStageCondition(
   condition: AgentTeamStageCondition | undefined,
@@ -51,37 +62,64 @@ function evaluateStageCondition(
 
   switch (condition.type) {
     case "if_previous_succeeded":
-      return getPriorExecutionStatuses(stageResults).every((status) => status === "completed");
+      return priorStagesAllSucceededForPipeline(stageResults);
     case "if_issues_found":
       return hasIssuesInStageResults(stageResults);
+    case "if_issues_from_stage":
+      return stageHasStructuredIssues(stageResults.get(condition.refStageLabel ?? ""));
+    case "if_stage_executed": {
+      const ref = condition.refStageLabel;
+      if (!ref) return false;
+      const res = stageResults.get(ref);
+      return res !== undefined && res.status !== "skipped";
+    }
     default:
       return true;
   }
 }
 
-function getPriorExecutionStatuses(
-  stageResults: Map<string, SubAgentResult>,
-): SubAgentResult["status"][] {
-  return Array.from(stageResults.values(), (result) => result.status);
+/**
+ * Stages that may end as `partial` while still allowing the pipeline to continue
+ * (e.g. reviewer listed issues → repair stage; tester reported failing cases → fix stage).
+ */
+function isAcceptablePriorStatusForPipeline(result: SubAgentResult): boolean {
+  if (result.status === "completed" || result.status === "skipped") return true;
+  if (result.status === "partial") {
+    const o = result.structuredOutput;
+    if (o?.role === "reviewer" || o?.role === "tester") return true;
+  }
+  return false;
+}
+
+/** All recorded stages are completed, skipped, or reviewer/tester partial with structured output. */
+function priorStagesAllSucceededForPipeline(stageResults: Map<string, SubAgentResult>): boolean {
+  for (const result of stageResults.values()) {
+    if (!isAcceptablePriorStatusForPipeline(result)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function stageHasStructuredIssues(result: SubAgentResult | undefined): boolean {
+  if (!result?.structuredOutput) return false;
+  const output = result.structuredOutput;
+  if (output.role === "reviewer" && output.data.issues.length > 0) {
+    return true;
+  }
+  if (
+    output.role === "tester" &&
+    output.data.testPlan.some((testCase) => testCase.passed === false)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function hasIssuesInStageResults(stageResults: Map<string, SubAgentResult>): boolean {
   for (const result of stageResults.values()) {
-    const output = result.structuredOutput;
-    if (!output) continue;
-
-    if (output.role === "reviewer" && output.data.issues.length > 0) {
-      return true;
-    }
-
-    if (
-      output.role === "tester" &&
-      output.data.testPlan.some((testCase) => testCase.passed === false)
-    ) {
-      return true;
-    }
+    if (stageHasStructuredIssues(result)) return true;
   }
-
   return false;
 }
 
@@ -151,10 +189,17 @@ function buildStageDescription(
 
     if (prevResult.structuredOutput) {
       const data = prevResult.structuredOutput.data as unknown as Record<string, unknown>;
+      const missingFields: string[] = [];
       for (const field of stage.inputMapping.fields) {
         if (data[field] !== undefined) {
           description += `- **${field}**: ${JSON.stringify(data[field])}\n`;
+        } else {
+          missingFields.push(field);
         }
+      }
+      if (missingFields.length > 0) {
+        description +=
+          `\n_(系统提示：上一阶段结构化输出缺少字段 ${missingFields.join(", ")}；请结合工具与上一阶段全文补全上下文。)_\n`;
       }
     } else {
       description += prevResult.reply;
@@ -173,6 +218,9 @@ function summarizeTeamExecution(stageResults: Map<string, SubAgentResult>): Team
 
   for (const result of stageResults.values()) {
     totalTurns += result.turnCount ?? 0;
+    if (result.status === "skipped") {
+      continue;
+    }
     if (result.status === "blocked") {
       hasBlocked = true;
       continue;
@@ -209,13 +257,33 @@ function resolveTeamStatus(summary: TeamAggregationSummary): TeamExecutionResult
 function aggregateTeamResults(
   team: AgentTeamDefinition,
   stageResults: Map<string, SubAgentResult>,
+  stopReason: TeamStopReason,
 ): TeamExecutionResult {
   const resultsObj = Object.fromEntries(stageResults);
   const stagesRun = Array.from(stageResults.keys());
   const summary = summarizeTeamExecution(stageResults);
-  const resolvedStatus = resolveTeamStatus(summary);
+  let resolvedStatus = resolveTeamStatus(summary);
 
-  let finalReply = `Team [${team.name}] execution finished with status: ${resolvedStatus}. Stages run: ${stagesRun.join(" -> ")}.\n\n`;
+  if (stopReason === "budget_exhausted" && resolvedStatus === "completed") {
+    resolvedStatus = "partial";
+  }
+  if (stopReason === "aborted" && resolvedStatus === "completed") {
+    resolvedStatus = "partial";
+  }
+
+  let nextRecommendedAction: string | undefined;
+  if (stopReason === "budget_exhausted") {
+    nextRecommendedAction =
+      "团队轮次预算已用尽：可缩小任务范围、提高模型能力，或手动继续未完成阶段。";
+  } else if (stopReason === "aborted") {
+    nextRecommendedAction = "执行被中断：可在需要时重新发起 task(team=...) 或从当前进度向用户说明。";
+  } else if (stopReason === "stage_failed") {
+    nextRecommendedAction = "某阶段失败：请查看 stage_results 中的失败阶段与错误信息，再决定是否重试或拆分任务。";
+  } else if (resolvedStatus === "partial") {
+    nextRecommendedAction = "流水线部分完成：请根据各阶段状态与结构化输出决定是否需要额外一轮修复或测试。";
+  }
+
+  let finalReply = `Team [${team.name}] execution finished with status: ${resolvedStatus}. stop_reason: ${stopReason}. Stages run: ${stagesRun.join(" -> ")}.\n\n`;
 
   for (const [label, res] of stageResults.entries()) {
     finalReply += `### Stage: ${label} (${res.status})\n${res.reply}\n\n`;
@@ -226,7 +294,16 @@ function aggregateTeamResults(
     stageResults: resultsObj,
     finalReply: finalReply.trim(),
     totalTurnsUsed: summary.totalTurns,
+    stopReason,
+    nextRecommendedAction,
   };
+}
+
+function truncateExpertStageSummary(reply: string, maxChars: number): string {
+  const t = reply.trim();
+  if (!t) return "";
+  if (t.length <= maxChars) return t;
+  return `${t.slice(0, maxChars)}…`;
 }
 
 async function executeStage(
@@ -240,6 +317,7 @@ async function executeStage(
     focusedPaths?: string[];
     onStageProgress?: (stage: string, event: SubAgentProgressEvent) => void;
     signal?: AbortSignal;
+    teamId: string;
   },
   stageResults: Map<string, SubAgentResult>,
 ): Promise<SubAgentResult> {
@@ -249,7 +327,7 @@ async function executeStage(
     stageResults,
   );
 
-  return executeSubAgentTask(
+  const result = await executeSubAgentTask(
     params.stage.agentRole,
     stageDescription,
     params.workspacePath,
@@ -260,6 +338,21 @@ async function executeStage(
     params.signal,
     params.focusedPaths,
   );
+
+  const summary =
+    truncateExpertStageSummary(result.reply, 1200) ||
+    `（阶段结束 · ${result.status}）`;
+
+  params.onStageProgress?.(params.stage.stageLabel, {
+    kind: "stage_complete",
+    teamId: params.teamId,
+    stageLabel: params.stage.stageLabel,
+    agentRole: params.stage.agentRole,
+    summary,
+    stageStatus: result.status,
+  });
+
+  return result;
 }
 
 export async function executeAgentTeam(params: {
@@ -278,6 +371,7 @@ export async function executeAgentTeam(params: {
   const groups = groupStagesByExecutionOrder(team.pipeline);
   let totalTurnsConsumed = 0;
   const maxTotalTurns = team.config.maxTotalTurns;
+  let stopReason: TeamStopReason = "completed_normal";
 
   // P4-1: Resolve the working memory strategy per team config.
   // - sharedWorkingMemory=true: sequential stages share the parent memory,
@@ -303,6 +397,7 @@ export async function executeAgentTeam(params: {
 
   for (const group of groups) {
     if (params.signal?.aborted) {
+      stopReason = "aborted";
       break;
     }
 
@@ -311,6 +406,7 @@ export async function executeAgentTeam(params: {
       console.warn(
         `[TeamExecutor] Total turn budget exhausted (${totalTurnsConsumed}/${maxTotalTurns}), stopping team.`
       );
+      stopReason = "budget_exhausted";
       break;
     }
 
@@ -321,7 +417,7 @@ export async function executeAgentTeam(params: {
         if (!stageResults.has(stage.stageLabel)) {
           stageResults.set(stage.stageLabel, {
             reply: `Stage skipped: condition "${stage.condition?.type ?? "always"}" evaluated to false.`,
-            status: "partial",
+            status: "skipped",
             proposedActions: [],
             toolTrace: [],
             turnCount: 0,
@@ -345,6 +441,7 @@ export async function executeAgentTeam(params: {
           focusedPaths,
           onStageProgress: params.onStageProgress,
           signal: params.signal,
+          teamId: team.id,
         },
         stageResults,
       );
@@ -352,7 +449,23 @@ export async function executeAgentTeam(params: {
       stageResults.set(stage.stageLabel, result);
       totalTurnsConsumed += result.turnCount ?? 0;
 
+      if (
+        team.config.emitPlanCheckpoint &&
+        stage.agentRole === "planner" &&
+        result.status === "completed"
+      ) {
+        params.onStageProgress?.(stage.stageLabel, {
+          kind: "team_checkpoint",
+          checkpointId: "plan_ready",
+          message: "需求对齐与任务拆解已完成；建议在进入实现前请用户确认范围、风险与验收标准。",
+          teamId: team.id,
+          stageLabel: stage.stageLabel,
+          agentRole: stage.agentRole,
+        });
+      }
+
       if (!shouldContinueAfterStageFailure(team, result.status)) {
+        stopReason = "stage_failed";
         break;
       }
 
@@ -369,23 +482,24 @@ export async function executeAgentTeam(params: {
         if (stageMemory && team.config.sharedWorkingMemory) {
           stageMemories.push(stageMemory);
         }
-        return {
-          stageLabel: stage.stageLabel,
-          result: await executeStage(
-            {
-              stage,
-              taskDescription,
-              workspacePath,
-              settings,
-              toolPermissions,
-              workingMemory: stageMemory,
-              focusedPaths,
-              onStageProgress: params.onStageProgress,
-              signal: params.signal,
-            },
-            stageResults,
-          ),
-        };
+          return {
+            stageLabel: stage.stageLabel,
+            result: await executeStage(
+              {
+                stage,
+                taskDescription,
+                workspacePath,
+                settings,
+                toolPermissions,
+                workingMemory: stageMemory,
+                focusedPaths,
+                onStageProgress: params.onStageProgress,
+                signal: params.signal,
+                teamId: team.id,
+              },
+              stageResults,
+            ),
+          };
       }),
     );
 
@@ -419,9 +533,10 @@ export async function executeAgentTeam(params: {
     }
 
     if (!shouldContinueAfterGroup(team, settledGroupResults)) {
+      stopReason = "stage_failed";
       break;
     }
   }
 
-  return aggregateTeamResults(team, stageResults);
+  return aggregateTeamResults(team, stageResults, stopReason);
 }

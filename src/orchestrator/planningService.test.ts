@@ -2640,6 +2640,8 @@ describe("P3: team progress and origin metadata", () => {
                 status: "completed",
                 finalReply: "done",
                 totalTurnsUsed: 1,
+                stopReason: "completed_normal",
+                nextRecommendedAction: undefined,
                 stageResults: {
                     "代码实现": {
                         status: "completed",

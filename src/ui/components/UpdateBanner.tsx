@@ -1,10 +1,31 @@
 import type { ReactElement } from "react";
-import type { UpdateState } from "../../hooks/useUpdater";
+import type { UpdateErrorAction, UpdateState } from "../../hooks/useUpdater";
 
 interface Props extends UpdateState {
   visible: boolean;
   onInstall: () => void;
+  onRetry: () => void;
   onDismiss: () => void;
+}
+
+function getErrorSummary(version: string, errorAction: UpdateErrorAction): string {
+  if (!version || errorAction === "check") {
+    return "自动更新检查失败";
+  }
+
+  return `v${version} 更新失败`;
+}
+
+function getRetryLabel(errorAction: UpdateErrorAction): string {
+  if (errorAction === "install") {
+    return "重试更新";
+  }
+
+  if (errorAction === "check") {
+    return "重新检查";
+  }
+
+  return "重试";
 }
 
 export function UpdateBanner({
@@ -13,7 +34,9 @@ export function UpdateBanner({
   version,
   progress,
   error,
+  errorAction,
   onInstall,
+  onRetry,
   onDismiss,
 }: Props): ReactElement | null {
   if (!visible) return null;
@@ -71,14 +94,14 @@ export function UpdateBanner({
           <>
             <span className="update-banner-icon">⚠</span>
             <span className="update-banner-text">
-              v{version || "最新版本"} 更新失败：{error || "未知错误"}
+              {getErrorSummary(version, errorAction)}：{error || "未知错误"}
             </span>
             <button
               type="button"
               className="btn btn-xs btn-primary update-banner-action"
-              onClick={onInstall}
+              onClick={onRetry}
             >
-              重试更新
+              {getRetryLabel(errorAction)}
             </button>
             <button
               type="button"

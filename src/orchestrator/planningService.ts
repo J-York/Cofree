@@ -76,8 +76,9 @@ import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { assembleSystemPrompt, assembleRuntimeContext, classifyTaskType } from "../agents/promptAssembly";
 import { tryExtractStructuredOutput, tryExtractFeedback } from "../agents/structuredOutput";
 import { runWithConcurrencyLimit } from "../lib/concurrency";
-import { BUILTIN_TEAMS } from "../agents/agentTeam";
+import { BUILTIN_TEAMS, isTeamAllowedForRoles, listTeamIdsAllowedForRoles } from "../agents/agentTeam";
 import { executeAgentTeam } from "./teamExecutor";
+import { countRepairStages, decideTeamRouting } from "./teamRouting";
 import type { ChatContextAttachment } from "../lib/contextAttachments";
 import {
   collectRelevantFilePaths,
@@ -1866,6 +1867,8 @@ function buildAgentToolDefs(runtime: ResolvedAgentRuntime): LiteLLMToolDefinitio
     }
     if (td.function.name !== "task") return td;
     if (allowedRoles.length === 0) return null;
+    const teamIds = listTeamIdsAllowedForRoles(allowedRoles);
+    const baseTeamProp = (td.function.parameters as any).properties.team;
     return {
       ...td,
       function: {
@@ -1877,6 +1880,10 @@ function buildAgentToolDefs(runtime: ResolvedAgentRuntime): LiteLLMToolDefinitio
             role: {
               ...(td.function.parameters as any).properties.role,
               enum: [...allowedRoles],
+            },
+            team: {
+              ...baseTeamProp,
+              ...(teamIds.length > 0 ? { enum: teamIds } : {}),
             },
           },
         },
@@ -3703,9 +3710,22 @@ export async function executeSubAgentTask(
         console.log(`[SubAgent] 提取到结构化输出 | role=${structuredOutput.role}`);
       }
       const feedbackResult = tryExtractFeedback(finalReply);
-      const resolvedStatus: SubAgentCompletionStatus = feedbackResult?.status ?? "completed";
+      let resolvedStatus: SubAgentCompletionStatus = feedbackResult?.status ?? "completed";
       if (feedbackResult) {
         console.log(`[SubAgent] 提取到反馈 | status=${resolvedStatus} | reason=${feedbackResult.feedback?.reason}`);
+      }
+      // Reviewer / tester structured signals drive Team conditions (if_issues_from_stage, etc.)
+      if (!feedbackResult && structuredOutput && resolvedStatus === "completed") {
+        if (structuredOutput.role === "reviewer") {
+          const d = structuredOutput.data;
+          if (d.overallAssessment === "request_changes" || d.issues.length > 0) {
+            resolvedStatus = "partial";
+          }
+        } else if (structuredOutput.role === "tester") {
+          if (structuredOutput.data.testPlan.some((tc) => tc.passed === false)) {
+            resolvedStatus = "partial";
+          }
+        }
       }
       return {
         reply: finalReply,
@@ -5101,22 +5121,23 @@ async function executeToolCall(
           };
         }
         // P0-2: Validate all team stage roles against allowedSubAgents
-        if (allowedSubAgents !== undefined) {
+        if (
+          allowedSubAgents !== undefined &&
+          !isTeamAllowedForRoles(teamDef, allowedSubAgents)
+        ) {
           const allowedSet = new Set<string>(allowedSubAgents);
           const unauthorizedRoles = teamDef.pipeline
             .map((stage) => stage.agentRole)
             .filter((role) => !allowedSet.has(role));
-          if (unauthorizedRoles.length > 0) {
-            const message = `Team "${teamId}" 包含未授权角色: [${[...new Set(unauthorizedRoles)].join(", ")}]。` +
-              `当前 Agent 的允许角色: [${allowedSubAgents.join(", ")}]`;
-            console.warn(`[Planning][P0-2] ${message}`);
-            return {
-              content: JSON.stringify({ error: message }),
-              success: false,
-              errorCategory: "permission",
-              errorMessage: message,
-            };
-          }
+          const message = `Team "${teamId}" 包含未授权角色: [${[...new Set(unauthorizedRoles)].join(", ")}]。` +
+            `当前 Agent 的允许角色: [${allowedSubAgents.join(", ")}]`;
+          console.warn(`[Planning][P0-2] ${message}`);
+          return {
+            content: JSON.stringify({ error: message }),
+            success: false,
+            errorCategory: "permission",
+            errorMessage: message,
+          };
         }
         if (!settings) {
           const message = "task 工具需要 settings 上下文，当前调用缺少 settings";
@@ -5138,11 +5159,12 @@ async function executeToolCall(
           focusedPaths,
           onStageProgress: (stage, event) => {
             const stageRole = teamDef.pipeline.find((candidate) => candidate.stageLabel === stage)?.agentRole;
+            const resolvedRole = stageRole ?? event.agentRole;
             onSubAgentProgress?.({
               ...event,
               teamId,
               stageLabel: stage,
-              agentRole: stageRole,
+              ...(resolvedRole !== undefined ? { agentRole: resolvedRole } : {}),
               sourceLabel: `${teamId} · ${stage}`,
             });
           },
@@ -5177,12 +5199,22 @@ async function executeToolCall(
           }
         }
 
+        const routing = decideTeamRouting({
+          teamId,
+          repairRoundsUsed: countRepairStages(teamResult.stageResults),
+          stopReason: teamResult.stopReason,
+        });
+
         const responsePayload: Record<string, unknown> = {
           ok: teamResult.status === "completed",
           action_type: "team_task",
           team: teamId,
           status: teamResult.status,
           completionStatus: teamResult.status,
+          stop_reason: teamResult.stopReason,
+          next_recommended_action: teamResult.nextRecommendedAction ?? null,
+          repair_rounds_used: countRepairStages(teamResult.stageResults),
+          routing_mode: routing.mode,
           reply: teamResult.finalReply,
           stage_results: Object.fromEntries(
             Object.entries(teamResult.stageResults).map(([k, v]) => [k, {

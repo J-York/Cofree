@@ -14,6 +14,73 @@
   flex-direction: row-reverse;
 }
 
+/* Expert-panel stage summary rows (assistantSpeaker) */
+.chat-row.chat-row-expert-turn .chat-avatar.assistant {
+  border-color: rgba(143, 166, 208, 0.35);
+  color: var(--accent-solid);
+}
+
+.chat-row.chat-row-expert-turn .chat-bubble-wrap {
+  max-width: 92%;
+}
+
+.chat-expert-stage-details {
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-1);
+  background: var(--surface-1);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.chat-expert-stage-summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  user-select: none;
+}
+
+.chat-expert-stage-summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-expert-stage-summary-main {
+  min-width: 0;
+  flex: 1;
+  line-height: 1.35;
+}
+
+.chat-expert-stage-summary-action {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent-solid);
+  opacity: 0.9;
+}
+
+.chat-expert-stage-details:not([open]) .chat-expert-stage-collapse-label {
+  display: none;
+}
+
+.chat-expert-stage-details[open] .chat-expert-stage-expand-label {
+  display: none;
+}
+
+.chat-expert-stage-body.chat-bubble {
+  border-radius: 0;
+  border: none;
+  border-top: 1px solid var(--border-1);
+  box-shadow: none;
+  margin: 0;
+  padding-top: 10px;
+  padding-bottom: 12px;
+  font-size: 13px;
+}
+
 .chat-avatar {
   width: 32px;
   height: 32px;

@@ -38,6 +38,7 @@ import {
   type ChatContextAttachment,
 } from "../../lib/contextAttachments";
 import { copyTextToClipboard } from "../../lib/clipboard";
+import { insertExpertStageSummaryMessages } from "./chat/expertStageMessages";
 import { ConversationSidebar } from "../components/ConversationSidebar";
 import { IconTrash } from "../components/Icons";
 import { getActiveManagedModel, isActiveModelLocal, resolveManagedModelSelection } from "../../lib/settingsStore";
@@ -221,6 +222,16 @@ const DEBUG_EXPORT_HISTORY_LIMIT = 200;
 const shellOutputTextEncoder = new TextEncoder();
 const EMPTY_LIVE_TOOL_CALLS: LiveToolCall[] = [];
 const EMPTY_SUB_AGENT_STATUS: SubAgentStatusItem[] = [];
+
+/** Strip leading `[team-id]` prefix for one-line expert-stage summaries. */
+function compactExpertPanelLabel(fullLabel: string): string {
+  const trimmed = fullLabel.trim();
+  const idx = trimmed.indexOf("] ");
+  if (idx >= 0 && trimmed.startsWith("[")) {
+    return trimmed.slice(idx + 2).trim();
+  }
+  return trimmed;
+}
 const EMPTY_SHELL_ACTION_IDS: string[] = [];
 const DEFAULT_CHAT_SUGGESTIONS = [
   { prompt: "帮我分析一下这个项目的代码结构", label: "分析代码结构" },
@@ -285,65 +296,111 @@ const ChatMessageRow = memo(function ChatMessageRow({
     message.plan !== null &&
     (message.plan.proposedActions.length > 0 || message.plan.steps.length > 0);
 
+  const isExpertStageTurn =
+    message.role === "assistant" && Boolean(message.assistantSpeaker);
+
+  const assistantMetaLabel =
+    message.role === "assistant" && message.assistantSpeaker?.label
+      ? message.assistantSpeaker.label
+      : assistantDisplayName;
+  const assistantAvatarLetter =
+    message.role === "assistant"
+      ? isExpertStageTurn
+        ? "专"
+        : (message.assistantSpeaker?.label ?? assistantDisplayName).charAt(0)
+      : "U";
+
+  const timeSuffix = formatTime(message.createdAt)
+    ? ` · ${formatTime(message.createdAt)}`
+    : "";
+
   return (
-    <div className={`chat-row ${message.role}`}>
+    <div
+      className={`chat-row ${message.role}${
+        message.assistantSpeaker ? " chat-row-expert-turn" : ""
+      }`}
+    >
       <div className={`chat-avatar ${message.role}`}>
-        {message.role === "user" ? "U" : assistantDisplayName.charAt(0)}
+        {message.role === "user" ? "U" : assistantAvatarLetter}
       </div>
       <div className="chat-bubble-wrap">
-        <p className="chat-meta">
-          {message.role === "user" ? "你" : assistantDisplayName}
-          {formatTime(message.createdAt) ? ` · ${formatTime(message.createdAt)}` : ""}
-        </p>
-        {message.role === "assistant" && debugMode && (
-          <AssistantToolCalls toolCalls={message.tool_calls} />
-        )}
-        {message.role === "assistant" &&
-          showStreamingStatus &&
-          liveToolCalls.length > 0 && (
-            <LiveToolStatus calls={liveToolCalls} />
-          )}
-        {message.role === "assistant" &&
-          showStreamingStatus &&
-          subAgentStatus.length > 0 && (
-            <SubAgentStatusPanel items={subAgentStatus} />
-          )}
-        {message.role === "assistant" && (message.toolTrace?.length ?? 0) > 0 && (
-          <ToolTracePanel traces={message.toolTrace!} />
-        )}
-        {hasPlan && message.plan && (
-          <InlinePlan
-            plan={message.plan}
-            messageId={message.id}
-            executingActionId={executingActionId}
-            activeShellActionIds={activeShellActionIds}
-            onPlanUpdate={onPlanUpdate}
-            onApprove={onApprove}
-            onRetry={onRetry}
-            onReject={onReject}
-            onComment={onComment}
-            onCancel={onCancel}
-            onApproveAll={onApproveAll}
-            onRejectAll={onRejectAll}
-          />
-        )}
-        <div className={`chat-bubble ${message.role}`}>
-          {message.role === "user" && (
-            <ContextAttachmentPills
-              attachments={message.contextAttachments ?? []}
-              compact
-            />
-          )}
-          <MessageContent
-            content={message.content}
-            isStreaming={
+        {isExpertStageTurn && message.assistantSpeaker ? (
+          <details className="chat-expert-stage-details">
+            <summary className="chat-expert-stage-summary">
+              <span className="chat-expert-stage-summary-main">
+                {compactExpertPanelLabel(message.assistantSpeaker.label)}
+                {timeSuffix}
+              </span>
+              <span className="chat-expert-stage-summary-action" aria-hidden>
+                <span className="chat-expert-stage-expand-label">展开</span>
+                <span className="chat-expert-stage-collapse-label">收起</span>
+              </span>
+            </summary>
+            <div className="chat-bubble assistant chat-expert-stage-body">
+              <MessageContent
+                content={message.content}
+                isStreaming={false}
+                role="assistant"
+              />
+            </div>
+          </details>
+        ) : (
+          <>
+            <p className="chat-meta">
+              {message.role === "user" ? "你" : assistantMetaLabel}
+              {formatTime(message.createdAt) ? timeSuffix : ""}
+            </p>
+            {message.role === "assistant" && debugMode && (
+              <AssistantToolCalls toolCalls={message.tool_calls} />
+            )}
+            {message.role === "assistant" &&
               showStreamingStatus &&
-              message.content === "" &&
-              message.role === "assistant"
-            }
-            role={message.role}
-          />
-        </div>
+              liveToolCalls.length > 0 && (
+                <LiveToolStatus calls={liveToolCalls} />
+              )}
+            {message.role === "assistant" &&
+              showStreamingStatus &&
+              subAgentStatus.length > 0 && (
+                <SubAgentStatusPanel items={subAgentStatus} />
+              )}
+            {message.role === "assistant" && (message.toolTrace?.length ?? 0) > 0 && (
+              <ToolTracePanel traces={message.toolTrace!} />
+            )}
+            {hasPlan && message.plan && (
+              <InlinePlan
+                plan={message.plan}
+                messageId={message.id}
+                executingActionId={executingActionId}
+                activeShellActionIds={activeShellActionIds}
+                onPlanUpdate={onPlanUpdate}
+                onApprove={onApprove}
+                onRetry={onRetry}
+                onReject={onReject}
+                onComment={onComment}
+                onCancel={onCancel}
+                onApproveAll={onApproveAll}
+                onRejectAll={onRejectAll}
+              />
+            )}
+            <div className={`chat-bubble ${message.role}`}>
+              {message.role === "user" && (
+                <ContextAttachmentPills
+                  attachments={message.contextAttachments ?? []}
+                  compact
+                />
+              )}
+              <MessageContent
+                content={message.content}
+                isStreaming={
+                  showStreamingStatus &&
+                  message.content === "" &&
+                  message.role === "assistant"
+                }
+                role={message.role}
+              />
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -2102,6 +2159,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           guardedSetTokens(estimatedTokens);
         },
         onSubAgentProgress: (role: string, event: SubAgentProgressEvent) => {
+          if (event.kind === "stage_complete") {
+            guardedSetMessages((prev) => insertExpertStageSummaryMessages(prev, event));
+          }
+
           const statusId = event.teamId && event.stageLabel
             ? `${event.teamId}:${event.stageLabel}`
             : event.sourceLabel ?? role;

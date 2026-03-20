@@ -19,6 +19,12 @@ import {
 
 export const CHAT_HISTORY_STORAGE_KEY = "cofree.chat.history.v1";
 
+/** Optional speaker line for assistant messages (expert-panel / multi-speaker timeline). */
+export interface AssistantSpeaker {
+  id: string;
+  label: string;
+}
+
 export interface ChatMessageRecord {
   id: string;
   role: "user" | "assistant" | "tool";
@@ -35,6 +41,7 @@ export interface ChatMessageRecord {
   tool_call_id?: string;
   name?: string;
   agentId?: string;
+  assistantSpeaker?: AssistantSpeaker;
 }
 
 function normalizeRole(value: unknown): ChatMessageRecord["role"] | null {
@@ -80,6 +87,16 @@ export function normalizeChatMessages(value: unknown): ChatMessageRecord[] {
       continue;
     }
 
+    let assistantSpeaker: AssistantSpeaker | undefined;
+    if (record.assistantSpeaker && typeof record.assistantSpeaker === "object") {
+      const sp = record.assistantSpeaker as Record<string, unknown>;
+      const sid = typeof sp.id === "string" ? sp.id : "";
+      const slabel = typeof sp.label === "string" ? sp.label : "";
+      if (sid && slabel) {
+        assistantSpeaker = { id: sid, label: slabel };
+      }
+    }
+
     records.push({
       id,
       role,
@@ -92,6 +109,7 @@ export function normalizeChatMessages(value: unknown): ChatMessageRecord[] {
       tool_call_id,
       name,
       agentId: typeof record.agentId === "string" ? record.agentId : undefined,
+      assistantSpeaker,
     });
   }
 

@@ -94,8 +94,13 @@
 
 #### 多 Agent / Team Pipeline
 - **已实现**: `handoffPolicy` 三态、team stage 执行、`workingMemory` checkpoint、HITL 续跑、`ask_user` 会话级排队
-- **限制**: 默认 Agent 仍以 `handoffPolicy: none` 为主，产品入口仍按实验能力开放
+- **说明**: 内置 ChatAgent 已默认启用可委派策略（全栈为 `parallel`，其余为 `sequential`），与 `task` 工具及运行时上下文中的 Sub-Agent 列表一致；自定义 Agent 仍可将 `handoffPolicy` 设为 `none` 以关闭委派
 - **边界**: 包含后台 shell 的批量审批仍采用保守策略，需要逐项批准
+
+#### 专家组（虚拟专家团）
+- **已实现**: 内置顶层 Agent `agent-concierge`（专家组接待）、预置 Team `team-expert-panel` 与默认闭环 `team-expert-panel-v2`（审查/测试驱动修复与复测）；阶段条件 `if_issues_from_stage` / `if_stage_executed`；合成 `skipped` 阶段状态；`task(team)` 返回 `stop_reason` / `repair_rounds_used` / `routing_mode`；planner 后软检查点 `team_checkpoint`；聊天区「专家组活动」状态条；Team 阶段完成时可写入带 `assistantSpeaker` 的会话消息（多说话人时间线，轻量形态 B）；调试导出含 `teamCheckpointStatusCount`
+- **说明文档**: [EXPERT_PANEL.md](./EXPERT_PANEL.md)
+- **与整改计划对齐**: [MULTI_AGENT_REMEDIATION_PLAN.md](./MULTI_AGENT_REMEDIATION_PLAN.md) 第 13 节
 
 ### 2.4 ❌ 未实现的功能
 
@@ -146,14 +151,15 @@
 - **CI/CD**: GitHub Actions自动化发布流程
 
 ### 4.3 ✅ 更新机制
-- **自动更新**: Tauri updater插件集成
-- **发布流程**: tag触发、多平台构建、Release上传
+- **自动更新**: Tauri updater 插件集成，签名 / 公钥校验失败会在 UI 中显式暴露
+- **发布流程**: tag 触发、多平台构建；配置 updater 签名密钥时会生成 `latest.json` / updater 签名工件
+- **平台签名**: workflow 已支持 macOS 证书导入与公证、Windows PFX 导入与代码签名；缺失 Secrets 时会退化为未签名构建
 
 ## 5. 测试状态
 
 ### 5.1 ✅ 测试覆盖
-- **单元测试**: 9个测试文件，覆盖核心逻辑
-- **关键测试**: approvalRuleStore、chatHistoryStore、cofreerc、hitlService等
+- **单元测试**: 核心逻辑已有回归覆盖
+- **关键测试**: approvalRuleStore、chatHistoryStore、cofreerc、hitlService、releaseAutomation 等
 
 ### 5.2 ⚠️ 测试限制
 - **集成测试**: 已补 `handoffPolicy`、team-origin、checkpoint restore、`ask_user` 排队等回归，但仍缺完整端到端测试

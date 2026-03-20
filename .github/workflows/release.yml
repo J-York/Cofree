@@ -44,11 +44,11 @@ jobs:
               '',
               '### 下载',
               '',
-              '| 平台 | 文件 |
-              '|------|------|
-              '| macOS (Apple Silicon) | `*_aarch64.dmg` |
-              '| macOS (Intel) | `*_x64.dmg` |
-              '| Windows | `.msi` 或 `-setup.exe` |
+              '| 平台 | 文件 |',
+              '|------|------|',
+              '| macOS (Apple Silicon) | `*_aarch64.dmg` |',
+              '| macOS (Intel) | `*_x64.dmg` |',
+              '| Windows | `.msi` 或 `-setup.exe` |',
               '',
               '已安装用户可在应用内收到自动更新提示。',
               '',
@@ -119,6 +119,23 @@ jobs:
             bundles: msi,nsis
 
     runs-on: ${{ matrix.platform.os }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+      WINDOWS_DIGEST_ALGORITHM: ${{ secrets.WINDOWS_DIGEST_ALGORITHM }}
+      WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
 
     steps:
       - name: Checkout repository
@@ -132,7 +149,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
-          version: 8
+          version: 10.32.1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -149,20 +166,178 @@ jobs:
         run: |
           rustup target add ${{ matrix.platform.target }}
 
+      - name: Resolve signing modes
+        id: signing_modes
+        shell: bash
+        run: |
+          has_tauri_signing=false
+          has_macos_signing=false
+          has_apple_api_notarization=false
+          has_apple_id_notarization=false
+          has_windows_signing=false
+
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            has_tauri_signing=true
+          else
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is not configured; this release will skip updater artifacts and automatic updates will remain on the previous signed release."
+          fi
+
+          if [[ "${{ matrix.platform.os }}" == macos-* ]]; then
+            if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$KEYCHAIN_PASSWORD" ]; then
+              has_macos_signing=true
+            else
+              echo "::warning::macOS signing secrets are not fully configured; macOS artifacts will be built without Developer ID signing."
+            fi
+
+            if [ -n "$APPLE_API_ISSUER" ] && [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_PRIVATE_KEY" ]; then
+              has_apple_api_notarization=true
+            elif [ -n "$APPLE_API_ISSUER$APPLE_API_KEY$APPLE_API_PRIVATE_KEY" ]; then
+              echo "::warning::Incomplete App Store Connect notarization secrets detected; API-based notarization will be skipped."
+            fi
+
+            if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              has_apple_id_notarization=true
+            elif [ -n "$APPLE_ID$APPLE_PASSWORD$APPLE_TEAM_ID" ]; then
+              echo "::warning::Incomplete Apple ID notarization secrets detected; Apple ID notarization will be skipped."
+            fi
+
+            if [ "$has_macos_signing" = true ] && [ "$has_apple_api_notarization" != true ] && [ "$has_apple_id_notarization" != true ]; then
+              echo "::warning::macOS signing is enabled, but notarization credentials are missing; the artifacts will be signed but not notarized."
+            fi
+          fi
+
+          if [ "${{ matrix.platform.os }}" = "windows-latest" ]; then
+            if [ -n "$WINDOWS_CERTIFICATE" ] && [ -n "$WINDOWS_CERTIFICATE_PASSWORD" ] && [ -n "$WINDOWS_CERTIFICATE_THUMBPRINT" ] && [ -n "$WINDOWS_DIGEST_ALGORITHM" ] && [ -n "$WINDOWS_TIMESTAMP_URL" ]; then
+              has_windows_signing=true
+            else
+              echo "::warning::Windows signing secrets are not fully configured; Windows artifacts will be built without Authenticode signing."
+            fi
+          fi
+
+          echo "has_tauri_signing=$has_tauri_signing" >> "$GITHUB_OUTPUT"
+          echo "has_macos_signing=$has_macos_signing" >> "$GITHUB_OUTPUT"
+          echo "has_apple_api_notarization=$has_apple_api_notarization" >> "$GITHUB_OUTPUT"
+          echo "has_apple_id_notarization=$has_apple_id_notarization" >> "$GITHUB_OUTPUT"
+          echo "has_windows_signing=$has_windows_signing" >> "$GITHUB_OUTPUT"
+
+          echo "HAS_TAURI_SIGNING_KEY=$has_tauri_signing" >> "$GITHUB_ENV"
+          echo "HAS_MACOS_SIGNING=$has_macos_signing" >> "$GITHUB_ENV"
+          echo "HAS_APPLE_API_NOTARIZATION=$has_apple_api_notarization" >> "$GITHUB_ENV"
+          echo "HAS_APPLE_ID_NOTARIZATION=$has_apple_id_notarization" >> "$GITHUB_ENV"
+          echo "HAS_WINDOWS_SIGNING=$has_windows_signing" >> "$GITHUB_ENV"
+
+      - name: Import Apple Developer Certificate
+        if: startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_macos_signing == 'true'
+        shell: bash
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security list-keychains -d user -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+
+          CERT_ID=$(security find-identity -v -p codesigning build.keychain | awk -F '"' '/Developer ID Application|Apple Distribution|Apple Development/ {print $2; exit}')
+          if [ -z "$CERT_ID" ]; then
+            echo "::warning::Unable to locate a usable Apple code signing identity in the imported keychain; proceeding without macOS signing."
+          else
+            echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+          fi
+
+      - name: Prepare macOS notarization credentials
+        if: startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_apple_api_notarization == 'true'
+        shell: bash
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$KEY_PATH"
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Import Windows certificate
+        if: matrix.platform.os == 'windows-latest' && steps.signing_modes.outputs.has_windows_signing == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path certificate | Out-Null
+          Set-Content -Path certificate/tempCert.txt -Value $env:WINDOWS_CERTIFICATE
+          certutil -decode certificate/tempCert.txt certificate/certificate.pfx
+          Remove-Item certificate/tempCert.txt -Force
+          Import-PfxCertificate -FilePath certificate/certificate.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText) | Out-Null
+
+      - name: Write release config
+        shell: bash
+        run: |
+          node <<'EOF'
+          const fs = require('node:fs');
+
+          const config = {};
+          if (process.env.HAS_TAURI_SIGNING_KEY !== 'true') {
+            config.bundle = {
+              ...(config.bundle ?? {}),
+              createUpdaterArtifacts: false,
+            };
+          }
+
+          if (process.env.HAS_WINDOWS_SIGNING === 'true') {
+            config.bundle = {
+              ...(config.bundle ?? {}),
+              windows: {
+                certificateThumbprint: process.env.WINDOWS_CERTIFICATE_THUMBPRINT,
+                digestAlgorithm: process.env.WINDOWS_DIGEST_ALGORITHM,
+                timestampUrl: process.env.WINDOWS_TIMESTAMP_URL,
+              },
+            };
+          }
+
+          fs.writeFileSync('src-tauri/tauri.release.conf.json', JSON.stringify(config, null, 2));
+          EOF
+
+      - name: Prepare Tauri build arguments
+        shell: bash
+        run: |
+          args="--target ${{ matrix.platform.target }} --bundles ${{ matrix.platform.bundles }} --config src-tauri/tauri.release.conf.json"
+          echo "TAURI_BUILD_ARGS=$args" >> "$GITHUB_ENV"
+
       - name: Install frontend dependencies
         run: pnpm install
 
       - name: Build frontend
         run: pnpm build
 
-      - name: Build Tauri app
+      - name: Build Tauri app with updater artifacts
+        if: steps.signing_modes.outputs.has_tauri_signing == 'true'
         uses: tauri-apps/tauri-action@44a5bf1eaeeebdabfd8951645f567c83b0ae02a3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ env.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ env.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          APPLE_ID: ${{ env.APPLE_ID }}
+          APPLE_PASSWORD: ${{ env.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ env.APPLE_TEAM_ID }}
         with:
           releaseId: ${{ needs.prepare_release.outputs.release_id }}
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true
-          args: --target ${{ matrix.platform.target }} --bundles ${{ matrix.platform.bundles }}
+          args: ${{ env.TAURI_BUILD_ARGS }}
+
+      - name: Build Tauri app without updater artifacts
+        if: steps.signing_modes.outputs.has_tauri_signing != 'true'
+        uses: tauri-apps/tauri-action@44a5bf1eaeeebdabfd8951645f567c83b0ae02a3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ env.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ env.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          APPLE_ID: ${{ env.APPLE_ID }}
+          APPLE_PASSWORD: ${{ env.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ env.APPLE_TEAM_ID }}
+        with:
+          releaseId: ${{ needs.prepare_release.outputs.release_id }}
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
+          args: ${{ env.TAURI_BUILD_ARGS }}

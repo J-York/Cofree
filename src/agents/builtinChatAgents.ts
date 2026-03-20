@@ -29,7 +29,7 @@ export const BUILTIN_CHAT_AGENTS: ChatAgentDefinition[] = [
     toolPolicy: {},
     useGlobalModel: true,
     allowedSubAgents: ["planner", "coder", "tester", "debugger", "reviewer"],
-    handoffPolicy: "none",
+    handoffPolicy: "parallel",
     builtin: true,
   },
   {
@@ -52,7 +52,7 @@ export const BUILTIN_CHAT_AGENTS: ChatAgentDefinition[] = [
     },
     useGlobalModel: true,
     allowedSubAgents: ["planner", "reviewer"],
-    handoffPolicy: "none",
+    handoffPolicy: "sequential",
     builtin: true,
   },
   {
@@ -76,7 +76,7 @@ export const BUILTIN_CHAT_AGENTS: ChatAgentDefinition[] = [
     },
     useGlobalModel: true,
     allowedSubAgents: ["planner", "coder", "reviewer"],
-    handoffPolicy: "none",
+    handoffPolicy: "sequential",
     builtin: true,
   },
   {
@@ -98,7 +98,28 @@ export const BUILTIN_CHAT_AGENTS: ChatAgentDefinition[] = [
     },
     useGlobalModel: true,
     allowedSubAgents: ["tester", "reviewer"],
-    handoffPolicy: "none",
+    handoffPolicy: "sequential",
+    builtin: true,
+  },
+  {
+    id: "agent-concierge",
+    name: "专家组接待",
+    description:
+      "面向「虚拟专家团」的接待 Agent：理解需求后委派给子角色或预置 Team（默认 team-expert-panel-v2 闭环），再向用户汇总结论。",
+    icon: "layers",
+    systemPromptTemplate: [
+      "你是 Cofree 的专家组接待（Concierge），用户面对的是一个虚拟专家团，而不是单枪匹马的通用助手。",
+      "你的职责：",
+      "1. 快速理解用户目标、约束与成功标准；必要时用只读工具补充上下文。",
+      "2. 将具体工作委派给合适的子专家：单步问题用 task(role=...)；需要端到端实现+审查+测试闭环时优先使用 task(team='team-expert-panel-v2', description=...)。仅需轻量三阶段（无测试/复验）时用 team-expert-panel；调试类问题可用 team-debug-fix；需要审查与测试并行时用 team-full-cycle。",
+      "3. 在委派前用一两句话向用户说明「将由哪位专家/哪条流水线负责」；子任务结束后用清晰的小标题结构汇总交付物、风险与待用户确认的点。",
+      "4. 不要在没有委派的情况下独自完成大段实现——你的价值是编排与对齐，专家角色负责深度执行。",
+      "5. 保持回复可扫读：短段落、列表优先，避免冗长独白。",
+    ].join("\n"),
+    toolPolicy: {},
+    useGlobalModel: true,
+    allowedSubAgents: ["planner", "coder", "tester", "debugger", "reviewer"],
+    handoffPolicy: "sequential",
     builtin: true,
   },
 ];

@@ -49,8 +49,8 @@
 - 管理工具调用循环、审批挂起、checkpoint、继续执行、自动诊断。
 
 ### 2.3 Agent 层
-- 顶层 ChatAgent 面向用户选择。
-- `task` 工具可把子任务委派给 `planner`、`coder`、`tester`。
+- 顶层 ChatAgent 面向用户选择（含内置「专家组接待」`agent-concierge`，见 [EXPERT_PANEL.md](./EXPERT_PANEL.md)）。
+- `task` 工具可把子任务委派给 `planner`、`coder`、`tester` 等子角色，或按预置 Team ID 跑流水线；工具 schema 中的 `team` 枚举会按当前 Agent 的 `allowedSubAgents` 过滤。
 - 子 Agent 运行独立工具循环，但仍在同一工作区和同一 guardrails 体系内。
 
 ### 2.4 持久化与状态

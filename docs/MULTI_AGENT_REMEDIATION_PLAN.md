@@ -82,12 +82,12 @@
 
 | ID | 阶段 | 事项 | 牵头文件/模块 | 依赖 | 状态 |
 |---|---|---|---|---|---|
-| P0-1 | Phase 0 | 修复 blocked fingerprint 在 continuation 中未被抑制的问题 | `src/orchestrator/planningService.ts` | 无 | TODO |
-| P0-2 | Phase 0 | 禁止 `task(team=...)` 绕过 `allowedSubAgents` | `src/orchestrator/planningService.ts`, `src/agents/agentTeam.ts` | 无 | TODO |
-| P0-3 | Phase 0 | 明确 `handoffPolicy` 的运行时语义并实际生效 | `src/agents/resolveAgentRuntime.ts`, `src/orchestrator/planningService.ts` | P0-2 | TODO |
-| P1-1 | Phase 1 | 扩展父子 Agent 结果协议，支持多动作回传 | `src/orchestrator/planningService.ts`, `src/orchestrator/types.ts` | P0-2 | TODO |
-| P1-2 | Phase 1 | Team 路径回传 `stageResults/structuredOutput/feedback/toolTrace` | `src/orchestrator/teamExecutor.ts`, `src/orchestrator/planningService.ts` | P1-1 | TODO |
-| P1-3 | Phase 1 | 修正 `task` 工具的 success/failure 语义映射 | `src/orchestrator/planningService.ts` | P1-1 | TODO |
+| P0-1 | Phase 0 | 修复 blocked fingerprint 在 continuation 中未被抑制的问题 | `src/orchestrator/planningService.ts` | 无 | DONE |
+| P0-2 | Phase 0 | 禁止 `task(team=...)` 绕过 `allowedSubAgents` | `src/orchestrator/planningService.ts`, `src/agents/agentTeam.ts` | 无 | DONE |
+| P0-3 | Phase 0 | 明确 `handoffPolicy` 的运行时语义并实际生效 | `src/agents/resolveAgentRuntime.ts`, `src/orchestrator/planningService.ts` | P0-2 | DONE |
+| P1-1 | Phase 1 | 扩展父子 Agent 结果协议，支持多动作回传 | `src/orchestrator/planningService.ts`, `src/orchestrator/types.ts` | P0-2 | DONE |
+| P1-2 | Phase 1 | Team 路径回传 `stageResults/structuredOutput/feedback/toolTrace` | `src/orchestrator/teamExecutor.ts`, `src/orchestrator/planningService.ts` | P1-1 | DONE |
+| P1-3 | Phase 1 | 修正 `task` 工具的 success/failure 语义映射 | `src/orchestrator/planningService.ts` | P1-1 | DONE |
 | P2-1 | Phase 2 | 子 Agent 写操作统一回父层审批，不直接 auto execute | `src/orchestrator/planningService.ts` | P1-1 | TODO |
 | P2-2 | Phase 2 | 为多 Agent 副作用增加串行化或工作区写锁 | `src/orchestrator/planningService.ts`, `src/orchestrator/hitlService.ts` | P2-1 | TODO |
 | P3-1 | Phase 3 | checkpoint 持久化 `workingMemory` | `src/orchestrator/checkpointStore.ts`, `src/orchestrator/workingMemory.ts` | P1-1 | TODO |
@@ -487,3 +487,16 @@
 - `P3-1/P3-2` 恢复 `workingMemory` 的 checkpoint 闭环。
 
 这 6 项完成后，系统的安全性、可解释性和可恢复性会先回到一个可控水平。
+
+## 13. 与「专家组」产品能力的排期对齐
+
+「专家组」功能（见 [EXPERT_PANEL.md](./EXPERT_PANEL.md)）依赖可信的 `task` / Team 委派与父子结果回传。与上表对应关系建议如下：
+
+| 专家组能力 | 依赖的整改能力 |
+|------------|----------------|
+| 接待 Agent 使用 `task(team=...)` | P0-2、P1-2 |
+| `handoffPolicy: sequential` 接待 Agent | P0-3 |
+| 子阶段动作进入父级审批 | P1-1、P1-3、P2-1（后续收紧） |
+| 续跑与 checkpoint | P3-*（按需） |
+
+**说明**：上表 P0-1～P1-3 已在代码库中落地并有 `planningService.test.ts` 等回归；P2-1 及之后条目仍按原优先级独立推进。若后续调整实现，请同步更新本节与第 5.2 节状态列。

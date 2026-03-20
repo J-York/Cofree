@@ -105,7 +105,9 @@ export type SubAgentCompletionStatus =
   | "partial"
   | "need_clarification"
   | "blocked"
-  | "failed";
+  | "failed"
+  /** Stage was not run because its condition evaluated to false (Team executor synthetic row). */
+  | "skipped";
 
 export interface SubAgentFeedback {
   reason: string;

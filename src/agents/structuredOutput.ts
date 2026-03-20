@@ -64,7 +64,8 @@ function isSubAgentStatus(value: unknown): value is SubAgentCompletionStatus {
     value === "partial" ||
     value === "need_clarification" ||
     value === "blocked" ||
-    value === "failed"
+    value === "failed" ||
+    value === "skipped"
   );
 }
 
