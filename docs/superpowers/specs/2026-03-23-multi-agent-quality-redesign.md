@@ -429,6 +429,40 @@ interface StageResult {
 }
 ```
 
+#### 5.5 现有类型到新类型的映射
+
+| 现有类型/变量 | 位置 | 新类型/变更 |
+|-------------|------|-----------|
+| `SubAgentResult`（含 reply/proposedActions/toolTrace 等） | `planningService.ts` | **保留不动**。`verdict` 字段追加到 `SubAgentResult` 上（`verdict?: "pass" \| "fail"`），而非引入新的 `StageResult` 包装层。条件求值从 `stageResults.get(label)?.verdict` 读取。 |
+| `ReviewerOutput`（issues + overallAssessment + summary） | `types.ts:81-90` | **替换为** `ReviewOutput`（含 dimensions 评分）。`overallAssessment` 删除——verdict 由代码计算，不由 LLM 填写。 |
+| `StructuredSubAgentOutput`（discriminated union `{ role, data }`） | `types.ts:92-97` | **扩展**：新增 `{ role: "verifier"; data: VerifierOutput }` 分支；reviewer 分支的 `data` 类型从 `ReviewerOutput` 改为 `ReviewOutput`。保持 discriminated union 模式不变。 |
+| 规格中的 `StageStructuredOutput` | 本文档 Section 5.2 | **不引入此类型**。继续使用现有 `StructuredSubAgentOutput` discriminated union，只是扩展分支。Section 5.2 的 plain union 仅为说明概念，实现时使用 discriminated union。 |
+| `TeamStopReason` | `teamExecutor.ts:16-20` | **扩展**：新增 `"quality_gate_failed"` 值。 |
+| `stageResults: Map<string, SubAgentResult>` | `teamExecutor.ts` | 保持 Map 结构不动，verdict 通过 `SubAgentResult.verdict` 访问。规格中 `pipelineState.stageResults` 的写法映射为此 Map。 |
+| `pipelineState.originalUserMessage` | 规格伪代码 | 映射为 `executeAgentTeam` 参数中的 `taskDescription`（即 `task` 工具传入的 description）。 |
+
+#### 5.6 `severity` 枚举迁移完整清单
+
+`"critical"` → `"blocker"` 涉及以下位置：
+
+| 文件 | 位置 | 说明 |
+|------|------|------|
+| `src/agents/types.ts` | `ReviewerOutput` 接口 | 随 ReviewerOutput → ReviewOutput 替换一并处理 |
+| `src/agents/defaultAgents.ts` | reviewer 的 `outputSchemaHint` | 更新 prompt 中的 severity 枚举示例 |
+| `src/orchestrator/structuredOutput.ts` | `normalizeSeverity()` 函数 | 更新映射逻辑 |
+| `src/orchestrator/structuredOutput.ts` | `validateReviewerOutput()` | 按 `ReviewOutput` 新结构重写 |
+| `src/orchestrator/planningService.ts` | `if_issues_from_stage` 判定逻辑 | 搜索 `"critical"` 硬编码引用并更新 |
+| `src/orchestrator/teamExecutor.ts` | `evaluateStageCondition` | 搜索 `"critical"` 引用 |
+
+#### 5.7 `executeShellCommand` 实现说明
+
+规格中 `assembleIsolatedContext` 需要执行 `git diff HEAD` 获取 diff。当前代码库不存在名为 `executeShellCommand` 的函数。实现时使用 Node.js `child_process.execSync("git diff HEAD", { cwd: workspacePath })` 封装为 `getGitDiff(workspacePath: string): string` 工具函数（在 `teamExecutor.ts` 或独立的 `gitUtils.ts` 中），这是执行器内部操作，不经过 LLM 工具调用链。
+
+#### 5.8 边界行为
+
+- `maxRepairRounds: 0`：视为不执行修复轮，直接以验证结果为准（若 fail 则 `quality_gate_failed`）
+- `maxRepairRounds` 未设置（`undefined`）：该阶段不是修复类阶段，`executeRepairLoop` 不会被调用
+
 ---
 
 ### 6. 变更影响范围
@@ -446,6 +480,7 @@ interface StageResult {
 | `src/ui/components/TitleBar.tsx` | 小改 | Agent 选择器适配 |
 | `src/ui/pages/chat/expertStageMessages.ts` | 修改 | 适配新流水线阶段标签 |
 | `src/ui/pages/ChatPage.tsx` | 小改 | Team 相关 UI 文案更新 |
+| `src/orchestrator/structuredOutput.ts` | 修改 | `validateReviewerOutput` 重写为 `validateReviewOutput`（适配 dimensions 评分）；新增 `validateVerifierOutput`；`normalizeSeverity` 更新 `critical` → `blocker`；`validateAndNormalize` switch 新增 `"verifier"` 分支 |
 
 ### 7. 向后兼容
 
