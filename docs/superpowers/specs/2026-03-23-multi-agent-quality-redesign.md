@@ -101,6 +101,20 @@ interface IsolatedInputSpec {
 - `contextPolicy: "shared"`（默认）：正常传递 working memory
 - `contextPolicy: "isolated"`：**不传 working memory**，按 `isolatedInputs` 组装干净的、只包含事实材料的上下文
 
+**优先级规则**：`contextPolicy` 是阶段级字段，**优先于** Team 级 `config.sharedWorkingMemory`。即：即使 Team 配置了 `sharedWorkingMemory: true`，标记为 `contextPolicy: "isolated"` 的阶段仍不接收 working memory。Team 级 `sharedWorkingMemory` 仅控制 `contextPolicy: "shared"`（或未指定）阶段之间的共享行为。
+
+#### 2.2.1 隔离上下文的组装实现
+
+当阶段 `contextPolicy === "isolated"` 时，`teamExecutor` 中新增函数 `assembleIsolatedContext(spec: IsolatedInputSpec, pipelineState)` 负责组装：
+
+1. **`fromOriginalRequest: true`** → 从 `pipelineState.originalUserMessage` 提取原始用户需求文本
+2. **`includeGitDiff: true`** → 在子 Agent 执行前调用 `git diff HEAD` 获取当前工作区变更（通过已有的 `executeShellCommand` 内部工具函数，非 LLM 工具调用）
+3. **`includeFileContents: ["changed"]`** → 解析 git diff 输出提取变更文件路径列表，然后通过 `fs.readFile` 读取每个文件的完整内容（同样是执行器内部操作，非 LLM 工具调用）
+4. **`includeFileContents: ["path/to/file.ts"]`** → 直接读取指定文件
+5. **`fromStage` + `fields`** → 从 `pipelineState.stageResults[stageLabel].structuredOutput` 提取指定字段
+
+组装后的上下文作为子 Agent 的 **system message 附录**注入，格式为结构化的 Markdown 节（`## 原始需求`、`## 代码变更 (git diff)`、`## 变更文件内容`、`## 上游阶段输出`）。
+
 #### 2.3 reviewer 的隔离输入
 
 reviewer 只接收：
@@ -118,7 +132,7 @@ reviewer 只接收：
   role: "verifier",
   displayName: "Verifier",
   promptIntent: "Execute project test/lint/typecheck commands. Report pass/fail strictly based on exit codes. Never guess or assume results.",
-  tools: ["propose_shell", "read_file", "glob"],
+  tools: ["propose_shell", "check_shell_job", "read_file", "glob"],
   sensitiveActionAllowed: false,
   allowAsSubAgent: true,
   subAgentMaxTurns: 10,
@@ -129,6 +143,8 @@ reviewer 只接收：
   }
 }
 ```
+
+> **注**：`check_shell_job` 是必需的——verifier 通过 `propose_shell` 提交命令后需轮询 job 状态获取退出码。
 
 verifier 与 tester 的区别：
 - **tester**：设计测试策略、编写测试用例、分析覆盖度（偏策略）
@@ -164,29 +180,71 @@ interface ReviewOutput {
 
 在 `teamExecutor` 中实现，逻辑如下：
 
+```typescript
+function computeReviewVerdict(output: ReviewOutput): "pass" | "fail" {
+  const scores = output.dimensions;
+  // 任意维度 <= 2 → fail
+  if (Object.values(scores).some(d => d.score <= 2)) return "fail";
+  // 存在 blocker → fail
+  if (output.issues.some(i => i.severity === "blocker")) return "fail";
+  // 正确性 <= 3 → fail（最重要的维度，阈值更高）
+  if (scores.correctness.score <= 3) return "fail";
+  return "pass";
+}
 ```
-verdict = "fail" 当以下任一条件成立：
-  - 任意维度 score <= 2
-  - 存在 severity === "blocker" 的 issue
-  - correctness.score <= 3
-否则 verdict = "pass"
-```
+
+容错：若 LLM 返回的 score 不在 1-5 范围内，clamp 到 [1, 5]；若 JSON 解析失败，视为 `verdict = "fail"`（宁可误拦不可漏放）。
 
 关键：**LLM 只负责打分和列问题，通不通过由代码逻辑决定**。
 
 #### 3.3 verifier 门禁（`computeVerifyVerdict`）
 
-```
-verdict = "pass" 当且仅当所有命令的 exitCode === 0
+```typescript
+function computeVerifyVerdict(output: VerifierOutput): "pass" | "fail" {
+  if (!output.commands || output.commands.length === 0) return "fail";
+  return output.commands.every(c => c.exitCode === 0) ? "pass" : "fail";
+}
 ```
 
-纯二值判断，无灰色地带。
+容错：无命令结果（LLM 未执行任何命令）视为 fail。
 
-#### 3.4 门禁触发的流水线行为
+#### 3.4 verdict 的存储与消费
+
+计算出的 verdict 存储在 `pipelineState.stageResults[stageLabel].verdict: "pass" | "fail"`。新增条件类型 `if_review_failed` / `if_verify_failed` 在 `evaluateStageCondition` 中的求值逻辑：
+
+```typescript
+case "if_review_failed":
+case "if_verify_failed":
+  const ref = pipelineState.stageResults[condition.refStageLabel];
+  return ref?.verdict === "fail";
+```
+
+#### 3.5 门禁触发的流水线行为与修复轮循环机制
 
 - `verdict === "pass"` → 继续下一阶段
 - `verdict === "fail"` → 触发 coder 修复轮
-  - 修复轮输入：reviewer 的 blocker + warning issues，或 verifier 的失败命令和 failureSummary
+
+**修复轮循环的执行器实现（状态机模型）**：
+
+当前 `teamExecutor` 的 `executeAgentTeam` 是线性遍历 `pipeline` 数组。为支持修复轮循环，引入以下机制：
+
+```
+对于每个带 maxRepairRounds 的修复阶段 S[i]（条件为 if_review_failed / if_verify_failed）：
+  1. 令其关联的验证阶段为 V（即 condition.refStageLabel 指向的阶段）
+  2. 执行时维护计数器 repairCount[S[i].stageLabel] = 0
+  3. 若 V 的 verdict === "fail" 且 repairCount < maxRepairRounds：
+     a. 执行 S[i]（coder 修复）
+     b. 重新执行 V（验证者复审/复验），仍为隔离上下文
+     c. repairCount++
+     d. 若 V 仍 fail，回到 3
+  4. 若 repairCount >= maxRepairRounds 且仍 fail：
+     stop_reason = "quality_gate_failed"，中止流水线
+```
+
+实现方式：**不修改线性遍历主循环**，而是将修复阶段（带 `maxRepairRounds`）的执行封装为内部循环函数 `executeRepairLoop(repairStage, verifyStage, maxRounds, pipelineState)`。线性主循环遇到修复阶段时调用此函数，函数内部完成「修复 → 复验 → 判断」的循环，返回后主循环继续向下。
+
+修复轮详情：
+  - 修复轮输入：reviewer 的 blocker + warning issues（过滤掉 suggestion），或 verifier 的失败命令和 failureSummary
   - 修复后再次通过同类型验证者（reviewer 或 verifier），仍上下文隔离
   - 最多循环 `maxRepairRounds` 次（reviewer: 2, verifier: 1）
   - 超过上限仍 fail → `stop_reason: "quality_gate_failed"`，结果返回给用户/编排 Agent 决策
@@ -231,7 +289,12 @@ planner [shared]
       inputMapping: { fromStage: "代码审查", fields: ["issues"] },
       maxRepairRounds: 2 },
     { agentRole: "verifier", stageLabel: "最终验证", contextPolicy: "isolated",
-      isolatedInputs: { fromOriginalRequest: false },
+      isolatedInputs: {
+        fromOriginalRequest: false,
+        includeGitDiff: true,
+        fromStage: "实现",
+        fields: ["changedFiles"],
+      },
       condition: { type: "if_previous_succeeded" } },
     { agentRole: "coder", stageLabel: "验证失败修复", contextPolicy: "shared",
       condition: { type: "if_verify_failed", refStageLabel: "最终验证" },
@@ -261,7 +324,12 @@ debugger [shared] → coder [shared] → verifier [isolated]
     { agentRole: "coder", stageLabel: "修复实现", contextPolicy: "shared",
       inputMapping: { fromStage: "问题诊断", fields: ["rootCause", "fix"] } },
     { agentRole: "verifier", stageLabel: "修复验证", contextPolicy: "isolated",
-      isolatedInputs: { fromOriginalRequest: false },
+      isolatedInputs: {
+        fromOriginalRequest: false,
+        includeGitDiff: true,
+        fromStage: "修复实现",
+        fields: ["changedFiles"],
+      },
       condition: { type: "if_previous_succeeded" } },
     { agentRole: "coder", stageLabel: "验证失败修复", contextPolicy: "shared",
       condition: { type: "if_verify_failed", refStageLabel: "修复验证" },
@@ -287,7 +355,83 @@ type AgentTeamStageConditionType =
 
 ---
 
-### 5. 变更影响范围
+### 5. 新增与修改的类型定义
+
+#### 5.1 `SubAgentRole` 扩展
+
+```typescript
+// src/agents/types.ts
+type SubAgentRole = "planner" | "coder" | "tester" | "debugger" | "reviewer" | "verifier";
+```
+
+#### 5.2 结构化输出类型
+
+```typescript
+// src/agents/types.ts 或 src/orchestrator/stageOutputTypes.ts（新文件）
+
+interface ReviewOutput {
+  dimensions: {
+    correctness: { score: number; reasoning: string };
+    security: { score: number; reasoning: string };
+    maintainability: { score: number; reasoning: string };
+    consistency: { score: number; reasoning: string };
+  };
+  issues: Array<{
+    severity: "blocker" | "warning" | "suggestion";
+    file: string;
+    line?: number;
+    message: string;
+  }>;
+}
+
+interface VerifierOutput {
+  commands: Array<{ cmd: string; exitCode: number; passed: boolean }>;
+  allPassed: boolean;
+  failureSummary: string;
+}
+
+/** 联合类型，用于 pipelineState.stageResults[label].structuredOutput */
+type StageStructuredOutput =
+  | PlannerOutput
+  | CoderOutput
+  | TesterOutput
+  | DebuggerOutput
+  | ReviewOutput
+  | VerifierOutput;
+```
+
+> **severity 枚举变更说明**：当前 reviewer 的 `outputSchemaHint` 中使用 `"critical|warning|suggestion"`，本设计改为 `"blocker|warning|suggestion"`。这是**有意的破坏性变更**——"blocker" 更明确地传达"阻断流水线"的语义。需同步更新 reviewer 的 `outputSchemaHint` prompt、以及现有 `evaluateStageCondition` 中对 `if_issues_from_stage` 的判定逻辑（若其内部检查了 `"critical"` 字符串）。
+
+#### 5.3 `AgentTeamStage` 扩展（完整）
+
+```typescript
+interface AgentTeamStage {
+  agentRole: SubAgentRole;
+  stageLabel: string;
+  inputMapping?: { fromStage: string; fields: string[] };
+  condition?: AgentTeamStageCondition;
+  parallelGroup?: string;
+  contextPolicy?: "shared" | "isolated";      // 新增
+  isolatedInputs?: IsolatedInputSpec;          // 新增，仅 contextPolicy === "isolated" 时有效
+  maxRepairRounds?: number;                    // 新增，仅修复类阶段使用
+}
+```
+
+#### 5.4 `StageResult` 扩展
+
+```typescript
+// teamExecutor.ts 内部
+interface StageResult {
+  status: "completed" | "failed" | "skipped";
+  turnCount: number;
+  structuredOutput?: StageStructuredOutput;
+  verdict?: "pass" | "fail";                   // 新增：仅验证类阶段（reviewer/verifier）有此字段
+}
+```
+
+---
+
+### 6. 变更影响范围
 
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
@@ -303,20 +447,32 @@ type AgentTeamStageConditionType =
 | `src/ui/pages/chat/expertStageMessages.ts` | 修改 | 适配新流水线阶段标签 |
 | `src/ui/pages/ChatPage.tsx` | 小改 | Team 相关 UI 文案更新 |
 
-### 6. 向后兼容
+### 7. 向后兼容
 
 - 已有对话绑定被砍 Agent ID → `getChatAgentFromSettings` fallback 到 `agent-general`
 - 已有对话绑定被砍 Team ID → `agentTeam.ts` 新增兼容映射（`team-expert-panel` / `team-expert-panel-v2` → `team-build`；`team-full-cycle` → `team-build`；`team-debug-fix` → `team-fix`）
-- 设置中的旧 `builtinAgentOverrides` 键 → 静默忽略
+- 设置中的旧 `builtinAgentOverrides` 键 → 若键不匹配新 Agent ID，静默忽略（不报错、不迁移）
+- severity 枚举 `"critical"` → `"blocker"` → 需搜索 `planningService.ts`、`teamExecutor.ts` 中对 `"critical"` 的硬编码引用并更新
 
-### 7. 不改的部分
+### 8. 测试迁移
+
+现有测试文件及迁移策略：
+
+| 测试文件 | 迁移说明 |
+|---------|---------|
+| `src/agents/resolveAgentRuntime.test.ts` | 更新测试用例中的 Agent ID（`agent-fullstack` → `agent-general` 等）；新增 verifier 角色的解析测试 |
+| `src/orchestrator/planningService.test.ts` | 更新 Team ID 引用；已知的 2 个失败测试（approval-flow fingerprint blocking）不在本次范围内 |
+| `tests/agentDomain.test.ts`（若存在） | 更新 Agent/Team 枚举值 |
+| 新增测试 | `teamExecutor` 的 `computeReviewVerdict`、`computeVerifyVerdict`、`executeRepairLoop`、`assembleIsolatedContext` 需要单元测试 |
+
+### 9. 不改的部分
 
 - `planningService.ts` 主循环（`task` 工具机制、`runNativeToolCallingLoop`）
 - `teamRouting.ts`（仍 `builtin_pipeline`，动态路由继续预留）
 - 模型路由（全局单模型，后续增强）
 - 用户自定义 Agent 机制（`customAgents` + `builtinAgentOverrides`）
 
-### 8. 成功标准
+### 10. 成功标准
 
 | 指标 | 验证方式 |
 |------|---------|
