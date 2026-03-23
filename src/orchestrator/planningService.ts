@@ -3539,6 +3539,7 @@ export interface SubAgentResult {
   turnCount: number;
   structuredOutput?: StructuredSubAgentOutput;
   feedback?: SubAgentFeedback;
+  verdict?: "pass" | "fail";
 }
 
 export async function executeSubAgentTask(

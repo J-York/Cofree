@@ -11,13 +11,19 @@ import type {
   AgentTeamDefinition,
   AgentTeamStage,
   AgentTeamStageCondition,
+  IsolatedInputSpec,
 } from "../agents/agentTeam";
+import type { ReviewOutput, VerifierOutput } from "../agents/types";
+import { execSync } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
 
 export type TeamStopReason =
   | "completed_normal"
   | "budget_exhausted"
   | "aborted"
-  | "stage_failed";
+  | "stage_failed"
+  | "quality_gate_failed";
 
 export interface TeamExecutionResult {
   status: "completed" | "failed" | "partial" | "blocked";
@@ -154,6 +160,23 @@ function hasIssuesInStageResults(stageResults: Map<string, SubAgentResult>): boo
   return false;
 }
 
+export function computeReviewVerdict(output: ReviewOutput): "pass" | "fail" {
+  if (output.issues?.some(i => i.severity === "blocker")) return "fail";
+  const dims = output.dimensions;
+  if (!dims) {
+    return output.issues?.length ? "fail" : "pass";
+  }
+  const allDims = [dims.correctness, dims.security, dims.maintainability, dims.consistency];
+  if (allDims.some(d => d.score <= 2)) return "fail";
+  if (dims.correctness.score <= 3) return "fail";
+  return "pass";
+}
+
+export function computeVerifyVerdict(output: VerifierOutput): "pass" | "fail" {
+  if (!output.commands || output.commands.length === 0) return "fail";
+  return output.commands.every(c => c.exitCode === 0) ? "pass" : "fail";
+}
+
 function groupStagesByExecutionOrder(pipeline: AgentTeamStage[]): AgentTeamStage[][] {
   const groups: AgentTeamStage[][] = [];
   let currentGroup: AgentTeamStage[] = [];
@@ -240,6 +263,66 @@ function buildStageDescription(
   return description;
 }
 
+function assembleIsolatedContext(
+  spec: IsolatedInputSpec,
+  taskDescription: string,
+  workspacePath: string,
+  stageResults: Map<string, SubAgentResult>,
+): string {
+  const sections: string[] = [];
+
+  if (spec.fromOriginalRequest) {
+    sections.push(`## 原始需求\n\n${taskDescription}`);
+  }
+
+  if (spec.includeGitDiff) {
+    try {
+      const diff = execSync("git diff HEAD", { cwd: workspacePath, encoding: "utf-8", timeout: 10000 });
+      if (diff.trim()) {
+        sections.push(`## 代码变更 (git diff)\n\n\`\`\`diff\n${diff}\n\`\`\``);
+      }
+    } catch { /* ignore git errors */ }
+  }
+
+  if (spec.includeFileContents?.length) {
+    let filePaths: string[] = [];
+    if (spec.includeFileContents.includes("changed")) {
+      try {
+        const nameOnly = execSync("git diff HEAD --name-only", { cwd: workspacePath, encoding: "utf-8", timeout: 10000 });
+        filePaths = nameOnly.trim().split("\n").filter(Boolean);
+      } catch { /* ignore */ }
+    } else {
+      filePaths = spec.includeFileContents;
+    }
+
+    const fileContents: string[] = [];
+    for (const fp of filePaths.slice(0, 20)) {
+      try {
+        const abs = path.resolve(workspacePath, fp);
+        const content = fs.readFileSync(abs, "utf-8");
+        fileContents.push(`### ${fp}\n\n\`\`\`\n${content}\n\`\`\``);
+      } catch { /* skip unreadable files */ }
+    }
+    if (fileContents.length > 0) {
+      sections.push(`## 变更文件内容\n\n${fileContents.join("\n\n")}`);
+    }
+  }
+
+  if (spec.fromStage && spec.fields?.length) {
+    const stageResult = stageResults.get(spec.fromStage);
+    if (stageResult?.structuredOutput) {
+      const data = stageResult.structuredOutput.data as unknown as Record<string, unknown>;
+      const subset: Record<string, unknown> = {};
+      for (const f of spec.fields) {
+        if (f in data) subset[f] = data[f];
+      }
+      sections.push(`## 上游阶段输出（${spec.fromStage}）\n\n\`\`\`json\n${JSON.stringify(subset, null, 2)}\n\`\`\``);
+    }
+  }
+
+  return sections.join("\n\n---\n\n");
+}
+
 function summarizeTeamExecution(stageResults: Map<string, SubAgentResult>): TeamAggregationSummary {
   let hasFailure = false;
   let hasPartial = false;
@@ -308,6 +391,8 @@ function aggregateTeamResults(
       "团队轮次预算已用尽：可缩小任务范围、提高模型能力，或手动继续未完成阶段。";
   } else if (stopReason === "aborted") {
     nextRecommendedAction = "执行被中断：可在需要时重新发起 task(team=...) 或从当前进度向用户说明。";
+  } else if (stopReason === "quality_gate_failed") {
+    nextRecommendedAction = "质量门禁未通过：审查或验证阶段的评估结果不满足最低要求，请查看 verdict 和 structuredOutput 了解具体原因。";
   } else if (stopReason === "stage_failed") {
     nextRecommendedAction = "某阶段失败：请查看 stage_results 中的失败阶段与错误信息，再决定是否重试或拆分任务。";
   } else if (resolvedStatus === "partial") {
@@ -352,11 +437,22 @@ async function executeStage(
   },
   stageResults: Map<string, SubAgentResult>,
 ): Promise<SubAgentResult> {
-  const stageDescription = buildStageDescription(
-    params.taskDescription,
-    params.stage,
-    stageResults,
-  );
+  const useIsolated = params.stage.contextPolicy === "isolated" && params.stage.isolatedInputs;
+
+  const stageDescription = useIsolated
+    ? assembleIsolatedContext(
+        params.stage.isolatedInputs!,
+        params.taskDescription,
+        params.workspacePath,
+        stageResults,
+      )
+    : buildStageDescription(
+        params.taskDescription,
+        params.stage,
+        stageResults,
+      );
+
+  const stageMemory = useIsolated ? undefined : params.workingMemory;
 
   const result = await executeSubAgentTask(
     params.stage.agentRole,
@@ -364,7 +460,7 @@ async function executeStage(
     params.workspacePath,
     params.settings,
     params.toolPermissions,
-    params.workingMemory,
+    stageMemory,
     (event) => params.onStageProgress?.(params.stage.stageLabel, event),
     params.signal,
     params.focusedPaths,
@@ -477,6 +573,12 @@ export async function executeAgentTeam(params: {
         stageResults,
       );
 
+      if (result.structuredOutput?.role === "reviewer") {
+        result.verdict = computeReviewVerdict(result.structuredOutput.data as ReviewOutput);
+      } else if (result.structuredOutput?.role === "verifier") {
+        result.verdict = computeVerifyVerdict(result.structuredOutput.data as VerifierOutput);
+      }
+
       stageResults.set(stage.stageLabel, result);
       totalTurnsConsumed += result.turnCount ?? 0;
 
@@ -544,9 +646,15 @@ export async function executeAgentTeam(params: {
     for (let i = 0; i < parallelResults.length; i++) {
       const result = parallelResults[i];
       if (result.status === "fulfilled") {
-        stageResults.set(result.value.stageLabel, result.value.result);
-        settledGroupResults.push(result.value.result);
-        totalTurnsConsumed += result.value.result.turnCount ?? 0;
+        const stageResult = result.value.result;
+        if (stageResult.structuredOutput?.role === "reviewer") {
+          stageResult.verdict = computeReviewVerdict(stageResult.structuredOutput.data as ReviewOutput);
+        } else if (stageResult.structuredOutput?.role === "verifier") {
+          stageResult.verdict = computeVerifyVerdict(stageResult.structuredOutput.data as VerifierOutput);
+        }
+        stageResults.set(result.value.stageLabel, stageResult);
+        settledGroupResults.push(stageResult);
+        totalTurnsConsumed += stageResult.turnCount ?? 0;
         continue;
       }
 

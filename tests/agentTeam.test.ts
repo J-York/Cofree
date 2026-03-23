@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { executeAgentTeam } from "../src/orchestrator/teamExecutor";
+import { executeAgentTeam, computeReviewVerdict, computeVerifyVerdict } from "../src/orchestrator/teamExecutor";
 import {
   type AgentTeamDefinition,
   isTeamAllowedForRoles,
@@ -43,6 +43,52 @@ function makeSubAgentResult(overrides?: Partial<planningService.SubAgentResult>)
     ...overrides,
   };
 }
+
+describe("computeReviewVerdict", () => {
+  function makeDimOutput(scores: { correctness: number; security: number; maintainability: number; consistency: number }) {
+    return {
+      dimensions: {
+        correctness: { score: scores.correctness, reasoning: "test" },
+        security: { score: scores.security, reasoning: "test" },
+        maintainability: { score: scores.maintainability, reasoning: "test" },
+        consistency: { score: scores.consistency, reasoning: "test" },
+      },
+      issues: [] as Array<{ severity: "blocker" | "warning" | "suggestion"; file: string; message: string }>,
+    };
+  }
+
+  it("returns fail when any dimension score <= 2", () => {
+    expect(computeReviewVerdict(makeDimOutput({ correctness: 5, security: 2, maintainability: 5, consistency: 5 }))).toBe("fail");
+  });
+
+  it("returns fail when blocker issue exists", () => {
+    const o = makeDimOutput({ correctness: 5, security: 5, maintainability: 5, consistency: 5 });
+    o.issues = [{ severity: "blocker", file: "a.ts", message: "critical bug" }];
+    expect(computeReviewVerdict(o)).toBe("fail");
+  });
+
+  it("returns fail when correctness <= 3", () => {
+    expect(computeReviewVerdict(makeDimOutput({ correctness: 3, security: 5, maintainability: 5, consistency: 5 }))).toBe("fail");
+  });
+
+  it("returns pass when all dimensions good and no blockers", () => {
+    expect(computeReviewVerdict(makeDimOutput({ correctness: 4, security: 4, maintainability: 4, consistency: 4 }))).toBe("pass");
+  });
+});
+
+describe("computeVerifyVerdict", () => {
+  it("returns pass when all commands exit 0", () => {
+    expect(computeVerifyVerdict({ commands: [{ cmd: "test", exitCode: 0, passed: true }], allPassed: true, failureSummary: "" })).toBe("pass");
+  });
+
+  it("returns fail when any command exits non-zero", () => {
+    expect(computeVerifyVerdict({ commands: [{ cmd: "test", exitCode: 1, passed: false }], allPassed: false, failureSummary: "fail" })).toBe("fail");
+  });
+
+  it("returns fail when no commands", () => {
+    expect(computeVerifyVerdict({ commands: [], allPassed: true, failureSummary: "" })).toBe("fail");
+  });
+});
 
 describe("agentTeam helpers", () => {
   it("listTeamIdsAllowedForRoles excludes teams with unauthorized roles", () => {
