@@ -8,7 +8,10 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   buildScopedSessionKey,
   loadLatestWorkflowCheckpoint,
+  saveWorkflowCheckpoint,
 } from "./checkpointStore";
+import type { OrchestrationPlan } from "./types";
+import type { WorkingMemorySnapshot } from "./workingMemory";
 
 describe("checkpointStore", () => {
   beforeEach(() => {
@@ -86,5 +89,45 @@ describe("checkpointStore", () => {
       maxTokenBudget: 2048,
     });
     expect(restored?.payload.workingMemory?.fileKnowledge[0]?.[0]).toBe("src/main.ts");
+  });
+
+  it("saveWorkflowCheckpoint sanitizes working memory in the invoke payload", async () => {
+    const plan: OrchestrationPlan = {
+      state: "human_review",
+      prompt: "t",
+      steps: [],
+      proposedActions: [],
+      workspacePath: "/w",
+    };
+    const wm: WorkingMemorySnapshot = {
+      fileKnowledge: [
+        [
+          "a.ts",
+          {
+            relativePath: "a.ts",
+            summary: "s".repeat(5000),
+            totalLines: 1,
+            lastReadAt: "2026-01-01T00:00:00Z",
+            lastReadTurn: 0,
+            readByAgent: "test",
+          },
+        ],
+      ],
+      discoveredFacts: [],
+      subAgentHistory: [],
+      taskProgress: [],
+      projectContext: "",
+      maxTokenBudget: 4000,
+    };
+    await saveWorkflowCheckpoint("csess:c1", "m1", plan, [], undefined, wm);
+    expect(vi.mocked(invoke)).toHaveBeenCalled();
+    const call = vi.mocked(invoke).mock.calls.find((c) => c[0] === "save_workflow_checkpoint");
+    expect(call).toBeDefined();
+    const payloadJson = (call![1] as { payloadJson: string }).payloadJson;
+    const parsed = JSON.parse(payloadJson) as {
+      workingMemory?: { fileKnowledge: Array<[string, { summary?: string }]> };
+    };
+    const firstEntry = parsed.workingMemory?.fileKnowledge?.[0];
+    expect(firstEntry?.[1]?.summary?.length).toBeLessThanOrEqual(2002);
   });
 });

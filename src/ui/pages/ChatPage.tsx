@@ -34,10 +34,21 @@ import {
   type ApprovalRuleOption,
 } from "../../lib/approvalRuleStore";
 import {
+  loadWorkspaceTeamTrustMode,
+  saveWorkspaceTeamTrustMode,
+  type WorkspaceTeamTrustMode,
+} from "../../lib/workspaceTeamTrustStore";
+import {
   dedupeContextAttachments,
   type ChatContextAttachment,
 } from "../../lib/contextAttachments";
 import { copyTextToClipboard } from "../../lib/clipboard";
+import {
+  buildCheckpointRestoreRecord,
+  buildCheckpointRestoreScopeKey,
+  getCheckpointRestoreScope,
+  shouldApplyCheckpointRecovery,
+} from "./chat/checkpointRecovery";
 import { insertExpertStageSummaryMessages } from "./chat/expertStageMessages";
 import { ConversationSidebar } from "../components/ConversationSidebar";
 import { IconTrash } from "../components/Icons";
@@ -64,10 +75,17 @@ import { AskUserDialog } from "../components/AskUserDialog";
 import type { AskUserRequest } from "../../orchestrator/askUserService";
 import {
   cancelPendingRequest,
+  cleanupOrphanedPendingRequest,
   getPendingRequest,
-  hasPendingRequest,
   submitUserResponse,
 } from "../../orchestrator/askUserService";
+import { resolveApprovalAskUserDecision } from "./chat/approvalGuard";
+import { WorkspaceTeamTrustDialog } from "./chat/WorkspaceTeamTrustDialog";
+import {
+  buildWorkspaceTeamTrustPromptKey,
+  collectPendingExpertTeamActionIds,
+  resolveWorkspaceTeamTrustMessageAction,
+} from "./chat/teamTrust";
 import {
   readLLMAuditRecords,
   readSensitiveActionAuditRecords,
@@ -205,6 +223,7 @@ interface RunningShellJobMeta {
 interface PendingShellQueue {
   messageId: string;
   actionIds: string[];
+  approvalContext?: ManualApprovalContext;
 }
 
 interface ShellOutputBuffer {
@@ -216,12 +235,21 @@ interface ShellOutputBuffer {
   timerId: ReturnType<typeof setTimeout> | null;
 }
 
+interface WorkspaceTeamTrustPromptState {
+  key: string;
+  messageId: string;
+  teamActionIds: string[];
+}
+
 const DEBUG_LOG_MAX_CONTENT_CHARS = 2000;
 const DEBUG_LOG_HISTORY_LIMIT = 18;
 const DEBUG_EXPORT_HISTORY_LIMIT = 200;
 const shellOutputTextEncoder = new TextEncoder();
 const EMPTY_LIVE_TOOL_CALLS: LiveToolCall[] = [];
 const EMPTY_SUB_AGENT_STATUS: SubAgentStatusItem[] = [];
+const TEAM_YOLO_APPROVAL_CONTEXT: ManualApprovalContext = {
+  approvalMode: "workspace_team_yolo",
+};
 
 /** Strip leading `[team-id]` prefix for one-line expert-stage summaries. */
 function compactExpertPanelLabel(fullLabel: string): string {
@@ -851,6 +879,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   const { actions: session, state: sessionState } = useSession();
 
   const wsPath = settings.workspacePath;
+  const workspaceTeamTrustMode = loadWorkspaceTeamTrustMode(wsPath);
 
   // Multi-conversation state
   const [conversations, setConversations] = useState<ConversationMetadata[]>(
@@ -925,6 +954,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     onConfirm: () => { },
   });
   const [askUserRequest, setAskUserRequest] = useState<AskUserRequest | null>(null);
+  const [workspaceTeamTrustPrompt, setWorkspaceTeamTrustPrompt] =
+    useState<WorkspaceTeamTrustPromptState | null>(null);
+  /** Suppress expert-team first-run dialog after checkpoint restore (teamTrust restoredPromptKey). */
+  const [restoredTeamTrustPromptKey, setRestoredTeamTrustPromptKey] = useState<
+    string | null
+  >(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<ChatMessageRecord[]>(
     currentConversation?.messages ?? []
@@ -946,6 +981,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   const workingMemoryBySessionRef = useRef(
     new Map<string, WorkingMemorySnapshot | null>(),
   );
+  const lastRestoredCheckpointRecordRef = useRef<string | null>(null);
+  const workspaceTeamYoloExecutionKeyRef = useRef<string | null>(null);
+  const seenManualPendingTeamTargetKeyRef = useRef<string | null>(null);
+  const promptApprovedTeamTargetKeyRef = useRef<string | null>(null);
 
   // Refs to keep the latest versions of callbacks used inside the shell-command-event
   // useEffect (which has an empty dependency array). Without these refs the listener
@@ -979,7 +1018,15 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     (messageId: string, actionId: string) => Promise<void>
   >(async () => {});
   const handleApproveAllActionsThreadRef = useRef<
-    (messageId: string, plan: OrchestrationPlan) => Promise<void>
+    (
+      messageId: string,
+      plan: OrchestrationPlan,
+      options?: {
+        actionIds?: string[];
+        approvalContext?: ManualApprovalContext;
+        allowBackgroundBatch?: boolean;
+      },
+    ) => Promise<void>
   >(async () => {});
   const handleRejectAllActionsThreadRef = useRef<(messageId: string) => void>(
     () => {},
@@ -1247,6 +1294,13 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       ),
     [activeAgent.id],
   );
+  const checkpointRestoreScope = getCheckpointRestoreScope(
+    currentConversation,
+    activeAgent.id,
+  );
+  const checkpointRestoreScopeKey = buildCheckpointRestoreScopeKey(
+    checkpointRestoreScope,
+  );
 
   const syncAskUserRequestForSession = useCallback((sessionId: string): void => {
     setAskUserRequest(getPendingRequest(sessionId));
@@ -1448,8 +1502,16 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   // React to workspace path changes: migrate, reload conversations
   const prevWsPathRef = useRef(wsPath);
   useEffect(() => {
-    if (prevWsPathRef.current === wsPath) return;
+    const leavingWorkspacePath = prevWsPathRef.current;
+    if (leavingWorkspacePath === wsPath) return;
     prevWsPathRef.current = wsPath;
+
+    // Capture before activateConversation() overwrites activeConversationIdRef (scoped HITL cleanup).
+    const leavingConversationId = activeConversationIdRef.current;
+    const leavingConv =
+      leavingWorkspacePath && leavingConversationId
+        ? loadConversation(leavingWorkspacePath, leavingConversationId)
+        : null;
 
     // Abort all in-flight streams (foreground + background)
     for (const ctrl of abortControllersRef.current.values()) {
@@ -1492,8 +1554,14 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       }
     }
 
-    // Reset session state
-    resetChatSessionState();
+    resetChatSessionState(
+      leavingConversationId && leavingConv
+        ? {
+            conversationId: leavingConversationId,
+            agentId: leavingConv.agentBinding?.agentId ?? undefined,
+          }
+        : undefined,
+    );
     session.resetSession();
     setPrompt("");
     setComposerAttachments([]);
@@ -1564,6 +1632,26 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
   const visibleMessages = messages.filter((message) => message.role !== "tool");
   const lastVisibleMessage = visibleMessages[visibleMessages.length - 1];
+  const latestPendingPlanMessage =
+    [...visibleMessages]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === "assistant" &&
+          message.plan?.state === "human_review" &&
+          message.plan.proposedActions.some((action) => action.status === "pending"),
+      ) ?? null;
+  const latestPendingTeamActionIds = latestPendingPlanMessage?.plan
+    ? collectPendingExpertTeamActionIds(latestPendingPlanMessage.plan)
+    : [];
+  const latestPendingTeamTargetKey =
+    latestPendingPlanMessage && latestPendingTeamActionIds.length > 0
+      ? `${latestPendingPlanMessage.id}:${latestPendingTeamActionIds.join(",")}`
+      : "";
+  const latestPendingPlanMessageActionStatuses =
+    latestPendingPlanMessage?.plan?.proposedActions
+      ?.map((action) => `${action.id}:${action.status}:${action.executed ? "1" : "0"}`)
+      .join("|") ?? "";
   const lastVisiblePlanState = lastVisibleMessage?.plan?.state ?? "";
   const lastVisibleActionStatuses =
     lastVisibleMessage?.plan?.proposedActions
@@ -1724,22 +1812,41 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   /* Restore checkpoint */
   useEffect(() => {
     let cancelled = false;
-    const conversation = currentConversation;
-    if (!conversation) {
+    if (!checkpointRestoreScope.conversationId) {
+      lastRestoredCheckpointRecordRef.current = null;
+      setRestoredTeamTrustPromptKey(null);
       return () => {
         cancelled = true;
       };
     }
-    const sessionId = resolveScopedSessionId(conversation);
+    const sessionId = buildScopedSessionKey(
+      checkpointRestoreScope.conversationId,
+      checkpointRestoreScope.agentId,
+    );
     const restore = async () => {
       try {
         const latest = await loadLatestWorkflowCheckpoint(sessionId);
         if (cancelled) return;
         if (!latest) {
+          lastRestoredCheckpointRecordRef.current = null;
+          setRestoredTeamTrustPromptKey(null);
           workingMemoryBySessionRef.current.delete(sessionId);
           resetHitlContinuationMemory(sessionId);
           return;
         }
+        const checkpointRecord = buildCheckpointRestoreRecord(
+          sessionId,
+          latest.messageId,
+        );
+        if (
+          !shouldApplyCheckpointRecovery(
+            lastRestoredCheckpointRecordRef.current,
+            checkpointRecord,
+          )
+        ) {
+          return;
+        }
+        lastRestoredCheckpointRecordRef.current = checkpointRecord;
         workingMemoryBySessionRef.current.set(
           sessionId,
           latest.payload.workingMemory ?? null,
@@ -1768,13 +1875,14 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                   plan: latest.payload.plan,
                   toolTrace: latest.payload.toolTrace ?? [],
                   tool_calls: buildToolCallsFromPlan(latest.payload.plan),
-                  agentId: conversation.agentBinding?.agentId ?? activeAgent.id,
+                  agentId: checkpointRestoreScope.agentId,
                 } satisfies ChatMessageRecord,
               ].slice(-80);
           messagesRef.current = next;
           return next;
         });
         hydrateHitlContinuationMemory(sessionId, latest.payload.continuationMemory);
+        setRestoredTeamTrustPromptKey(buildWorkspaceTeamTrustPromptKey(wsPath));
         setSessionNote("已从 checkpoint 恢复审批状态");
       } catch {
         /* non-fatal */
@@ -1785,9 +1893,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       cancelled = true;
     };
   }, [
-    activeAgent.id,
-    currentConversation,
-    resolveScopedSessionId,
+    checkpointRestoreScopeKey,
+    wsPath,
   ]);
 
   useEffect(() => {
@@ -1797,6 +1904,51 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     }
     syncAskUserRequestForSession(resolveScopedSessionId(currentConversation));
   }, [currentConversation, resolveScopedSessionId, syncAskUserRequestForSession]);
+
+  useEffect(() => {
+    const promptKey = buildWorkspaceTeamTrustPromptKey(wsPath);
+    setWorkspaceTeamTrustPrompt((current) =>
+      current?.key === promptKey ? current : null,
+    );
+    setRestoredTeamTrustPromptKey(null);
+    workspaceTeamYoloExecutionKeyRef.current = null;
+    seenManualPendingTeamTargetKeyRef.current = null;
+    promptApprovedTeamTargetKeyRef.current = null;
+  }, [wsPath]);
+
+  useEffect(() => {
+    if (!workspaceTeamTrustPrompt) {
+      return;
+    }
+
+    const currentPromptKey = buildWorkspaceTeamTrustPromptKey(wsPath);
+    if (
+      !currentPromptKey ||
+      workspaceTeamTrustPrompt.key !== currentPromptKey ||
+      workspaceTeamTrustMode !== null
+    ) {
+      setWorkspaceTeamTrustPrompt(null);
+      return;
+    }
+
+    const promptMessage = messagesRef.current.find(
+      (message) => message.id === workspaceTeamTrustPrompt.messageId,
+    );
+    if (!promptMessage?.plan) {
+      setWorkspaceTeamTrustPrompt(null);
+      return;
+    }
+
+    if (collectPendingExpertTeamActionIds(promptMessage.plan).length === 0) {
+      setWorkspaceTeamTrustPrompt(null);
+    }
+  }, [
+    workspaceTeamTrustMode,
+    workspaceTeamTrustPrompt,
+    wsPath,
+    latestPendingPlanMessage?.id,
+    latestPendingPlanMessageActionStatuses,
+  ]);
 
   const continueAfterHitlIfNeeded = (
     messageId: string,
@@ -2652,6 +2804,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       pendingShellQueuesRef.current.set(runningJob.messageId, {
         messageId: runningJob.messageId,
         actionIds: restActionIds,
+        approvalContext: pendingQueue.approvalContext,
       });
     } else {
       pendingShellQueuesRef.current.delete(runningJob.messageId);
@@ -2667,6 +2820,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         messageId: runningJob.messageId,
         actionId: nextActionId,
         plan: queuedPlan,
+        approvalContext: pendingQueue.approvalContext,
       });
       setSessionNote(
         `后台命令 ${runningJob.actionId} 已就绪，正在执行下一个命令 (${nextActionId})`,
@@ -2997,6 +3151,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
               pendingShellQueuesRef.current.set(runningJob.messageId, {
                 messageId: runningJob.messageId,
                 actionIds: restActionIds,
+                approvalContext: pendingQueue.approvalContext,
               });
             } else {
               pendingShellQueuesRef.current.delete(runningJob.messageId);
@@ -3013,6 +3168,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
                 messageId: runningJob.messageId,
                 actionId: nextActionId,
                 plan: queuedPlan,
+                approvalContext: pendingQueue.approvalContext,
               });
               setSessionNote(
                 `动作 ${runningJob.actionId} 已完成，正在执行下一个命令 (${nextActionId})`,
@@ -3065,21 +3221,47 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   const ensureApprovalInteractionAllowed = (
     messageId: string,
     plan?: OrchestrationPlan,
+    options?: {
+      actionIds?: string[];
+      allowBackgroundBatch?: boolean;
+    },
   ): boolean => {
     const targetMessage = messagesRef.current.find((message) => message.id === messageId);
     const sessionId = resolveScopedSessionId(currentConversation, targetMessage?.agentId);
-    if (hasPendingRequest(sessionId)) {
+    const pendingAskUserRequest = getPendingRequest(sessionId);
+    const askUserDecision = resolveApprovalAskUserDecision(
+      sessionId,
+      pendingAskUserRequest,
+      askUserRequest,
+      resolveScopedSessionId(currentConversation),
+    );
+    if (askUserDecision === "clear_hidden" && pendingAskUserRequest) {
+      const orphanedAskUserCleaned = cleanupOrphanedPendingRequest(sessionId, 0);
+      if (!orphanedAskUserCleaned) {
+        cancelPendingRequest(sessionId);
+      }
+      syncAskUserRequestForSession(sessionId);
+      setSessionNote("检测到未显示的待回答问题，已自动清理并继续审批。");
+    }
+    if (askUserDecision === "block_visible") {
       setSessionNote("当前有待回答的问题，请先完成 ask_user 请求后再继续审批。");
       syncAskUserRequestForSession(sessionId);
       return false;
     }
-    const pendingActions = plan?.proposedActions.filter((action) => action.status === "pending") ?? [];
+    const actionIdSet =
+      options?.actionIds && options.actionIds.length > 0
+        ? new Set(options.actionIds)
+        : null;
+    const pendingActions =
+      plan?.proposedActions.filter(
+        (action) => action.status === "pending" && (!actionIdSet || actionIdSet.has(action.id)),
+      ) ?? [];
     const hasBackgroundPendingShell = pendingActions.some(
       (action) =>
         action.type === "shell" &&
         resolveShellExecutionMode(action.payload.shell, action.payload.executionMode) === "background",
     );
-    if (pendingActions.length > 1 && hasBackgroundPendingShell) {
+    if (!options?.allowBackgroundBatch && pendingActions.length > 1 && hasBackgroundPendingShell) {
       setSessionNote("包含后台命令时暂不支持批量审批，请逐项批准相关动作。");
       return false;
     }
@@ -3091,8 +3273,18 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     actionId: string,
     plan: OrchestrationPlan,
     rememberOption?: ApprovalRuleOption,
+    executionOptions?: {
+      approvalContext?: ManualApprovalContext;
+      skipInteractionGuard?: boolean;
+    },
   ): Promise<void> => {
-    if (executingActionId || !ensureApprovalInteractionAllowed(messageId)) return;
+    if (
+      executingActionId ||
+      (!executionOptions?.skipInteractionGuard &&
+        !ensureApprovalInteractionAllowed(messageId, plan, { actionIds: [actionId] }))
+    ) {
+      return;
+    }
     setExecutingActionId(actionId);
     setCategorizedError(null);
     const targetAction = plan.proposedActions.find((action) => action.id === actionId);
@@ -3103,7 +3295,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     handlePlanUpdate(messageId, () => runningPlan);
     try {
       let rememberMessage = "";
-      let approvalContext: ManualApprovalContext | undefined;
+      let approvalContext: ManualApprovalContext | undefined =
+        executionOptions?.approvalContext;
       if (rememberOption) {
         try {
           const { added } = addWorkspaceApprovalRule(
@@ -3230,14 +3423,43 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
   const handleApproveAllActions = async (
     messageId: string,
-    plan: OrchestrationPlan
+    plan: OrchestrationPlan,
+    options?: {
+      actionIds?: string[];
+      approvalContext?: ManualApprovalContext;
+      allowBackgroundBatch?: boolean;
+    },
   ): Promise<void> => {
-    if (executingActionId || !ensureApprovalInteractionAllowed(messageId, plan)) return;
+    if (
+      executingActionId ||
+      !ensureApprovalInteractionAllowed(messageId, plan, {
+        actionIds: options?.actionIds,
+        allowBackgroundBatch: options?.allowBackgroundBatch,
+      })
+    ) {
+      return;
+    }
+    const actionIdSet =
+      options?.actionIds && options.actionIds.length > 0
+        ? new Set(options.actionIds)
+        : null;
     const pendingActions = plan.proposedActions.filter(
-      (action) => action.status === "pending",
+      (action) => action.status === "pending" && (!actionIdSet || actionIdSet.has(action.id)),
     );
-    if (pendingActions.length === 1 && pendingActions[0]?.type === "shell") {
-      await handleApproveAction(messageId, pendingActions[0].id, plan);
+    if (pendingActions.length === 0) {
+      return;
+    }
+    if (pendingActions.length === 1) {
+      await handleApproveAction(
+        messageId,
+        pendingActions[0].id,
+        plan,
+        undefined,
+        {
+          approvalContext: options?.approvalContext,
+          skipInteractionGuard: true,
+        },
+      );
       return;
     }
     setExecutingActionId("batch-approve");
@@ -3271,6 +3493,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         nextPlan = await approveAllPendingActions(
           nextPlan,
           settings.workspacePath,
+          {
+            actionIds: pendingPatchIds,
+            approvalContext: options?.approvalContext,
+          },
         );
         handlePlanUpdate(messageId, () => nextPlan);
         const patchFailed = nextPlan.proposedActions.some(
@@ -3305,6 +3531,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           pendingShellQueuesRef.current.set(messageId, {
             messageId,
             actionIds: queuedShellIds,
+            approvalContext: options?.approvalContext,
           });
           nextPlan = queuedShellIds.reduce(
             (currentPlan, actionId) =>
@@ -3324,6 +3551,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             messageId,
             actionId: firstShellId,
             plan: nextPlan,
+            approvalContext: options?.approvalContext,
           });
           const patchCompletedCount = nextPlan.proposedActions.filter(
             (action) =>
@@ -3439,7 +3667,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     if (isStreaming || Boolean(executingActionId)) return;
     if (!currentConversation) return;
 
-    resetChatSessionState();
+    resetChatSessionState({
+      conversationId: currentConversation.id,
+      agentId: currentConversation.agentBinding?.agentId ?? undefined,
+    });
     session.resetSession();
     conversationDebugEntriesRef.current.delete(
       resolveConversationDebugKey(currentConversation.id),
@@ -3479,6 +3710,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
     snapshotToBackground();
 
+    const previousConversationId = activeConversationIdRef.current;
+    const previousConv =
+      previousConversationId && wsPath
+        ? loadConversation(wsPath, previousConversationId)
+        : null;
+
     const newConv = createConversation(
       wsPath,
       [],
@@ -3491,7 +3728,14 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     setComposerAttachments([]);
     clearMentionUi();
 
-    resetChatSessionState();
+    resetChatSessionState(
+      previousConversationId && previousConv
+        ? {
+            conversationId: previousConversationId,
+            agentId: previousConv.agentBinding?.agentId ?? undefined,
+          }
+        : undefined,
+    );
     session.resetSession();
   };
 
@@ -3500,6 +3744,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     if (conversationId === activeConversationId) return;
 
     snapshotToBackground();
+
+    const previousConversationId = activeConversationIdRef.current;
+    const previousConv =
+      previousConversationId && wsPath
+        ? loadConversation(wsPath, previousConversationId)
+        : null;
 
     const conv = loadConversation(wsPath, conversationId);
     if (!conv) return;
@@ -3514,7 +3764,14 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     setComposerAttachments([]);
     clearMentionUi();
 
-    resetChatSessionState();
+    resetChatSessionState(
+      previousConversationId && previousConv
+        ? {
+            conversationId: previousConversationId,
+            agentId: previousConv.agentBinding?.agentId ?? undefined,
+          }
+        : undefined,
+    );
     session.resetSession();
   };
 
@@ -3533,12 +3790,19 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
     const wasActiveConversation = conversationId === activeConversationId;
 
+    const deletedConvSnapshot =
+      wsPath && conversationId
+        ? loadConversation(wsPath, conversationId)
+        : null;
+
     deleteConversation(wsPath, conversationId);
     const updatedList = loadConversationList(wsPath);
     setConversations(updatedList);
 
     if (wasActiveConversation) {
       if (updatedList.length > 0) {
+        const deletedConversationId = conversationId;
+        const deletedConv = deletedConvSnapshot;
         const nextConversation = loadConversation(wsPath, updatedList[0].id);
         if (nextConversation) {
           activateConversation(nextConversation, {
@@ -3550,7 +3814,14 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           setComposerAttachments([]);
           clearMentionUi();
 
-          resetChatSessionState();
+          resetChatSessionState(
+            deletedConv
+              ? {
+                  conversationId: deletedConversationId,
+                  agentId: deletedConv.agentBinding?.agentId ?? undefined,
+                }
+              : undefined,
+          );
           session.resetSession();
         }
       } else {
@@ -3585,6 +3856,33 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     });
   };
 
+  const handleChooseWorkspaceTeamTrustMode = (
+    mode: WorkspaceTeamTrustMode,
+  ): void => {
+    if (!wsPath.trim()) {
+      setSessionNote("未选择工作区，无法保存专家团执行模式。");
+      return;
+    }
+
+    const saved = saveWorkspaceTeamTrustMode(wsPath, mode);
+    if (!saved) {
+      setSessionNote("保存当前工作区的专家团执行模式失败。");
+      return;
+    }
+
+    promptApprovedTeamTargetKeyRef.current =
+      mode === "team_yolo" && workspaceTeamTrustPrompt
+        ? `${workspaceTeamTrustPrompt.messageId}:${workspaceTeamTrustPrompt.teamActionIds.join(",")}`
+        : null;
+    setWorkspaceTeamTrustPrompt(null);
+    workspaceTeamYoloExecutionKeyRef.current = null;
+    setSessionNote(
+      mode === "team_yolo"
+        ? "已为当前工作区启用专家团 YOLO 模式"
+        : "当前工作区将继续使用专家团审批模式",
+    );
+  };
+
   handleApproveActionThreadRef.current = handleApproveAction;
   handleRetryActionThreadRef.current = handleRetryAction;
   handleRejectActionThreadRef.current = handleRejectAction;
@@ -3593,6 +3891,105 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   handleApproveAllActionsThreadRef.current = handleApproveAllActions;
   handleRejectAllActionsThreadRef.current = handleRejectAllActions;
   handleSuggestionClickThreadRef.current = handleSuggestionClick;
+
+  useEffect(() => {
+    if (workspaceTeamTrustMode !== "team_yolo" && latestPendingTeamTargetKey) {
+      seenManualPendingTeamTargetKeyRef.current = latestPendingTeamTargetKey;
+    }
+
+    if (askUserRequest) {
+      return;
+    }
+
+    const messageAction = resolveWorkspaceTeamTrustMessageAction({
+      message: latestPendingPlanMessage,
+      workspacePath: wsPath,
+      mode: workspaceTeamTrustMode,
+      activePromptKey: workspaceTeamTrustPrompt?.key ?? null,
+      restoredPromptKey: restoredTeamTrustPromptKey,
+    });
+
+    if (messageAction.kind === "prompt") {
+      setWorkspaceTeamTrustPrompt((current) => {
+        if (
+          current?.key === messageAction.promptKey &&
+          current.messageId === messageAction.messageId
+        ) {
+          return current;
+        }
+        return {
+          key: messageAction.promptKey,
+          messageId: messageAction.messageId,
+          teamActionIds: messageAction.teamActionIds,
+        };
+      });
+      if (workspaceTeamTrustPrompt?.key !== messageAction.promptKey) {
+        setSessionNote("当前工作区首次使用专家团，请先选择执行模式。");
+      }
+      return;
+    }
+
+    if (messageAction.kind !== "yolo" || !latestPendingPlanMessage?.plan) {
+      return;
+    }
+
+    const currentTeamTargetKey = `${messageAction.messageId}:${messageAction.teamActionIds.join(",")}`;
+    const canAutoRunCurrentPendingTeamActions =
+      seenManualPendingTeamTargetKeyRef.current !== currentTeamTargetKey ||
+      promptApprovedTeamTargetKeyRef.current === currentTeamTargetKey;
+    if (!canAutoRunCurrentPendingTeamActions) {
+      return;
+    }
+
+    if (
+      !ensureApprovalInteractionAllowed(messageAction.messageId, latestPendingPlanMessage.plan, {
+        actionIds: messageAction.teamActionIds,
+        allowBackgroundBatch: true,
+      })
+    ) {
+      return;
+    }
+
+    const executionKey = [
+      messageAction.messageId,
+      messageAction.teamActionIds.join(","),
+      latestPendingPlanMessageActionStatuses,
+    ].join("::");
+    if (workspaceTeamYoloExecutionKeyRef.current === executionKey) {
+      return;
+    }
+
+    workspaceTeamYoloExecutionKeyRef.current = executionKey;
+    promptApprovedTeamTargetKeyRef.current = null;
+    setSessionNote(
+      `专家团 YOLO 已自动开始 ${messageAction.teamActionIds.length} 个动作`,
+    );
+    void handleApproveAllActionsThreadRef.current(
+      messageAction.messageId,
+      latestPendingPlanMessage.plan,
+      {
+        actionIds: messageAction.teamActionIds,
+        approvalContext: TEAM_YOLO_APPROVAL_CONTEXT,
+        allowBackgroundBatch: true,
+      },
+    ).catch((error) => {
+      workspaceTeamYoloExecutionKeyRef.current = null;
+      setCategorizedError(classifyError(error));
+      setSessionNote(
+        `专家团 YOLO 自动执行失败：${error instanceof Error ? error.message : "未知错误"}`,
+      );
+    });
+  }, [
+    askUserRequest,
+    latestPendingPlanMessage,
+    latestPendingPlanMessageActionStatuses,
+    latestPendingTeamTargetKey,
+    workspaceTeamTrustMode,
+    workspaceTeamTrustPrompt?.key,
+    wsPath,
+    currentConversation,
+    restoredTeamTrustPromptKey,
+  ]);
 
   const handlePromptChange = (nextText: string, caretIndex?: number): void => {
     setPrompt(nextText);
@@ -3757,6 +4154,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         defaultValue={inputDialog.defaultValue}
         onConfirm={inputDialog.onConfirm}
         onCancel={() => setInputDialog((prev) => ({ ...prev, open: false }))}
+      />
+      <WorkspaceTeamTrustDialog
+        open={workspaceTeamTrustPrompt !== null}
+        onChooseMode={handleChooseWorkspaceTeamTrustMode}
       />
       <AskUserDialog
         open={askUserRequest !== null}

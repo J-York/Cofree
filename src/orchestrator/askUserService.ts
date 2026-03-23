@@ -122,6 +122,77 @@ function promoteNextQueuedRequest(state: AskUserState): AskUserRequest | null {
   return next;
 }
 
+function cancelRequestById(requestId: string, reason: Error, reasonCode: string): boolean {
+  for (const [sessionId, state] of askUserState.entries()) {
+    if (state.pending?.id === requestId) {
+      promoteNextQueuedRequest(state);
+
+      logAskUserEvent("request_cancelled", {
+        sessionId,
+        requestId,
+        reason: reasonCode,
+        nextRequestId: state.pending?.id,
+        queueLength: state.queue.length,
+      });
+
+      const resolver = pendingResolvers.get(requestId);
+      if (resolver) {
+        pendingResolvers.delete(requestId);
+        resolver.reject(reason);
+      }
+
+      sessionTimestamps.set(sessionId, Date.now());
+      return true;
+    }
+
+    const queuedIndex = state.queue.findIndex((request) => request.id === requestId);
+    if (queuedIndex >= 0) {
+      state.queue.splice(queuedIndex, 1);
+
+      logAskUserEvent("request_cancelled", {
+        sessionId,
+        requestId,
+        reason: reasonCode,
+        pendingRequestId: state.pending?.id,
+        queueLength: state.queue.length,
+      });
+
+      const resolver = pendingResolvers.get(requestId);
+      if (resolver) {
+        pendingResolvers.delete(requestId);
+        resolver.reject(reason);
+      }
+
+      sessionTimestamps.set(sessionId, Date.now());
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function cleanupOrphanedPendingRequest(
+  sessionId: string,
+  minAgeMs: number = 1500,
+): boolean {
+  const pending = getPendingRequest(sessionId);
+  if (!pending) {
+    return false;
+  }
+  if (pendingResolvers.has(pending.id)) {
+    return false;
+  }
+  const createdAt = Date.parse(pending.timestamp);
+  if (Number.isFinite(createdAt) && Date.now() - createdAt < minAgeMs) {
+    return false;
+  }
+  return cancelRequestById(
+    pending.id,
+    new Error("ask_user orphaned request cleaned up"),
+    "cleaned_up_orphaned",
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -234,31 +305,11 @@ export function cancelPendingRequest(sessionId: string): boolean {
   if (!state || !state.pending) {
     return false;
   }
-
-  const requestId = state.pending.id;
-  const cancelledRequest = state.pending;
-  promoteNextQueuedRequest(state);
-
-  logAskUserEvent("request_cancelled", {
-    sessionId,
-    requestId,
-    reason: "cancelled_by_system",
-    nextRequestId: state.pending?.id,
-    queueLength: state.queue.length,
-  });
-
-  // Reject the waiting promise if any
-  const resolver = pendingResolvers.get(requestId);
-  if (resolver) {
-    pendingResolvers.delete(requestId);
-    resolver.reject(new Error("ask_user request cancelled by user"));
-  }
-
-  if (cancelledRequest) {
-    sessionTimestamps.set(sessionId, Date.now());
-  }
-
-  return true;
+  return cancelRequestById(
+    state.pending.id,
+    new Error("ask_user request cancelled by user"),
+    "cancelled_by_user",
+  );
 }
 
 /**
@@ -294,14 +345,22 @@ export function waitForUserResponse(
 ): Promise<AskUserResponse> {
   return new Promise<AskUserResponse>((resolve, reject) => {
     if (signal?.aborted) {
+      cancelRequestById(requestId, new Error("Aborted"), "cancelled_by_abort");
       reject(new Error("Aborted"));
       return;
     }
 
     const onAbort = () => {
-      pendingResolvers.delete(requestId);
-      signal?.removeEventListener("abort", onAbort);
-      reject(new Error("Aborted"));
+      const aborted = cancelRequestById(
+        requestId,
+        new Error("Aborted"),
+        "cancelled_by_abort",
+      );
+      if (!aborted) {
+        pendingResolvers.delete(requestId);
+        signal?.removeEventListener("abort", onAbort);
+        reject(new Error("Aborted"));
+      }
     };
 
     pendingResolvers.set(requestId, {

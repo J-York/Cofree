@@ -88,12 +88,12 @@
 | P1-1 | Phase 1 | 扩展父子 Agent 结果协议，支持多动作回传 | `src/orchestrator/planningService.ts`, `src/orchestrator/types.ts` | P0-2 | DONE |
 | P1-2 | Phase 1 | Team 路径回传 `stageResults/structuredOutput/feedback/toolTrace` | `src/orchestrator/teamExecutor.ts`, `src/orchestrator/planningService.ts` | P1-1 | DONE |
 | P1-3 | Phase 1 | 修正 `task` 工具的 success/failure 语义映射 | `src/orchestrator/planningService.ts` | P1-1 | DONE |
-| P2-1 | Phase 2 | 子 Agent 写操作统一回父层审批，不直接 auto execute | `src/orchestrator/planningService.ts` | P1-1 | TODO |
+| P2-1 | Phase 2 | 子 Agent 写操作统一回父层审批，不直接 auto execute | `src/orchestrator/planningService.ts` | P1-1 | DONE |
 | P2-2 | Phase 2 | 为多 Agent 副作用增加串行化或工作区写锁 | `src/orchestrator/planningService.ts`, `src/orchestrator/hitlService.ts` | P2-1 | TODO |
-| P3-1 | Phase 3 | checkpoint 持久化 `workingMemory` | `src/orchestrator/checkpointStore.ts`, `src/orchestrator/workingMemory.ts` | P1-1 | TODO |
-| P3-2 | Phase 3 | planning loop 从 checkpoint 恢复 `workingMemory` | `src/orchestrator/planningService.ts`, `src/ui/pages/ChatPage.tsx` | P3-1 | TODO |
-| P3-3 | Phase 3 | 使用 `buildScopedSessionKey` 对齐 conversation + agent 级 session | `src/orchestrator/checkpointStore.ts`, `src/ui/pages/ChatPage.tsx` | P3-1 | TODO |
-| P3-4 | Phase 3 | 明确后台 shell 的可恢复边界并补最小快照 | `src/ui/pages/ChatPage.tsx`, `src/orchestrator/hitlService.ts` | P3-3 | TODO |
+| P3-1 | Phase 3 | checkpoint 持久化 `workingMemory` | `src/orchestrator/checkpointStore.ts`, `src/orchestrator/workingMemory.ts` | P1-1 | DONE |
+| P3-2 | Phase 3 | planning loop 从 checkpoint 恢复 `workingMemory` | `src/orchestrator/planningService.ts`, `src/ui/pages/ChatPage.tsx` | P3-1 | DONE |
+| P3-3 | Phase 3 | 使用 `buildScopedSessionKey` 对齐 conversation + agent 级 session | `src/orchestrator/checkpointStore.ts`, `src/ui/pages/ChatPage.tsx` | P3-1 | DONE |
+| P3-4 | Phase 3 | 明确后台 shell 的可恢复边界并补最小快照 | `src/ui/pages/ChatPage.tsx`, `src/orchestrator/hitlService.ts` | P3-3 | DONE |
 | P4-1 | Phase 4 | 让 `sharedWorkingMemory` 与 `maxTotalTurns` 真正生效 | `src/orchestrator/teamExecutor.ts` | P1-1 | TODO |
 | P4-2 | Phase 4 | 修复并行 stage reject 未进入最终聚合的问题 | `src/orchestrator/teamExecutor.ts` | 无 | TODO |
 | P4-3 | Phase 4 | 补齐 Team 条件、失败策略和 partial 语义 | `src/orchestrator/teamExecutor.ts` | P4-1, P4-2 | TODO |
@@ -499,4 +499,9 @@
 | 子阶段动作进入父级审批 | P1-1、P1-3、P2-1（后续收紧） |
 | 续跑与 checkpoint | P3-*（按需） |
 
-**说明**：上表 P0-1～P1-3 已在代码库中落地并有 `planningService.test.ts` 等回归；P2-1 及之后条目仍按原优先级独立推进。若后续调整实现，请同步更新本节与第 5.2 节状态列。
+**说明**：上表 P0-1～P1-3 已在代码库中落地并有 `planningService.test.ts` 等回归；P2-1（子 Agent 强制 `ask` + `autoExecutionPolicy: disabled`）已落地并有 P2-1 回归测试；P3-1/P3-2/P3-4（含 `workingMemory` 持久化与恢复、reload 时后台 shell 降级）已落地；P3-3：`ChatPage` / checkpoint / `ask_user` / `runPlanningSession` 均使用 `buildScopedSessionKey` 或调用方传入的 scoped `sessionId`；`getChatSessionId()` 仅用于 `resetChatSessionId` 的全局会话轮换与 `buildScopedSessionKey` 的无 conversation 回退；`resetChatSessionState` 已按会话清理 scoped HITL。编排层补充 `P3-2: restoredWorkingMemory in runPlanningSession` 回归测试。若后续调整实现，请同步更新本节与第 5.2 节状态列。
+
+### 2026-03-23
+
+- 完成：ChatPage 专家团 YOLO `restoredPromptKey` 与 checkpoint 恢复对齐；P2-1 回归测试；`workingMemory` checkpoint 脱敏与体积上限；会话级 `resetChatSessionState` 与文档状态同步。
+- 下一步：P3-3 全仓库 session 键审计；P5 回归矩阵。

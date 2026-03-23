@@ -36,6 +36,12 @@ import {
   updateWorkspacePath,
 } from "../../lib/settingsStore";
 import {
+  clearWorkspaceTeamTrustMode,
+  loadWorkspaceTeamTrustMode,
+  saveWorkspaceTeamTrustMode,
+  type WorkspaceTeamTrustMode,
+} from "../../lib/workspaceTeamTrustStore";
+import {
   getAllChatAgents,
   getBuiltinChatAgent,
   hasBuiltinOverride,
@@ -81,6 +87,68 @@ export function resolveSelectedVendorId(
   return getVendorById(settings, settings.activeVendorId)?.id ?? settings.vendors[0]?.id ?? null;
 }
 
+function getWorkspaceTeamTrustModeLabel(
+  mode: WorkspaceTeamTrustMode | null,
+): string {
+  if (mode === "team_yolo") {
+    return "YOLO";
+  }
+  if (mode === "team_manual") {
+    return "审批";
+  }
+  return "未设置（首次使用时询问）";
+}
+
+export function WorkspaceTeamTrustModeField({
+  workspacePath,
+  mode,
+  onChange,
+}: {
+  workspacePath: string;
+  mode: WorkspaceTeamTrustMode | null;
+  onChange: (mode: WorkspaceTeamTrustMode | null) => void;
+}): ReactElement {
+  const disabled = !workspacePath.trim();
+
+  return (
+    <div className="settings-card">
+      <div className="settings-card-header">
+        <div>
+          <h3 className="settings-card-title">专家团执行模式</h3>
+          <p className="settings-card-desc">
+            按工作区决定专家团敏感动作是自动执行还是逐条审批。
+          </p>
+        </div>
+      </div>
+      <div className="field">
+        <label className="field-label">当前工作区</label>
+        <select
+          className="select"
+          value={mode ?? ""}
+          disabled={disabled}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value === "team_yolo" || value === "team_manual") {
+              onChange(value);
+              return;
+            }
+            onChange(null);
+          }}
+        >
+          <option value="">未设置（首次使用时询问）</option>
+          <option value="team_yolo">YOLO</option>
+          <option value="team_manual">审批</option>
+        </select>
+      </div>
+      <div className="settings-inline-feedback">
+        {disabled
+          ? "该设置按工作区存储；请先选择工作区。"
+          : `当前模式：${getWorkspaceTeamTrustModeLabel(mode)}`}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage({
   settings,
   onSave,
@@ -91,6 +159,10 @@ export function SettingsPage({
   const [saveMessage, setSaveMessage] = useState<string>("");
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string>("");
+  const [workspaceTeamTrustMode, setWorkspaceTeamTrustMode] =
+    useState<WorkspaceTeamTrustMode | null>(() =>
+      loadWorkspaceTeamTrustMode(settings.workspacePath),
+    );
   const [clearScope, setClearScope] = useState<"workspace" | "all">("workspace");
   const [confirmClearScope, setConfirmClearScope] = useState<"workspace" | "all" | null>(null);
 
@@ -150,12 +222,14 @@ export function SettingsPage({
 
   useEffect(() => {
     void loadWorkspaceInfo(draft.workspacePath || "");
+    setWorkspaceTeamTrustMode(loadWorkspaceTeamTrustMode(draft.workspacePath || ""));
   }, [draft.workspacePath]);
 
   useEffect(() => {
     setDraft(settings);
     setSelectedVendorId((current) => resolveSelectedVendorId(settings, current));
     setVendorApiKeys({});
+    setWorkspaceTeamTrustMode(loadWorkspaceTeamTrustMode(settings.workspacePath));
   }, [settings]);
 
   const activeManagedModel = getActiveManagedModel(draft);
@@ -246,6 +320,40 @@ export function SettingsPage({
           (error instanceof Error ? error.message : String(error))
       );
     }
+  };
+
+  const handleWorkspaceTeamTrustModeChange = (
+    mode: WorkspaceTeamTrustMode | null,
+  ): void => {
+    const workspacePath = draft.workspacePath.trim();
+    if (!workspacePath) {
+      setSaveMessage("请先选择工作区后再设置专家团执行模式");
+      setTimeout(() => setSaveMessage(""), 3000);
+      return;
+    }
+
+    if (mode === null) {
+      clearWorkspaceTeamTrustMode(workspacePath);
+      setWorkspaceTeamTrustMode(null);
+      setSaveMessage("已重置当前工作区的专家团执行模式");
+      setTimeout(() => setSaveMessage(""), 3000);
+      return;
+    }
+
+    const saved = saveWorkspaceTeamTrustMode(workspacePath, mode);
+    if (!saved) {
+      setSaveMessage("保存当前工作区的专家团执行模式失败");
+      setTimeout(() => setSaveMessage(""), 3000);
+      return;
+    }
+
+    setWorkspaceTeamTrustMode(mode);
+    setSaveMessage(
+      mode === "team_yolo"
+        ? "当前工作区已启用专家团 YOLO 模式"
+        : "当前工作区将继续使用专家团审批模式",
+    );
+    setTimeout(() => setSaveMessage(""), 3000);
   };
 
   const handleCreateVendor = () => {
@@ -789,10 +897,12 @@ export function SettingsPage({
               setDraft={setDraft}
               workspaceInfo={workspaceInfo}
               workspaceError={workspaceError}
+              workspaceTeamTrustMode={workspaceTeamTrustMode}
               clearScope={clearScope}
               setClearScope={setClearScope}
               confirmClearScope={confirmClearScope}
               setConfirmClearScope={setConfirmClearScope}
+              onWorkspaceTeamTrustModeChange={handleWorkspaceTeamTrustModeChange}
               onSelectWorkspace={handleSelectWorkspace}
               onClearWorkspaceHistory={handleClearWorkspaceHistory}
               onClearAllHistory={handleClearAllHistory}
@@ -1273,10 +1383,12 @@ interface AdvancedTabProps {
   setDraft: React.Dispatch<React.SetStateAction<AppSettings>>;
   workspaceInfo: WorkspaceInfo | null;
   workspaceError: string;
+  workspaceTeamTrustMode: WorkspaceTeamTrustMode | null;
   clearScope: "workspace" | "all";
   setClearScope: (scope: "workspace" | "all") => void;
   confirmClearScope: "workspace" | "all" | null;
   setConfirmClearScope: (scope: "workspace" | "all" | null) => void;
+  onWorkspaceTeamTrustModeChange: (mode: WorkspaceTeamTrustMode | null) => void;
   onSelectWorkspace: () => Promise<void>;
   onClearWorkspaceHistory: () => void;
   onClearAllHistory: () => void;
@@ -1289,10 +1401,12 @@ function AdvancedTab({
   setDraft,
   workspaceInfo,
   workspaceError,
+  workspaceTeamTrustMode,
   clearScope,
   setClearScope,
   confirmClearScope,
   setConfirmClearScope,
+  onWorkspaceTeamTrustModeChange,
   onSelectWorkspace,
   onClearWorkspaceHistory,
   onClearAllHistory,
@@ -1370,6 +1484,12 @@ function AdvancedTab({
             <div className="settings-empty-hint">{workspaceError}</div>
           )}
         </div>
+
+        <WorkspaceTeamTrustModeField
+          workspacePath={draft.workspacePath}
+          mode={workspaceTeamTrustMode}
+          onChange={onWorkspaceTeamTrustModeChange}
+        />
 
         <div className="settings-card">
           <div className="settings-card-header">

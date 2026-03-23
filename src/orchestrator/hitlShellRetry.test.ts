@@ -14,6 +14,7 @@ vi.mock("../lib/tauriBridge", async (importOriginal) => {
 
 import { awaitShellCommandWithDeadline } from "../lib/tauriBridge";
 import {
+    approveAllPendingActions,
     approveAction,
     retryFailedShellAction,
 } from "./hitlService";
@@ -48,6 +49,57 @@ function createShellPlan(): OrchestrationPlan {
                 planStepId: "step-shell",
                 payload: {
                     shell: "npm test",
+                    timeoutMs: 1000,
+                },
+            },
+        ],
+    };
+}
+
+function createMultiShellPlan(): OrchestrationPlan {
+    return {
+        state: "human_review",
+        prompt: "run multiple shell commands",
+        steps: [
+            {
+                id: "step-shell",
+                title: "执行验证命令",
+                summary: "运行 shell 命令并检查输出",
+                owner: "tester",
+                status: "in_progress",
+            },
+        ],
+        activeStepId: "step-shell",
+        proposedActions: [
+            {
+                id: "shell-team",
+                type: "shell",
+                description: "Run team command",
+                gateRequired: true,
+                status: "pending",
+                executed: false,
+                toolCallId: "tool-team",
+                toolName: "propose_shell",
+                fingerprint: "fp-shell-team",
+                planStepId: "step-shell",
+                payload: {
+                    shell: "pnpm test team",
+                    timeoutMs: 1000,
+                },
+            },
+            {
+                id: "shell-manual",
+                type: "shell",
+                description: "Run manual command",
+                gateRequired: true,
+                status: "pending",
+                executed: false,
+                toolCallId: "tool-manual",
+                toolName: "propose_shell",
+                fingerprint: "fp-shell-manual",
+                planStepId: "step-shell",
+                payload: {
+                    shell: "pnpm test manual",
                     timeoutMs: 1000,
                 },
             },
@@ -132,6 +184,88 @@ describe("HITL shell retry flow", () => {
             approvalRuleLabel: "npm xxx",
             approvalRuleKind: "shell_command_prefix",
         });
+    });
+
+    it("records workspace team yolo approvals in execution metadata", async () => {
+        vi.mocked(awaitShellCommandWithDeadline).mockResolvedValue({
+            moved_to_background: false,
+            result: {
+                success: true,
+                command: "npm test",
+                timed_out: false,
+                status: 0,
+                stdout: "passed",
+                stderr: "",
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_total_bytes: 6,
+                stderr_total_bytes: 0,
+                output_limit_bytes: 16384,
+            },
+        });
+
+        const nextPlan = await approveAction(
+            createShellPlan(),
+            "shell-1",
+            "workspace",
+            {
+                approvalMode: "workspace_team_yolo",
+            },
+        );
+
+        expect(nextPlan.proposedActions[0]?.executionResult?.metadata).toMatchObject({
+            approvalMode: "workspace_team_yolo",
+            approvalRuleLabel: null,
+            approvalRuleKind: null,
+        });
+    });
+
+    it("approves only the requested action ids in batch mode", async () => {
+        vi.mocked(awaitShellCommandWithDeadline)
+            .mockResolvedValueOnce({
+                moved_to_background: false,
+                result: {
+                    success: true,
+                    command: "pnpm test team",
+                    timed_out: false,
+                    status: 0,
+                    stdout: "team passed",
+                    stderr: "",
+                    cancelled: false,
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                    stdout_total_bytes: 11,
+                    stderr_total_bytes: 0,
+                    output_limit_bytes: 16384,
+                },
+            });
+
+        const nextPlan = await approveAllPendingActions(
+            createMultiShellPlan(),
+            "workspace",
+            {
+                actionIds: ["shell-team"],
+                approvalContext: {
+                    approvalMode: "workspace_team_yolo",
+                },
+            },
+        );
+
+        expect(nextPlan.proposedActions.find((action) => action.id === "shell-team")).toMatchObject({
+            status: "completed",
+            executed: true,
+            executionResult: {
+                metadata: {
+                    approvalMode: "workspace_team_yolo",
+                },
+            },
+        });
+        expect(nextPlan.proposedActions.find((action) => action.id === "shell-manual")).toMatchObject({
+            status: "pending",
+            executed: false,
+        });
+        expect(awaitShellCommandWithDeadline).toHaveBeenCalledTimes(1);
     });
 
     it("creates a fresh pending shell action identity for retry", () => {

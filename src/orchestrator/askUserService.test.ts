@@ -9,6 +9,7 @@ import {
   getPendingRequest,
   submitUserResponse,
   cancelPendingRequest,
+  cleanupOrphanedPendingRequest,
   getResponseHistory,
   hasPendingRequest,
   getLastResponse,
@@ -180,6 +181,32 @@ describe("askUserService", () => {
     });
   });
 
+  describe("cleanupOrphanedPendingRequest", () => {
+    it("should clear an orphaned pending request", () => {
+      const requestId = createAskUserRequest(testSessionId, "Need input");
+
+      expect(getPendingRequest(testSessionId)?.id).toBe(requestId);
+      expect(cleanupOrphanedPendingRequest(testSessionId, 0)).toBe(true);
+      expect(getPendingRequest(testSessionId)).toBeNull();
+      expect(hasPendingRequest(testSessionId)).toBe(false);
+    });
+
+    it("should keep a live pending request with an active waiter", async () => {
+      const requestId = createAskUserRequest(testSessionId, "Need input");
+      const waiter = waitForUserResponse(requestId);
+
+      expect(cleanupOrphanedPendingRequest(testSessionId, 0)).toBe(false);
+      expect(getPendingRequest(testSessionId)?.id).toBe(requestId);
+
+      expect(submitUserResponse(testSessionId, requestId, "done")).toBe(true);
+      await expect(waiter).resolves.toMatchObject({
+        id: requestId,
+        response: "done",
+        skipped: false,
+      });
+    });
+  });
+
   describe("waitForUserResponse", () => {
     it("should resolve queued waiters in order", async () => {
       const firstRequestId = createAskUserRequest(testSessionId, "First question");
@@ -214,6 +241,21 @@ describe("askUserService", () => {
       clearSessionState(testSessionId);
 
       await expect(waiter).rejects.toThrow("session cleanup");
+    });
+
+    it("should clear the pending request when waiter is aborted", async () => {
+      const controller = new AbortController();
+      const requestId = createAskUserRequest(testSessionId, "Need input");
+      const waiter = waitForUserResponse(requestId, controller.signal);
+
+      expect(getPendingRequest(testSessionId)?.id).toBe(requestId);
+      expect(hasPendingRequest(testSessionId)).toBe(true);
+
+      controller.abort();
+
+      await expect(waiter).rejects.toThrow("Aborted");
+      expect(getPendingRequest(testSessionId)).toBeNull();
+      expect(hasPendingRequest(testSessionId)).toBe(false);
     });
   });
 

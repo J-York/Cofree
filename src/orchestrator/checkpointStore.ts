@@ -18,6 +18,7 @@ import { normalizeHitlContinuationMemory, type HitlContinuationMemory } from "./
 import {
   type WorkingMemorySnapshot,
   normalizeWorkingMemorySnapshot,
+  sanitizeWorkingMemoryForCheckpoint,
 } from "./workingMemory";
 
 const CHAT_SESSION_KEY = "cofree.chat.session.v1";
@@ -229,7 +230,9 @@ export async function saveWorkflowCheckpoint(
     toolTrace: sanitizeToolTraceForCheckpoint(toolTrace),
     continuationMemory: continuationMemory ? sanitizeForPersistence(continuationMemory) as HitlContinuationMemory : undefined,
     // P3-1: Persist working memory so it can be restored on reload/HITL continuation
-    workingMemory: workingMemorySnapshot ?? undefined,
+    workingMemory: workingMemorySnapshot
+      ? sanitizeWorkingMemoryForCheckpoint(workingMemorySnapshot)
+      : undefined,
   };
   await invoke("save_workflow_checkpoint", {
     sessionId,

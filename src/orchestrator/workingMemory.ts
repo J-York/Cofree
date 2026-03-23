@@ -859,3 +859,136 @@ export function normalizeWorkingMemorySnapshot(
     maxTokenBudget: typeof obj.maxTokenBudget === "number" ? obj.maxTokenBudget : 4000,
   };
 }
+
+// --- Checkpoint persistence: truncate + size cap (P3-1) ---
+
+const CHECKPOINT_WM_MAX_FILE_SUMMARY_CHARS = 2000;
+const CHECKPOINT_WM_MAX_FACT_CONTENT_CHARS = 2000;
+const CHECKPOINT_WM_MAX_FACT_SOURCE_CHARS = 2000;
+const CHECKPOINT_WM_MAX_SUBAGENT_TEXT_CHARS = 4000;
+const CHECKPOINT_WM_MAX_KEY_FINDING_CHARS = 512;
+const CHECKPOINT_WM_MAX_PROJECT_CONTEXT_CHARS = 8000;
+const CHECKPOINT_WM_MAX_TASK_TEXT_CHARS = 2000;
+/** Target max JSON size for persisted working memory (soft cap; evict entries if exceeded). */
+export const CHECKPOINT_WORKING_MEMORY_MAX_JSON_BYTES = 512 * 1024;
+
+function truncateCheckpointText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars)}…`;
+}
+
+/**
+ * Reduces sensitive / oversized fields before writing `workingMemory` to SQLite.
+ * Also applies {@link capWorkingMemorySnapshotJsonSize} so payloads stay bounded.
+ */
+export function sanitizeWorkingMemoryForCheckpoint(
+  snapshot: WorkingMemorySnapshot,
+): WorkingMemorySnapshot {
+  const fileKnowledge: Array<[string, FileKnowledge]> = snapshot.fileKnowledge.map(
+    ([path, fk]) => {
+      const next: FileKnowledge = {
+        ...fk,
+        summary: truncateCheckpointText(fk.summary, CHECKPOINT_WM_MAX_FILE_SUMMARY_CHARS),
+        relativePath: truncateCheckpointText(fk.relativePath, 1024),
+      };
+      return [path, next];
+    },
+  );
+
+  const discoveredFacts = snapshot.discoveredFacts.map((f) => ({
+    ...f,
+    content: truncateCheckpointText(f.content, CHECKPOINT_WM_MAX_FACT_CONTENT_CHARS),
+    source: truncateCheckpointText(f.source, CHECKPOINT_WM_MAX_FACT_SOURCE_CHARS),
+  }));
+
+  const subAgentHistory = snapshot.subAgentHistory.map((h) => ({
+    ...h,
+    taskDescription: truncateCheckpointText(
+      h.taskDescription,
+      CHECKPOINT_WM_MAX_SUBAGENT_TEXT_CHARS,
+    ),
+    replySummary: truncateCheckpointText(
+      h.replySummary,
+      CHECKPOINT_WM_MAX_SUBAGENT_TEXT_CHARS,
+    ),
+    keyFindings: h.keyFindings
+      .map((k) => truncateCheckpointText(k, CHECKPOINT_WM_MAX_KEY_FINDING_CHARS))
+      .slice(0, 50),
+  }));
+
+  const taskProgress = snapshot.taskProgress.map((p) => ({
+    ...p,
+    description: truncateCheckpointText(p.description, CHECKPOINT_WM_MAX_TASK_TEXT_CHARS),
+    targetFile: p.targetFile
+      ? truncateCheckpointText(p.targetFile, 1024)
+      : undefined,
+    errorHint: p.errorHint
+      ? truncateCheckpointText(p.errorHint, CHECKPOINT_WM_MAX_TASK_TEXT_CHARS)
+      : undefined,
+  }));
+
+  let out: WorkingMemorySnapshot = {
+    fileKnowledge,
+    discoveredFacts,
+    subAgentHistory,
+    taskProgress,
+    projectContext: truncateCheckpointText(
+      snapshot.projectContext,
+      CHECKPOINT_WM_MAX_PROJECT_CONTEXT_CHARS,
+    ),
+    maxTokenBudget: snapshot.maxTokenBudget,
+  };
+
+  out = capWorkingMemorySnapshotJsonSize(out, CHECKPOINT_WORKING_MEMORY_MAX_JSON_BYTES);
+  return out;
+}
+
+/**
+ * If JSON serialization still exceeds `maxBytes`, drop lowest-priority chunks iteratively.
+ */
+export function capWorkingMemorySnapshotJsonSize(
+  snapshot: WorkingMemorySnapshot,
+  maxBytes: number,
+): WorkingMemorySnapshot {
+  let s: WorkingMemorySnapshot = {
+    fileKnowledge: [...snapshot.fileKnowledge],
+    discoveredFacts: [...snapshot.discoveredFacts],
+    subAgentHistory: [...snapshot.subAgentHistory],
+    taskProgress: [...snapshot.taskProgress],
+    projectContext: snapshot.projectContext,
+    maxTokenBudget: snapshot.maxTokenBudget,
+  };
+
+  let guard = 0;
+  while (JSON.stringify(s).length > maxBytes && guard < 512) {
+    guard += 1;
+    if (s.fileKnowledge.length > 0) {
+      s = { ...s, fileKnowledge: s.fileKnowledge.slice(1) };
+      continue;
+    }
+    if (s.discoveredFacts.length > 0) {
+      s = { ...s, discoveredFacts: s.discoveredFacts.slice(1) };
+      continue;
+    }
+    if (s.subAgentHistory.length > 0) {
+      s = { ...s, subAgentHistory: s.subAgentHistory.slice(1) };
+      continue;
+    }
+    if (s.taskProgress.length > 0) {
+      s = { ...s, taskProgress: s.taskProgress.slice(1) };
+      continue;
+    }
+    const half = Math.max(0, Math.floor(s.projectContext.length / 2));
+    s = {
+      ...s,
+      projectContext: truncateCheckpointText(s.projectContext, half || 1),
+    };
+    if (s.projectContext.length <= 1) {
+      break;
+    }
+  }
+
+  return s;
+}

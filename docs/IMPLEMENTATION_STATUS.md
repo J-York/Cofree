@@ -52,7 +52,7 @@
 
 #### 可观察性与恢复
 - **审计日志**: LLM请求和敏感动作的本地持久化记录
-- **Checkpoint系统**: SQLite存储的工作流状态恢复机制，已接通 scoped session 与 `workingMemory` 快照恢复
+- **Checkpoint系统**: SQLite存储的工作流状态恢复机制，已接通 scoped session 与 `workingMemory` 快照恢复；checkpoint 写入前对 `workingMemory` 做字段截断与 JSON 体积上限（避免过大或敏感内容落库）
 - **文件快照**: patch失败时的自动回滚能力
 - **来源可观测性**: child action 的 `origin/originDetail`、team stage 进度与审批来源可保留并展示
 
@@ -94,6 +94,7 @@
 
 #### 多 Agent / Team Pipeline
 - **已实现**: `handoffPolicy` 三态、team stage 执行、`workingMemory` checkpoint、HITL 续跑、`ask_user` 会话级排队
+- **P2-1**: Sub-Agent 路径对 `propose_*` 写入类工具强制为「仅提案」：权限覆盖为 `ask` 且 `autoExecutionPolicy: disabled`，全局 `auto` 不会导致子 Agent 直接落盘或执行 shell
 - **说明**: 内置 ChatAgent 已默认启用可委派策略（全栈为 `parallel`，其余为 `sequential`），与 `task` 工具及运行时上下文中的 Sub-Agent 列表一致；自定义 Agent 仍可将 `handoffPolicy` 设为 `none` 以关闭委派
 - **边界**: 包含后台 shell 的批量审批仍采用保守策略，需要逐项批准
 

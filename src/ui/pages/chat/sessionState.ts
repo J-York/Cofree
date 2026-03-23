@@ -2,6 +2,7 @@ import type { ChatMessageRecord } from "../../../lib/chatHistoryStore";
 import type { Conversation, ConversationMetadata } from "../../../lib/conversationStore";
 import type { CategorizedError } from "../../../lib/errorClassifier";
 import {
+  buildScopedSessionKey,
   getChatSessionId,
   resetChatSessionId,
 } from "../../../orchestrator/checkpointStore";
@@ -115,7 +116,22 @@ export function resolvePreferredConversationId(
     : conversations[0].id;
 }
 
-export function resetChatSessionState(): string {
+/**
+ * Resets the global chat session id and clears HITL continuation memory for the
+ * previous/next global ids. When `scopedSession` is set, also clears in-memory
+ * HITL state for that conversation+agent scoped key (P3-3).
+ */
+export function resetChatSessionState(scopedSession?: {
+  conversationId: string;
+  agentId?: string | null;
+}): string {
+  if (scopedSession?.conversationId?.trim()) {
+    const scopedId = buildScopedSessionKey(
+      scopedSession.conversationId.trim(),
+      scopedSession.agentId?.trim() || undefined,
+    );
+    resetHitlContinuationMemory(scopedId);
+  }
   const previousSessionId = getChatSessionId();
   resetChatSessionId();
   resetHitlContinuationMemory(previousSessionId);

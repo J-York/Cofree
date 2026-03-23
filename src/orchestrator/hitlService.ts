@@ -49,7 +49,7 @@ interface SnapshotResult {
 }
 
 export interface ManualApprovalContext {
-  approvalMode?: "manual" | "remember_workspace_rule";
+  approvalMode?: "manual" | "remember_workspace_rule" | "workspace_team_yolo";
   approvalRuleLabel?: string;
   approvalRuleKind?: string;
 }
@@ -89,6 +89,16 @@ function createExecutionResult(
     message,
     timestamp: nowIso(),
     metadata,
+  };
+}
+
+function buildApprovalContextMetadata(
+  approvalContext?: ManualApprovalContext,
+): Record<string, unknown> {
+  return {
+    approvalMode: approvalContext?.approvalMode ?? "manual",
+    approvalRuleLabel: approvalContext?.approvalRuleLabel ?? null,
+    approvalRuleKind: approvalContext?.approvalRuleKind ?? null,
   };
 }
 
@@ -343,9 +353,7 @@ function applyShellExecutionResult(params: {
       metadata: {
         ...(result.metadata ?? {}),
         executor,
-        approvalMode: approvalContext?.approvalMode ?? "manual",
-        approvalRuleLabel: approvalContext?.approvalRuleLabel ?? null,
-        approvalRuleKind: approvalContext?.approvalRuleKind ?? null,
+        ...buildApprovalContextMetadata(approvalContext),
       },
     },
   }));
@@ -481,9 +489,7 @@ export function markShellActionBackground(
       metadata: {
         ...(result.metadata ?? {}),
         executor,
-        approvalMode: params.approvalContext?.approvalMode ?? "manual",
-        approvalRuleLabel: params.approvalContext?.approvalRuleLabel ?? null,
-        approvalRuleKind: params.approvalContext?.approvalRuleKind ?? null,
+        ...buildApprovalContextMetadata(params.approvalContext),
       },
     },
   }));
@@ -850,14 +856,22 @@ export function rejectAllPendingActions(
 
 export async function approveAllPendingActions(
   plan: OrchestrationPlan,
-  workspacePath: string
+  workspacePath: string,
+  options?: {
+    actionIds?: string[];
+    approvalContext?: ManualApprovalContext;
+  },
 ): Promise<OrchestrationPlan> {
   if (!workspacePath.trim()) {
     throw new Error("未选择工作区，无法执行审批动作。");
   }
 
+  const actionIdSet =
+    options?.actionIds && options.actionIds.length > 0
+      ? new Set(options.actionIds)
+      : null;
   const pendingActions = plan.proposedActions.filter(
-    (action) => action.status === "pending"
+    (action) => action.status === "pending" && (!actionIdSet || actionIdSet.has(action.id))
   );
 
   if (pendingActions.length === 0) {
@@ -958,6 +972,7 @@ export async function approveAllPendingActions(
             executed: false,
             executionResult: createExecutionResult(false, failMsg, {
               files: preflight.files,
+                ...buildApprovalContextMetadata(options?.approvalContext),
             }),
           };
         }),
@@ -983,7 +998,10 @@ export async function approveAllPendingActions(
               executionResult: createExecutionResult(
                 false,
                 applyResult.message,
-                { files: applyResult.files },
+                {
+                  files: applyResult.files,
+                  ...buildApprovalContextMetadata(options?.approvalContext),
+                },
               ),
             };
           }),
@@ -1009,6 +1027,7 @@ export async function approveAllPendingActions(
                   files: allFiles,
                   snapshotId: batchSnapshotId,
                   snapshotFiles: batchSnapshotFiles,
+                  ...buildApprovalContextMetadata(options?.approvalContext),
                 },
               ),
             };
@@ -1019,7 +1038,12 @@ export async function approveAllPendingActions(
   } else {
     // Non-atomic: apply patches one-by-one (single patch or no group)
     for (const action of patchActions) {
-      currentPlan = await approveAction(currentPlan, action.id, workspacePath);
+      currentPlan = await approveAction(
+        currentPlan,
+        action.id,
+        workspacePath,
+        options?.approvalContext,
+      );
       const updatedAction = currentPlan.proposedActions.find(
         (a) => a.id === action.id
       );
@@ -1074,6 +1098,7 @@ export async function approveAllPendingActions(
             atomicRollback: true,
             batchSnapshotId,
             rollbackSuccess: rollback.success,
+            ...buildApprovalContextMetadata(options?.approvalContext),
           }),
         };
       });
@@ -1114,7 +1139,12 @@ export async function approveAllPendingActions(
 
   // Apply shell actions (not part of the atomic patch unit)
   for (const action of shellActions) {
-    currentPlan = await approveAction(currentPlan, action.id, workspacePath);
+    currentPlan = await approveAction(
+      currentPlan,
+      action.id,
+      workspacePath,
+      options?.approvalContext,
+    );
   }
 
   return currentPlan;
@@ -1261,9 +1291,7 @@ export async function approveAction(
     metadata: {
       ...(result.metadata ?? {}),
       executor,
-      approvalMode: approvalContext?.approvalMode ?? "manual",
-      approvalRuleLabel: approvalContext?.approvalRuleLabel ?? null,
-      approvalRuleKind: approvalContext?.approvalRuleKind ?? null,
+      ...buildApprovalContextMetadata(approvalContext),
     },
   };
 

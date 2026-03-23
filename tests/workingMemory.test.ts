@@ -9,9 +9,14 @@ import {
   snapshotWorkingMemory,
   restoreWorkingMemory,
   normalizeWorkingMemorySnapshot,
+  sanitizeWorkingMemoryForCheckpoint,
+  capWorkingMemorySnapshotJsonSize,
+  CHECKPOINT_WORKING_MEMORY_MAX_JSON_BYTES,
   forkWorkingMemory,
   mergeForkedMemories,
   type WorkingMemory,
+  type FileKnowledge,
+  type WorkingMemorySnapshot,
 } from "../src/orchestrator/workingMemory";
 
 function makeMemory(overrides?: Partial<Parameters<typeof createWorkingMemory>[0]>): WorkingMemory {
@@ -468,6 +473,85 @@ describe("P3-1/P3-2: WorkingMemory checkpoint round-trip", () => {
     const restored = restoreWorkingMemory(snapshot!);
     expect(restored.taskProgress).toHaveLength(1);
     expect(restored.taskProgress[0].status).toBe("completed");
+  });
+});
+
+describe("sanitizeWorkingMemoryForCheckpoint / capWorkingMemorySnapshotJsonSize", () => {
+  it("truncates oversized file summaries for checkpoint persistence", () => {
+    const mem = makeMemory();
+    const longSummary = "x".repeat(5000);
+    mem.fileKnowledge.set("a.ts", {
+      relativePath: "a.ts",
+      summary: longSummary,
+      totalLines: 1,
+      lastReadAt: "2026-01-01T00:00:00Z",
+      lastReadTurn: 0,
+      readByAgent: "test",
+    });
+    const snap = snapshotWorkingMemory(mem);
+    const sanitized = sanitizeWorkingMemoryForCheckpoint(snap);
+    expect(sanitized.fileKnowledge[0][1].summary.length).toBeLessThanOrEqual(2002);
+    const normalized = normalizeWorkingMemorySnapshot(sanitized);
+    expect(normalized).not.toBeNull();
+    const restored = restoreWorkingMemory(normalized!);
+    expect(restored.fileKnowledge.get("a.ts")?.summary.startsWith("x")).toBe(true);
+  });
+
+  it("evicts fileKnowledge until JSON is under maxBytes", () => {
+    const entries: Array<[string, FileKnowledge]> = [];
+    for (let i = 0; i < 80; i++) {
+      entries.push([
+        `f${i}.ts`,
+        {
+          relativePath: `f${i}.ts`,
+          summary: "y".repeat(4000),
+          totalLines: 1,
+          lastReadAt: "2026-01-01T00:00:00Z",
+          lastReadTurn: 0,
+          readByAgent: "test",
+        },
+      ]);
+    }
+    const snap: WorkingMemorySnapshot = {
+      fileKnowledge: entries,
+      discoveredFacts: [],
+      subAgentHistory: [],
+      taskProgress: [],
+      projectContext: "",
+      maxTokenBudget: 4000,
+    };
+    const capped = capWorkingMemorySnapshotJsonSize(snap, 80_000);
+    expect(JSON.stringify(capped).length).toBeLessThanOrEqual(80_000);
+    expect(capped.fileKnowledge.length).toBeLessThan(entries.length);
+  });
+
+  it("sanitizeWorkingMemoryForCheckpoint respects CHECKPOINT_WORKING_MEMORY_MAX_JSON_BYTES", () => {
+    const entries: Array<[string, FileKnowledge]> = [];
+    for (let i = 0; i < 120; i++) {
+      entries.push([
+        `f${i}.ts`,
+        {
+          relativePath: `f${i}.ts`,
+          summary: "z".repeat(3000),
+          totalLines: 1,
+          lastReadAt: "2026-01-01T00:00:00Z",
+          lastReadTurn: 0,
+          readByAgent: "test",
+        },
+      ]);
+    }
+    const snap: WorkingMemorySnapshot = {
+      fileKnowledge: entries,
+      discoveredFacts: [],
+      subAgentHistory: [],
+      taskProgress: [],
+      projectContext: "p".repeat(100_000),
+      maxTokenBudget: 4000,
+    };
+    const sanitized = sanitizeWorkingMemoryForCheckpoint(snap);
+    expect(JSON.stringify(sanitized).length).toBeLessThanOrEqual(
+      CHECKPOINT_WORKING_MEMORY_MAX_JSON_BYTES,
+    );
   });
 });
 

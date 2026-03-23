@@ -102,6 +102,7 @@ import {
     runPlanningSession,
     type ToolExecutionTrace,
 } from "./planningService";
+import type { WorkingMemorySnapshot } from "./workingMemory";
 import { clearOldToolUses, compressMessagesToFitBudget } from "./contextBudget";
 
 function createSettings(): AppSettings {
@@ -1009,6 +1010,85 @@ describe("planningService approval-flow repair", () => {
             "d:/Code/cofree",
             createSettings(),
             DEFAULT_SETTINGS.toolPermissions,
+        );
+
+        expect(result.proposedActions).toHaveLength(1);
+        expect(result.proposedActions[0]).toMatchObject({
+            type: "shell",
+            status: "pending",
+            executed: false,
+            payload: {
+                shell: "npm install",
+            },
+        });
+        expect(result.toolTrace[0]?.status).toBe("pending_approval");
+    });
+
+    it("P2-1: keeps sub-agent shell proposals pending when global propose_* permissions are auto", async () => {
+        vi.stubGlobal("window", { localStorage: new MemoryStorage() });
+        vi.mocked(gatewayComplete)
+            .mockResolvedValueOnce({
+                status: 200,
+                endpoint: "http://localhost:4000/chat/completions",
+                body: JSON.stringify({
+                    id: "chatcmpl-p2-1-auto-shell",
+                    choices: [
+                        {
+                            message: {
+                                role: "assistant",
+                                content: "",
+                                tool_calls: [
+                                    {
+                                        id: "p2-1-shell",
+                                        type: "function",
+                                        function: {
+                                            name: "propose_shell",
+                                            arguments: JSON.stringify({
+                                                shell: "npm install",
+                                                description: "Install dependencies",
+                                            }),
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                    usage: { prompt_tokens: 8, completion_tokens: 6 },
+                }),
+            })
+            .mockResolvedValueOnce({
+                status: 200,
+                endpoint: "http://localhost:4000/chat/completions",
+                body: JSON.stringify({
+                    id: "chatcmpl-p2-1-auto-done",
+                    choices: [
+                        {
+                            message: {
+                                role: "assistant",
+                                content: "done",
+                            },
+                        },
+                    ],
+                    usage: { prompt_tokens: 8, completion_tokens: 2 },
+                }),
+            });
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const autoPerms = {
+            ...DEFAULT_SETTINGS.toolPermissions,
+            propose_shell: "auto" as const,
+            propose_file_edit: "auto" as const,
+            propose_apply_patch: "auto" as const,
+        };
+
+        const result = await executeSubAgentTask(
+            "tester",
+            "Install the missing dependencies.",
+            "d:/Code/cofree",
+            createSettings(),
+            autoPerms,
         );
 
         expect(result.proposedActions).toHaveLength(1);
@@ -2702,6 +2782,73 @@ describe("P3: team progress and origin metadata", () => {
             sourceLabel: "team-full-cycle · 代码实现",
             agentRole: "coder",
         });
+    });
+});
+
+describe("P3-2: restoredWorkingMemory in runPlanningSession", () => {
+    it("returns workingMemorySnapshot that retains restored file knowledge after a no-tool turn", async () => {
+        const streamBody = JSON.stringify({
+            id: "chatcmpl-wm-restore",
+            choices: [
+                {
+                    message: {
+                        role: "assistant",
+                        content: "done",
+                    },
+                },
+            ],
+            usage: { prompt_tokens: 4, completion_tokens: 2 },
+        });
+        vi.mocked(gatewayStream).mockResolvedValueOnce({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: streamBody,
+        } as any);
+        vi.mocked(gatewayComplete).mockResolvedValue({
+            status: 200,
+            endpoint: "http://localhost:4000/chat/completions",
+            body: streamBody,
+        });
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            if (command === "list_workspace_files") {
+                return [];
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const restored: WorkingMemorySnapshot = {
+            fileKnowledge: [
+                [
+                    "src/restored.ts",
+                    {
+                        relativePath: "src/restored.ts",
+                        summary: "restored from checkpoint",
+                        totalLines: 10,
+                        lastReadAt: "2026-01-01T00:00:00Z",
+                        lastReadTurn: 0,
+                        readByAgent: "test",
+                    },
+                ],
+            ],
+            discoveredFacts: [],
+            subAgentHistory: [],
+            taskProgress: [],
+            projectContext: "restored-project-context",
+            maxTokenBudget: 4000,
+        };
+
+        const result = await runPlanningSession({
+            prompt: "hi",
+            settings: createSettings(),
+            conversationHistory: [],
+            restoredWorkingMemory: restored,
+        });
+
+        const snapshot = result.workingMemorySnapshot;
+        expect(snapshot).toBeDefined();
+        const entry = snapshot!.fileKnowledge.find(([p]) => p === "src/restored.ts");
+        expect(entry?.[1].summary).toBe("restored from checkpoint");
+        expect(snapshot!.projectContext).toContain("restored");
     });
 });
 
