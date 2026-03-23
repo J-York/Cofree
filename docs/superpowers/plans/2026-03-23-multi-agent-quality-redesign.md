@@ -133,6 +133,10 @@ outputSchemaHint: [
 ].join("\n"),
 ```
 
+- [ ] **Step 1.5: Update reviewer's workflowTemplate**
+
+更新 `defaultAgents.ts` 中 reviewer 的 `workflowTemplate`（约 line 114-122），将"审查维度：正确性 | 安全性 | 性能 | 可维护性 | 一致性"改为"审查维度：correctness | security | maintainability | consistency（各 1-5 分）"，与新 ReviewOutput 的四个维度对齐。
+
 - [ ] **Step 2: Add verifier to DEFAULT_AGENTS array**
 
 After the reviewer entry, add:
@@ -306,9 +310,9 @@ case "verifier":
   return validateVerifierOutput(parsed);
 ```
 
-- [ ] **Step 7: Update imports**
+- [ ] **Step 7: Update imports and remove dead code**
 
-Update the import at top to use `ReviewOutput, VerifierOutput` instead of `ReviewerOutput`.
+Update the import at top to use `ReviewOutput, VerifierOutput` instead of `ReviewerOutput`. Delete `normalizeAssessment` function (dead code after ReviewerOutput → ReviewOutput migration).
 
 - [ ] **Step 8: Run tests**
 
@@ -404,10 +408,10 @@ Add `"quality_gate_failed"` to `TeamStopReason` in `teamExecutor.ts`.
 
 Replace the entire `BUILTIN_TEAMS` array with `team-build` and `team-fix` definitions as specified in the design spec (Section 4.1 and 4.2). Copy the exact pipeline definitions from the spec.
 
-- [ ] **Step 5: Add legacy team ID compat mapping**
+- [ ] **Step 5: Add legacy team ID compat mapping and export IsolatedInputSpec**
 
 ```typescript
-const LEGACY_TEAM_ID_MAP: Record<string, string> = {
+export const LEGACY_TEAM_ID_MAP: Record<string, string> = {
   "team-full-cycle": "team-build",
   "team-expert-panel": "team-build",
   "team-expert-panel-v2": "team-build",
@@ -418,6 +422,8 @@ export function resolveTeamId(id: string): string {
   return LEGACY_TEAM_ID_MAP[id] ?? id;
 }
 ```
+
+确保 `IsolatedInputSpec` 接口有 `export` 关键字，因为 `teamExecutor.ts` 需要导入它。
 
 - [ ] **Step 6: Run tests**
 
@@ -601,43 +607,199 @@ function assembleIsolatedContext(
 
 - [ ] **Step 9: Update resolveStageMemory for contextPolicy**
 
-Modify the existing `resolveStageMemory` in `executeAgentTeam` to check `stage.contextPolicy === "isolated"` — when isolated, return `undefined` for working memory (the isolated context is injected separately as system message appendix).
+Modify the existing `resolveStageMemory` in `executeAgentTeam` to check `stage.contextPolicy === "isolated"` — when isolated, return `undefined` for working memory (the isolated context is injected separately via taskDescription).
 
-- [ ] **Step 10: Implement executeRepairLoop**
+- [ ] **Step 10: Wire isolated context into executeStage → executeSubAgentTask**
+
+关键胶水代码：当 `stage.contextPolicy === "isolated"` 时，`executeStage` 中传给 `executeSubAgentTask` 的 `taskDescription` 参数需要替换为 `assembleIsolatedContext` 的输出。具体修改 `executeStage`（约 309-356 行）：
+
+```typescript
+// 在 executeStage 内部：
+let stageTaskDescription = buildStageDescription(stage, taskDescription, stageResults);
+
+if (stage.contextPolicy === "isolated" && stage.isolatedInputs) {
+  const isolatedCtx = assembleIsolatedContext(
+    stage.isolatedInputs,
+    taskDescription,       // 原始用户需求
+    workspacePath,
+    stageResults,
+  );
+  // 隔离阶段使用纯净上下文替代共享描述
+  stageTaskDescription = isolatedCtx;
+}
+
+// 传入 executeSubAgentTask 时使用 stageTaskDescription
+```
+
+同时，`resolveStageMemory` 对 isolated 阶段返回 `undefined`（不传 working memory）。
+
+- [ ] **Step 11: Implement assembleIsolatedContext 的 includeFileContents 分支**
+
+补全 Step 8 中留空的 `includeFileContents` 实现：
+
+```typescript
+if (spec.includeFileContents?.length) {
+  let filePaths: string[] = [];
+  if (spec.includeFileContents.includes("changed")) {
+    try {
+      const nameOnly = execSync("git diff HEAD --name-only", { cwd: workspacePath, encoding: "utf-8", timeout: 10000 });
+      filePaths = nameOnly.trim().split("\n").filter(Boolean);
+    } catch { /* ignore */ }
+  } else {
+    filePaths = spec.includeFileContents;
+  }
+
+  const fileContents: string[] = [];
+  for (const fp of filePaths.slice(0, 20)) {
+    try {
+      const abs = path.resolve(workspacePath, fp);
+      const content = fs.readFileSync(abs, "utf-8");
+      fileContents.push(`### ${fp}\n\n\`\`\`\n${content}\n\`\`\``);
+    } catch { /* skip unreadable files */ }
+  }
+  if (fileContents.length > 0) {
+    sections.push(`## 变更文件内容\n\n${fileContents.join("\n\n")}`);
+  }
+}
+```
+
+- [ ] **Step 12: Implement executeRepairLoop**
 
 ```typescript
 async function executeRepairLoop(params: {
   repairStage: AgentTeamStage;
-  verifyStage: AgentTeamStage;
+  verifyStageDefinition: AgentTeamStage;
   maxRounds: number;
-  // ...other execution params
-}): Promise<{ repairCount: number; finalVerdict: "pass" | "fail" }> {
+  taskDescription: string;
+  workspacePath: string;
+  settings: AppSettings;
+  toolPermissions: ToolPermissions;
+  workingMemory: WorkingMemory | undefined;
+  stageResults: Map<string, SubAgentResult>;
+  onStageProgress?: (stage: string, event: SubAgentProgressEvent) => void;
+  signal?: AbortSignal;
+  team: AgentTeamDefinition;
+}): Promise<{ repairCount: number; finalVerdict: "pass" | "fail"; turnsConsumed: number }> {
   let repairCount = 0;
+  let totalTurns = 0;
+  let finalVerdict: "pass" | "fail" = "fail";
+
   while (repairCount < params.maxRounds) {
-    // 1. Execute repair (coder) stage
-    // 2. Re-execute verify stage (isolated context)
-    // 3. Compute verdict
-    // 4. If pass → break; if fail → repairCount++
+    // 1. Execute coder repair stage (shared context)
+    const repairResult = await executeStage(/* ...params for repair stage... */);
+    params.stageResults.set(params.repairStage.stageLabel, repairResult);
+    totalTurns += repairResult.turnCount;
+
+    // 2. Re-execute verification stage (isolated context)
+    const verifyResult = await executeStage(/* ...params for verify stage, isolated context... */);
+    params.stageResults.set(params.verifyStageDefinition.stageLabel, verifyResult);
+    totalTurns += verifyResult.turnCount;
+
+    // 3. Compute verdict based on role
+    if (params.verifyStageDefinition.agentRole === "reviewer" && verifyResult.structuredOutput) {
+      verifyResult.verdict = computeReviewVerdict(verifyResult.structuredOutput.data as ReviewOutput);
+    } else if (params.verifyStageDefinition.agentRole === "verifier" && verifyResult.structuredOutput) {
+      verifyResult.verdict = computeVerifyVerdict(verifyResult.structuredOutput.data as VerifierOutput);
+    }
+
+    finalVerdict = verifyResult.verdict ?? "fail";
+    if (finalVerdict === "pass") break;
     repairCount++;
   }
-  return { repairCount, finalVerdict };
+
+  return { repairCount, finalVerdict, turnsConsumed: totalTurns };
 }
 ```
 
-- [ ] **Step 11: Integrate into main loop**
+- [ ] **Step 13: Integrate executeRepairLoop into main loop**
 
-In `executeAgentTeam`'s main loop, when encountering a stage with `maxRepairRounds`, call `executeRepairLoop` instead of the normal single-execution path. The repair loop handles the coder-fix → re-verify cycle internally.
+在 `executeAgentTeam` 的单阶段执行路径中（约 line 430 附近），添加判断逻辑：
 
-- [ ] **Step 12: Compute and store verdict after reviewer/verifier stages**
+```typescript
+// 执行完当前阶段后，检查是否需要进入修复循环
+if (stage.maxRepairRounds && stage.maxRepairRounds > 0) {
+  // 此阶段是修复阶段（带 maxRepairRounds），由条件触发
+  // 查找它引用的验证阶段定义
+  const refLabel = stage.condition?.refStageLabel;
+  const verifyStageDefinition = team.pipeline.find(s => s.stageLabel === refLabel);
+
+  if (verifyStageDefinition && stageResults.get(refLabel!)?.verdict === "fail") {
+    const loopResult = await executeRepairLoop({
+      repairStage: stage,
+      verifyStageDefinition,
+      maxRounds: stage.maxRepairRounds,
+      taskDescription, workspacePath, settings, toolPermissions,
+      workingMemory: resolveStageMemory(),
+      stageResults, onStageProgress, signal, team,
+    });
+    totalTurnsConsumed += loopResult.turnsConsumed;
+
+    if (loopResult.finalVerdict === "fail") {
+      stopReason = "quality_gate_failed";
+      break;
+    }
+    continue; // 修复循环已处理该阶段，主循环跳到下一组
+  }
+}
+```
+
+**关键注意**：修复阶段的 `condition` (如 `if_review_failed`) 在主循环的 `evaluateStageCondition` 中已经会被求值。当条件为 true 时正常执行该阶段，然后上面的 `maxRepairRounds` 检查启动循环；当条件为 false（验证通过了）时阶段被 skip，循环不触发。
+
+- [ ] **Step 14: Compute and store verdict after reviewer/verifier stages**
 
 After `executeStage` for reviewer or verifier roles, extract `structuredOutput`, compute verdict via `computeReviewVerdict` / `computeVerifyVerdict`, and store in `result.verdict`.
 
-- [ ] **Step 13: Run all tests**
+- [ ] **Step 15: Write tests for assembleIsolatedContext**
+
+```typescript
+describe("assembleIsolatedContext", () => {
+  it("includes original request when fromOriginalRequest is true", () => {
+    const ctx = assembleIsolatedContext(
+      { fromOriginalRequest: true },
+      "Fix the login bug",
+      "/tmp/workspace",
+      new Map(),
+    );
+    expect(ctx).toContain("Fix the login bug");
+  });
+
+  it("includes upstream stage output when fromStage specified", () => {
+    const results = new Map();
+    results.set("实现", {
+      status: "completed", turnCount: 1, reply: "", proposedActions: [], toolTrace: [],
+      structuredOutput: { role: "coder", data: { changedFiles: ["a.ts"], summary: "done" } },
+    });
+    const ctx = assembleIsolatedContext(
+      { fromOriginalRequest: false, fromStage: "实现", fields: ["changedFiles"] },
+      "", "/tmp/workspace", results,
+    );
+    expect(ctx).toContain("a.ts");
+  });
+});
+```
+
+- [ ] **Step 16: Write tests for evaluateStageCondition with new condition types**
+
+```typescript
+it("if_review_failed returns true when verdict is fail", () => {
+  const results = new Map();
+  results.set("代码审查", { status: "completed", turnCount: 1, reply: "", proposedActions: [], toolTrace: [], verdict: "fail" });
+  expect(evaluateStageCondition({ type: "if_review_failed", refStageLabel: "代码审查" }, results)).toBe(true);
+});
+
+it("if_verify_failed returns false when verdict is pass", () => {
+  const results = new Map();
+  results.set("最终验证", { status: "completed", turnCount: 1, reply: "", proposedActions: [], toolTrace: [], verdict: "pass" });
+  expect(evaluateStageCondition({ type: "if_verify_failed", refStageLabel: "最终验证" }, results)).toBe(false);
+});
+```
+
+- [ ] **Step 17: Run all tests**
 
 Run: `pnpm test -- tests/agentTeam.test.ts --run`
 Expected: PASS
 
-- [ ] **Step 14: Commit**
+- [ ] **Step 18: Commit**
 
 ```bash
 git add src/orchestrator/teamExecutor.ts src/orchestrator/planningService.ts tests/agentTeam.test.ts
@@ -795,9 +957,20 @@ git commit -m "feat: adapt runtime resolver and prompt assembly for new agent ID
 - Modify: `src/orchestrator/planningService.ts`
 - Test: `src/orchestrator/planningService.test.ts`
 
-- [ ] **Step 1: Search for hardcoded old agent/team IDs**
+- [ ] **Step 1: Search for hardcoded old agent/team IDs and wire resolveTeamId**
 
-Search `planningService.ts` for: `agent-fullstack`, `agent-concierge`, `agent-code-reviewer`, `agent-architect`, `agent-qa`, `team-expert-panel`, `team-full-cycle`, `team-debug-fix`. Replace with new IDs or use `resolveTeamId`.
+Search `planningService.ts` for: `agent-fullstack`, `agent-concierge`, `agent-code-reviewer`, `agent-architect`, `agent-qa`, `team-expert-panel`, `team-full-cycle`, `team-debug-fix`. Replace agent IDs with new IDs.
+
+**关键**：在 `planningService.ts` 中查找 `BUILTIN_TEAMS.find((t) => t.id === teamId)` 的位置（约 line 5144），在查找前先调用 `resolveTeamId`：
+
+```typescript
+import { resolveTeamId } from "../agents/agentTeam";
+// ...
+const resolvedTeamId = resolveTeamId(teamId);
+const team = BUILTIN_TEAMS.find((t) => t.id === resolvedTeamId);
+```
+
+这确保旧对话中存储的 `team-expert-panel-v2` 等旧 ID 能映射到新的 `team-build`。
 
 - [ ] **Step 2: Ensure executeSubAgentTask handles verifier role**
 
@@ -825,12 +998,16 @@ git commit -m "feat: adapt planningService for new agent/team IDs and verifier r
 
 ---
 
-### Task 9: UI 适配
+### Task 9: UI 适配 + 剩余测试文件旧 ID 清理
 
 **Files:**
 - Modify: `src/ui/components/TitleBar.tsx` — Agent 选择器
 - Modify: `src/ui/pages/ChatPage.tsx` — Team 相关文案
 - Modify: `src/ui/pages/chat/expertStageMessages.ts` — 阶段标签
+- Modify: 以下测试文件中的旧 agent/team ID 引用：
+  - `tests/specializedAgents.test.ts`
+  - `tests/subAgentFeedback.test.ts`
+  - 其他引用了 `agent-fullstack`、`agent-concierge`、`team-expert-panel` 等旧 ID 的测试文件（通过 `pnpm test --run` 发现并修复）
 
 - [ ] **Step 1: Update TitleBar.tsx**
 
