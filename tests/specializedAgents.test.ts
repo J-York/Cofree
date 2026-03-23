@@ -42,6 +42,12 @@ describe("tryExtractStructuredOutput - Specialized Agents", () => {
       const reply = `代码审查完成。
 \`\`\`json
 {
+  "dimensions": {
+    "correctness": { "score": 4, "reasoning": "逻辑正确" },
+    "security": { "score": 5, "reasoning": "无敏感问题" },
+    "maintainability": { "score": 3, "reasoning": "可再拆分" },
+    "consistency": { "score": 4, "reasoning": "风格一致" }
+  },
   "issues": [
     {
       "severity": "warning",
@@ -49,9 +55,7 @@ describe("tryExtractStructuredOutput - Specialized Agents", () => {
       "line": 42,
       "message": "可以优化循环"
     }
-  ],
-  "overallAssessment": "comment",
-  "summary": "代码逻辑清晰，但有一些警告"
+  ]
 }
 \`\`\``;
 
@@ -59,17 +63,17 @@ describe("tryExtractStructuredOutput - Specialized Agents", () => {
       expect(result).not.toBeUndefined();
       expect(result!.role).toBe("reviewer");
       if (result!.role === "reviewer") {
-        expect(result!.data.overallAssessment).toBe("comment");
-        expect(result!.data.summary).toBe("代码逻辑清晰，但有一些警告");
+        expect(result!.data.dimensions.correctness.score).toBe(4);
         expect(result!.data.issues).toHaveLength(1);
         expect(result!.data.issues[0].severity).toBe("warning");
+        expect(result!.data.issues[0].line).toBe(42);
       }
     });
 
-    it("normalizes missing arrays for reviewer", () => {
+    it("returns undefined when dimensions are missing", () => {
       const reply = '```json\n{"overallAssessment": "approve", "summary": "Looks good"}\n```';
       const result = tryExtractStructuredOutput("reviewer", reply);
-      expect(result).toBeUndefined(); // Because issues is missing! And we check Array.isArray(data.issues)
+      expect(result).toBeUndefined();
     });
   });
 });

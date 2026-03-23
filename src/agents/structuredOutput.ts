@@ -17,7 +17,8 @@ import type {
   CoderOutput,
   TesterOutput,
   DebuggerOutput,
-  ReviewerOutput,
+  ReviewOutput,
+  VerifierOutput,
 } from "./types";
 
 /**
@@ -115,7 +116,9 @@ function validateAndNormalize(
     case "debugger":
       return validateDebuggerOutput(parsed);
     case "reviewer":
-      return validateReviewerOutput(parsed);
+      return validateReviewOutput(parsed);
+    case "verifier":
+      return validateVerifierOutput(parsed);
     default:
       return undefined;
   }
@@ -214,30 +217,69 @@ function validateDebuggerOutput(
   return { role: "debugger", data: output };
 }
 
-function validateReviewerOutput(
+function validateReviewOutput(
   data: Record<string, unknown>,
 ): StructuredSubAgentOutput | undefined {
-  if (!Array.isArray(data.issues)) return undefined;
+  const dims = data.dimensions;
+  if (!dims || typeof dims !== "object") return undefined;
 
-  const issues = data.issues
-    .filter((i): i is Record<string, unknown> => i && typeof i === "object")
-    .map((i) => ({
-      severity: normalizeSeverity(i.severity),
-      file: String(i.file ?? ""),
-      line: typeof i.line === "number" ? i.line : 0,
-      message: String(i.message ?? ""),
-    }))
-    .filter((i) => i.message.length > 0);
+  const dimRecord = dims as Record<string, unknown>;
+  const requiredKeys = ["correctness", "security", "maintainability", "consistency"] as const;
+  const dimensions: Record<string, { score: number; reasoning: string }> = {};
 
-  const summary = typeof data.summary === "string" ? data.summary : "";
+  for (const key of requiredKeys) {
+    const d = dimRecord[key];
+    if (!d || typeof d !== "object") return undefined;
+    const entry = d as Record<string, unknown>;
+    const rawScore = typeof entry.score === "number" ? entry.score : NaN;
+    if (isNaN(rawScore)) return undefined;
+    dimensions[key] = {
+      score: Math.max(1, Math.min(5, Math.round(rawScore))),
+      reasoning: typeof entry.reasoning === "string" ? entry.reasoning : "",
+    };
+  }
 
-  const output: ReviewerOutput = {
+  const issues = Array.isArray(data.issues)
+    ? (data.issues as Array<Record<string, unknown>>)
+        .filter((i) => i && typeof i === "object")
+        .map((i) => ({
+          severity: normalizeSeverity(i.severity),
+          file: String(i.file ?? ""),
+          line: typeof i.line === "number" ? i.line : undefined,
+          message: String(i.message ?? ""),
+        }))
+        .filter((i) => i.message.length > 0)
+    : [];
+
+  const output: ReviewOutput = {
+    dimensions: dimensions as ReviewOutput["dimensions"],
     issues,
-    overallAssessment: normalizeAssessment(data.overallAssessment),
-    summary,
   };
 
   return { role: "reviewer", data: output };
+}
+
+function validateVerifierOutput(
+  data: Record<string, unknown>,
+): StructuredSubAgentOutput | undefined {
+  if (!Array.isArray(data.commands)) return undefined;
+
+  const commands = (data.commands as Array<Record<string, unknown>>)
+    .filter((c) => c && typeof c === "object")
+    .map((c) => ({
+      cmd: String(c.cmd ?? ""),
+      exitCode: typeof c.exitCode === "number" ? c.exitCode : -1,
+      passed: typeof c.passed === "boolean" ? c.passed : false,
+    }))
+    .filter((c) => c.cmd.length > 0);
+
+  const output: VerifierOutput = {
+    commands,
+    allPassed: typeof data.allPassed === "boolean" ? data.allPassed : false,
+    failureSummary: typeof data.failureSummary === "string" ? data.failureSummary : "",
+  };
+
+  return { role: "verifier", data: output };
 }
 
 // ---------------------------------------------------------------------------
@@ -259,12 +301,8 @@ function normalizeHypothesisStatus(value: unknown): "confirmed" | "rejected" | "
   return "pending";
 }
 
-function normalizeSeverity(value: unknown): "critical" | "warning" | "suggestion" {
-  if (value === "critical" || value === "warning" || value === "suggestion") return value;
+function normalizeSeverity(value: unknown): "blocker" | "warning" | "suggestion" {
+  if (value === "blocker" || value === "warning" || value === "suggestion") return value;
+  if (value === "critical") return "blocker";
   return "suggestion";
-}
-
-function normalizeAssessment(value: unknown): "approve" | "request_changes" | "comment" {
-  if (value === "approve" || value === "request_changes" || value === "comment") return value;
-  return "comment";
 }

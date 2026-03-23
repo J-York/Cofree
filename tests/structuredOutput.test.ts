@@ -137,6 +137,40 @@ describe("tryExtractStructuredOutput", () => {
     });
   });
 
+  describe("reviewer", () => {
+    it("parses reviewer output with dimensions scoring", () => {
+      const reply =
+        '```json\n{"dimensions":{"correctness":{"score":4,"reasoning":"ok"},"security":{"score":5,"reasoning":"ok"},"maintainability":{"score":3,"reasoning":"needs work"},"consistency":{"score":4,"reasoning":"ok"}},"issues":[{"severity":"blocker","file":"a.ts","line":10,"message":"bug"}]}\n```';
+      const result = tryExtractStructuredOutput("reviewer", reply);
+      expect(result).toBeDefined();
+      expect(result!.role).toBe("reviewer");
+      const data = result!.data as any;
+      expect(data.dimensions.correctness.score).toBe(4);
+      expect(data.issues[0].severity).toBe("blocker");
+    });
+
+    it("normalizes legacy critical severity to blocker", () => {
+      const reply =
+        '```json\n{"dimensions":{"correctness":{"score":4,"reasoning":"ok"},"security":{"score":4,"reasoning":"ok"},"maintainability":{"score":4,"reasoning":"ok"},"consistency":{"score":4,"reasoning":"ok"}},"issues":[{"severity":"critical","file":"b.ts","line":5,"message":"old format"}]}\n```';
+      const result = tryExtractStructuredOutput("reviewer", reply);
+      expect(result).toBeDefined();
+      const data = result!.data as any;
+      expect(data.issues[0].severity).toBe("blocker");
+    });
+  });
+
+  describe("verifier", () => {
+    it("parses verifier output", () => {
+      const reply =
+        '```json\n{"commands":[{"cmd":"pnpm test","exitCode":0,"passed":true}],"allPassed":true,"failureSummary":""}\n```';
+      const result = tryExtractStructuredOutput("verifier", reply);
+      expect(result).toBeDefined();
+      expect(result!.role).toBe("verifier");
+      const data = result!.data as any;
+      expect(data.allPassed).toBe(true);
+    });
+  });
+
   describe("edge cases", () => {
     it("returns undefined when no JSON block found", () => {
       const result = tryExtractStructuredOutput("planner", "Just plain text, no JSON here.");
