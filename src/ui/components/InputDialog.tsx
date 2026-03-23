@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useRef, useState, type ReactElement } from "react";
+import { BaseDialog } from "./BaseDialog";
 
 export interface InputDialogProps {
   open: boolean;
@@ -29,7 +30,6 @@ export function InputDialog({
 }: InputDialogProps): ReactElement | null {
   const [value, setValue] = useState(defaultValue);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const backdropRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (open) {
@@ -39,63 +39,41 @@ export function InputDialog({
     }
   }, [open, defaultValue]);
 
-  useEffect(() => {
-    if (!open) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onCancel();
-      } else if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        onConfirm(value);
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [open, value, onConfirm, onCancel]);
-
-  if (!open) return null;
-
-  const handleBackdropClick = (e: React.MouseEvent) => {
-    if (e.target === backdropRef.current) {
-      onCancel();
-    }
+  const handleEnter = () => {
+    onConfirm(value);
   };
 
   return (
-    <div
-      ref={backdropRef}
-      className="input-dialog-backdrop"
-      onClick={handleBackdropClick}
+    <BaseDialog
+      open={open}
+      title={title}
+      onCancel={onCancel}
+      onEnter={handleEnter}
     >
-      <div className="input-dialog">
-        <h3 className="input-dialog-title">{title}</h3>
-        <textarea
-          ref={inputRef}
-          className="input-dialog-textarea"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder={placeholder}
-          rows={3}
-        />
-        <div className="input-dialog-actions">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={onCancel}
-          >
-            {cancelLabel}
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            onClick={() => onConfirm(value)}
-          >
-            {confirmLabel}
-          </button>
-        </div>
+      <textarea
+        ref={inputRef}
+        className="input-dialog-textarea"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder={placeholder}
+        rows={3}
+      />
+      <div className="input-dialog-actions">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={onCancel}
+        >
+          {cancelLabel}
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          onClick={() => onConfirm(value)}
+        >
+          {confirmLabel}
+        </button>
       </div>
-    </div>
+    </BaseDialog>
   );
 }

@@ -1,5 +1,14 @@
 import { type ReactElement, useState } from "react";
 import type { CategorizedError } from "../../lib/errorClassifier";
+import {
+  IconAlertTriangle,
+  IconLightning,
+  IconShield,
+  IconFolderAlert,
+  IconRobot,
+  IconUnknown,
+  IconX
+} from "./Icons";
 
 interface ErrorBannerProps {
   error: CategorizedError;
@@ -23,12 +32,12 @@ export function ErrorBanner({
       <div className="error-banner-header">
         <div className="error-banner-title-row">
           <span className="error-banner-icon">
-            {error.category === "auth_error" && "\u26A0"}
-            {error.category === "network_timeout" && "\u26A1"}
-            {error.category === "patch_conflict" && "\u2694"}
-            {error.category === "workspace_error" && "\uD83D\uDCC1"}
-            {error.category === "llm_failure" && "\uD83E\uDD16"}
-            {error.category === "unknown" && "\u2757"}
+            {error.category === "auth_error" && <IconShield />}
+            {error.category === "network_timeout" && <IconLightning />}
+            {error.category === "patch_conflict" && <IconAlertTriangle />}
+            {error.category === "workspace_error" && <IconFolderAlert />}
+            {error.category === "llm_failure" && <IconRobot />}
+            {error.category === "unknown" && <IconUnknown />}
           </span>
           <span className="error-banner-title">{error.title}</span>
         </div>
@@ -39,7 +48,7 @@ export function ErrorBanner({
             type="button"
             aria-label="dismiss"
           >
-            \u2715
+            <IconX size={14} />
           </button>
         )}
       </div>

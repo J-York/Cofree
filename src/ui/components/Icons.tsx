@@ -271,3 +271,53 @@ export function IconMonitor(props: IconProps) {
     </svg>
   );
 }
+
+export function IconAlertTriangle(props: IconProps) {
+  return (
+    <svg {...defaults(props)}>
+      <path d="M8 2l7 12H1L8 2zM8 6v4M8 12h0" />
+    </svg>
+  );
+}
+
+export function IconLightning(props: IconProps) {
+  return (
+    <svg {...defaults(props)}>
+      <path d="M9 2L3 9h4v5l6-7H9V2z" />
+    </svg>
+  );
+}
+
+export function IconShield(props: IconProps) {
+  return (
+    <svg {...defaults(props)}>
+      <path d="M8 2L2 4.5v4c0 3.5 3 6.5 6 7.5 3-1 6-4 6-7.5v-4L8 2z" />
+    </svg>
+  );
+}
+
+export function IconFolderAlert(props: IconProps) {
+  return (
+    <svg {...defaults(props)}>
+      <path d="M2 4v9h12V6H8L6 4H2zM8 8v3M8 13h0" />
+    </svg>
+  );
+}
+
+export function IconRobot(props: IconProps) {
+  return (
+    <svg {...defaults(props)}>
+      <rect x="3" y="5" width="10" height="8" rx="2" />
+      <path d="M8 2v3M5 5V4M11 5V4M6 9h0M10 9h0" />
+    </svg>
+  );
+}
+
+export function IconUnknown(props: IconProps) {
+  return (
+    <svg {...defaults(props)}>
+      <circle cx="8" cy="8" r="7" />
+      <path d="M8 12h0M8 9.5c0-1.5 2-2 2-3s-1-2-2-2-2 1-2 2" />
+    </svg>
+  );
+}
