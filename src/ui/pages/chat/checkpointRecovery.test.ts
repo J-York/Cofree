@@ -10,26 +10,26 @@ describe("checkpointRecovery", () => {
   it("derives the same restore scope for the same conversation despite message mutations", () => {
     const before = {
       id: "conv-1",
-      agentBinding: { agentId: "agent-concierge" },
+      agentBinding: { agentId: "agent-orchestrator" },
       messages: [{ id: "m1", content: "before" }],
     };
     const after = {
       id: "conv-1",
-      agentBinding: { agentId: "agent-concierge" },
+      agentBinding: { agentId: "agent-orchestrator" },
       messages: [
         { id: "m1", content: "before" },
         { id: "m2", content: "after approve" },
       ],
     };
 
-    expect(getCheckpointRestoreScope(before, "agent-fullstack")).toEqual(
-      getCheckpointRestoreScope(after, "agent-fullstack"),
+    expect(getCheckpointRestoreScope(before, "agent-general")).toEqual(
+      getCheckpointRestoreScope(after, "agent-general"),
     );
   });
 
   it("does not re-apply the same checkpoint record twice", () => {
     const record = buildCheckpointRestoreRecord(
-      "csess:conv-1:agent-concierge",
+      "csess:conv-1:agent-orchestrator",
       "assistant-1",
     );
 
@@ -38,7 +38,7 @@ describe("checkpointRecovery", () => {
     expect(
       shouldApplyCheckpointRecovery(
         record,
-        buildCheckpointRestoreRecord("csess:conv-2:agent-concierge", "assistant-1"),
+        buildCheckpointRestoreRecord("csess:conv-2:agent-orchestrator", "assistant-1"),
       ),
     ).toBe(true);
   });

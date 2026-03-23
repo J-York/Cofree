@@ -19,8 +19,8 @@ describe("checkpointStore", () => {
   });
 
   it("builds scoped session keys from conversation and agent ids", () => {
-    expect(buildScopedSessionKey("conv-1", "agent-fullstack")).toBe(
-      "csess:conv-1:agent-fullstack",
+    expect(buildScopedSessionKey("conv-1", "agent-general")).toBe(
+      "csess:conv-1:agent-general",
     );
     expect(buildScopedSessionKey("conv-1")).toBe("csess:conv-1");
   });
@@ -30,7 +30,7 @@ describe("checkpointStore", () => {
       found: true,
       checkpoint: {
         checkpoint_id: "cp-1",
-        session_id: "csess:conv-1:agent-fullstack",
+        session_id: "csess:conv-1:agent-general",
         message_id: "msg-1",
         workflow_state: "human_review",
         payload_json: JSON.stringify({
@@ -77,7 +77,7 @@ describe("checkpointStore", () => {
       },
     });
 
-    const restored = await loadLatestWorkflowCheckpoint("csess:conv-1:agent-fullstack");
+    const restored = await loadLatestWorkflowCheckpoint("csess:conv-1:agent-general");
 
     expect(restored).not.toBeNull();
     expect(restored?.payload.plan.proposedActions[0]).toMatchObject({

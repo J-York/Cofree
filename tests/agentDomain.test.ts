@@ -26,8 +26,8 @@ function makeSettings(overrides?: Partial<AppSettings>): AppSettings {
 }
 
 describe("builtinChatAgents", () => {
-  it("should have at least one agent", () => {
-    expect(BUILTIN_CHAT_AGENTS.length).toBeGreaterThan(0);
+  it("should have exactly 2 agents", () => {
+    expect(BUILTIN_CHAT_AGENTS.length).toBe(2);
   });
 
   it("default agent id should be found in the list", () => {
@@ -67,8 +67,8 @@ describe("resolveAgentRuntime", () => {
   });
 
   it("resolves a specific agent by id", () => {
-    const runtime = resolveAgentRuntime("agent-code-reviewer", makeSettings());
-    expect(runtime.agentId).toBe("agent-code-reviewer");
+    const runtime = resolveAgentRuntime("agent-orchestrator", makeSettings());
+    expect(runtime.agentId).toBe("agent-orchestrator");
     expect(runtime.enabledTools).not.toContain("propose_file_edit");
     expect(runtime.enabledTools).toContain("read_file");
   });
@@ -80,16 +80,16 @@ describe("resolveAgentRuntime", () => {
 
   it("resolves from a ConversationAgentBinding", () => {
     const binding = createAgentBinding(
-      "agent-architect",
+      "agent-orchestrator",
       {
         vendorId: DEFAULT_SETTINGS.activeVendorId!,
         modelId: DEFAULT_SETTINGS.activeModelId!,
       },
       "user-override",
-      "架构师",
+      "编排 Agent",
     );
     const runtime = resolveAgentRuntime(binding, makeSettings());
-    expect(runtime.agentId).toBe("agent-architect");
+    expect(runtime.agentId).toBe("agent-orchestrator");
   });
 
   it("uses model ref from active model selection", () => {
@@ -107,10 +107,10 @@ describe("resolveAgentRuntime", () => {
     });
 
     const binding = createAgentBinding(
-      "agent-fullstack",
+      "agent-general",
       { vendorId: vendor.id, modelId: model.id },
       "default",
-      "全栈工程师",
+      "通用 Agent",
     );
     const runtime = resolveAgentRuntime(binding, settings);
 
@@ -127,7 +127,7 @@ describe("resolveAgentRuntime", () => {
       vendors: [...DEFAULT_SETTINGS.vendors, vendor],
       managedModels: [...DEFAULT_SETTINGS.managedModels, model],
       builtinAgentOverrides: {
-        "agent-fullstack": {
+        "agent-general": {
           modelSelection: {
             vendorId: vendor.id,
             modelId: model.id,
@@ -136,7 +136,7 @@ describe("resolveAgentRuntime", () => {
       },
     });
 
-    const runtime = resolveAgentRuntime("agent-fullstack", settings);
+    const runtime = resolveAgentRuntime("agent-general", settings);
 
     expect(runtime.vendorId).toBe(vendor.id);
     expect(runtime.modelId).toBe(model.id);
@@ -147,10 +147,10 @@ describe("resolveAgentRuntime", () => {
   it("falls back to the global active model when binding references a deleted model", () => {
     const settings = makeSettings();
     const binding = createAgentBinding(
-      "agent-fullstack",
+      "agent-general",
       { vendorId: "vendor-missing", modelId: "model-missing" },
       "default",
-      "全栈工程师",
+      "通用 Agent",
     );
     const runtime = resolveAgentRuntime(binding, settings);
 
@@ -163,17 +163,17 @@ describe("resolveAgentRuntime", () => {
 describe("createAgentBinding", () => {
   it("creates a binding with correct fields", () => {
     const binding = createAgentBinding(
-      "agent-qa",
+      "agent-general",
       { vendorId: "vendor-1", modelId: "model-1" },
       "default",
-      "QA 工程师",
+      "通用 Agent",
       { vendorName: "OpenAI", modelName: "gpt-4.1" },
     );
-    expect(binding.agentId).toBe("agent-qa");
+    expect(binding.agentId).toBe("agent-general");
     expect(binding.vendorId).toBe("vendor-1");
     expect(binding.modelId).toBe("model-1");
     expect(binding.bindingSource).toBe("default");
-    expect(binding.agentNameSnapshot).toBe("QA 工程师");
+    expect(binding.agentNameSnapshot).toBe("通用 Agent");
     expect(binding.vendorNameSnapshot).toBe("OpenAI");
     expect(binding.modelNameSnapshot).toBe("gpt-4.1");
     expect(binding.boundAt).toBeTruthy();
@@ -182,8 +182,8 @@ describe("createAgentBinding", () => {
 
 describe("buildScopedSessionKey", () => {
   it("builds a scoped key when conversationId is given", () => {
-    const key = buildScopedSessionKey("conv-123", "agent-fullstack");
-    expect(key).toBe("csess:conv-123:agent-fullstack");
+    const key = buildScopedSessionKey("conv-123", "agent-general");
+    expect(key).toBe("csess:conv-123:agent-general");
   });
 
   it("includes only conversation when agentId is missing", () => {
@@ -219,8 +219,8 @@ const FAKE_TOOL_DEFS: LiteLLMToolDefinition[] = [
 ];
 
 describe("selectAgentTools", () => {
-  it("code reviewer does not see propose_file_edit or propose_apply_patch", () => {
-    const runtime = resolveAgentRuntime("agent-code-reviewer", makeSettings());
+  it("orchestrator does not see propose_file_edit or propose_apply_patch", () => {
+    const runtime = resolveAgentRuntime("agent-orchestrator", makeSettings());
     const ctx = selectAgentTools(runtime, FAKE_TOOL_DEFS);
     const toolNames = ctx.visibleToolDefs.map((t) => t.function.name);
     expect(toolNames).not.toContain("propose_file_edit");
@@ -229,63 +229,63 @@ describe("selectAgentTools", () => {
     expect(toolNames).toContain("grep");
   });
 
-  it("fullstack agent sees all tools including task", () => {
-    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+  it("general agent sees all tools including task", () => {
+    const runtime = resolveAgentRuntime("agent-general", makeSettings());
     const ctx = selectAgentTools(runtime, FAKE_TOOL_DEFS);
     const toolNames = ctx.visibleToolDefs.map((t) => t.function.name);
     expect(toolNames).toContain("propose_file_edit");
     expect(toolNames).toContain("task");
   });
 
-  it("QA agent allowedSubAgents is only tester", () => {
-    const runtime = resolveAgentRuntime("agent-qa", makeSettings());
-    expect(runtime.allowedSubAgents).toEqual(["tester", "reviewer"]);
+  it("orchestrator allowedSubAgents includes all roles", () => {
+    const runtime = resolveAgentRuntime("agent-orchestrator", makeSettings());
+    expect(runtime.allowedSubAgents).toEqual(["planner", "coder", "tester", "debugger", "reviewer", "verifier"]);
   });
 
-  it("fullstack agent allowedSubAgents includes all three roles", () => {
-    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
-    expect(runtime.allowedSubAgents).toEqual(["planner", "coder", "tester", "debugger", "reviewer"]);
+  it("general agent allowedSubAgents includes all roles", () => {
+    const runtime = resolveAgentRuntime("agent-general", makeSettings());
+    expect(runtime.allowedSubAgents).toEqual(["planner", "coder", "tester", "debugger", "reviewer", "verifier"]);
   });
 });
 
 describe("assembleSystemPrompt", () => {
   it("includes agent-specific prompt template", () => {
-    const runtime = resolveAgentRuntime("agent-code-reviewer", makeSettings());
+    const runtime = resolveAgentRuntime("agent-orchestrator", makeSettings());
     const prompt = assembleSystemPrompt(runtime);
-    expect(prompt).toContain("代码审查员");
+    expect(prompt).toContain("编排 Agent");
   });
 
   it("includes base workflow rules", () => {
-    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+    const runtime = resolveAgentRuntime("agent-general", makeSettings());
     const prompt = assembleSystemPrompt(runtime);
     expect(prompt).toContain("propose_file_edit");
     expect(prompt).toContain("Sub-Agent");
   });
 
   it("different agents produce different prompts", () => {
-    const fullstackPrompt = assembleSystemPrompt(resolveAgentRuntime("agent-fullstack", makeSettings()));
-    const reviewerPrompt = assembleSystemPrompt(resolveAgentRuntime("agent-code-reviewer", makeSettings()));
-    expect(fullstackPrompt).not.toBe(reviewerPrompt);
+    const generalPrompt = assembleSystemPrompt(resolveAgentRuntime("agent-general", makeSettings()));
+    const orchestratorPrompt = assembleSystemPrompt(resolveAgentRuntime("agent-orchestrator", makeSettings()));
+    expect(generalPrompt).not.toBe(orchestratorPrompt);
   });
 });
 
 describe("assembleRuntimeContext", () => {
   it("includes workspace path", () => {
-    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings({ workspacePath: "/test/workspace" }));
+    const runtime = resolveAgentRuntime("agent-general", makeSettings({ workspacePath: "/test/workspace" }));
     const ctx = assembleRuntimeContext(runtime, "/test/workspace");
     expect(ctx).toContain("/test/workspace");
   });
 
-  it("lists only allowed sub-agent roles for the agent", () => {
-    const reviewerRuntime = resolveAgentRuntime("agent-code-reviewer", makeSettings());
-    const ctx = assembleRuntimeContext(reviewerRuntime, "/test");
+  it("lists allowed sub-agent roles for the orchestrator", () => {
+    const orchestratorRuntime = resolveAgentRuntime("agent-orchestrator", makeSettings());
+    const ctx = assembleRuntimeContext(orchestratorRuntime, "/test");
     expect(ctx).toContain("planner");
-    expect(ctx).not.toContain("coder");
-    expect(ctx).not.toContain("tester");
+    expect(ctx).toContain("coder");
+    expect(ctx).toContain("tester");
   });
 
-  it("lists all three roles for fullstack agent", () => {
-    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+  it("lists all roles for general agent", () => {
+    const runtime = resolveAgentRuntime("agent-general", makeSettings());
     const ctx = assembleRuntimeContext(runtime, "/test");
     expect(ctx).toContain("planner");
     expect(ctx).toContain("coder");
@@ -293,16 +293,15 @@ describe("assembleRuntimeContext", () => {
   });
 
   it("does not include update_plan in 本轮可用工具 when no internalTools passed", () => {
-    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+    const runtime = resolveAgentRuntime("agent-general", makeSettings());
     const ctx = assembleRuntimeContext(runtime, "/test");
-    // Without internalTools, update_plan must NOT appear in the main tools line
     const toolsLine = ctx.split("\n").find((line) => line.startsWith("本轮可用工具:"));
     expect(toolsLine, "本轮可用工具 line should exist in context").toBeDefined();
     expect(toolsLine).not.toContain("update_plan");
   });
 
   it("includes update_plan in 本轮可用工具 when passed as internalTools", () => {
-    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+    const runtime = resolveAgentRuntime("agent-general", makeSettings());
     const ctx = assembleRuntimeContext(runtime, "/test", ["update_plan"]);
     const toolsLine = ctx.split("\n").find((line) => line.startsWith("本轮可用工具:"));
     expect(toolsLine, "本轮可用工具 line should exist in context").toBeDefined();
@@ -310,12 +309,11 @@ describe("assembleRuntimeContext", () => {
   });
 
   it("includes update_plan in 自动执行工具 when passed as internalTools", () => {
-    const runtime = resolveAgentRuntime("agent-fullstack", makeSettings());
+    const runtime = resolveAgentRuntime("agent-general", makeSettings());
     const ctx = assembleRuntimeContext(runtime, "/test", ["update_plan"]);
     const autoLine = ctx.split("\n").find((line) => line.startsWith("自动执行工具"));
     expect(autoLine, "自动执行工具 line should exist in context").toBeDefined();
     expect(autoLine).toContain("update_plan");
-    // update_plan must NOT appear in the ask/approval list
     const askLine = ctx.split("\n").find((line) => line.startsWith("需审批工具:"));
     expect(askLine).not.toContain("update_plan");
   });

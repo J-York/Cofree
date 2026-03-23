@@ -23,13 +23,13 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
 }
 
 describe("resolveAgentRuntime ask_user visibility", () => {
-  it("includes ask_user for default fullstack agent", () => {
-    const runtime = resolveAgentRuntime("agent-fullstack", createSettings());
+  it("includes ask_user for default general agent", () => {
+    const runtime = resolveAgentRuntime("agent-general", createSettings());
     expect(runtime.enabledTools).toContain("ask_user");
   });
 
   it("includes ask_user even when builtin agent uses explicit enabledTools", () => {
-    const runtime = resolveAgentRuntime("agent-code-reviewer", createSettings());
+    const runtime = resolveAgentRuntime("agent-orchestrator", createSettings());
     expect(runtime.enabledTools).toContain("ask_user");
   });
 
@@ -54,6 +54,16 @@ describe("resolveAgentRuntime ask_user visibility", () => {
     expect(runtime.enabledTools).toEqual(
       expect.arrayContaining(["read_file", "ask_user"]),
     );
+  });
+
+  it("orchestrator is read-only + delegation: no direct write/shell tools", () => {
+    const runtime = resolveAgentRuntime("agent-orchestrator", createSettings());
+    expect(runtime.enabledTools).toContain("ask_user");
+    expect(runtime.enabledTools).toContain("task");
+    expect(runtime.enabledTools).toContain("read_file");
+    expect(runtime.enabledTools).not.toContain("propose_file_edit");
+    expect(runtime.enabledTools).not.toContain("propose_apply_patch");
+    expect(runtime.enabledTools).not.toContain("propose_shell");
   });
 });
 

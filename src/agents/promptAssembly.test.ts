@@ -7,8 +7,8 @@ function createRuntime(
   overrides: Partial<ResolvedAgentRuntime> = {},
 ): ResolvedAgentRuntime {
   return {
-    agentId: "agent-fullstack",
-    agentName: "Fullstack",
+    agentId: "agent-general",
+    agentName: "General",
     systemPrompt: "system prompt",
     enabledTools: ["read_file"],
     toolPermissions: {

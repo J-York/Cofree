@@ -84,11 +84,11 @@ function resolveDecision(
 
 describe("teamTrust", () => {
   it("parses a stable team id from originDetail", () => {
-    expect(parseTeamIdFromOriginDetail("team-expert-panel-v2 / 代码实现")).toBe(
-      "team-expert-panel-v2",
+    expect(parseTeamIdFromOriginDetail("team-build / 代码实现")).toBe(
+      "team-build",
     );
-    expect(parseTeamIdFromOriginDetail("team-expert-panel-v2")).toBe(
-      "team-expert-panel-v2",
+    expect(parseTeamIdFromOriginDetail("team-build")).toBe(
+      "team-build",
     );
   });
 
@@ -111,7 +111,7 @@ describe("teamTrust", () => {
       isExpertTeamAction(
         createShellAction("team-shell", {
           origin: "team_stage",
-          originDetail: "team-expert-panel-v2 / 代码实现",
+          originDetail: "team-build / 代码实现",
         }),
       ),
     ).toBe(true);
@@ -129,7 +129,7 @@ describe("teamTrust", () => {
       isExpertTeamAction(
         createShellAction("subagent-shell", {
           origin: "sub_agent",
-          originDetail: "team-expert-panel-v2 / 代码实现",
+          originDetail: "team-build / 代码实现",
         }),
       ),
     ).toBe(false);
@@ -138,11 +138,11 @@ describe("teamTrust", () => {
   it("collects only pending expert-team action ids", () => {
     const teamShell = createShellAction("team-shell", {
       origin: "team_stage",
-      originDetail: "team-expert-panel-v2 / 执行命令",
+      originDetail: "team-build / 执行命令",
     });
     const teamPatch = createPatchAction("team-patch", {
       origin: "team_stage",
-      originDetail: "team-expert-panel-v2 / 修改文件",
+      originDetail: "team-build / 修改文件",
       status: "completed",
       executed: true,
     });
@@ -158,7 +158,7 @@ describe("teamTrust", () => {
   it("prompts on the first pending expert-team action when the workspace has no saved mode", () => {
     const teamShell = createShellAction("team-shell", {
       origin: "team_stage",
-      originDetail: "team-expert-panel-v2 / 执行命令",
+      originDetail: "team-build / 执行命令",
     });
 
     expect(resolveDecision(null, [teamShell])).toMatchObject({
@@ -170,7 +170,7 @@ describe("teamTrust", () => {
   it("uses yolo for pending expert-team actions after a saved team_yolo decision", () => {
     const teamShell = createShellAction("team-shell", {
       origin: "team_stage",
-      originDetail: "team-expert-panel-v2 / 执行命令",
+      originDetail: "team-build / 执行命令",
     });
     const nonTeamShell = createShellAction("non-team-shell", {
       origin: "main_agent",
@@ -185,7 +185,7 @@ describe("teamTrust", () => {
   it("uses manual mode for saved team_manual decisions without re-prompting", () => {
     const teamPatch = createPatchAction("team-patch", {
       origin: "team_stage",
-      originDetail: "team-expert-panel-v2 / 修改文件",
+      originDetail: "team-build / 修改文件",
     });
 
     expect(resolveDecision("team_manual", [teamPatch])).toMatchObject({
@@ -197,7 +197,7 @@ describe("teamTrust", () => {
   it("falls back to manual when there is no workspace path", () => {
     const teamShell = createShellAction("team-shell", {
       origin: "team_stage",
-      originDetail: "team-expert-panel-v2 / 执行命令",
+      originDetail: "team-build / 执行命令",
     });
 
     expect(resolveDecision(null, [teamShell], "")).toMatchObject({
@@ -226,7 +226,7 @@ describe("teamTrust", () => {
   it("opens the first-run reminder only once per workspace while it is already in flight", () => {
     const teamShell = createShellAction("team-shell", {
       origin: "team_stage",
-      originDetail: "team-expert-panel-v2 / 执行命令",
+      originDetail: "team-build / 执行命令",
     });
     const decision = resolveDecision(null, [teamShell]);
     const promptKey = buildWorkspaceTeamTrustPromptKey("/repo/cofree");
@@ -252,7 +252,7 @@ describe("teamTrust", () => {
   it("does not reopen the first-run reminder when checkpoint restore already tracks that workspace", () => {
     const teamShell = createShellAction("team-shell", {
       origin: "team_stage",
-      originDetail: "team-expert-panel-v2 / 执行命令",
+      originDetail: "team-build / 执行命令",
     });
     const decision = resolveDecision(null, [teamShell]);
     const promptKey = buildWorkspaceTeamTrustPromptKey("/repo/cofree");
@@ -270,7 +270,7 @@ describe("teamTrust", () => {
   it("resolves a prompt action from the latest message when first-run trust is still unset", () => {
     const teamShell = createShellAction("team-shell", {
       origin: "team_stage",
-      originDetail: "team-expert-panel-v2 / 执行命令",
+      originDetail: "team-build / 执行命令",
     });
 
     expect(
@@ -295,7 +295,7 @@ describe("teamTrust", () => {
   it("resolves a yolo action only for team-owned pending actions", () => {
     const teamShell = createShellAction("team-shell", {
       origin: "team_stage",
-      originDetail: "team-expert-panel-v2 / 执行命令",
+      originDetail: "team-build / 执行命令",
     });
     const nonTeamShell = createShellAction("non-team-shell", {
       origin: "main_agent",

@@ -20,7 +20,7 @@ describe("approvalGuard", () => {
   it("allows approval when there is no pending ask_user request", () => {
     expect(
       resolveApprovalAskUserDecision(
-        "csess:conv-1:agent-concierge",
+        "csess:conv-1:agent-orchestrator",
         null,
         null,
       ),
@@ -28,11 +28,11 @@ describe("approvalGuard", () => {
   });
 
   it("blocks approval when the pending ask_user request is already visible for the same session", () => {
-    const request = makeRequest("ask-1", "csess:conv-1:agent-concierge");
+    const request = makeRequest("ask-1", "csess:conv-1:agent-orchestrator");
 
     expect(
       resolveApprovalAskUserDecision(
-        "csess:conv-1:agent-concierge",
+        "csess:conv-1:agent-orchestrator",
         request,
         request,
       ),
@@ -40,11 +40,11 @@ describe("approvalGuard", () => {
   });
 
   it("clears a hidden pending ask_user request for the same session", () => {
-    const request = makeRequest("ask-1", "csess:conv-1:agent-concierge");
+    const request = makeRequest("ask-1", "csess:conv-1:agent-orchestrator");
 
     expect(
       resolveApprovalAskUserDecision(
-        "csess:conv-1:agent-concierge",
+        "csess:conv-1:agent-orchestrator",
         request,
         null,
       ),
@@ -52,12 +52,12 @@ describe("approvalGuard", () => {
   });
 
   it("clears a pending ask_user request when the visible dialog belongs to another session", () => {
-    const pendingRequest = makeRequest("ask-1", "csess:conv-1:agent-concierge");
-    const visibleRequest = makeRequest("ask-2", "csess:conv-2:agent-concierge");
+    const pendingRequest = makeRequest("ask-1", "csess:conv-1:agent-orchestrator");
+    const visibleRequest = makeRequest("ask-2", "csess:conv-2:agent-orchestrator");
 
     expect(
       resolveApprovalAskUserDecision(
-        "csess:conv-1:agent-concierge",
+        "csess:conv-1:agent-orchestrator",
         pendingRequest,
         visibleRequest,
       ),

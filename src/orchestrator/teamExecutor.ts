@@ -590,7 +590,7 @@ export async function executeAgentTeam(params: {
         params.onStageProgress?.(stage.stageLabel, {
           kind: "team_checkpoint",
           checkpointId: "plan_ready",
-          message: "需求对齐与任务拆解已完成；建议在进入实现前请用户确认范围、风险与验收标准。",
+          message: "需求分析与任务拆解已完成；建议在进入实现前请用户确认范围、风险与验收标准。",
           teamId: team.id,
           stageLabel: stage.stageLabel,
           agentRole: stage.agentRole,
