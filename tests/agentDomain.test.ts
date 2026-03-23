@@ -12,6 +12,14 @@ import { buildScopedSessionKey } from "../src/orchestrator/checkpointStore";
 import { DEFAULT_SETTINGS, createVendorConfig, createManagedModel } from "../src/lib/settingsStore";
 import type { AppSettings } from "../src/lib/settingsStore";
 import type { LiteLLMToolDefinition } from "../src/lib/litellm";
+import type { SubAgentRole } from "../src/agents/types";
+
+describe("agent types", () => {
+  it("SubAgentRole type allows verifier", () => {
+    const roles: SubAgentRole[] = ["planner", "coder", "tester", "debugger", "reviewer", "verifier"];
+    expect(roles).toHaveLength(6);
+  });
+});
 
 function makeSettings(overrides?: Partial<AppSettings>): AppSettings {
   return { ...DEFAULT_SETTINGS, ...overrides };

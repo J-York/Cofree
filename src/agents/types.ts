@@ -15,7 +15,7 @@ import type { ModelSelection } from "../lib/modelSelection";
 // Sub-agent layer (internal orchestrator roles, NOT user-selectable)
 // ---------------------------------------------------------------------------
 
-export type SubAgentRole = "planner" | "coder" | "tester" | "debugger" | "reviewer";
+export type SubAgentRole = "planner" | "coder" | "tester" | "debugger" | "reviewer" | "verifier";
 
 export interface SubAgentDefinition {
   role: SubAgentRole;
@@ -78,15 +78,28 @@ export interface DebuggerOutput {
   fix?: string;
 }
 
-export interface ReviewerOutput {
+export interface ReviewOutput {
+  dimensions: {
+    correctness: { score: number; reasoning: string };
+    security: { score: number; reasoning: string };
+    maintainability: { score: number; reasoning: string };
+    consistency: { score: number; reasoning: string };
+  };
   issues: Array<{
-    severity: "critical" | "warning" | "suggestion";
+    severity: "blocker" | "warning" | "suggestion";
     file: string;
-    line: number;
+    line?: number;
     message: string;
   }>;
-  overallAssessment: "approve" | "request_changes" | "comment";
-  summary: string;
+}
+
+/** @deprecated Use ReviewOutput */
+export type ReviewerOutput = ReviewOutput;
+
+export interface VerifierOutput {
+  commands: Array<{ cmd: string; exitCode: number; passed: boolean }>;
+  allPassed: boolean;
+  failureSummary: string;
 }
 
 export type StructuredSubAgentOutput =
@@ -94,7 +107,8 @@ export type StructuredSubAgentOutput =
   | { role: "coder"; data: CoderOutput }
   | { role: "tester"; data: TesterOutput }
   | { role: "debugger"; data: DebuggerOutput }
-  | { role: "reviewer"; data: ReviewerOutput };
+  | { role: "reviewer"; data: ReviewOutput }
+  | { role: "verifier"; data: VerifierOutput };
 
 // ---------------------------------------------------------------------------
 // Sub-agent completion status and feedback (Phase 3)
