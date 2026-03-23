@@ -51,6 +51,8 @@ interface TeamAggregationSummary {
  * - if_issues_found: run when any prior reviewer/tester structured output reports issues/failures.
  * - if_issues_from_stage: same as issues check but only for the named `refStageLabel` stage result.
  * - if_stage_executed: true when the named stage exists and was not synthetic-skipped.
+ * - if_review_failed: true when the named reviewer stage reported issues or ended failed/blocked.
+ * - if_verify_failed: true when the named verifier stage reports !allPassed / failing commands or ended failed/blocked.
  */
 function evaluateStageCondition(
   condition: AgentTeamStageCondition | undefined,
@@ -73,9 +75,38 @@ function evaluateStageCondition(
       const res = stageResults.get(ref);
       return res !== undefined && res.status !== "skipped";
     }
+    case "if_review_failed": {
+      const ref = condition.refStageLabel;
+      if (!ref) return false;
+      const res = stageResults.get(ref);
+      if (!res || res.status === "skipped") return false;
+      if (res.status === "failed" || res.status === "blocked") return true;
+      return stageHasReviewerIssues(res);
+    }
+    case "if_verify_failed": {
+      const ref = condition.refStageLabel;
+      if (!ref) return false;
+      const res = stageResults.get(ref);
+      if (!res || res.status === "skipped") return false;
+      if (res.status === "failed" || res.status === "blocked") return true;
+      return stageVerifierFailed(res);
+    }
     default:
       return true;
   }
+}
+
+function stageHasReviewerIssues(result: SubAgentResult): boolean {
+  const o = result.structuredOutput;
+  if (o?.role !== "reviewer") return false;
+  return o.data.issues.length > 0;
+}
+
+function stageVerifierFailed(result: SubAgentResult): boolean {
+  const o = result.structuredOutput;
+  if (o?.role !== "verifier") return false;
+  if (!o.data.allPassed) return true;
+  return o.data.commands.some((c) => !c.passed);
 }
 
 /**

@@ -1524,6 +1524,79 @@ describe("planningService approval-flow repair", () => {
         expect(actions).toHaveLength(0);
     });
 
+    it("buildProposedActions assigns a shared patch group only when targets are disjoint files", () => {
+        const patchBase = (path: string, oldLine: string, newLine: string) =>
+            [
+                `diff --git a/${path} b/${path}`,
+                `--- a/${path}`,
+                `+++ b/${path}`,
+                "@@ -1,1 +1,1 @@",
+                `-${oldLine}`,
+                `+${newLine}`,
+            ].join("\n");
+
+        const patchFooA = patchBase("src/foo.ts", "a", "b");
+        const patchFooB = patchBase("src/foo.ts", "b", "c");
+        const patchBar = patchBase("src/bar.ts", "x", "y");
+
+        const sameFilePair = planningServiceTestUtils.buildProposedActions([
+            {
+                id: "p1",
+                type: "apply_patch",
+                description: "edit foo 1",
+                gateRequired: true,
+                status: "pending",
+                executed: false,
+                payload: { patch: patchFooA },
+            },
+            {
+                id: "p2",
+                type: "apply_patch",
+                description: "edit foo 2",
+                gateRequired: true,
+                status: "pending",
+                executed: false,
+                payload: { patch: patchFooB },
+            },
+        ]);
+        expect(sameFilePair).toHaveLength(2);
+        expect(sameFilePair[0]?.type === "apply_patch" && !sameFilePair[0].group).toBe(
+            true,
+        );
+        expect(sameFilePair[1]?.type === "apply_patch" && !sameFilePair[1].group).toBe(
+            true,
+        );
+
+        const disjointPair = planningServiceTestUtils.buildProposedActions([
+            {
+                id: "p3",
+                type: "apply_patch",
+                description: "edit foo",
+                gateRequired: true,
+                status: "pending",
+                executed: false,
+                payload: { patch: patchFooA },
+            },
+            {
+                id: "p4",
+                type: "apply_patch",
+                description: "edit bar",
+                gateRequired: true,
+                status: "pending",
+                executed: false,
+                payload: { patch: patchBar },
+            },
+        ]);
+        expect(disjointPair).toHaveLength(2);
+        const g0 =
+            disjointPair[0]?.type === "apply_patch" ? disjointPair[0].group : undefined;
+        const g1 =
+            disjointPair[1]?.type === "apply_patch" ? disjointPair[1].group : undefined;
+        expect(g0?.groupId).toBeTruthy();
+        expect(g0?.groupId).toBe(g1?.groupId);
+        expect(g0?.atomicIntent).toBe(true);
+    });
+
     it("surfaces a diagnostic reply when a pending approval trace exists without a preserved card", () => {
         const reply = planningServiceTestUtils.reconcileAssistantReply({
             assistantReply: "",
@@ -2710,7 +2783,7 @@ describe("P3: team progress and origin metadata", () => {
     it("tags team child actions with stage origin and forwards stage progress details", async () => {
         const progressEvents: any[] = [];
         vi.mocked(executeAgentTeam).mockImplementation(async (params: any) => {
-            params.onStageProgress?.("代码实现", {
+            params.onStageProgress?.("实现", {
                 kind: "tool_start",
                 toolName: "read_file",
                 turn: 1,
@@ -2723,7 +2796,7 @@ describe("P3: team progress and origin metadata", () => {
                 stopReason: "completed_normal",
                 nextRecommendedAction: undefined,
                 stageResults: {
-                    "代码实现": {
+                    实现: {
                         status: "completed",
                         turnCount: 1,
                         reply: "done",
@@ -2763,7 +2836,7 @@ describe("P3: team progress and origin metadata", () => {
             DEFAULT_SETTINGS.toolPermissions,
             createSettings(),
             undefined,
-            ["planner", "coder", "reviewer", "tester"] as any,
+            ["planner", "coder", "reviewer", "tester", "verifier"] as any,
             undefined,
             undefined,
             undefined,
@@ -2773,13 +2846,13 @@ describe("P3: team progress and origin metadata", () => {
         expect(result.success).toBe(true);
         expect(result.proposedActions?.[0]).toMatchObject({
             origin: "team_stage",
-            originDetail: "team-full-cycle / 代码实现",
+            originDetail: "team-build / 实现",
         });
         expect(progressEvents[0]).toMatchObject({
             kind: "tool_start",
-            teamId: "team-full-cycle",
-            stageLabel: "代码实现",
-            sourceLabel: "team-full-cycle · 代码实现",
+            teamId: "team-build",
+            stageLabel: "实现",
+            sourceLabel: "team-build · 实现",
             agentRole: "coder",
         });
     });

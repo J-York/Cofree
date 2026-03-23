@@ -5,6 +5,7 @@ import {
   isTeamAllowedForRoles,
   listTeamIdsAllowedForRoles,
   BUILTIN_TEAMS,
+  resolveTeamId,
 } from "../src/agents/agentTeam";
 import * as planningService from "../src/orchestrator/planningService";
 import {
@@ -46,15 +47,46 @@ function makeSubAgentResult(overrides?: Partial<planningService.SubAgentResult>)
 describe("agentTeam helpers", () => {
   it("listTeamIdsAllowedForRoles excludes teams with unauthorized roles", () => {
     expect(listTeamIdsAllowedForRoles(["planner"])).toEqual([]);
-    const team = BUILTIN_TEAMS.find((t) => t.id === "team-expert-panel");
-    expect(team).toBeDefined();
-    expect(isTeamAllowedForRoles(team!, ["planner", "coder", "reviewer"])).toBe(true);
-    expect(listTeamIdsAllowedForRoles(["planner", "coder", "reviewer"])).toContain(
-      "team-expert-panel",
-    );
-    expect(listTeamIdsAllowedForRoles(["planner", "coder", "reviewer", "tester"])).toContain(
-      "team-expert-panel-v2",
-    );
+    const build = BUILTIN_TEAMS.find((t) => t.id === "team-build");
+    expect(build).toBeDefined();
+    expect(
+      isTeamAllowedForRoles(build!, ["planner", "coder", "reviewer", "tester", "verifier"]),
+    ).toBe(true);
+    expect(
+      listTeamIdsAllowedForRoles(["planner", "coder", "reviewer", "tester", "verifier"]),
+    ).toContain("team-build");
+    const fix = BUILTIN_TEAMS.find((t) => t.id === "team-fix");
+    expect(fix).toBeDefined();
+    expect(isTeamAllowedForRoles(fix!, ["debugger", "coder", "verifier"])).toBe(true);
+    expect(listTeamIdsAllowedForRoles(["debugger", "coder", "verifier"])).toContain("team-fix");
+  });
+
+  it("team-build and team-fix exist in BUILTIN_TEAMS", () => {
+    const ids = BUILTIN_TEAMS.map((t) => t.id);
+    expect(ids).toContain("team-build");
+    expect(ids).toContain("team-fix");
+  });
+
+  it("team-build includes verifier stage with isolated contextPolicy", () => {
+    const build = BUILTIN_TEAMS.find((t) => t.id === "team-build")!;
+    const verifierStage = build.pipeline.find((s) => s.agentRole === "verifier");
+    expect(verifierStage).toBeDefined();
+    expect(verifierStage!.contextPolicy).toBe("isolated");
+  });
+
+  it("team-build reviewer has isolated contextPolicy", () => {
+    const build = BUILTIN_TEAMS.find((t) => t.id === "team-build")!;
+    const reviewerStage = build.pipeline.find((s) => s.agentRole === "reviewer");
+    expect(reviewerStage).toBeDefined();
+    expect(reviewerStage!.contextPolicy).toBe("isolated");
+  });
+
+  it("resolveTeamId maps legacy IDs", () => {
+    expect(resolveTeamId("team-expert-panel")).toBe("team-build");
+    expect(resolveTeamId("team-expert-panel-v2")).toBe("team-build");
+    expect(resolveTeamId("team-full-cycle")).toBe("team-build");
+    expect(resolveTeamId("team-debug-fix")).toBe("team-fix");
+    expect(resolveTeamId("team-build")).toBe("team-build");
   });
 });
 

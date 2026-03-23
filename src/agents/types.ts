@@ -79,6 +79,8 @@ export interface DebuggerOutput {
 }
 
 export interface ReviewOutput {
+  /** When present, `request_changes` signals the team executor to treat the stage as partial. */
+  overallAssessment?: string;
   dimensions: {
     correctness: { score: number; reasoning: string };
     security: { score: number; reasoning: string };

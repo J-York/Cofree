@@ -1,5 +1,13 @@
 import type { SubAgentRole } from "./types";
 
+export interface IsolatedInputSpec {
+  fromOriginalRequest: boolean;
+  fromStage?: string;
+  fields?: string[];
+  includeGitDiff?: boolean;
+  includeFileContents?: string[];
+}
+
 /** True if every stage role in the team is in `allowedRoles` (P0-2 contract). */
 export function isTeamAllowedForRoles(
   team: AgentTeamDefinition,
@@ -24,7 +32,9 @@ export type AgentTeamStageConditionType =
   /** True when the named prior stage's structured output reports reviewer issues or failed tests. */
   | "if_issues_from_stage"
   /** True when the named stage ran (not synthetic skipped). */
-  | "if_stage_executed";
+  | "if_stage_executed"
+  | "if_review_failed"
+  | "if_verify_failed";
 
 export interface AgentTeamStageCondition {
   type: AgentTeamStageConditionType;
@@ -68,134 +78,81 @@ export interface AgentTeamStage {
   condition?: AgentTeamStageCondition;
   /** 可选：与相邻且 parallelGroup 相同的阶段并行执行 */
   parallelGroup?: string;
+  contextPolicy?: "shared" | "isolated";
+  isolatedInputs?: IsolatedInputSpec;
+  maxRepairRounds?: number;
+}
+
+export const LEGACY_TEAM_ID_MAP: Record<string, string> = {
+  "team-full-cycle": "team-build",
+  "team-expert-panel": "team-build",
+  "team-expert-panel-v2": "team-build",
+  "team-debug-fix": "team-fix",
+};
+
+export function resolveTeamId(id: string): string {
+  return LEGACY_TEAM_ID_MAP[id] ?? id;
 }
 
 export const BUILTIN_TEAMS: AgentTeamDefinition[] = [
   {
-    id: "team-full-cycle",
-    name: "完整开发周期",
-    description: "分析 → 实现 → 审查 → 测试",
+    id: "team-build",
+    name: "构建流水线",
+    description: "需求分析 → 实现 → 审查(隔离)+测试(并行) → 门禁修复 → 最终验证",
     pipeline: [
-      { agentRole: "planner", stageLabel: "需求分析与任务拆解" },
+      { agentRole: "planner", stageLabel: "需求分析", contextPolicy: "shared" },
       {
         agentRole: "coder",
-        stageLabel: "代码实现",
-        inputMapping: { fromStage: "需求分析与任务拆解", fields: ["tasks"] },
+        stageLabel: "实现",
+        contextPolicy: "shared",
+        inputMapping: { fromStage: "需求分析", fields: ["tasks", "riskAssessment"] },
       },
       {
         agentRole: "reviewer",
         stageLabel: "代码审查",
+        contextPolicy: "isolated",
+        isolatedInputs: {
+          fromOriginalRequest: true,
+          includeGitDiff: true,
+          includeFileContents: ["changed"],
+        },
         condition: { type: "if_previous_succeeded" },
         parallelGroup: "review_and_test",
       },
       {
         agentRole: "tester",
-        stageLabel: "测试验证",
+        stageLabel: "测试设计与执行",
+        contextPolicy: "shared",
         condition: { type: "if_previous_succeeded" },
         parallelGroup: "review_and_test",
-      },
-    ],
-    config: { maxTotalTurns: 80, sharedWorkingMemory: true, failurePolicy: "stop" },
-  },
-  {
-    id: "team-debug-fix",
-    name: "调试修复",
-    description: "调试 → 修复 → 验证",
-    pipeline: [
-      { agentRole: "debugger", stageLabel: "问题诊断" },
-      {
-        agentRole: "coder",
-        stageLabel: "修复实现",
-        inputMapping: { fromStage: "问题诊断", fields: ["rootCause", "fix"] },
-      },
-      {
-        agentRole: "tester",
-        stageLabel: "修复验证",
-        condition: { type: "if_previous_succeeded" },
-      },
-    ],
-    config: { maxTotalTurns: 60, sharedWorkingMemory: true, failurePolicy: "stop" },
-  },
-  {
-    id: "team-expert-panel",
-    name: "专家组流水线",
-    description: "需求对齐 → 实现 → 审查（专家组接待推荐路径）",
-    pipeline: [
-      { agentRole: "planner", stageLabel: "需求对齐与任务拆解" },
-      {
-        agentRole: "coder",
-        stageLabel: "实现与落地",
-        inputMapping: {
-          fromStage: "需求对齐与任务拆解",
-          fields: ["tasks", "riskAssessment", "architectureNotes"],
-        },
-        condition: { type: "if_previous_succeeded" },
-      },
-      {
-        agentRole: "reviewer",
-        stageLabel: "审查与质量把关",
-        condition: { type: "if_previous_succeeded" },
-      },
-    ],
-    config: { maxTotalTurns: 72, sharedWorkingMemory: true, failurePolicy: "stop" },
-  },
-  {
-    id: "team-expert-panel-v2",
-    name: "专家组流水线（闭环）",
-    description:
-      "需求对齐 → 实现 → 审查 → 按需修复 → 测试 → 按需修复 → 复验（专家组接待默认推荐）",
-    pipeline: [
-      { agentRole: "planner", stageLabel: "需求对齐与任务拆解" },
-      {
-        agentRole: "coder",
-        stageLabel: "实现与落地",
-        inputMapping: {
-          fromStage: "需求对齐与任务拆解",
-          fields: ["tasks", "riskAssessment", "architectureNotes"],
-        },
-        condition: { type: "if_previous_succeeded" },
-      },
-      {
-        agentRole: "reviewer",
-        stageLabel: "审查与质量把关",
-        condition: { type: "if_previous_succeeded" },
       },
       {
         agentRole: "coder",
         stageLabel: "审查问题修复",
-        condition: {
-          type: "if_issues_from_stage",
-          refStageLabel: "审查与质量把关",
-        },
-        inputMapping: {
-          fromStage: "审查与质量把关",
-          fields: ["issues", "summary", "overallAssessment"],
-        },
+        contextPolicy: "shared",
+        condition: { type: "if_review_failed", refStageLabel: "代码审查" },
+        inputMapping: { fromStage: "代码审查", fields: ["issues"] },
+        maxRepairRounds: 2,
       },
       {
-        agentRole: "tester",
-        stageLabel: "测试验证",
+        agentRole: "verifier",
+        stageLabel: "最终验证",
+        contextPolicy: "isolated",
+        isolatedInputs: {
+          fromOriginalRequest: false,
+          includeGitDiff: true,
+          fromStage: "实现",
+          fields: ["changedFiles"],
+        },
         condition: { type: "if_previous_succeeded" },
       },
       {
         agentRole: "coder",
-        stageLabel: "测试失败修复",
-        condition: {
-          type: "if_issues_from_stage",
-          refStageLabel: "测试验证",
-        },
-        inputMapping: {
-          fromStage: "测试验证",
-          fields: ["testPlan", "riskLevel", "coverageGaps"],
-        },
-      },
-      {
-        agentRole: "tester",
-        stageLabel: "测试复验",
-        condition: {
-          type: "if_stage_executed",
-          refStageLabel: "测试失败修复",
-        },
+        stageLabel: "验证失败修复",
+        contextPolicy: "shared",
+        condition: { type: "if_verify_failed", refStageLabel: "最终验证" },
+        inputMapping: { fromStage: "最终验证", fields: ["commands", "failureSummary"] },
+        maxRepairRounds: 1,
       },
     ],
     config: {
@@ -204,5 +161,40 @@ export const BUILTIN_TEAMS: AgentTeamDefinition[] = [
       failurePolicy: "stop",
       emitPlanCheckpoint: true,
     },
+  },
+  {
+    id: "team-fix",
+    name: "修复流水线",
+    description: "调试 → 修复 → 验证(硬门禁)",
+    pipeline: [
+      { agentRole: "debugger", stageLabel: "问题诊断", contextPolicy: "shared" },
+      {
+        agentRole: "coder",
+        stageLabel: "修复实现",
+        contextPolicy: "shared",
+        inputMapping: { fromStage: "问题诊断", fields: ["rootCause", "fix"] },
+      },
+      {
+        agentRole: "verifier",
+        stageLabel: "修复验证",
+        contextPolicy: "isolated",
+        isolatedInputs: {
+          fromOriginalRequest: false,
+          includeGitDiff: true,
+          fromStage: "修复实现",
+          fields: ["changedFiles"],
+        },
+        condition: { type: "if_previous_succeeded" },
+      },
+      {
+        agentRole: "coder",
+        stageLabel: "验证失败修复",
+        contextPolicy: "shared",
+        condition: { type: "if_verify_failed", refStageLabel: "修复验证" },
+        inputMapping: { fromStage: "修复验证", fields: ["commands", "failureSummary"] },
+        maxRepairRounds: 1,
+      },
+    ],
+    config: { maxTotalTurns: 60, sharedWorkingMemory: true, failurePolicy: "stop" },
   },
 ];

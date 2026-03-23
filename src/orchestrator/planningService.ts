@@ -37,6 +37,7 @@ import {
 } from "../lib/approvalRuleStore";
 import type {
   ActionProposal,
+  ApplyPatchActionProposal,
   OrchestrationPlan,
   PlanStep,
   PlanStepStatus,
@@ -76,7 +77,12 @@ import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { assembleSystemPrompt, assembleRuntimeContext, classifyTaskType } from "../agents/promptAssembly";
 import { tryExtractStructuredOutput, tryExtractFeedback } from "../agents/structuredOutput";
 import { runWithConcurrencyLimit } from "../lib/concurrency";
-import { BUILTIN_TEAMS, isTeamAllowedForRoles, listTeamIdsAllowedForRoles } from "../agents/agentTeam";
+import {
+  BUILTIN_TEAMS,
+  isTeamAllowedForRoles,
+  listTeamIdsAllowedForRoles,
+  resolveTeamId,
+} from "../agents/agentTeam";
 import { executeAgentTeam } from "./teamExecutor";
 import { countRepairStages, decideTeamRouting } from "./teamRouting";
 import type { ChatContextAttachment } from "../lib/contextAttachments";
@@ -1730,6 +1736,37 @@ function collectPatchedFiles(patch: string): string[] {
   }
 
   return Array.from(files);
+}
+
+/**
+ * True when every patch targets a non-empty, known file set and no workspace path
+ * appears in more than one patch. Used to decide whether a shared atomic batch group is safe.
+ */
+function applyPatchTargetsAreDisjointForBatching(
+  patchActions: ApplyPatchActionProposal[],
+): boolean {
+  if (patchActions.length <= 1) {
+    return true;
+  }
+  const pathCounts = new Map<string, number>();
+  for (const action of patchActions) {
+    const files = collectPatchedFiles(action.payload.patch)
+      .map((file) => file.trim())
+      .filter(Boolean);
+    if (files.length === 0) {
+      return false;
+    }
+    const uniqInPatch = new Set(files);
+    for (const file of uniqInPatch) {
+      pathCounts.set(file, (pathCounts.get(file) ?? 0) + 1);
+    }
+  }
+  for (const count of pathCounts.values()) {
+    if (count > 1) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function countPlannedArtifacts(actions: ActionProposal[]): number {
@@ -5109,7 +5146,8 @@ async function executeToolCall(
       }
 
       if (teamId) {
-        const teamDef = BUILTIN_TEAMS.find((t) => t.id === teamId);
+        const resolvedTeamId = resolveTeamId(teamId);
+        const teamDef = BUILTIN_TEAMS.find((t) => t.id === resolvedTeamId);
         if (!teamDef) {
           const validTeams = BUILTIN_TEAMS.map((t) => t.id).join(", ");
           const message = `无效的 Team ID: "${teamId}"。可用团队: ${validTeams}`;
@@ -5162,10 +5200,10 @@ async function executeToolCall(
             const resolvedRole = stageRole ?? event.agentRole;
             onSubAgentProgress?.({
               ...event,
-              teamId,
+              teamId: resolvedTeamId,
               stageLabel: stage,
               ...(resolvedRole !== undefined ? { agentRole: resolvedRole } : {}),
-              sourceLabel: `${teamId} · ${stage}`,
+              sourceLabel: `${resolvedTeamId} · ${stage}`,
             });
           },
           signal
@@ -5184,7 +5222,7 @@ async function executeToolCall(
               ...stageRes.proposedActions.map((action) => ({
                 ...action,
                 origin: "team_stage" as const,
-                originDetail: `${teamId} / ${stageLabel}`,
+                originDetail: `${resolvedTeamId} / ${stageLabel}`,
               })),
             );
           }
@@ -5200,7 +5238,7 @@ async function executeToolCall(
         }
 
         const routing = decideTeamRouting({
-          teamId,
+          teamId: resolvedTeamId,
           repairRoundsUsed: countRepairStages(teamResult.stageResults),
           stopReason: teamResult.stopReason,
         });
@@ -5208,7 +5246,7 @@ async function executeToolCall(
         const responsePayload: Record<string, unknown> = {
           ok: teamResult.status === "completed",
           action_type: "team_task",
-          team: teamId,
+          team: resolvedTeamId,
           status: teamResult.status,
           completionStatus: teamResult.status,
           stop_reason: teamResult.stopReason,
@@ -7470,12 +7508,16 @@ function buildProposedActions(
   }
 
   // --- Phase 5: Action Group semantics for multi-patch batches ---
-  // Only when the same round produces 2+ patch actions, we assign a shared groupId.
+  // Only when the same round produces 2+ patch actions with pairwise-disjoint target files,
+  // assign a shared groupId for atomic combined apply. Same-file or unknown-target patches
+  // must not share a batch (combined git-apply often fails and rolls back the whole group).
   const patchActions = uniqueActions.filter(
-    (a): a is import("./types").ApplyPatchActionProposal =>
-      a.type === "apply_patch"
+    (a): a is ApplyPatchActionProposal => a.type === "apply_patch"
   );
-  if (patchActions.length > 1) {
+  if (
+    patchActions.length > 1 &&
+    applyPatchTargetsAreDisjointForBatching(patchActions)
+  ) {
     const groupId = createActionId("action-group");
     const createdAt = nowIso();
     const files = Array.from(
