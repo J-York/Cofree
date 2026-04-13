@@ -47,7 +47,6 @@ import {
   hasBuiltinOverride,
 } from "../../agents/builtinChatAgents";
 import { AGENT_TOOL_CATALOG, type SubAgentRole } from "../../agents/types";
-import { BUILTIN_TEAMS } from "../../agents/agentTeam";
 import {
   clearAllConversations,
   clearWorkspaceConversations,
@@ -96,7 +95,7 @@ function getWorkspaceTeamTrustModeLabel(
   if (mode === "team_manual") {
     return "审批";
   }
-  return "未设置（首次使用时询问）";
+  return "未设置（首次进入编排时询问）";
 }
 
 export function WorkspaceTeamTrustModeField({
@@ -114,9 +113,9 @@ export function WorkspaceTeamTrustModeField({
     <div className="settings-card">
       <div className="settings-card-header">
         <div>
-          <h3 className="settings-card-title">专家团执行模式</h3>
+          <h3 className="settings-card-title">编排执行模式</h3>
           <p className="settings-card-desc">
-            按工作区决定专家团敏感动作是自动执行还是逐条审批。
+            按工作区决定编排（子 Agent / 专家团）相关敏感动作是自动执行还是逐条审批。
           </p>
         </div>
       </div>
@@ -135,7 +134,7 @@ export function WorkspaceTeamTrustModeField({
             onChange(null);
           }}
         >
-          <option value="">未设置（首次使用时询问）</option>
+          <option value="">未设置（首次进入编排时询问）</option>
           <option value="team_yolo">YOLO</option>
           <option value="team_manual">审批</option>
         </select>
@@ -327,7 +326,7 @@ export function SettingsPage({
   ): void => {
     const workspacePath = draft.workspacePath.trim();
     if (!workspacePath) {
-      setSaveMessage("请先选择工作区后再设置专家团执行模式");
+      setSaveMessage("请先选择工作区后再设置编排执行模式");
       setTimeout(() => setSaveMessage(""), 3000);
       return;
     }
@@ -335,14 +334,14 @@ export function SettingsPage({
     if (mode === null) {
       clearWorkspaceTeamTrustMode(workspacePath);
       setWorkspaceTeamTrustMode(null);
-      setSaveMessage("已重置当前工作区的专家团执行模式");
+      setSaveMessage("已重置当前工作区的编排执行模式");
       setTimeout(() => setSaveMessage(""), 3000);
       return;
     }
 
     const saved = saveWorkspaceTeamTrustMode(workspacePath, mode);
     if (!saved) {
-      setSaveMessage("保存当前工作区的专家团执行模式失败");
+      setSaveMessage("保存当前工作区的编排执行模式失败");
       setTimeout(() => setSaveMessage(""), 3000);
       return;
     }
@@ -350,8 +349,8 @@ export function SettingsPage({
     setWorkspaceTeamTrustMode(mode);
     setSaveMessage(
       mode === "team_yolo"
-        ? "当前工作区已启用专家团 YOLO 模式"
-        : "当前工作区将继续使用专家团审批模式",
+        ? "当前工作区已启用编排 YOLO 模式"
+        : "当前工作区将继续使用编排审批模式",
     );
     setTimeout(() => setSaveMessage(""), 3000);
   };
@@ -742,39 +741,6 @@ export function SettingsPage({
                 />
               )}
 
-              <header className="settings-pane-header" style={{ marginTop: "32px" }}>
-                <h2 className="settings-pane-title">内置工作流团队 (Agent Teams)</h2>
-                <p className="settings-pane-desc">
-                  多智能体团队编排，通过固定流程协作完成复杂任务。可以在聊天或通过任务请求委派。
-                </p>
-              </header>
-              <div className="agent-card-list">
-                {BUILTIN_TEAMS.map((team) => (
-                  <div key={team.id} className="agent-card" style={{ cursor: "default" }}>
-                    <div className="agent-card-header">
-                      <span className="agent-card-name" style={{ fontFamily: "monospace" }}>{team.id}</span>
-                      <span className="agent-card-badge">内置团队</span>
-                    </div>
-                    <span className="agent-card-desc" style={{ marginBottom: "12px", display: "inline-block" }}>
-                      {team.name} - {team.description}
-                    </span>
-                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
-                      {team.pipeline.map((stage, idx) => (
-                        <span key={idx} style={{ 
-                          fontSize: "11px", 
-                          background: "var(--bg-3)", 
-                          padding: "2px 8px", 
-                          borderRadius: "10px",
-                          border: "1px solid var(--border-color)",
-                          color: "var(--text-1)"
-                        }}>
-                          {idx + 1}. {stage.stageLabel}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
             </>
           )}
 

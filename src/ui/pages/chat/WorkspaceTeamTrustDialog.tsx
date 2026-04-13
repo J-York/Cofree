@@ -28,15 +28,15 @@ export function WorkspaceTeamTrustDialog({
             id="workspace-team-trust-dialog-title"
             className="input-dialog-title"
           >
-            当前工作区首次使用专家团
+            当前工作区首次进入编排模式
           </h3>
         </div>
 
         <div className="ask-user-content">
           <div className="ask-user-question">
             <div className="ask-user-question-text">
-              专家团 YOLO 模式会在此工作区自动执行专家团 shell 与文件修改动作，
-              不再逐条等待审批；普通单 Agent 对话仍保持原有审批行为。
+              编排 YOLO 模式会在此工作区自动执行编排过程中主 Agent、子 Agent 与专家团产生的
+              shell 与文件修改动作，不再逐条等待审批；未进入编排的单 Agent 对话仍保持原有审批行为。
             </div>
           </div>
         </div>
@@ -47,7 +47,7 @@ export function WorkspaceTeamTrustDialog({
             className="btn btn-primary btn-sm"
             onClick={() => onChooseMode("team_yolo")}
           >
-            启用该工作区专家团 YOLO
+            启用该工作区编排 YOLO
           </button>
           <button
             type="button"

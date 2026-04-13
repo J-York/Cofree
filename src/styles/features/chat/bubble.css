@@ -27,9 +27,9 @@
 .chat-expert-stage-details {
   border-radius: var(--r-md);
   border: 1px solid var(--border-1);
-  background: var(--surface-1);
+  background: var(--surface-0);
   overflow: hidden;
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
 }
 
 .chat-expert-stage-summary {
@@ -39,9 +39,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 8px 12px;
-  font-size: 12px;
-  color: var(--text-2);
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-3);
   user-select: none;
 }
 
@@ -196,4 +196,19 @@
 @keyframes dot-fade {
   0%,80%,100% { opacity: 0.3; transform: scale(0.8); }
   40% { opacity: 1; transform: scale(1.1); }
+}
+
+/* Expert inline stage panel: calmer when page-level topbar also summarizes activity */
+.chat-layout:has(.conversation-topbar) .chat-expert-stage-details {
+  border-color: color-mix(in srgb, var(--border-1) 88%, transparent);
+  box-shadow: none;
+}
+
+.chat-layout:has(.conversation-topbar) .chat-expert-stage-summary {
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.chat-layout:has(.conversation-topbar) .chat-expert-stage-summary-action {
+  font-size: 10px;
 }

@@ -63,43 +63,80 @@ export function collectPendingExpertTeamActionIds(
     .map((action) => action.id);
 }
 
+/** Pending shell/patch from team pipeline or delegated sub-agent (orchestration). */
+export function isOrchestrationAction(
+  action: Pick<ActionProposal, "type" | "origin" | "gateRequired">,
+): boolean {
+  if (action.origin !== "team_stage" && action.origin !== "sub_agent") {
+    return false;
+  }
+  if (!action.gateRequired || !YOLO_ELIGIBLE_ACTION_TYPES.has(action.type)) {
+    return false;
+  }
+  return true;
+}
+
+export function collectPendingOrchestrationActionIds(
+  plan: Pick<OrchestrationPlan, "proposedActions">,
+): string[] {
+  return plan.proposedActions
+    .filter((action) => action.status === "pending" && isOrchestrationAction(action))
+    .map((action) => action.id);
+}
+
+/** All pending gated shell/patch actions on the plan (any origin), for YOLO auto-approve batch. */
+export function collectAllPendingYoloActionIds(
+  plan: Pick<OrchestrationPlan, "proposedActions">,
+): string[] {
+  return plan.proposedActions
+    .filter(
+      (action) =>
+        action.status === "pending" &&
+        action.gateRequired &&
+        YOLO_ELIGIBLE_ACTION_TYPES.has(action.type),
+    )
+    .map((action) => action.id);
+}
+
 export function resolveWorkspaceTeamTrustDecision(params: {
   workspacePath?: string;
   mode: WorkspaceTeamTrustMode | null;
   plan: Pick<OrchestrationPlan, "proposedActions">;
 }): WorkspaceTeamTrustDecision {
-  const teamActionIds = collectPendingExpertTeamActionIds(params.plan);
-  if (teamActionIds.length === 0) {
+  const orchestrationActionIds = collectPendingOrchestrationActionIds(params.plan);
+  if (orchestrationActionIds.length === 0) {
     return {
       kind: "manual",
-      teamActionIds,
+      teamActionIds: [],
     };
   }
+
+  const allYoloActionIds = collectAllPendingYoloActionIds(params.plan);
 
   if (!params.workspacePath?.trim()) {
     return {
       kind: "disabled_no_workspace",
-      teamActionIds,
+      teamActionIds: allYoloActionIds,
     };
   }
 
   if (params.mode === "team_yolo") {
     return {
       kind: "yolo",
-      teamActionIds,
+      teamActionIds: allYoloActionIds,
     };
   }
 
   if (params.mode === "team_manual") {
     return {
       kind: "manual",
-      teamActionIds,
+      teamActionIds: allYoloActionIds,
     };
   }
 
   return {
     kind: "prompt_first_run",
-    teamActionIds,
+    teamActionIds: allYoloActionIds,
   };
 }
 
@@ -112,7 +149,7 @@ export function getWorkspaceTeamTrustModeLabel(
   if (mode === "team_manual") {
     return "审批";
   }
-  return "未设置（首次使用时询问）";
+  return "未设置（首次进入编排时询问）";
 }
 
 export function buildWorkspaceTeamTrustPromptKey(

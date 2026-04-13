@@ -4,9 +4,12 @@ import type { OrchestrationPlan, ActionProposal } from "../../../orchestrator/ty
 import type { WorkspaceTeamTrustMode } from "../../../lib/workspaceTeamTrustStore";
 import {
   buildWorkspaceTeamTrustPromptKey,
+  collectAllPendingYoloActionIds,
   collectPendingExpertTeamActionIds,
+  collectPendingOrchestrationActionIds,
   getWorkspaceTeamTrustModeLabel,
   isExpertTeamAction,
+  isOrchestrationAction,
   parseTeamIdFromOriginDetail,
   resolveWorkspaceTeamTrustDecision,
   resolveWorkspaceTeamTrustMessageAction,
@@ -167,7 +170,7 @@ describe("teamTrust", () => {
     });
   });
 
-  it("uses yolo for pending expert-team actions after a saved team_yolo decision", () => {
+  it("uses yolo for all pending gated shell/patch after team_yolo when orchestration is present", () => {
     const teamShell = createShellAction("team-shell", {
       origin: "team_stage",
       originDetail: "team-build / 执行命令",
@@ -178,7 +181,61 @@ describe("teamTrust", () => {
 
     expect(resolveDecision("team_yolo", [teamShell, nonTeamShell])).toMatchObject({
       kind: "yolo",
-      teamActionIds: ["team-shell"],
+      teamActionIds: ["team-shell", "non-team-shell"],
+    });
+  });
+
+  it("treats sub_agent shell as orchestration", () => {
+    expect(
+      isOrchestrationAction(
+        createShellAction("sub-s", { origin: "sub_agent", originDetail: "coder" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("prompts first run when only sub_agent orchestration actions exist", () => {
+    const subShell = createShellAction("sub-s", {
+      origin: "sub_agent",
+      originDetail: "coder",
+    });
+    expect(resolveDecision(null, [subShell])).toMatchObject({
+      kind: "prompt_first_run",
+      teamActionIds: ["sub-s"],
+    });
+  });
+
+  it("collectPendingOrchestrationActionIds includes team_stage and sub_agent", () => {
+    const teamShell = createShellAction("a", {
+      origin: "team_stage",
+      originDetail: "team-build / 执行",
+    });
+    const subShell = createShellAction("b", { origin: "sub_agent", originDetail: "coder" });
+    const mainShell = createShellAction("c", { origin: "main_agent" });
+    expect(collectPendingOrchestrationActionIds(createPlan([teamShell, subShell, mainShell]))).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
+  it("collectAllPendingYoloActionIds includes main_agent pending actions", () => {
+    const teamShell = createShellAction("a", {
+      origin: "team_stage",
+      originDetail: "team-build / 执行",
+    });
+    const mainShell = createShellAction("b", { origin: "main_agent" });
+    expect(collectAllPendingYoloActionIds(createPlan([teamShell, mainShell]))).toEqual(["a", "b"]);
+  });
+
+  it("prompt_first_run returns all pending yolo ids when mixing team_stage and main_agent", () => {
+    const teamShell = createShellAction("team-shell", {
+      origin: "team_stage",
+      originDetail: "team-build / 执行命令",
+    });
+    const mainShell = createShellAction("main-shell", { origin: "main_agent" });
+
+    expect(resolveDecision(null, [teamShell, mainShell])).toMatchObject({
+      kind: "prompt_first_run",
+      teamActionIds: ["team-shell", "main-shell"],
     });
   });
 
@@ -220,7 +277,7 @@ describe("teamTrust", () => {
   it("formats the workspace trust label for settings", () => {
     expect(getWorkspaceTeamTrustModeLabel("team_yolo")).toBe("YOLO");
     expect(getWorkspaceTeamTrustModeLabel("team_manual")).toBe("审批");
-    expect(getWorkspaceTeamTrustModeLabel(null)).toBe("未设置（首次使用时询问）");
+    expect(getWorkspaceTeamTrustModeLabel(null)).toBe("未设置（首次进入编排时询问）");
   });
 
   it("opens the first-run reminder only once per workspace while it is already in flight", () => {
@@ -292,7 +349,7 @@ describe("teamTrust", () => {
     });
   });
 
-  it("resolves a yolo action only for team-owned pending actions", () => {
+  it("resolves yolo with all pending gated shell/patch for auto-approve", () => {
     const teamShell = createShellAction("team-shell", {
       origin: "team_stage",
       originDetail: "team-build / 执行命令",
@@ -315,7 +372,7 @@ describe("teamTrust", () => {
     ).toMatchObject({
       kind: "yolo",
       messageId: "assistant-2",
-      teamActionIds: ["team-shell"],
+      teamActionIds: ["team-shell", "non-team-shell"],
     });
   });
 });

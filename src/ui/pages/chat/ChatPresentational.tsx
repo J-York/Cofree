@@ -264,11 +264,17 @@ export const MessageContent = memo(function MessageContent({
   );
 });
 
-export function LiveToolStatus({ calls }: { calls: LiveToolCall[] }) {
+export function LiveToolStatus({
+  calls,
+  showAskUserAnchor = false,
+}: {
+  calls: LiveToolCall[];
+  showAskUserAnchor?: boolean;
+}) {
   if (calls.length === 0) return null;
 
   return (
-    <div className="live-tool-status">
+    <div className="live-tool-status" data-topbar-anchor="tools" tabIndex={-1}>
       {calls.map((call) => {
         const icon =
           call.status === "running"
@@ -287,7 +293,16 @@ export function LiveToolStatus({ calls }: { calls: LiveToolCall[] }) {
               ? `${formatToolName(call.toolName)} · 等待您的输入`
               : formatToolName(call.toolName);
         return (
-          <div key={call.callId} className={`live-tool-item ${call.status}`}>
+          <div
+            key={call.callId}
+            className={`live-tool-item ${call.status}`}
+            data-topbar-anchor={
+              showAskUserAnchor && call.status === "waiting_for_user" ? "ask_user" : undefined
+            }
+            tabIndex={
+              showAskUserAnchor && call.status === "waiting_for_user" ? -1 : undefined
+            }
+          >
             <span className="live-tool-icon">{icon}</span>
             <span className="live-tool-name">{label}</span>
             {call.argsPreview && (
@@ -341,7 +356,12 @@ export function SubAgentStatusPanel({
   if (items.length === 0) return null;
 
   return (
-    <div className="live-tool-status expert-panel-activity" style={{ marginBottom: 6 }}>
+    <div
+      className="live-tool-status expert-panel-activity"
+      style={{ marginBottom: 6 }}
+      data-topbar-anchor="parallel"
+      tabIndex={-1}
+    >
       <p
         className="tool-trace-label"
         style={{ margin: "0 0 6px 0", fontSize: 11, opacity: 0.88 }}
@@ -384,13 +404,23 @@ export function SubAgentStatusPanel({
   );
 }
 
-export function ToolTracePanel({ traces }: { traces: ToolExecutionTrace[] }) {
+export function ToolTracePanel({
+  traces,
+  showAskUserAnchor = false,
+}: {
+  traces: ToolExecutionTrace[];
+  showAskUserAnchor?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   if (!traces.length) return null;
+  const hasCollapsedAskUserTarget =
+    showAskUserAnchor && traces.some((trace) => trace.status === "waiting_for_user");
   return (
-    <div className="tool-trace">
+    <div className="tool-trace" data-topbar-anchor="tools" tabIndex={-1}>
       <div
         className="tool-trace-header"
+        data-topbar-anchor={hasCollapsedAskUserTarget ? "ask_user" : undefined}
+        tabIndex={hasCollapsedAskUserTarget ? -1 : undefined}
         onClick={() => setExpanded(!expanded)}
         style={{
           cursor: "pointer",
@@ -419,6 +449,19 @@ export function ToolTracePanel({ traces }: { traces: ToolExecutionTrace[] }) {
             <li
               key={`${trace.callId}-${trace.startedAt}`}
               className={`tool-trace-item ${trace.status === "pending_approval" ? "pending" : trace.status === "waiting_for_user" ? "pending" : trace.status}`}
+              data-topbar-anchor={
+                trace.status === "failed"
+                  ? "blocked_output"
+                  : showAskUserAnchor && trace.status === "waiting_for_user"
+                    ? "ask_user"
+                    : undefined
+              }
+              tabIndex={
+                trace.status === "failed" ||
+                (showAskUserAnchor && trace.status === "waiting_for_user")
+                  ? -1
+                  : undefined
+              }
             >
               <div className="tool-trace-head">
                 <span className="tool-trace-name">{trace.name}</span>
@@ -686,7 +729,12 @@ function PlanActionCard({
   const isCancelling = executingActionId === `cancel:${action.id}`;
 
   return (
-    <li className="action-item">
+    <li
+      className="action-item"
+      data-topbar-action-id={action.id}
+      data-topbar-anchor={action.status === "failed" ? "blocked_output" : undefined}
+      tabIndex={-1}
+    >
       <div className="action-header">
         <h4 className="action-title">{action.type}</h4>
         <span className={actionStatusBadgeClass(action.status)}>
@@ -811,6 +859,9 @@ export function InlinePlan({
   onApproveAll,
   onRejectAll,
   activeShellActionIds,
+  forceExpanded = false,
+  forcedExpandedActionId = null,
+  expandRequestKey = 0,
 }: {
   plan: OrchestrationPlan;
   messageId: string;
@@ -836,6 +887,9 @@ export function InlinePlan({
   onCancel: (messageId: string, actionId: string) => Promise<void>;
   onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
   onRejectAll: (messageId: string) => void;
+  forceExpanded?: boolean;
+  forcedExpandedActionId?: string | null;
+  expandRequestKey?: number;
 }) {
   const safePlan: OrchestrationPlan = {
     ...plan,
@@ -882,6 +936,19 @@ export function InlinePlan({
     }
     prevAllResolved.current = allResolved;
   }, [allResolved]);
+
+  useEffect(() => {
+    if (!forceExpanded && !forcedExpandedActionId) {
+      return;
+    }
+    if (
+      forcedExpandedActionId &&
+      !safePlan.proposedActions.some((action) => action.id === forcedExpandedActionId)
+    ) {
+      return;
+    }
+    setExpanded(true);
+  }, [expandRequestKey, forceExpanded, forcedExpandedActionId, safePlan.proposedActions]);
 
   const approvedCount = safePlan.proposedActions.filter(
     (action) => action.status === "completed",
@@ -930,6 +997,8 @@ export function InlinePlan({
   return (
     <div
       className={`inline-plan${allResolved && !expanded ? " inline-plan-collapsed" : ""}`}
+      data-topbar-anchor="plan"
+      tabIndex={-1}
     >
       <div
         onClick={() => setExpanded(!expanded)}
@@ -991,6 +1060,14 @@ export function InlinePlan({
               <li
                 key={step.id}
                 className={`plan-item plan-step plan-step-${step.status}${step.id === safePlan.activeStepId ? " is-active" : ""}`}
+                data-topbar-anchor={
+                  step.status === "blocked" || step.status === "failed"
+                    ? "blocked_output"
+                    : undefined
+                }
+                tabIndex={
+                  step.status === "blocked" || step.status === "failed" ? -1 : undefined
+                }
               >
                 <div className="plan-step-header">
                   <span className="plan-step-title">

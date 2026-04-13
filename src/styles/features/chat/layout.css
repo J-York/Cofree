@@ -66,6 +66,11 @@
   box-shadow: var(--shadow-md);
 }
 
+/* Keep the floating sidebar toggle from sitting on top of the topbar content. */
+.chat-layout .conversation-topbar {
+  padding-left: 52px;
+}
+
 /* ── Chat Thread ────────────────────────────────────────── */
 .chat-thread {
   flex: 1;

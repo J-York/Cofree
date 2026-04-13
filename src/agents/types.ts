@@ -49,68 +49,8 @@ export interface PlannerOutput {
   architectureNotes?: string;
 }
 
-export interface CoderOutput {
-  changedFiles: string[];
-  summary: string;
-  implementationNotes?: string;
-  knownIssues?: string[];
-}
-
-export interface TesterOutput {
-  testPlan: Array<{
-    testCase: string;
-    steps: string[];
-    expectedResult: string;
-    actualResult?: string;
-    passed?: boolean;
-  }>;
-  riskLevel: "low" | "medium" | "high";
-  coverageGaps?: string[];
-}
-
-export interface DebuggerOutput {
-  hypotheses: Array<{
-    description: string;
-    evidence: string;
-    status: "confirmed" | "rejected" | "pending";
-  }>;
-  rootCause?: string;
-  fix?: string;
-}
-
-export interface ReviewOutput {
-  /** When present, `request_changes` signals the team executor to treat the stage as partial. */
-  overallAssessment?: string;
-  dimensions: {
-    correctness: { score: number; reasoning: string };
-    security: { score: number; reasoning: string };
-    maintainability: { score: number; reasoning: string };
-    consistency: { score: number; reasoning: string };
-  };
-  issues: Array<{
-    severity: "blocker" | "warning" | "suggestion";
-    file: string;
-    line?: number;
-    message: string;
-  }>;
-}
-
-/** @deprecated Use ReviewOutput */
-export type ReviewerOutput = ReviewOutput;
-
-export interface VerifierOutput {
-  commands: Array<{ cmd: string; exitCode: number; passed: boolean }>;
-  allPassed: boolean;
-  failureSummary: string;
-}
-
 export type StructuredSubAgentOutput =
-  | { role: "planner"; data: PlannerOutput }
-  | { role: "coder"; data: CoderOutput }
-  | { role: "tester"; data: TesterOutput }
-  | { role: "debugger"; data: DebuggerOutput }
-  | { role: "reviewer"; data: ReviewOutput }
-  | { role: "verifier"; data: VerifierOutput };
+  | { role: "planner"; data: PlannerOutput };
 
 // ---------------------------------------------------------------------------
 // Sub-agent completion status and feedback (Phase 3)

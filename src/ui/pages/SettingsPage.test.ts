@@ -95,8 +95,8 @@ describe("WorkspaceTeamTrustModeField", () => {
 
     expect(select.props.value).toBe("");
     expect(select.props.disabled).toBe(false);
-    expect(collectText(tree)).toContain("专家团执行模式");
-    expect(collectText(tree)).toContain("未设置（首次使用时询问）");
+    expect(collectText(tree)).toContain("编排执行模式");
+    expect(collectText(tree)).toContain("未设置（首次进入编排时询问）");
   });
 
   it("shows the saved team_yolo mode and forwards changes", () => {

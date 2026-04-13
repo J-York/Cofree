@@ -134,6 +134,10 @@ export interface SubAgentProgressMeta {
   stageLabel?: string;
   agentRole?: string;
   sourceLabel?: string;
+  currentStageIndex?: number;
+  totalStages?: number;
+  completedStageCount?: number;
+  activeParallelCount?: number;
 }
 
 export type SubAgentProgressEvent = (

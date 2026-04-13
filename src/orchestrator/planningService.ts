@@ -77,14 +77,6 @@ import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { assembleSystemPrompt, assembleRuntimeContext, classifyTaskType } from "../agents/promptAssembly";
 import { tryExtractStructuredOutput, tryExtractFeedback } from "../agents/structuredOutput";
 import { runWithConcurrencyLimit } from "../lib/concurrency";
-import {
-  BUILTIN_TEAMS,
-  isTeamAllowedForRoles,
-  listTeamIdsAllowedForRoles,
-  resolveTeamId,
-} from "../agents/agentTeam";
-import { executeAgentTeam } from "./teamExecutor";
-import { countRepairStages, decideTeamRouting } from "./teamRouting";
 import type { ChatContextAttachment } from "../lib/contextAttachments";
 import {
   collectRelevantFilePaths,
@@ -107,16 +99,6 @@ import {
   type AskUserRequest,
 } from "./askUserService";
 import {
-  globalToolCache,
-  extractFileDependencies,
-} from "../lib/toolResultCache";
-import {
-  getPerformanceConfig,
-} from "../lib/performanceConfig";
-import {
-  globalMetricsTracker,
-} from "../lib/performanceMetrics";
-import {
   DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
   resolveShellExecutionMode,
   resolveShellReadyTimeoutMs,
@@ -129,9 +111,7 @@ import {
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
 
-// Performance configuration - updated for v0.0.9
-const perfConfig = getPerformanceConfig("default");
-const MAX_PARALLEL_SUB_AGENTS = perfConfig.maxParallelSubAgents; // Was 3, now 5
+const MAX_PARALLEL_SUB_AGENTS = 5;
 const MAX_LIST_ENTRIES = 120;
 const MAX_FILE_PREVIEW_CHARS = 15000;
 const MAX_TOOL_RESULT_PREVIEW = 400;
@@ -1454,11 +1434,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           role: {
             type: "string",
             enum: ["planner", "coder", "tester"],
-            description: "The role of the sub-agent to delegate to. Required unless 'team' is provided.",
-          },
-          team: {
-            type: "string",
-            description: "Optional ID of a predefined Agent Team to execute. If provided, overrides 'role'.",
+            description: "The role of the sub-agent to delegate to.",
           },
           description: {
             type: "string",
@@ -1904,8 +1880,6 @@ function buildAgentToolDefs(runtime: ResolvedAgentRuntime): LiteLLMToolDefinitio
     }
     if (td.function.name !== "task") return td;
     if (allowedRoles.length === 0) return null;
-    const teamIds = listTeamIdsAllowedForRoles(allowedRoles);
-    const baseTeamProp = (td.function.parameters as any).properties.team;
     return {
       ...td,
       function: {
@@ -1917,10 +1891,6 @@ function buildAgentToolDefs(runtime: ResolvedAgentRuntime): LiteLLMToolDefinitio
             role: {
               ...(td.function.parameters as any).properties.role,
               enum: [...allowedRoles],
-            },
-            team: {
-              ...baseTeamProp,
-              ...(teamIds.length > 0 ? { enum: teamIds } : {}),
             },
           },
         },
@@ -2359,7 +2329,7 @@ async function requestSummary(
       return `[片段 ${chunkIndex + 1}/${chunks.length}]\n${chunkContent.slice(0, 500)}...`;
     });
 
-    const MAX_PARALLEL_SUMMARY_CHUNKS = perfConfig.maxParallelSummaryChunks; // Was 3, now 5
+    const MAX_PARALLEL_SUMMARY_CHUNKS = 5;
     const settledResults = await runWithConcurrencyLimit(chunkTasks, MAX_PARALLEL_SUMMARY_CHUNKS);
     const chunkSummaries: string[] = settledResults.map((result, idx) => {
       if (result.status === "fulfilled") {
@@ -3152,9 +3122,6 @@ async function autoExecutePatchProposal(params: {
     ...(params.autoApprovalMeta ?? {}),
   };
   if (applyResult.success) {
-    // Invalidate cache for affected files
-    globalToolCache.invalidate("file_change", applyResult.files);
-
     const diagnostics = await fetchPostPatchDiagnostics(
       params.workspacePath,
       applyResult.files
@@ -3220,11 +3187,6 @@ async function autoExecuteShellProposal(params: {
   }
 
   const cmdResult = deadlineResult.result;
-
-  // Invalidate cache for git operations
-  if (cmdResult.success && params.shell.trim().startsWith("git ")) {
-    globalToolCache.invalidate("git_operation");
-  }
 
   return {
     content: JSON.stringify({
@@ -3632,7 +3594,6 @@ export async function executeSubAgentTask(
     "你正在执行一个被委派的子任务。请专注于完成任务并返回结果。",
     "完成任务后，请简洁地汇报结果。不要提出超出任务范围的额外建议。",
     "严禁输出伪工具调用标签。回复语言与任务描述保持一致。",
-    agentDef.outputSchemaHint ? `\n${agentDef.outputSchemaHint}` : "",
     [
       "\n如果你发现任务描述不够清晰或缺少必要信息，请在回复中使用以下 JSON 格式标记：",
       '```json',
@@ -3743,27 +3704,14 @@ export async function executeSubAgentTask(
       }
       console.log(`[SubAgent] 完成 | turns=${turn + 1}`);
       const finalReply = completion.assistantMessage.content.trim();
-      const structuredOutput = tryExtractStructuredOutput(role as SubAgentRole, finalReply);
+      const structuredOutput = tryExtractStructuredOutput(role, finalReply);
       if (structuredOutput) {
         console.log(`[SubAgent] 提取到结构化输出 | role=${structuredOutput.role}`);
       }
       const feedbackResult = tryExtractFeedback(finalReply);
-      let resolvedStatus: SubAgentCompletionStatus = feedbackResult?.status ?? "completed";
+      const resolvedStatus: SubAgentCompletionStatus = feedbackResult?.status ?? "completed";
       if (feedbackResult) {
         console.log(`[SubAgent] 提取到反馈 | status=${resolvedStatus} | reason=${feedbackResult.feedback?.reason}`);
-      }
-      // Reviewer / tester structured signals drive Team conditions (if_issues_from_stage, etc.)
-      if (!feedbackResult && structuredOutput && resolvedStatus === "completed") {
-        if (structuredOutput.role === "reviewer") {
-          const d = structuredOutput.data;
-          if (d.overallAssessment === "request_changes" || d.issues.length > 0) {
-            resolvedStatus = "partial";
-          }
-        } else if (structuredOutput.role === "tester") {
-          if (structuredOutput.data.testPlan.some((tc) => tc.passed === false)) {
-            resolvedStatus = "partial";
-          }
-        }
       }
       return {
         reply: finalReply,
@@ -4044,30 +3992,6 @@ async function executeToolCall(
     };
   }
 
-  // --- Performance: Check tool result cache ---
-  const toolName = call.function.name;
-  const cacheableTools = new Set([
-    "read_file", "list_files", "git_status", "git_diff",
-    "diagnostics", "grep", "glob",
-  ]);
-
-  if (perfConfig.enableToolCache && cacheableTools.has(toolName)) {
-    const startTime = Date.now();
-    const cached = globalToolCache.get(toolName, args);
-    if (cached) {
-      const executionTime = Date.now() - startTime;
-      globalMetricsTracker.recordToolExecution(toolName, executionTime, true);
-      console.log(`[Cache] HIT for ${toolName}:`, JSON.stringify(args).slice(0, 80));
-      return {
-        content: cached,
-        success: true,
-        fromCache: true,
-      };
-    }
-  }
-
-  const toolExecutionStart = Date.now();
-
   try {
     if (call.function.name === "list_files") {
       const relativePath = normalizeRelativePath(args.relative_path);
@@ -4086,16 +4010,6 @@ async function executeToolCall(
         entry_count: entries.length,
         entries_preview: renderListEntries(entries),
       });
-
-      // Store in cache
-      if (perfConfig.enableToolCache) {
-        const dependencies = extractFileDependencies(toolName, args);
-        globalToolCache.set(toolName, args, resultContent, dependencies);
-      }
-
-      // Track metrics
-      const executionTime = Date.now() - toolExecutionStart;
-      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
 
       return {
         content: resultContent,
@@ -4190,16 +4104,6 @@ async function executeToolCall(
           : {}),
       });
 
-      // Store in cache (only for full file reads without line ranges)
-      if (perfConfig.enableToolCache && !startLine && !endLine) {
-        const dependencies = extractFileDependencies(toolName, args);
-        globalToolCache.set(toolName, args, resultContent, dependencies);
-      }
-
-      // Track metrics
-      const executionTime = Date.now() - toolExecutionStart;
-      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
-
       return {
         content: resultContent,
         success: true,
@@ -4221,15 +4125,6 @@ async function executeToolCall(
         ...status,
       });
 
-      // Store in cache
-      if (perfConfig.enableToolCache) {
-        globalToolCache.set(toolName, args, resultContent);
-      }
-
-      // Track metrics
-      const executionTime = Date.now() - toolExecutionStart;
-      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
-
       return {
         content: resultContent,
         success: true,
@@ -4249,15 +4144,6 @@ async function executeToolCall(
         diff_preview: smartTruncate(diff, MAX_FILE_PREVIEW_CHARS),
         truncated: diff.length > MAX_FILE_PREVIEW_CHARS,
       });
-
-      // Store in cache
-      if (perfConfig.enableToolCache) {
-        globalToolCache.set(toolName, args, resultContent);
-      }
-
-      // Track metrics
-      const executionTime = Date.now() - toolExecutionStart;
-      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
 
       return {
         content: resultContent,
@@ -4307,16 +4193,6 @@ async function executeToolCall(
         matches_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
       });
 
-      // Store in cache
-      if (perfConfig.enableToolCache) {
-        const dependencies = extractFileDependencies(toolName, args);
-        globalToolCache.set(toolName, args, resultContent, dependencies);
-      }
-
-      // Track metrics
-      const executionTime = Date.now() - toolExecutionStart;
-      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
-
       return {
         content: resultContent,
         success: true,
@@ -4358,16 +4234,6 @@ async function executeToolCall(
         file_count: entries.length,
         files_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
       });
-
-      // Store in cache
-      if (perfConfig.enableToolCache) {
-        const dependencies = extractFileDependencies(toolName, args);
-        globalToolCache.set(toolName, args, resultContent, dependencies);
-      }
-
-      // Track metrics
-      const executionTime = Date.now() - toolExecutionStart;
-      globalMetricsTracker.recordToolExecution(toolName, executionTime, false);
 
       return {
         content: resultContent,
@@ -5125,10 +4991,9 @@ async function executeToolCall(
 
     if (call.function.name === "task") {
       const role = asString(args.role).trim();
-      const teamId = asString(args.team).trim();
       const description = asString(args.description).trim();
-      if (!role && !teamId) {
-        const message = "role 和 team 不能同时为空";
+      if (!role) {
+        const message = "role 不能为空";
         return {
           content: JSON.stringify({ error: message }),
           success: false,
@@ -5146,141 +5011,6 @@ async function executeToolCall(
         };
       }
 
-      if (teamId) {
-        const resolvedTeamId = resolveTeamId(teamId);
-        const teamDef = BUILTIN_TEAMS.find((t) => t.id === resolvedTeamId);
-        if (!teamDef) {
-          const validTeams = BUILTIN_TEAMS.map((t) => t.id).join(", ");
-          const message = `无效的 Team ID: "${teamId}"。可用团队: ${validTeams}`;
-          return {
-            content: JSON.stringify({ error: message }),
-            success: false,
-            errorCategory: "validation",
-            errorMessage: message,
-          };
-        }
-        // P0-2: Validate all team stage roles against allowedSubAgents
-        if (
-          allowedSubAgents !== undefined &&
-          !isTeamAllowedForRoles(teamDef, allowedSubAgents)
-        ) {
-          const allowedSet = new Set<string>(allowedSubAgents);
-          const unauthorizedRoles = teamDef.pipeline
-            .map((stage) => stage.agentRole)
-            .filter((role) => !allowedSet.has(role));
-          const message = `Team "${teamId}" 包含未授权角色: [${[...new Set(unauthorizedRoles)].join(", ")}]。` +
-            `当前 Agent 的允许角色: [${allowedSubAgents.join(", ")}]`;
-          console.warn(`[Planning][P0-2] ${message}`);
-          return {
-            content: JSON.stringify({ error: message }),
-            success: false,
-            errorCategory: "permission",
-            errorMessage: message,
-          };
-        }
-        if (!settings) {
-          const message = "task 工具需要 settings 上下文，当前调用缺少 settings";
-          return {
-            content: JSON.stringify({ error: message }),
-            success: false,
-            errorCategory: "validation",
-            errorMessage: message,
-          };
-        }
-
-        const teamResult = await executeAgentTeam({
-          team: teamDef,
-          taskDescription: description,
-          workspacePath: safeWorkspace,
-          settings,
-          toolPermissions,
-          workingMemory,
-          focusedPaths,
-          onStageProgress: (stage, event) => {
-            const stageRole = teamDef.pipeline.find((candidate) => candidate.stageLabel === stage)?.agentRole;
-            const resolvedRole = stageRole ?? event.agentRole;
-            onSubAgentProgress?.({
-              ...event,
-              teamId: resolvedTeamId,
-              stageLabel: stage,
-              ...(resolvedRole !== undefined ? { agentRole: resolvedRole } : {}),
-              sourceLabel: `${resolvedTeamId} · ${stage}`,
-            });
-          },
-          signal
-        });
-
-        // P1-2 & P1-3: Return full team execution details with correct success/failure mapping
-        const teamIsSuccess = teamResult.status === "completed" || teamResult.status === "partial";
-        const allTeamActions: ActionProposal[] = [];
-        const allTeamToolTraces: ToolExecutionTrace[] = [];
-        const teamStructuredOutputs: Record<string, unknown> = {};
-        const teamFeedbackEntries: Record<string, unknown> = {};
-
-        for (const [stageLabel, stageRes] of Object.entries(teamResult.stageResults)) {
-          if (stageRes.proposedActions?.length) {
-            allTeamActions.push(
-              ...stageRes.proposedActions.map((action) => ({
-                ...action,
-                origin: "team_stage" as const,
-                originDetail: `${resolvedTeamId} / ${stageLabel}`,
-              })),
-            );
-          }
-          if (stageRes.toolTrace?.length) {
-            allTeamToolTraces.push(...stageRes.toolTrace);
-          }
-          if (stageRes.structuredOutput) {
-            teamStructuredOutputs[stageLabel] = stageRes.structuredOutput;
-          }
-          if (stageRes.feedback) {
-            teamFeedbackEntries[stageLabel] = stageRes.feedback;
-          }
-        }
-
-        const routing = decideTeamRouting({
-          teamId: resolvedTeamId,
-          repairRoundsUsed: countRepairStages(teamResult.stageResults),
-          stopReason: teamResult.stopReason,
-        });
-
-        const responsePayload: Record<string, unknown> = {
-          ok: teamResult.status === "completed",
-          action_type: "team_task",
-          team: resolvedTeamId,
-          status: teamResult.status,
-          completionStatus: teamResult.status,
-          stop_reason: teamResult.stopReason,
-          next_recommended_action: teamResult.nextRecommendedAction ?? null,
-          repair_rounds_used: countRepairStages(teamResult.stageResults),
-          routing_mode: routing.mode,
-          reply: teamResult.finalReply,
-          stage_results: Object.fromEntries(
-            Object.entries(teamResult.stageResults).map(([k, v]) => [k, {
-              status: v.status,
-              reply: v.reply.slice(0, 500),
-              proposed_action_count: v.proposedActions?.length ?? 0,
-              tool_call_count: v.toolTrace?.length ?? 0,
-            }])
-          ),
-          child_action_count: allTeamActions.length,
-          child_failure_count: allTeamToolTraces.filter((t) => t.status === "failed").length,
-          structured_outputs: Object.keys(teamStructuredOutputs).length > 0 ? teamStructuredOutputs : null,
-          feedback: Object.keys(teamFeedbackEntries).length > 0 ? teamFeedbackEntries : null,
-        };
-        const result: ToolExecutionResult = {
-          content: JSON.stringify(responsePayload),
-          success: teamIsSuccess,
-          completionStatus: teamResult.status === "completed" ? "completed"
-            : teamResult.status === "partial" ? "partial" : "failed",
-        };
-        // P1-1: Return all proposed actions from team stages
-        if (allTeamActions.length > 0) {
-          result.proposedActions = allTeamActions;
-          result.proposedAction = allTeamActions[0];
-        }
-        return result;
-      }
       const validRoles: string[] = allowedSubAgents !== undefined
         ? [...allowedSubAgents]
         : DEFAULT_AGENTS.filter((agent) => agent.allowAsSubAgent).map((agent) => agent.role);
@@ -6992,7 +6722,7 @@ async function runNativeToolCallingLoop(
       "web_search", "web_fetch",
       "check_shell_job",
     ]);
-    const MAX_PARALLEL_READ_TOOLS = perfConfig.maxParallelReadTools; // Was 5, now 15
+    const MAX_PARALLEL_READ_TOOLS = 15;
 
     const taskCalls = completion.toolCalls.filter((tc) => tc.function.name === "task");
     const readOnlyCalls = completion.toolCalls.filter(

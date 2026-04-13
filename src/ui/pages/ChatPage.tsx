@@ -1,9 +1,9 @@
 import {
-  memo,
   type ReactElement,
   type RefObject,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -83,16 +83,13 @@ import { resolveApprovalAskUserDecision } from "./chat/approvalGuard";
 import { WorkspaceTeamTrustDialog } from "./chat/WorkspaceTeamTrustDialog";
 import {
   buildWorkspaceTeamTrustPromptKey,
-  collectPendingExpertTeamActionIds,
+  collectPendingOrchestrationActionIds,
   resolveWorkspaceTeamTrustMessageAction,
 } from "./chat/teamTrust";
 import {
   readLLMAuditRecords,
   readSensitiveActionAuditRecords,
 } from "../../lib/auditLog";
-import {
-  formatTime,
-} from "../utils/chatUtils";
 import {
   approveAction,
   approveAllPendingActions,
@@ -148,15 +145,28 @@ import {
   type ChatViewState,
 } from "./chat/sessionState";
 import {
-  MessageContent,
-  LiveToolStatus,
-  AssistantToolCalls,
   ContextAttachmentPills,
-  SubAgentStatusPanel,
-  ToolTracePanel,
-  InlinePlan,
   TokenUsageRing,
 } from "./chat/ChatPresentational";
+import { type ConversationTopbarAction } from "./chat/ConversationTopbar";
+import { ChatThreadSection } from "./chat/ChatThreadSection";
+import {
+  buildDraftConversationBindingUpdate,
+  resolveConversationAssistantDisplayName,
+} from "./chat/conversationAgentDisplay";
+import {
+  focusTopbarTarget,
+  resolveTopbarTargetElement,
+  scrollThreadTargetIntoView,
+} from "./chat/conversationTopbarDom";
+import {
+  resolveConversationTopbarTarget,
+  type ConversationTopbarTarget,
+} from "./chat/conversationTopbarNavigation";
+import {
+  deriveConversationTopbarState,
+  type ConversationTopbarState,
+} from "./chat/conversationTopbarState";
 import {
   buildExecutionSettings,
   createConversationAgentBinding,
@@ -245,310 +255,130 @@ const DEBUG_LOG_MAX_CONTENT_CHARS = 2000;
 const DEBUG_LOG_HISTORY_LIMIT = 18;
 const DEBUG_EXPORT_HISTORY_LIMIT = 200;
 const shellOutputTextEncoder = new TextEncoder();
-const EMPTY_LIVE_TOOL_CALLS: LiveToolCall[] = [];
-const EMPTY_SUB_AGENT_STATUS: SubAgentStatusItem[] = [];
 const TEAM_YOLO_APPROVAL_CONTEXT: ManualApprovalContext = {
   approvalMode: "workspace_team_yolo",
 };
+const CHECKPOINT_RESTORE_SESSION_NOTE = "已从 checkpoint 恢复审批状态";
+const CHECKPOINT_RESTORE_MESSAGE = "已从审批点恢复上一轮工作流状态。";
 
-/** Strip leading `[team-id]` prefix for one-line expert-stage summaries. */
-function compactExpertPanelLabel(fullLabel: string): string {
-  const trimmed = fullLabel.trim();
-  const idx = trimmed.indexOf("] ");
-  if (idx >= 0 && trimmed.startsWith("[")) {
-    return trimmed.slice(idx + 2).trim();
-  }
-  return trimmed;
-}
-const EMPTY_SHELL_ACTION_IDS: string[] = [];
-const DEFAULT_CHAT_SUGGESTIONS = [
-  { prompt: "帮我分析一下这个项目的代码结构", label: "分析代码结构" },
-  { prompt: "帮我查找并修复代码中的问题", label: "查找问题" },
-  { prompt: "帮我写一个新功能", label: "新功能开发" },
-  { prompt: "帮我优化这个项目的性能", label: "性能优化" },
-];
-
-interface ChatMessageRowProps {
-  message: ChatMessageRecord;
-  assistantDisplayName: string;
-  debugMode: boolean;
-  showStreamingStatus: boolean;
-  liveToolCalls: LiveToolCall[];
-  subAgentStatus: SubAgentStatusItem[];
-  executingActionId: string;
-  getActiveShellActionIds: (messageId: string) => string[];
-  onPlanUpdate: (
-    messageId: string,
-    updater: (plan: OrchestrationPlan) => OrchestrationPlan,
-  ) => void;
-  onApprove: (
-    messageId: string,
-    actionId: string,
-    plan: OrchestrationPlan,
-    rememberOption?: ApprovalRuleOption,
-  ) => Promise<void>;
-  onRetry: (
-    messageId: string,
-    actionId: string,
-    plan: OrchestrationPlan,
-  ) => Promise<void>;
-  onReject: (messageId: string, actionId: string) => void;
-  onComment: (messageId: string, actionId: string) => void;
-  onCancel: (messageId: string, actionId: string) => Promise<void>;
-  onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
-  onRejectAll: (messageId: string) => void;
-}
-
-const ChatMessageRow = memo(function ChatMessageRow({
-  message,
-  assistantDisplayName,
-  debugMode,
-  showStreamingStatus,
-  liveToolCalls,
-  subAgentStatus,
-  executingActionId,
-  getActiveShellActionIds,
-  onPlanUpdate,
-  onApprove,
-  onRetry,
-  onReject,
-  onComment,
-  onCancel,
-  onApproveAll,
-  onRejectAll,
-}: ChatMessageRowProps): ReactElement {
-  const activeShellActionIds = message.plan
-    ? getActiveShellActionIds(message.id)
-    : EMPTY_SHELL_ACTION_IDS;
-  const hasPlan =
-    message.plan !== null &&
-    (message.plan.proposedActions.length > 0 || message.plan.steps.length > 0);
-
-  const isExpertStageTurn =
-    message.role === "assistant" && Boolean(message.assistantSpeaker);
-
-  const assistantMetaLabel =
-    message.role === "assistant" && message.assistantSpeaker?.label
-      ? message.assistantSpeaker.label
-      : assistantDisplayName;
-  const assistantAvatarLetter =
-    message.role === "assistant"
-      ? isExpertStageTurn
-        ? "专"
-        : (message.assistantSpeaker?.label ?? assistantDisplayName).charAt(0)
-      : "U";
-
-  const timeSuffix = formatTime(message.createdAt)
-    ? ` · ${formatTime(message.createdAt)}`
-    : "";
-
+function hasVisibleAssistantPlan(message: ChatMessageRecord): message is ChatMessageRecord & {
+  plan: OrchestrationPlan;
+} {
   return (
-    <div
-      className={`chat-row ${message.role}${
-        message.assistantSpeaker ? " chat-row-expert-turn" : ""
-      }`}
-    >
-      <div className={`chat-avatar ${message.role}`}>
-        {message.role === "user" ? "U" : assistantAvatarLetter}
-      </div>
-      <div className="chat-bubble-wrap">
-        {isExpertStageTurn && message.assistantSpeaker ? (
-          <details className="chat-expert-stage-details">
-            <summary className="chat-expert-stage-summary">
-              <span className="chat-expert-stage-summary-main">
-                {compactExpertPanelLabel(message.assistantSpeaker.label)}
-                {timeSuffix}
-              </span>
-              <span className="chat-expert-stage-summary-action" aria-hidden>
-                <span className="chat-expert-stage-expand-label">展开</span>
-                <span className="chat-expert-stage-collapse-label">收起</span>
-              </span>
-            </summary>
-            <div className="chat-bubble assistant chat-expert-stage-body">
-              <MessageContent
-                content={message.content}
-                isStreaming={false}
-                role="assistant"
-              />
-            </div>
-          </details>
-        ) : (
-          <>
-            <p className="chat-meta">
-              {message.role === "user" ? "你" : assistantMetaLabel}
-              {formatTime(message.createdAt) ? timeSuffix : ""}
-            </p>
-            {message.role === "assistant" && debugMode && (
-              <AssistantToolCalls toolCalls={message.tool_calls} />
-            )}
-            {message.role === "assistant" &&
-              showStreamingStatus &&
-              liveToolCalls.length > 0 && (
-                <LiveToolStatus calls={liveToolCalls} />
-              )}
-            {message.role === "assistant" &&
-              showStreamingStatus &&
-              subAgentStatus.length > 0 && (
-                <SubAgentStatusPanel items={subAgentStatus} />
-              )}
-            {message.role === "assistant" && (message.toolTrace?.length ?? 0) > 0 && (
-              <ToolTracePanel traces={message.toolTrace!} />
-            )}
-            {hasPlan && message.plan && (
-              <InlinePlan
-                plan={message.plan}
-                messageId={message.id}
-                executingActionId={executingActionId}
-                activeShellActionIds={activeShellActionIds}
-                onPlanUpdate={onPlanUpdate}
-                onApprove={onApprove}
-                onRetry={onRetry}
-                onReject={onReject}
-                onComment={onComment}
-                onCancel={onCancel}
-                onApproveAll={onApproveAll}
-                onRejectAll={onRejectAll}
-              />
-            )}
-            <div className={`chat-bubble ${message.role}`}>
-              {message.role === "user" && (
-                <ContextAttachmentPills
-                  attachments={message.contextAttachments ?? []}
-                  compact
-                />
-              )}
-              <MessageContent
-                content={message.content}
-                isStreaming={
-                  showStreamingStatus &&
-                  message.content === "" &&
-                  message.role === "assistant"
-                }
-                role={message.role}
-              />
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+    message.role === "assistant" &&
+    message.plan !== null &&
+    (message.plan.proposedActions.length > 0 || message.plan.steps.length > 0)
   );
-});
+}
 
-interface ChatThreadSectionProps {
-  threadRef: RefObject<HTMLDivElement | null>;
-  onThreadScroll: () => void;
+function findLatestVisibleAssistantPlanMessage(
+  messages: ChatMessageRecord[],
+): (ChatMessageRecord & { plan: OrchestrationPlan }) | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]!;
+    if (hasVisibleAssistantPlan(message)) {
+      return message;
+    }
+  }
+  return null;
+}
+
+function hasWaitingUserToolTrace(message: ChatMessageRecord): boolean {
+  return message.toolTrace?.some((trace) => trace.status === "waiting_for_user") ?? false;
+}
+
+function hasWaitingUserLiveToolCall(calls: LiveToolCall[]): boolean {
+  return calls.some((call) => call.status === "waiting_for_user");
+}
+
+function findLatestAskUserAnchorMessageId(params: {
   messages: ChatMessageRecord[];
-  assistantDisplayName: string;
-  assistantDescription: string;
-  debugMode: boolean;
+  lastVisibleMessage: ChatMessageRecord | undefined;
   isStreaming: boolean;
   liveToolCalls: LiveToolCall[];
-  subAgentStatus: SubAgentStatusItem[];
-  executingActionId: string;
-  getActiveShellActionIds: (messageId: string) => string[];
-  onPlanUpdate: (
-    messageId: string,
-    updater: (plan: OrchestrationPlan) => OrchestrationPlan,
-  ) => void;
-  onApprove: (
-    messageId: string,
-    actionId: string,
-    plan: OrchestrationPlan,
-    rememberOption?: ApprovalRuleOption,
-  ) => Promise<void>;
-  onRetry: (
-    messageId: string,
-    actionId: string,
-    plan: OrchestrationPlan,
-  ) => Promise<void>;
-  onReject: (messageId: string, actionId: string) => void;
-  onComment: (messageId: string, actionId: string) => void;
-  onCancel: (messageId: string, actionId: string) => Promise<void>;
-  onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
-  onRejectAll: (messageId: string) => void;
-  onSuggestionClick: (text: string) => void;
+  hasAskUserPending: boolean;
+}): string | null {
+  const {
+    messages,
+    lastVisibleMessage,
+    isStreaming,
+    liveToolCalls,
+    hasAskUserPending,
+  } = params;
+  if (!hasAskUserPending) {
+    return null;
+  }
+  if (
+    isStreaming &&
+    lastVisibleMessage?.role === "assistant" &&
+    hasWaitingUserLiveToolCall(liveToolCalls)
+  ) {
+    return lastVisibleMessage.id;
+  }
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]!;
+    if (message.role !== "assistant") {
+      continue;
+    }
+    if (hasWaitingUserToolTrace(message)) {
+      return message.id;
+    }
+  }
+  return null;
 }
 
-const ChatThreadSection = memo(function ChatThreadSection({
-  threadRef,
-  onThreadScroll,
-  messages,
-  assistantDisplayName,
-  assistantDescription,
-  debugMode,
-  isStreaming,
-  liveToolCalls,
-  subAgentStatus,
-  executingActionId,
-  getActiveShellActionIds,
-  onPlanUpdate,
-  onApprove,
-  onRetry,
-  onReject,
-  onComment,
-  onCancel,
-  onApproveAll,
-  onRejectAll,
-  onSuggestionClick,
-}: ChatThreadSectionProps): ReactElement {
-  const visibleMessages = messages.filter((message) => message.role !== "tool");
-  const lastMessage = messages[messages.length - 1];
+function findLatestRestoreAnchorMessageId(
+  messages: ChatMessageRecord[],
+  hasRestoreNotice: boolean,
+): string | null {
+  if (!hasRestoreNotice) {
+    return null;
+  }
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]!;
+    if (
+      message.role === "assistant" &&
+      message.content.trim() === CHECKPOINT_RESTORE_MESSAGE
+    ) {
+      return message.id;
+    }
+  }
+  return null;
+}
 
-  return (
-    <div className="chat-thread" ref={threadRef} onScroll={onThreadScroll}>
-      {visibleMessages.length === 0 ? (
-        <div className="chat-empty">
-          <p className="chat-empty-text">你好，我是{assistantDisplayName}</p>
-          <p className="chat-empty-subtext">{assistantDescription}</p>
-          <div className="chat-suggestions">
-            {DEFAULT_CHAT_SUGGESTIONS.map((suggestion) => (
-              <button
-                key={suggestion.prompt}
-                className="chat-suggestion-chip"
-                onClick={() => onSuggestionClick(suggestion.prompt)}
-                type="button"
-              >
-                {suggestion.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : (
-        visibleMessages.map((message) => {
-          const showStreamingStatus =
-            isStreaming &&
-            message.role === "assistant" &&
-            message === lastMessage;
-
-          return (
-            <ChatMessageRow
-              key={message.id}
-              message={message}
-              assistantDisplayName={assistantDisplayName}
-              debugMode={debugMode}
-              showStreamingStatus={showStreamingStatus}
-              liveToolCalls={showStreamingStatus ? liveToolCalls : EMPTY_LIVE_TOOL_CALLS}
-              subAgentStatus={showStreamingStatus ? subAgentStatus : EMPTY_SUB_AGENT_STATUS}
-              executingActionId={message.plan ? executingActionId : ""}
-              getActiveShellActionIds={getActiveShellActionIds}
-              onPlanUpdate={onPlanUpdate}
-              onApprove={onApprove}
-              onRetry={onRetry}
-              onReject={onReject}
-              onComment={onComment}
-              onCancel={onCancel}
-              onApproveAll={onApproveAll}
-              onRejectAll={onRejectAll}
-            />
-          );
-        })
-      )}
-    </div>
-  );
-});
+function applyTopbarActionAvailability(
+  state: ConversationTopbarState,
+  targets: Map<ConversationTopbarAction, ConversationTopbarTarget | null>,
+): ConversationTopbarState {
+  return {
+    ...state,
+    badges: state.badges.map((badge) =>
+      badge.action
+        ? {
+            ...badge,
+            disabled: (targets.get(badge.action) ?? null) === null,
+          }
+        : badge,
+    ),
+    progress: state.progress.visible
+      ? {
+          ...state.progress,
+          disabled: (targets.get("progress") ?? null) === null,
+        }
+      : state.progress,
+    attention:
+      state.attention && state.attention.ctaAction
+        ? {
+            ...state.attention,
+            ctaDisabled: (targets.get(state.attention.ctaAction) ?? null) === null,
+          }
+        : state.attention,
+  };
+}
 
 interface ChatComposerSectionProps {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
+  contextAnchorRef: RefObject<HTMLDivElement | null>;
   prompt: string;
   chatBlocked: boolean;
   composerAttachments: ChatContextAttachment[];
@@ -578,6 +408,7 @@ interface ChatComposerSectionProps {
 
 function ChatComposerSection({
   textareaRef,
+  contextAnchorRef,
   prompt,
   chatBlocked,
   composerAttachments,
@@ -618,7 +449,12 @@ function ChatComposerSection({
         void onSubmit();
       }}
     >
-      <div className="chat-input-box">
+      <div
+        className="chat-input-box"
+        data-topbar-anchor="context"
+        ref={contextAnchorRef}
+        tabIndex={-1}
+      >
         <ContextAttachmentPills
           attachments={composerAttachments}
           onRemove={onRemoveComposerAttachment}
@@ -967,9 +803,13 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
   const lastPromptRef = useRef<string>("");
   const lastContextAttachmentsRef = useRef<ChatContextAttachment[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
+  const contextAnchorRef = useRef<HTMLDivElement | null>(null);
   const shouldStickThreadToBottomRef = useRef(true);
   const forceThreadScrollRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [expandedPlanMessageId, setExpandedPlanMessageId] = useState<string | null>(null);
+  const [expandedPlanActionId, setExpandedPlanActionId] = useState<string | null>(null);
+  const [expandedPlanRequestKey, setExpandedPlanRequestKey] = useState(0);
 
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
   const backgroundStreamsRef = useRef(new Map<string, BackgroundStreamState>());
@@ -1499,6 +1339,20 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     saveConversation(wsPath, updatedConversation);
   }, [settings.activeModelId, settings.activeVendorId]);
 
+  useEffect(() => {
+    const updatedConversation = buildDraftConversationBindingUpdate({
+      conversation: currentConversation,
+      messageCount: messages.length,
+      nextBinding: createConversationAgentBinding(settings, activeAgent),
+    });
+    if (!updatedConversation) {
+      return;
+    }
+    setCurrentConversation(updatedConversation);
+    saveConversation(wsPath, updatedConversation);
+    setConversations(loadConversationList(wsPath));
+  }, [activeAgent, currentConversation, messages.length, settings, wsPath]);
+
   // React to workspace path changes: migrate, reload conversations
   const prevWsPathRef = useRef(wsPath);
   useEffect(() => {
@@ -1632,6 +1486,10 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
 
   const visibleMessages = messages.filter((message) => message.role !== "tool");
   const lastVisibleMessage = visibleMessages[visibleMessages.length - 1];
+  const activePlanMessage = findLatestVisibleAssistantPlanMessage(visibleMessages);
+  const activePlan = activePlanMessage?.plan ?? null;
+  const hasAskUserPending = askUserRequest !== null;
+  const hasRestoreNotice = sessionNote === CHECKPOINT_RESTORE_SESSION_NOTE;
   const latestPendingPlanMessage =
     [...visibleMessages]
       .reverse()
@@ -1642,7 +1500,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
           message.plan.proposedActions.some((action) => action.status === "pending"),
       ) ?? null;
   const latestPendingTeamActionIds = latestPendingPlanMessage?.plan
-    ? collectPendingExpertTeamActionIds(latestPendingPlanMessage.plan)
+    ? collectPendingOrchestrationActionIds(latestPendingPlanMessage.plan)
     : [];
   const latestPendingTeamTargetKey =
     latestPendingPlanMessage && latestPendingTeamActionIds.length > 0
@@ -1939,7 +1797,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       return;
     }
 
-    if (collectPendingExpertTeamActionIds(promptMessage.plan).length === 0) {
+    if (collectPendingOrchestrationActionIds(promptMessage.plan).length === 0) {
       setWorkspaceTeamTrustPrompt(null);
     }
   }, [
@@ -3860,13 +3718,13 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     mode: WorkspaceTeamTrustMode,
   ): void => {
     if (!wsPath.trim()) {
-      setSessionNote("未选择工作区，无法保存专家团执行模式。");
+      setSessionNote("未选择工作区，无法保存编排执行模式。");
       return;
     }
 
     const saved = saveWorkspaceTeamTrustMode(wsPath, mode);
     if (!saved) {
-      setSessionNote("保存当前工作区的专家团执行模式失败。");
+      setSessionNote("保存当前工作区的编排执行模式失败。");
       return;
     }
 
@@ -3878,8 +3736,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     workspaceTeamYoloExecutionKeyRef.current = null;
     setSessionNote(
       mode === "team_yolo"
-        ? "已为当前工作区启用专家团 YOLO 模式"
-        : "当前工作区将继续使用专家团审批模式",
+        ? "已为当前工作区启用编排 YOLO 模式"
+        : "当前工作区将继续使用编排审批模式",
     );
   };
 
@@ -3924,7 +3782,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         };
       });
       if (workspaceTeamTrustPrompt?.key !== messageAction.promptKey) {
-        setSessionNote("当前工作区首次使用专家团，请先选择执行模式。");
+        setSessionNote("当前工作区首次进入编排模式，请先选择执行模式。");
       }
       return;
     }
@@ -3962,7 +3820,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     workspaceTeamYoloExecutionKeyRef.current = executionKey;
     promptApprovedTeamTargetKeyRef.current = null;
     setSessionNote(
-      `专家团 YOLO 已自动开始 ${messageAction.teamActionIds.length} 个动作`,
+      `编排 YOLO 已自动开始 ${messageAction.teamActionIds.length} 个动作`,
     );
     void handleApproveAllActionsThreadRef.current(
       messageAction.messageId,
@@ -3976,7 +3834,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       workspaceTeamYoloExecutionKeyRef.current = null;
       setCategorizedError(classifyError(error));
       setSessionNote(
-        `专家团 YOLO 自动执行失败：${error instanceof Error ? error.message : "未知错误"}`,
+        `编排 YOLO 自动执行失败：${error instanceof Error ? error.message : "未知错误"}`,
       );
     });
   }, [
@@ -4004,8 +3862,195 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     setMentionSelectionIndex((prev) => Math.max(prev - 1, 0));
   };
 
-  const assistantDisplayName =
-    currentConversation?.agentBinding?.agentNameSnapshot ?? activeAgent.name;
+  const assistantDisplayName = resolveConversationAssistantDisplayName({
+    conversation: currentConversation,
+    messageCount: messages.length,
+    activeAgentName: activeAgent.name,
+  });
+  const activeConversationIdentity = resolveScopedSessionId(currentConversation);
+  const askUserAnchorMessageId = useMemo(
+    () =>
+      findLatestAskUserAnchorMessageId({
+        messages: messages,
+        lastVisibleMessage,
+        isStreaming,
+        liveToolCalls,
+        hasAskUserPending,
+      }),
+    [
+      hasAskUserPending,
+      isStreaming,
+      lastVisibleMessage?.id,
+      liveToolCalls,
+      messages,
+    ],
+  );
+  const restoreAnchorMessageId = useMemo(
+    () => findLatestRestoreAnchorMessageId(visibleMessages, hasRestoreNotice),
+    [hasRestoreNotice, visibleMessages],
+  );
+  const derivedTopbarState = useMemo(
+    () =>
+      deriveConversationTopbarState({
+      agentLabel: assistantDisplayName,
+      isStreaming,
+      liveToolCalls,
+      subAgentStatus,
+      activePlan,
+      hasAskUserPending,
+      hasRestoreNotice,
+      sessionNote,
+      }),
+    [
+      activeConversationIdentity,
+      activePlan,
+      assistantDisplayName,
+      hasAskUserPending,
+      hasRestoreNotice,
+      isStreaming,
+      liveToolCalls,
+      sessionNote,
+      subAgentStatus,
+    ],
+  );
+  const topbarTargets = useMemo(() => {
+    const targets = new Map<ConversationTopbarAction, ConversationTopbarTarget | null>();
+
+    for (const badge of derivedTopbarState.badges) {
+      if (!badge.action || targets.has(badge.action)) {
+        continue;
+      }
+      targets.set(
+        badge.action,
+        resolveConversationTopbarTarget({
+          action: badge.action,
+          messages,
+          activePlan,
+          liveToolCalls,
+          subAgentStatus,
+          hasAskUserPending,
+          askUserAnchorMessageId,
+          hasRestoreNotice,
+          restoreAnchorMessageId,
+          sessionNote,
+        }),
+      );
+    }
+
+    if (derivedTopbarState.progress.visible) {
+      targets.set(
+        "progress",
+        resolveConversationTopbarTarget({
+          action: "progress",
+          messages,
+          activePlan,
+          liveToolCalls,
+          subAgentStatus,
+          hasAskUserPending,
+          askUserAnchorMessageId,
+          hasRestoreNotice,
+          restoreAnchorMessageId,
+          sessionNote,
+        }),
+      );
+    }
+
+    if (derivedTopbarState.attention?.ctaAction) {
+      targets.set(
+        derivedTopbarState.attention.ctaAction,
+        resolveConversationTopbarTarget({
+          action: derivedTopbarState.attention.ctaAction,
+          messages,
+          activePlan,
+          liveToolCalls,
+          subAgentStatus,
+          hasAskUserPending,
+          askUserAnchorMessageId,
+          hasRestoreNotice,
+          restoreAnchorMessageId,
+          sessionNote,
+        }),
+      );
+    }
+
+    return targets;
+  }, [
+    activeConversationIdentity,
+    activePlan,
+    askUserAnchorMessageId,
+    derivedTopbarState,
+    hasAskUserPending,
+    hasRestoreNotice,
+    liveToolCalls,
+    messages,
+    restoreAnchorMessageId,
+    sessionNote,
+    subAgentStatus,
+  ]);
+  const topbarState = useMemo(
+    () => applyTopbarActionAvailability(derivedTopbarState, topbarTargets),
+    [derivedTopbarState, topbarTargets],
+  );
+
+  useEffect(() => {
+    setExpandedPlanMessageId(null);
+    setExpandedPlanActionId(null);
+    setExpandedPlanRequestKey(0);
+  }, [activeConversationIdentity]);
+
+  const navigateTopbarTarget = useCallback(
+    (target: ConversationTopbarTarget, waitForExpansion = false): void => {
+      const runNavigation = () => {
+        const resolved = resolveTopbarTargetElement({
+          thread: threadRef.current,
+          contextAnchor: contextAnchorRef.current,
+          target,
+        });
+        if (!resolved) {
+          return;
+        }
+
+        if (threadRef.current && threadRef.current.contains(resolved)) {
+          scrollThreadTargetIntoView(threadRef.current, resolved);
+        } else {
+          resolved.scrollIntoView?.({ block: "nearest" });
+        }
+        focusTopbarTarget(resolved);
+      };
+
+      window.requestAnimationFrame(() => {
+        if (waitForExpansion) {
+          window.requestAnimationFrame(runNavigation);
+          return;
+        }
+        runNavigation();
+      });
+    },
+    [],
+  );
+
+  const handleTopbarAction = useCallback(
+    (action: ConversationTopbarAction): void => {
+      const target = topbarTargets.get(action) ?? null;
+      if (!target) {
+        return;
+      }
+
+      const shouldExpandPlan =
+        Boolean(target.messageId) &&
+        (target.anchor === "approval" ||
+          target.anchor === "plan" ||
+          target.anchor === "blocked_output");
+      if (shouldExpandPlan) {
+        setExpandedPlanMessageId(target.messageId ?? null);
+        setExpandedPlanActionId(target.actionId ?? null);
+        setExpandedPlanRequestKey((current) => current + 1);
+      }
+
+      navigateTopbarTarget(target, shouldExpandPlan);
+    },
+    [navigateTopbarTarget, topbarTargets],
+  );
 
   // Listen for global new-conversation shortcut
   useEffect(() => {
@@ -4075,6 +4120,13 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             onApproveAll={handleApproveAllActionsForThread}
             onRejectAll={handleRejectAllActionsForThread}
             onSuggestionClick={handleSuggestionClickForThread}
+            topbarState={topbarState}
+            onTopbarAction={handleTopbarAction}
+            expandedPlanMessageId={expandedPlanMessageId}
+            expandedPlanActionId={expandedPlanActionId}
+            expandedPlanRequestKey={expandedPlanRequestKey}
+            askUserAnchorMessageId={askUserAnchorMessageId}
+            restoreAnchorMessageId={restoreAnchorMessageId}
           />
 
           {/* ── Input ── */}
@@ -4113,6 +4165,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
             )}
             <ChatComposerSection
               textareaRef={textareaRef}
+              contextAnchorRef={contextAnchorRef}
               prompt={prompt}
               chatBlocked={chatBlocked}
               composerAttachments={composerAttachments}

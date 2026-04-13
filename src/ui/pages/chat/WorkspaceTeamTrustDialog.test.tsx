@@ -53,14 +53,14 @@ describe("WorkspaceTeamTrustDialog", () => {
       ReactElement<{ children?: ReactNode }>
     >;
 
-    expect(collectText(tree)).toContain("当前工作区首次使用专家团");
+    expect(collectText(tree)).toContain("当前工作区首次进入编排模式");
     expect(collectText(tree)).toContain(
-      "专家团 YOLO 模式会在此工作区自动执行专家团 shell 与文件修改动作",
+      "编排 YOLO 模式会在此工作区自动执行编排过程中主 Agent、子 Agent 与专家团产生的",
     );
-    expect(collectText(tree)).toContain("普通单 Agent 对话仍保持原有审批行为");
+    expect(collectText(tree)).toContain("未进入编排的单 Agent 对话仍保持原有审批行为");
     expect(buttons).toHaveLength(2);
     expect(buttons.map((button) => collectText(button.props.children))).toEqual([
-      "启用该工作区专家团 YOLO",
+      "启用该工作区编排 YOLO",
       "继续使用审批模式",
     ]);
   });

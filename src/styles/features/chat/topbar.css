@@ -1,0 +1,248 @@
+/* ── Conversation topbar (page-level status) ──────────── */
+.conversation-topbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.conversation-topbar-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.conversation-topbar-row[data-conversation-topbar-row="1"] {
+  align-items: center;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-1);
+}
+
+.conversation-topbar-agent {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--text-1);
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-topbar-primary {
+  flex: 1;
+  min-width: 120px;
+  font-weight: 500;
+  color: var(--text-1);
+}
+
+.conversation-topbar-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.conversation-topbar-badge {
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--border-1);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+button.conversation-topbar-badge {
+  cursor: pointer;
+  font: inherit;
+  transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+
+button.conversation-topbar-badge:hover {
+  border-color: var(--border-2);
+  color: var(--text-1);
+  background: var(--surface-3);
+}
+
+.conversation-topbar-badge--info {
+  border-color: color-mix(in srgb, var(--accent-solid) 28%, var(--border-1));
+  color: var(--accent-solid);
+  background: color-mix(in srgb, var(--accent-solid) 8%, var(--surface-2));
+}
+
+.conversation-topbar-badge--warning {
+  border-color: color-mix(in srgb, var(--color-warning) 35%, var(--border-1));
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+}
+
+.conversation-topbar-badge--blocked {
+  border-color: color-mix(in srgb, var(--color-error) 35%, var(--border-1));
+  color: var(--color-error);
+  background: var(--color-error-bg);
+}
+
+.conversation-topbar-badge--success {
+  border-color: color-mix(in srgb, var(--color-success) 35%, var(--border-1));
+  color: var(--color-success);
+  background: var(--color-success-bg);
+}
+
+.conversation-topbar-progress {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 2px 2px;
+  border-radius: var(--r-sm);
+  outline: none;
+  transition: background var(--t-fast);
+}
+
+.conversation-topbar-progress:hover,
+.conversation-topbar-progress:focus-visible {
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+}
+
+.conversation-topbar-progress-label {
+  display: block;
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+
+.conversation-topbar-track {
+  display: flex;
+  gap: 4px;
+  align-items: stretch;
+  min-height: 6px;
+}
+
+.conversation-topbar-segment {
+  flex: 1;
+  min-width: 0;
+  border-radius: var(--r-xs);
+  position: relative;
+  min-height: 6px;
+}
+
+.conversation-topbar-segment-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.conversation-topbar-segment--completed {
+  background: color-mix(in srgb, var(--color-success) 45%, var(--surface-3));
+}
+
+.conversation-topbar-segment--active {
+  background: color-mix(in srgb, var(--accent-solid) 40%, var(--surface-3));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-solid) 35%, transparent);
+}
+
+.conversation-topbar-segment--pending {
+  background: var(--surface-2);
+  border: 1px solid var(--border-1);
+}
+
+.conversation-topbar-segment--blocked {
+  background: var(--color-error-bg);
+  border: 1px solid color-mix(in srgb, var(--color-error) 45%, var(--border-1));
+}
+
+.conversation-topbar-segment--blocked .conversation-topbar-segment-label {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  clip: auto;
+  overflow: visible;
+  display: block;
+  text-align: center;
+  font-size: 9px;
+  line-height: 1.2;
+  font-weight: 600;
+  color: var(--color-error);
+  padding: 2px 0;
+}
+
+.conversation-topbar-attention {
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--surface-1);
+  border: 1px solid var(--border-1);
+}
+
+.conversation-topbar-attention[data-attention-level="info"] {
+  border-left: 2px solid var(--accent-solid);
+}
+
+.conversation-topbar-attention[data-attention-level="warning"] {
+  border-left: 2px solid var(--color-warning);
+}
+
+.conversation-topbar-attention[data-attention-level="blocked"] {
+  border-left: 2px solid var(--color-error);
+}
+
+.conversation-topbar-attention-live {
+  flex: 1;
+  min-width: 0;
+}
+
+.conversation-topbar-attention-level {
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.conversation-topbar-attention[data-attention-level="warning"] .conversation-topbar-attention-level {
+  color: var(--color-warning);
+}
+
+.conversation-topbar-attention[data-attention-level="blocked"] .conversation-topbar-attention-level {
+  color: var(--color-error);
+}
+
+.conversation-topbar-attention-extra {
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+.conversation-topbar-cta {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--text-1);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+
+.conversation-topbar-cta:hover {
+  background: var(--surface-3);
+  border-color: var(--border-1);
+}
