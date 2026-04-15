@@ -186,7 +186,8 @@ jobs:
               has_macos_signing=true
             else
               has_macos_signing=false
-              echo "::warning::macOS signing secrets are not configured; building unsigned artifacts."
+              echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+              echo "::warning::macOS signing certificate secrets are not configured; using ad-hoc signing identity '-' for macOS artifacts."
             fi
 
             if [ -n "$APPLE_API_ISSUER" ] && [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_PRIVATE_KEY" ]; then
