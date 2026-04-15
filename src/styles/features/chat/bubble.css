@@ -40,7 +40,7 @@
   justify-content: space-between;
   gap: 10px;
   padding: 6px 10px;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-3);
   user-select: none;
 }
@@ -91,7 +91,7 @@
   font-size: 13px;
   font-weight: 600;
   flex-shrink: 0;
-  box-shadow: var(--shadow-md);
+  box-shadow: none;
 }
 
 .chat-avatar.user {
@@ -130,21 +130,21 @@
   word-break: break-word;
   line-height: 1.6;
   font-size: 14px;
-  box-shadow: var(--shadow-md);
+  box-shadow: none;
 }
 
 .chat-bubble.user {
   background: var(--user-bubble-bg);
   color: var(--text-1);
   border: 1px solid var(--user-bubble-border);
-  border-radius: var(--r-lg) var(--r-xs) var(--r-lg) var(--r-lg);
+  border-radius: var(--r-lg);
 }
 
 .chat-bubble.assistant {
   background: var(--surface-2);
   border: 1px solid var(--border-1);
   color: var(--text-1);
-  border-radius: var(--r-xs) var(--r-lg) var(--r-lg) var(--r-lg);
+  border-radius: var(--r-lg);
 }
 
 /* ── Streaming Cursor ───────────────────────────────────── */

@@ -25,26 +25,16 @@ const ALL_TOOL_NAMES = [
   "git_status", "git_diff",
   "propose_file_edit", "propose_apply_patch", "propose_shell",
   "check_shell_job",
-  "diagnostics", "fetch", "ask_user", "task",
+  "diagnostics", "fetch", "ask_user",
 ];
-
-function canDelegateWithTask(agent: ChatAgentDefinition): boolean {
-  return agent.allowedSubAgents.length > 0 && (agent.handoffPolicy ?? "none") !== "none";
-}
 
 function resolveEnabledTools(agent: ChatAgentDefinition): string[] {
   if (agent.toolPolicy.enabledTools && agent.toolPolicy.enabledTools.length > 0) {
     const base = new Set(agent.toolPolicy.enabledTools);
-    // Keep human-in-the-loop clarification always available for top-level agents.
     base.add("ask_user");
-    if (canDelegateWithTask(agent)) {
-      base.add("task");
-    } else {
-      base.delete("task");
-    }
     return ALL_TOOL_NAMES.filter((toolName) => base.has(toolName));
   }
-  return ALL_TOOL_NAMES.filter((toolName) => toolName !== "task" || canDelegateWithTask(agent));
+  return [...ALL_TOOL_NAMES];
 }
 
 function resolveToolPermissions(
@@ -106,8 +96,6 @@ export function resolveAgentRuntime(
     vendorProtocol: vendor?.protocol || "openai-chat-completions",
     baseUrl: vendor?.baseUrl || settings.liteLLMBaseUrl,
     apiKey: settings.apiKey,
-    allowedSubAgents: agent.allowedSubAgents,
-    handoffPolicy: agent.handoffPolicy ?? "none",
   };
 }
 

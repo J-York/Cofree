@@ -6,7 +6,7 @@ import type {
   VendorConfig,
   VendorProtocol,
 } from "../../lib/settingsStore";
-import type { ChatAgentDefinition, SubAgentRole } from "../../agents/types";
+import type { ChatAgentDefinition } from "../../agents/types";
 
 export interface WorkspaceInfo {
   git_branch?: string;
@@ -84,14 +84,6 @@ export interface AgentEditorProps {
   onDelete: () => void;
   onCancelDelete: () => void;
 }
-
-export const SUB_AGENT_ROLES: { role: SubAgentRole; label: string }[] = [
-  { role: "planner", label: "Planner（规划）" },
-  { role: "coder", label: "Coder（编码）" },
-  { role: "tester", label: "Tester（测试）" },
-  { role: "debugger", label: "Debugger（调试）" },
-  { role: "reviewer", label: "Reviewer（代码审查）" },
-];
 
 export interface SettingsNavProps {
   activeTab: SettingsTab;

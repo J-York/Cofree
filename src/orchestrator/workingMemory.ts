@@ -7,7 +7,6 @@
  * across the main loop and all sub-agents within a single session.
  */
 
-import type { SubAgentRole } from "../agents/types";
 import { estimateTokensFromText } from "./contextBudget";
 
 // ---------------------------------------------------------------------------
@@ -34,7 +33,7 @@ export interface DiscoveredFact {
 }
 
 export interface SubAgentExecRecord {
-  role: SubAgentRole;
+  role: string;
   taskDescription: string;
   replySummary: string;
   proposedActionCount: number;
@@ -171,10 +170,12 @@ export function recordSubAgentExecution(
   memory: WorkingMemory,
   record: Omit<SubAgentExecRecord, "completedAt">,
 ): void {
-  memory.subAgentHistory.push({
-    ...record,
-    completedAt: new Date().toISOString(),
-  });
+  memory.subAgentHistory.push(
+    cloneSubAgentExecRecord({
+      ...record,
+      completedAt: new Date().toISOString(),
+    }),
+  );
   if (memory.subAgentHistory.length > MAX_SUBAGENT_HISTORY) {
     memory.subAgentHistory.shift();
   }
@@ -191,6 +192,36 @@ function generateProgressId(): string {
   return `prog-${Date.now()}-${progressIdCounter}`;
 }
 
+function cloneFileKnowledge(value: FileKnowledge): FileKnowledge {
+  return { ...value };
+}
+
+function cloneDiscoveredFact(value: DiscoveredFact): DiscoveredFact {
+  return { ...value };
+}
+
+function cloneSubAgentExecRecord(value: SubAgentExecRecord): SubAgentExecRecord {
+  return {
+    ...value,
+    keyFindings: [...value.keyFindings],
+  };
+}
+
+function cloneTaskProgressEntry(value: TaskProgressEntry): TaskProgressEntry {
+  return { ...value };
+}
+
+function evictTaskProgressToCap(entries: TaskProgressEntry[]): void {
+  while (entries.length > MAX_TASK_PROGRESS_ENTRIES) {
+    const completedIdx = entries.findIndex((entry) => entry.status === "completed");
+    if (completedIdx >= 0) {
+      entries.splice(completedIdx, 1);
+      continue;
+    }
+    entries.shift();
+  }
+}
+
 export function recordTaskProgress(
   memory: WorkingMemory,
   entry: Omit<TaskProgressEntry, "id" | "timestamp">,
@@ -202,16 +233,7 @@ export function recordTaskProgress(
   });
 
   // Evict oldest completed entries when over limit
-  while (memory.taskProgress.length > MAX_TASK_PROGRESS_ENTRIES) {
-    const completedIdx = memory.taskProgress.findIndex(
-      (e) => e.status === "completed",
-    );
-    if (completedIdx >= 0) {
-      memory.taskProgress.splice(completedIdx, 1);
-    } else {
-      memory.taskProgress.shift();
-    }
-  }
+  evictTaskProgressToCap(memory.taskProgress);
 }
 
 export function formatTaskProgressBlock(memory: WorkingMemory): string {
@@ -394,7 +416,7 @@ export function extractFileKnowledge(
 export function serializeWorkingMemory(
   memory: WorkingMemory,
   tokenBudget: number,
-  forRole?: SubAgentRole,
+  forRole?: string,
   queryOptions?: WorkingMemoryQueryOptions,
 ): string {
   if (tokenBudget <= 0) return "";
@@ -560,7 +582,7 @@ export function collectRelevantFilePaths(
   memory: WorkingMemory,
   query: string,
   limit = 8,
-  forRole?: SubAgentRole,
+  forRole?: string,
 ): string[] {
   if (limit <= 0 || memory.fileKnowledge.size === 0) {
     return [];
@@ -716,10 +738,13 @@ function truncateToTokenBudget(text: string, budget: number): string | null {
 
 export function snapshotWorkingMemory(memory: WorkingMemory): WorkingMemorySnapshot {
   return {
-    fileKnowledge: [...memory.fileKnowledge.entries()],
-    discoveredFacts: [...memory.discoveredFacts],
-    subAgentHistory: [...memory.subAgentHistory],
-    taskProgress: [...memory.taskProgress],
+    fileKnowledge: [...memory.fileKnowledge.entries()].map(([path, knowledge]) => [
+      path,
+      cloneFileKnowledge(knowledge),
+    ]),
+    discoveredFacts: memory.discoveredFacts.map(cloneDiscoveredFact),
+    subAgentHistory: memory.subAgentHistory.map(cloneSubAgentExecRecord),
+    taskProgress: memory.taskProgress.map(cloneTaskProgressEntry),
     projectContext: memory.projectContext,
     maxTokenBudget: memory.maxTokenBudget,
   };
@@ -727,10 +752,12 @@ export function snapshotWorkingMemory(memory: WorkingMemory): WorkingMemorySnaps
 
 export function restoreWorkingMemory(snapshot: WorkingMemorySnapshot): WorkingMemory {
   return {
-    fileKnowledge: new Map(snapshot.fileKnowledge),
-    discoveredFacts: snapshot.discoveredFacts ?? [],
-    subAgentHistory: snapshot.subAgentHistory ?? [],
-    taskProgress: snapshot.taskProgress ?? [],
+    fileKnowledge: new Map(
+      snapshot.fileKnowledge.map(([path, knowledge]) => [path, cloneFileKnowledge(knowledge)]),
+    ),
+    discoveredFacts: (snapshot.discoveredFacts ?? []).map(cloneDiscoveredFact),
+    subAgentHistory: (snapshot.subAgentHistory ?? []).map(cloneSubAgentExecRecord),
+    taskProgress: (snapshot.taskProgress ?? []).map(cloneTaskProgressEntry),
     projectContext: snapshot.projectContext ?? "",
     maxTokenBudget: snapshot.maxTokenBudget ?? 4000,
   };
@@ -741,14 +768,7 @@ export function restoreWorkingMemory(snapshot: WorkingMemorySnapshot): WorkingMe
  * Mutations on the fork will not affect the original.
  */
 export function forkWorkingMemory(source: WorkingMemory): WorkingMemory {
-  return {
-    fileKnowledge: new Map(source.fileKnowledge),
-    discoveredFacts: source.discoveredFacts.map((f) => ({ ...f })),
-    subAgentHistory: source.subAgentHistory.map((h) => ({ ...h })),
-    taskProgress: source.taskProgress.map((p) => ({ ...p })),
-    projectContext: source.projectContext,
-    maxTokenBudget: source.maxTokenBudget,
-  };
+  return restoreWorkingMemory(snapshotWorkingMemory(source));
 }
 
 /**
@@ -770,7 +790,7 @@ export function mergeForkedMemories(
     for (const [path, knowledge] of fork.fileKnowledge) {
       const existing = target.fileKnowledge.get(path);
       if (!existing || knowledge.lastReadAt > existing.lastReadAt) {
-        target.fileKnowledge.set(path, knowledge);
+        target.fileKnowledge.set(path, cloneFileKnowledge(knowledge));
       }
     }
   }
@@ -785,7 +805,7 @@ export function mergeForkedMemories(
       const key = `${fact.category}::${fact.content}`;
       if (!existingFactKeys.has(key)) {
         existingFactKeys.add(key);
-        newFacts.push(fact);
+        newFacts.push(cloneDiscoveredFact(fact));
       }
     }
   }
@@ -803,7 +823,7 @@ export function mergeForkedMemories(
       const key = `${record.role}::${record.completedAt}`;
       if (!existingHistoryTimestamps.has(key)) {
         existingHistoryTimestamps.add(key);
-        newHistory.push(record);
+        newHistory.push(cloneSubAgentExecRecord(record));
       }
     }
   }
@@ -820,20 +840,13 @@ export function mergeForkedMemories(
     for (const entry of fork.taskProgress) {
       if (!existingProgressIds.has(entry.id)) {
         existingProgressIds.add(entry.id);
-        newProgress.push(entry);
+        newProgress.push(cloneTaskProgressEntry(entry));
       }
     }
   }
   newProgress.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   target.taskProgress.push(...newProgress);
-  while (target.taskProgress.length > MAX_TASK_PROGRESS_ENTRIES) {
-    const completedIdx = target.taskProgress.findIndex((e) => e.status === "completed");
-    if (completedIdx >= 0) {
-      target.taskProgress.splice(completedIdx, 1);
-    } else {
-      target.taskProgress.shift();
-    }
-  }
+  evictTaskProgressToCap(target.taskProgress);
 }
 
 /**

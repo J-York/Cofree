@@ -9,7 +9,7 @@ import type {
 } from "../../../lib/sessionContext";
 import type { AppSettings } from "../../../lib/settingsStore";
 import type { WorkflowCheckpointPayload } from "../../../orchestrator/checkpointStore";
-import type { ToolExecutionTrace } from "../../../orchestrator/planningService";
+import type { ToolExecutionTrace } from "../../../orchestrator/toolTraceTypes";
 import type { LiveToolCall, SubAgentStatusItem } from "./types";
 
 const FALLBACK_DEBUG_EXPORT_KEY = "__no_conversation__";

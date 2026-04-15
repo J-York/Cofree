@@ -3,7 +3,7 @@ import {
   BUILTIN_CHAT_AGENTS,
   DEFAULT_CHAT_AGENT_ID,
   getBuiltinChatAgent,
-  getChatAgentOrDefault,
+  getChatAgentFromSettings,
 } from "../src/agents/builtinChatAgents";
 import { resolveAgentRuntime, createAgentBinding } from "../src/agents/resolveAgentRuntime";
 import { assembleSystemPrompt, assembleRuntimeContext } from "../src/agents/promptAssembly";
@@ -12,22 +12,15 @@ import { buildScopedSessionKey } from "../src/orchestrator/checkpointStore";
 import { DEFAULT_SETTINGS, createVendorConfig, createManagedModel } from "../src/lib/settingsStore";
 import type { AppSettings } from "../src/lib/settingsStore";
 import type { LiteLLMToolDefinition } from "../src/lib/litellm";
-import type { SubAgentRole } from "../src/agents/types";
-
-describe("agent types", () => {
-  it("SubAgentRole type allows verifier", () => {
-    const roles: SubAgentRole[] = ["planner", "coder", "tester", "debugger", "reviewer", "verifier"];
-    expect(roles).toHaveLength(6);
-  });
-});
+import type { ChatAgentDefinition } from "../src/agents/types";
 
 function makeSettings(overrides?: Partial<AppSettings>): AppSettings {
   return { ...DEFAULT_SETTINGS, ...overrides };
 }
 
 describe("builtinChatAgents", () => {
-  it("should have exactly 2 agents", () => {
-    expect(BUILTIN_CHAT_AGENTS.length).toBe(2);
+  it("should have exactly 1 agent", () => {
+    expect(BUILTIN_CHAT_AGENTS.length).toBe(1);
   });
 
   it("default agent id should be found in the list", () => {
@@ -36,13 +29,13 @@ describe("builtinChatAgents", () => {
     expect(agent!.id).toBe(DEFAULT_CHAT_AGENT_ID);
   });
 
-  it("getChatAgentOrDefault falls back to default for unknown id", () => {
-    const agent = getChatAgentOrDefault("nonexistent-agent");
+  it("getChatAgentFromSettings falls back to default for unknown id", () => {
+    const agent = getChatAgentFromSettings("nonexistent-agent", DEFAULT_SETTINGS);
     expect(agent.id).toBe(DEFAULT_CHAT_AGENT_ID);
   });
 
-  it("getChatAgentOrDefault falls back to default for null", () => {
-    const agent = getChatAgentOrDefault(null);
+  it("getChatAgentFromSettings falls back to default for null", () => {
+    const agent = getChatAgentFromSettings(null, DEFAULT_SETTINGS);
     expect(agent.id).toBe(DEFAULT_CHAT_AGENT_ID);
   });
 
@@ -67,9 +60,8 @@ describe("resolveAgentRuntime", () => {
   });
 
   it("resolves a specific agent by id", () => {
-    const runtime = resolveAgentRuntime("agent-orchestrator", makeSettings());
-    expect(runtime.agentId).toBe("agent-orchestrator");
-    expect(runtime.enabledTools).not.toContain("propose_file_edit");
+    const runtime = resolveAgentRuntime("agent-general", makeSettings());
+    expect(runtime.agentId).toBe("agent-general");
     expect(runtime.enabledTools).toContain("read_file");
   });
 
@@ -80,16 +72,16 @@ describe("resolveAgentRuntime", () => {
 
   it("resolves from a ConversationAgentBinding", () => {
     const binding = createAgentBinding(
-      "agent-orchestrator",
+      "agent-general",
       {
         vendorId: DEFAULT_SETTINGS.activeVendorId!,
         modelId: DEFAULT_SETTINGS.activeModelId!,
       },
       "user-override",
-      "编排 Agent",
+      "通用 Agent",
     );
     const runtime = resolveAgentRuntime(binding, makeSettings());
-    expect(runtime.agentId).toBe("agent-orchestrator");
+    expect(runtime.agentId).toBe("agent-general");
   });
 
   it("uses model ref from active model selection", () => {
@@ -201,7 +193,7 @@ describe("settings v3 migration", () => {
   });
 });
 
-// --- Sub-Agent delegation wiring tests ---
+// --- Agent tool wiring tests ---
 
 const FAKE_TOOL_DEFS: LiteLLMToolDefinition[] = [
   { type: "function", function: { name: "list_files", description: "", parameters: { type: "object" } } },
@@ -215,57 +207,55 @@ const FAKE_TOOL_DEFS: LiteLLMToolDefinition[] = [
   { type: "function", function: { name: "propose_shell", description: "", parameters: { type: "object" } } },
   { type: "function", function: { name: "diagnostics", description: "", parameters: { type: "object" } } },
   { type: "function", function: { name: "fetch", description: "", parameters: { type: "object" } } },
-  { type: "function", function: { name: "task", description: "", parameters: { type: "object", properties: { role: { type: "string", enum: ["planner", "coder", "tester"] } } } } },
 ];
 
 describe("selectAgentTools", () => {
-  it("orchestrator does not see propose_file_edit or propose_apply_patch", () => {
-    const runtime = resolveAgentRuntime("agent-orchestrator", makeSettings());
-    const ctx = selectAgentTools(runtime, FAKE_TOOL_DEFS);
-    const toolNames = ctx.visibleToolDefs.map((t) => t.function.name);
-    expect(toolNames).not.toContain("propose_file_edit");
-    expect(toolNames).not.toContain("propose_apply_patch");
-    expect(toolNames).toContain("read_file");
-    expect(toolNames).toContain("grep");
-  });
-
-  it("general agent sees all tools including task", () => {
+  it("general agent sees propose_file_edit and propose_apply_patch", () => {
     const runtime = resolveAgentRuntime("agent-general", makeSettings());
     const ctx = selectAgentTools(runtime, FAKE_TOOL_DEFS);
     const toolNames = ctx.visibleToolDefs.map((t) => t.function.name);
     expect(toolNames).toContain("propose_file_edit");
-    expect(toolNames).toContain("task");
+    expect(toolNames).toContain("read_file");
+    expect(toolNames).toContain("grep");
   });
 
-  it("orchestrator allowedSubAgents includes all roles", () => {
-    const runtime = resolveAgentRuntime("agent-orchestrator", makeSettings());
-    expect(runtime.allowedSubAgents).toEqual(["planner", "coder", "tester", "debugger", "reviewer", "verifier"]);
-  });
-
-  it("general agent allowedSubAgents includes all roles", () => {
+  it("general agent does not see task tool (removed)", () => {
     const runtime = resolveAgentRuntime("agent-general", makeSettings());
-    expect(runtime.allowedSubAgents).toEqual(["planner", "coder", "tester", "debugger", "reviewer", "verifier"]);
+    const ctx = selectAgentTools(runtime, FAKE_TOOL_DEFS);
+    const toolNames = ctx.visibleToolDefs.map((t) => t.function.name);
+    expect(toolNames).not.toContain("task");
   });
 });
 
 describe("assembleSystemPrompt", () => {
   it("includes agent-specific prompt template", () => {
-    const runtime = resolveAgentRuntime("agent-orchestrator", makeSettings());
+    const runtime = resolveAgentRuntime("agent-general", makeSettings());
     const prompt = assembleSystemPrompt(runtime);
-    expect(prompt).toContain("编排 Agent");
+    expect(prompt).toContain("你是 Cofree 的通用 AI 编程助手");
   });
 
   it("includes base workflow rules", () => {
     const runtime = resolveAgentRuntime("agent-general", makeSettings());
     const prompt = assembleSystemPrompt(runtime);
     expect(prompt).toContain("propose_file_edit");
-    expect(prompt).toContain("Sub-Agent");
   });
 
-  it("different agents produce different prompts", () => {
+  it("different custom agents produce different prompts", () => {
+    const customAgent: ChatAgentDefinition = {
+      id: "agent-custom-prompt",
+      name: "Custom",
+      description: "custom",
+      systemPromptTemplate: "Custom unique prompt content XYZ",
+      toolPolicy: {},
+      builtin: false,
+    };
+    const settings = makeSettings({
+      customAgents: [customAgent],
+      activeAgentId: customAgent.id,
+    });
     const generalPrompt = assembleSystemPrompt(resolveAgentRuntime("agent-general", makeSettings()));
-    const orchestratorPrompt = assembleSystemPrompt(resolveAgentRuntime("agent-orchestrator", makeSettings()));
-    expect(generalPrompt).not.toBe(orchestratorPrompt);
+    const customPrompt = assembleSystemPrompt(resolveAgentRuntime(customAgent.id, settings));
+    expect(generalPrompt).not.toBe(customPrompt);
   });
 });
 
@@ -274,22 +264,6 @@ describe("assembleRuntimeContext", () => {
     const runtime = resolveAgentRuntime("agent-general", makeSettings({ workspacePath: "/test/workspace" }));
     const ctx = assembleRuntimeContext(runtime, "/test/workspace");
     expect(ctx).toContain("/test/workspace");
-  });
-
-  it("lists allowed sub-agent roles for the orchestrator", () => {
-    const orchestratorRuntime = resolveAgentRuntime("agent-orchestrator", makeSettings());
-    const ctx = assembleRuntimeContext(orchestratorRuntime, "/test");
-    expect(ctx).toContain("planner");
-    expect(ctx).toContain("coder");
-    expect(ctx).toContain("tester");
-  });
-
-  it("lists all roles for general agent", () => {
-    const runtime = resolveAgentRuntime("agent-general", makeSettings());
-    const ctx = assembleRuntimeContext(runtime, "/test");
-    expect(ctx).toContain("planner");
-    expect(ctx).toContain("coder");
-    expect(ctx).toContain("tester");
   });
 
   it("does not include update_plan in 本轮可用工具 when no internalTools passed", () => {

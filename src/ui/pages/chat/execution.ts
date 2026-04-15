@@ -10,11 +10,13 @@ import type { Conversation } from "../../../lib/conversationStore";
 import type { ChatContextAttachment } from "../../../lib/contextAttachments";
 import {
   actionFingerprint,
+  type PlanningSessionPhase,
+} from "../../../orchestrator/planningService";
+import {
   derivePlanWorkflowState,
   setPlanStepStatus,
   syncPlanStateWithActions,
-  type PlanningSessionPhase,
-} from "../../../orchestrator/planningService";
+} from "../../../orchestrator/todoPlanState";
 import type { ChatAgentDefinition } from "../../../agents/types";
 import { createAgentBinding } from "../../../agents/resolveAgentRuntime";
 import type { OrchestrationPlan } from "../../../orchestrator/types";

@@ -1,16 +1,8 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/orchestrator/types.ts
- * Milestone: 2
- * Task: 2.2
- * Status: Completed
- * Owner: Codex-GPT-5
- * Last Modified: 2026-03-01
  * Description: Shared types for orchestration planning output and pending gated actions.
  */
-
-import type { AgentRole } from "../agents/defaultAgents";
-import type { SubAgentCompletionStatus } from "../agents/types";
 
 export type WorkflowState = "planning" | "executing" | "human_review" | "done";
 
@@ -69,7 +61,6 @@ export interface ShellPayload {
   retryAttempt?: number;
 }
 
-/** P5-2: Tracks where an action originated for audit/debugging. */
 export type ActionOrigin = "main_agent" | "sub_agent" | "team_stage";
 
 interface ActionProposalBase {
@@ -83,9 +74,7 @@ interface ActionProposalBase {
   toolName?: string;
   fingerprint?: string;
   planStepId?: string;
-  /** P5-2: Which agent layer proposed this action. */
   origin?: ActionOrigin;
-  /** P5-2: For sub_agent/team_stage origins, the role or stage label. */
   originDetail?: string;
 }
 
@@ -107,7 +96,7 @@ export interface PlanStep {
   id: string;
   title: string;
   summary: string;
-  owner: AgentRole;
+  owner: string;
   status: PlanStepStatus;
   dependsOn?: string[];
   linkedActionIds?: string[];
@@ -126,34 +115,44 @@ export interface OrchestrationPlan {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-Agent progress events (Phase 5)
+// Sub-agent progress types (retained for UI backward compatibility;
+// no longer emitted by the orchestrator)
 // ---------------------------------------------------------------------------
 
-export interface SubAgentProgressMeta {
-  teamId?: string;
+export type SubAgentProgressKind =
+  | "summary"
+  | "tool_start"
+  | "tool_complete"
+  | "action_proposed"
+  | "stage_complete"
+  | "team_checkpoint"
+  | "thinking";
+
+export interface SubAgentProgressEvent {
+  kind: SubAgentProgressKind;
+  message?: string;
+  toolName?: string;
+  turn?: number;
+  maxTurns?: number;
+  success?: boolean;
+  durationMs?: number;
+  actionType?: string;
+  description?: string;
   stageLabel?: string;
-  agentRole?: string;
-  sourceLabel?: string;
+  stageIndex?: number;
   currentStageIndex?: number;
   totalStages?: number;
+  teamId?: string;
+  agentRole?: string;
+  sourceLabel?: string;
+  stageStatus?: "running" | "completed" | "failed" | "skipped" | "blocked";
   completedStageCount?: number;
   activeParallelCount?: number;
+  summary?: string;
+  partialContent?: string;
 }
 
-export type SubAgentProgressEvent = (
-  | { kind: "tool_start"; toolName: string; turn: number; maxTurns: number }
-  | { kind: "tool_complete"; toolName: string; success: boolean; durationMs: number }
-  | { kind: "thinking"; partialContent: string }
-  | { kind: "action_proposed"; actionType: SensitiveActionType; description: string }
-  | { kind: "summary"; message: string }
-  /** Soft milestone after planner stage; does not pause execution (see team config `emitPlanCheckpoint`). */
-  | { kind: "team_checkpoint"; checkpointId: string; message: string }
-  /** Emitted when an Agent Team stage finishes; used for expert-panel timeline + debug export. */
-  | {
-      kind: "stage_complete";
-      stageLabel: string;
-      agentRole: string;
-      summary: string;
-      stageStatus: SubAgentCompletionStatus;
-    }
-) & SubAgentProgressMeta;
+export interface SubAgentProgressMeta {
+  role: string;
+  events: SubAgentProgressEvent[];
+}

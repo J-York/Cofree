@@ -11,7 +11,7 @@
 
 import type { OrchestrationPlan } from "../orchestrator/types";
 import { normalizeOrchestrationPlan } from "../orchestrator/planGuards";
-import type { ToolErrorCategory, ToolExecutionTrace } from "../orchestrator/planningService";
+import type { ToolErrorCategory, ToolExecutionTrace } from "../orchestrator/toolTraceTypes";
 import {
   normalizeContextAttachments,
   type ChatContextAttachment,

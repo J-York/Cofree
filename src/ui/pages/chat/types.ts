@@ -1,6 +1,6 @@
 import type { ChatMessageRecord } from "../../../lib/chatHistoryStore";
 import type { CategorizedError } from "../../../lib/errorClassifier";
-import type { ToolExecutionStatus } from "../../../orchestrator/planningService";
+import type { ToolExecutionStatus } from "../../../orchestrator/toolTraceTypes";
 import type { SubAgentProgressEvent } from "../../../orchestrator/types";
 
 export interface LiveToolCall {

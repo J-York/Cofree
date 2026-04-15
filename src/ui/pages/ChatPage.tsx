@@ -49,7 +49,6 @@ import {
   getCheckpointRestoreScope,
   shouldApplyCheckpointRecovery,
 } from "./chat/checkpointRecovery";
-import { insertExpertStageSummaryMessages } from "./chat/expertStageMessages";
 import { ConversationSidebar } from "../components/ConversationSidebar";
 import { IconTrash } from "../components/Icons";
 import { getActiveManagedModel, isActiveModelLocal, resolveManagedModelSelection } from "../../lib/settingsStore";
@@ -125,7 +124,6 @@ import {
 import type { WorkingMemorySnapshot } from "../../orchestrator/workingMemory";
 import type {
   OrchestrationPlan,
-  SubAgentProgressEvent,
 } from "../../orchestrator/types";
 import { useSession } from "../../lib/sessionContext";
 import {
@@ -2007,16 +2005,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         if (bg) bg.isStreaming = streaming;
       }
     };
-    const guardedSetSubAgentStatus = (
-      updater: (prev: SubAgentStatusItem[]) => SubAgentStatusItem[],
-    ) => {
-      if (isActive()) {
-        setSubAgentStatus(updater);
-      } else {
-        const bg = backgroundStreamsRef.current.get(streamConvId);
-        if (bg) bg.subAgentStatus = updater(bg.subAgentStatus);
-      }
-    };
 
     if (visibleUserMessage) {
       const userMsg: ChatMessageRecord = {
@@ -2046,7 +2034,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
     setSessionNote("正在回复…");
     setLiveToolCalls([]);
     setLiveContextTokens(null);
-    guardedSetSubAgentStatus(() => []);
+    setSubAgentStatus([]);
+
     session.setWorkflowPhase("planning");
     if (settings.debugMode) {
       appendConversationDebugEntry(streamConvId, {
@@ -2167,44 +2156,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
         },
         onContextUpdate: (estimatedTokens) => {
           guardedSetTokens(estimatedTokens);
-        },
-        onSubAgentProgress: (role: string, event: SubAgentProgressEvent) => {
-          if (event.kind === "stage_complete") {
-            guardedSetMessages((prev) => insertExpertStageSummaryMessages(prev, event));
-          }
-
-          const statusId = event.teamId && event.stageLabel
-            ? `${event.teamId}:${event.stageLabel}`
-            : event.sourceLabel ?? role;
-          const statusLabel =
-            event.sourceLabel ??
-            (event.stageLabel ? `${role} · ${event.stageLabel}` : role);
-          guardedSetSubAgentStatus((prev) => {
-            const existing = prev.find((status) => status.id === statusId);
-            if (existing) {
-              return prev.map((status) =>
-                status.id === statusId
-                  ? {
-                    ...status,
-                    label: statusLabel,
-                    role: event.agentRole ?? role,
-                    lastEvent: event,
-                    updatedAt: Date.now(),
-                  }
-                  : status
-              );
-            }
-            return [
-              ...prev,
-              {
-                id: statusId,
-                label: statusLabel,
-                role: event.agentRole ?? role,
-                lastEvent: event,
-                updatedAt: Date.now(),
-              },
-            ];
-          });
         },
         onLoopCheckpoint: (checkpoint) => {
           const checkpointPlan = initializePlan(

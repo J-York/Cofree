@@ -7,7 +7,7 @@ import type { OrchestrationPlan, SubAgentProgressEvent } from "../../../orchestr
 import type { ConversationTopbarState } from "./conversationTopbarState";
 import { ChatThreadSection } from "./ChatThreadSection";
 
-type StageCompleteEvent = Extract<SubAgentProgressEvent, { kind: "stage_complete" }>;
+type StageCompleteEvent = Omit<SubAgentProgressEvent, "kind"> & { kind: "stage_complete" };
 
 function assistantMessage(
   id: string,

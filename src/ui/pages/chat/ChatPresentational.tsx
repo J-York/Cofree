@@ -18,7 +18,7 @@ import {
   type ApprovalRuleOption,
 } from "../../../lib/approvalRuleStore";
 import type { ChatContextAttachment } from "../../../lib/contextAttachments";
-import type { ToolExecutionTrace } from "../../../orchestrator/planningService";
+import type { ToolExecutionTrace } from "../../../orchestrator/toolTraceTypes";
 import type {
   ActionProposal,
   ApplyPatchActionProposal,

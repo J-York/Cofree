@@ -10,14 +10,9 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { DEFAULT_AGENTS } from "../agents/defaultAgents";
-import { awaitShellCommandWithDeadline, checkShellJob } from "../lib/tauriBridge";
 import { recordLLMAudit } from "../lib/auditLog";
 import {
-  gatewayComplete,
-  gatewayStream,
   gatewaySummarize,
-  isHighRiskToolCallingModelCombo,
   type LiteLLMMessage,
   type LiteLLMToolDefinition,
 } from "../lib/piAiBridge";
@@ -30,19 +25,26 @@ import {
   type AppSettings,
   type ToolPermissions,
 } from "../lib/settingsStore";
-import {
-  describeApprovalRule,
-  findMatchingApprovalRule,
-  type ApprovalRule,
-} from "../lib/approvalRuleStore";
 import type {
   ActionProposal,
   ApplyPatchActionProposal,
   OrchestrationPlan,
   PlanStep,
-  PlanStepStatus,
-  SubAgentProgressEvent,
 } from "./types";
+import {
+  addPlanStep,
+  appendPlanStepNote,
+  attachActionToPlanStep,
+  buildTodoSystemPrompt,
+  clonePlanState,
+  derivePlanWorkflowState,
+  formatTodoPlanBlock,
+  normalizeTodoPlanState,
+  setActivePlanStep,
+  setPlanStepStatus,
+  syncPlanStateWithActions,
+  type TodoPlanState,
+} from "./todoPlanState";
 import {
   summarizeWorkspaceFiles,
   type WorkspaceOverviewBudget,
@@ -58,7 +60,6 @@ import { SummaryCache } from "../lib/summaryCache";
 import {
   clearOldToolUses,
   compressMessagesToFitBudget,
-  estimateTokensForMessages,
   estimateTokensForToolDefinitions,
   initialSystemPrefixLength,
   MessageTokenTracker,
@@ -66,55 +67,70 @@ import {
 } from "./contextBudget";
 import type {
   ResolvedAgentRuntime,
-  PlannerOutput,
-  SubAgentRole,
   ConversationAgentBinding,
-  StructuredSubAgentOutput,
-  SubAgentCompletionStatus,
-  SubAgentFeedback,
 } from "../agents/types";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
-import { assembleSystemPrompt, assembleRuntimeContext, classifyTaskType } from "../agents/promptAssembly";
-import { tryExtractStructuredOutput, tryExtractFeedback } from "../agents/structuredOutput";
-import { runWithConcurrencyLimit } from "../lib/concurrency";
+import { assembleSystemPrompt, assembleRuntimeContext } from "../agents/promptAssembly";
 import type { ChatContextAttachment } from "../lib/contextAttachments";
+import { runWithConcurrencyLimit } from "../lib/concurrency";
 import {
-  collectRelevantFilePaths,
+  executeToolCompletionForTurn,
+  sanitizeMessagesForToolCalling,
+  type RequestRecord,
+  type ToolCallRecord,
+} from "./llmToolLoop";
+import {
+  detectPseudoToolCallNarration,
+  detectPseudoToolJsonTranscript,
+  summarizeToolArgs,
+  trimToolContentForContext,
+} from "./toolCallAnalysis";
+import {
+  buildCreatePathRepairMessage,
+  buildPatchPreflightRepairMessage,
+  buildPseudoToolCallCompatibilityDiagnostic,
+  buildPseudoToolCallRepairMessage,
+  buildReadOnlyTurnsWarningMessage,
+  buildSameFileEditFailureMessage,
+  buildSearchNotFoundRepairMessage,
+  buildShellDialectRepairInstruction,
+  buildToolNotFoundWarningMessage,
+  shouldForceReadOnlySummary,
+  shouldRetryPseudoToolCall,
+  shouldStopForConsecutiveFailures,
+  shouldStopForToolNotFound,
+  shouldWarnForToolNotFound,
+  MAX_CREATE_HINT_REPAIR_ROUNDS,
+  MAX_PATCH_REPAIR_ROUNDS,
+  MAX_SAME_FILE_EDIT_FAILURES,
+  MAX_SEARCH_NOT_FOUND_REPAIR_ROUNDS,
+  MAX_SHELL_DIALECT_REPAIR_ROUNDS,
+} from "./repairPolicies";
+import {
+  executeToolCall as executeToolCallInternal,
+  executeToolCallWithRetry as executeToolCallWithRetryInternal,
+  type SensitiveWriteAutoExecutionPolicy,
+  type ToolExecutionResult,
+  type ToolExecutorDeps,
+} from "./toolExecutor";
+import type {
+  ToolExecutionStatus,
+  ToolExecutionTrace,
+} from "./toolTraceTypes";
+import {
   createWorkingMemory,
   restoreWorkingMemory,
   extractFileKnowledge,
-  addDiscoveredFact,
-  recordSubAgentExecution,
-  recordTaskProgress,
-  formatTaskProgressBlock,
   serializeWorkingMemory,
   snapshotWorkingMemory,
   type WorkingMemory,
   type WorkingMemorySnapshot,
 } from "./workingMemory";
-import { buildMatchedContextRuleNote } from "./explicitContextService";
-import {
-  createAskUserRequest,
-  waitForUserResponse,
-  type AskUserRequest,
-} from "./askUserService";
-import {
-  DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
-  resolveShellExecutionMode,
-  resolveShellReadyTimeoutMs,
-  resolveShellReadyUrl,
-  inferBlockUntilMs,
-  INSTALL_BUILD_BLOCK_UNTIL_MS,
-  INSTALL_BUILD_TIMEOUT_MS,
-} from "../lib/shellCommand";
+import type { AskUserRequest } from "./askUserService";
 
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
 
-const MAX_PARALLEL_SUB_AGENTS = 5;
-const MAX_LIST_ENTRIES = 120;
-const MAX_FILE_PREVIEW_CHARS = 15000;
-const MAX_TOOL_RESULT_PREVIEW = 400;
 
 // --- Phase 4: Context management budgets ---
 const SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -263,27 +279,9 @@ function computeDynamicCooldownMs(workspacePath: string | undefined, currentToke
 // P1-2: Max chars per chunk for map-reduce summarization
 const SUMMARY_CHUNK_MAX_CHARS = 8000;
 
-const MAX_TOOL_OUTPUT_CHARS = 15000; // hard cap for tool content injected into LLM context
-const MAX_GREP_PREVIEW_MATCHES = 30;
-const MAX_GREP_PREVIEW_CHARS = 8000;
-const MAX_GLOB_PREVIEW_FILES = 60;
-const MAX_GLOB_PREVIEW_CHARS = 6000;
-const MAX_SHELL_TOOL_PREVIEW_CHARS = 6000;
-// (reserved) diagnostics preview is already aggregated server-side; keep only a hard char cap.
-// const MAX_DIAGNOSTICS_PREVIEW_ENTRIES = 30;
-// const MAX_DIAGNOSTICS_MESSAGE_CHARS = 240;
-const MAX_FETCH_PREVIEW_CHARS = 10000;
-const MAX_TOOL_RETRY = 2;
-const MAX_PATCH_REPAIR_ROUNDS = 1;
-const MAX_CREATE_HINT_REPAIR_ROUNDS = 1;
-const MAX_SHELL_DIALECT_REPAIR_ROUNDS = 1;
-const MAX_SEARCH_NOT_FOUND_REPAIR_ROUNDS = 2;
 const MAX_MULTI_ARTIFACT_REMINDER_ROUNDS = 2;
-const MAX_PSEUDO_TOOL_CALL_REPAIR_ROUNDS = 5;
 const MAX_PROPOSED_ACTIONS_PER_BATCH = 5;
 
-const MAX_TOOL_NOT_FOUND_STRIKES = 3;
-const MAX_CONSECUTIVE_FAILURE_TURNS = 5;
 
 const MAX_LLM_REQUEST_RETRIES = 3;
 const LLM_RETRY_BASE_DELAY_MS = 1000;
@@ -292,8 +290,6 @@ const LLM_RETRY_MAX_DELAY_MS = 15000;
 const INCREMENTAL_CHECKPOINT_INTERVAL = 10;
 const MAX_ABSOLUTE_TURNS = 150;
 
-const MAX_CONSECUTIVE_READ_ONLY_TURNS = 8;
-const DEDUP_TURN_WINDOW = 10;
 const WORKING_MEMORY_NOTE_PREFIX = "[工作记忆刷新]";
 const TODO_PLAN_NOTE_PREFIX = "[Todo Plan]";
 const WORKING_MEMORY_REFRESH_INTERVAL = 3;
@@ -303,84 +299,9 @@ const TOOL_CALLING_REINFORCEMENT_INTERVAL = 10;
 const TOOL_CALLING_REINFORCEMENT_NOTE_PREFIX = "[工具调用提醒]";
 
 function computeWorkingMemoryFingerprint(wm: WorkingMemory): string {
-  return `${wm.fileKnowledge.size}:${wm.discoveredFacts.length}:${wm.subAgentHistory.length}:${wm.taskProgress.length}`;
+  return `${wm.fileKnowledge.size}`;
 }
 
-/**
- * Sanitize messages before sending to the LLM API.
- *
- * This function ensures that the tool-call → tool-result sequence is never
- * broken by interleaved system messages, which is a common cause of GPT
- * models "forgetting" to use native tool calling after many turns.
- *
- * It also consolidates consecutive system messages to reduce noise.
- */
-function sanitizeMessagesForToolCalling(messages: LiteLLMMessage[]): LiteLLMMessage[] {
-  const result: LiteLLMMessage[] = [];
-  let i = 0;
-
-  while (i < messages.length) {
-    const msg = messages[i];
-
-    if (msg.role === "assistant" && msg.tool_calls?.length) {
-      result.push(msg);
-      i++;
-
-      const expectedCallIds = new Set(msg.tool_calls.map((tc) => tc.id));
-      const deferredSystemMessages: LiteLLMMessage[] = [];
-
-      while (i < messages.length && expectedCallIds.size > 0) {
-        const next = messages[i];
-        if (
-          next.role === "tool" &&
-          next.tool_call_id &&
-          expectedCallIds.has(next.tool_call_id)
-        ) {
-          result.push(next);
-          expectedCallIds.delete(next.tool_call_id);
-          i++;
-          continue;
-        }
-        if (next.role === "tool" && next.tool_call_id) {
-          result.push(next);
-          i++;
-          continue;
-        }
-        if (next.role === "system") {
-          deferredSystemMessages.push(next);
-          i++;
-          continue;
-        }
-        break;
-      }
-
-      if (deferredSystemMessages.length > 0) {
-        const consolidated = consolidateSystemMessages(deferredSystemMessages);
-        result.push(...consolidated);
-      }
-      continue;
-    }
-
-    result.push(msg);
-    i++;
-  }
-
-  return result;
-}
-
-/**
- * Merge consecutive system messages that share a common prefix into a single
- * message, reducing the number of system messages the model must process.
- */
-function consolidateSystemMessages(
-  systemMsgs: LiteLLMMessage[],
-): LiteLLMMessage[] {
-  if (systemMsgs.length <= 1) {
-    return systemMsgs;
-  }
-  const merged = systemMsgs.map((m) => m.content.trim()).filter(Boolean).join("\n\n");
-  return [{ role: "system", content: merged }];
-}
 
 /**
  * Remove stale interstitial system messages that accumulate between tool
@@ -619,14 +540,6 @@ function upsertTodoPlanContextMessage(messages: LiteLLMMessage[], planState: Tod
   return todoPrompt;
 }
 
-function extractCandidatePathsFromTaskDescription(taskDescription: string): string[] {
-  const matches = taskDescription.match(/(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9_-]+)?/g) ?? [];
-  const normalized = matches
-    .map((path) => path.trim().replace(/\\/g, "/").replace(/^\/+/, ""))
-    .filter((path) => path.length > 0 && /[./]/.test(path));
-  return [...new Set(normalized)].slice(0, 12);
-}
-
 function normalizeFocusedPathList(paths: string[] | undefined): string[] {
   return [...new Set(
     (paths ?? [])
@@ -635,381 +548,15 @@ function normalizeFocusedPathList(paths: string[] | undefined): string[] {
   )];
 }
 
-function collectSubAgentFocusedPaths(
-  taskDescription: string,
-  workingMemory: WorkingMemory | undefined,
-  role: SubAgentRole,
-  explicitFocusedPaths?: string[],
-): string[] {
-  const seededPaths = normalizeFocusedPathList(explicitFocusedPaths);
-  const fromTask = extractCandidatePathsFromTaskDescription(taskDescription);
-  const fromMemory = workingMemory
-    ? collectRelevantFilePaths(workingMemory, taskDescription, 8, role)
-    : [];
-  return [...new Set([...seededPaths, ...fromTask, ...fromMemory])].slice(0, 12);
-}
 
-interface ToolCallRecord {
-  id: string;
-  type: "function";
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
-export type ToolExecutionStatus = "success" | "failed" | "pending_approval" | "waiting_for_user";
-
-interface ToolExecutionResult {
-  content: string;
-  /** @deprecated Use proposedActions[] instead. Kept for backward compat during transition. */
-  proposedAction?: ActionProposal;
-  /** P1-1: Array of proposed actions from sub-agent/team execution. */
-  proposedActions?: ActionProposal[];
-  errorCategory?: ToolErrorCategory;
-  errorMessage?: string;
-  success?: boolean;
-  /** P1-3: Completion status of sub-agent / team execution, richer than boolean success. */
-  completionStatus?: SubAgentCompletionStatus;
-  traceStatus?: ToolExecutionStatus;
-  fromCache?: boolean;
-}
-
-type SensitiveWriteAutoExecutionPolicy = "allow" | "disabled";
 
 const INTERNAL_TOOL_NAMES = ["update_plan"] as const;
-
-export interface TodoPlanState {
-  steps: PlanStep[];
-  activeStepId?: string;
-}
 
 interface InitialPlanSeed extends TodoPlanState {
   source: "fallback" | "planner" | "existing";
 }
 
-function clonePlanStep(step: PlanStep): PlanStep {
-  return {
-    ...step,
-    dependsOn: step.dependsOn ? [...step.dependsOn] : undefined,
-    linkedActionIds: step.linkedActionIds ? [...step.linkedActionIds] : undefined,
-  };
-}
 
-function clonePlanState(state: TodoPlanState): TodoPlanState {
-  return {
-    steps: state.steps.map(clonePlanStep),
-    activeStepId: state.activeStepId,
-  };
-}
-
-function sanitizeStepTitle(title: string, fallback: string): string {
-  const normalized = title.trim() || fallback.trim();
-  return normalized || "未命名步骤";
-}
-
-function isTerminalPlanStepStatus(status: PlanStepStatus): boolean {
-  return status === "completed" || status === "failed" || status === "skipped";
-}
-
-function areStepDependenciesSatisfied(step: PlanStep, steps: PlanStep[]): boolean {
-  if (!step.dependsOn?.length) {
-    return true;
-  }
-  const byId = new Map(steps.map((entry) => [entry.id, entry]));
-  return step.dependsOn.every((depId) => {
-    const dependency = byId.get(depId);
-    return dependency ? dependency.status === "completed" || dependency.status === "skipped" : false;
-  });
-}
-
-function findRunnablePendingStep(steps: PlanStep[]): PlanStep | undefined {
-  return steps.find(
-    (step) => step.status === "pending" && areStepDependenciesSatisfied(step, steps),
-  );
-}
-
-interface SyncPlanStateOptions {
-  promoteNextRunnable?: boolean;
-}
-
-function normalizeTodoPlanStateInternal(
-  state: TodoPlanState,
-  options?: SyncPlanStateOptions,
-): TodoPlanState {
-  const promoteNextRunnable = options?.promoteNextRunnable !== false;
-  const steps = state.steps.map((step, index) => {
-    const fallbackTitle = step.summary?.trim() || `步骤 ${index + 1}`;
-    return {
-      ...clonePlanStep(step),
-      title: sanitizeStepTitle(step.title ?? "", fallbackTitle),
-      summary: step.summary?.trim() || fallbackTitle,
-      status: step.status ?? "pending",
-      owner: step.owner ?? "planner",
-      dependsOn: step.dependsOn?.filter(Boolean),
-      linkedActionIds: step.linkedActionIds?.filter(Boolean),
-    };
-  });
-
-  let activeStepId = state.activeStepId?.trim() || steps.find((step) => step.status === "in_progress")?.id;
-  if (activeStepId) {
-    const active = steps.find((step) => step.id === activeStepId);
-    if (!active || isTerminalPlanStepStatus(active.status)) {
-      activeStepId = undefined;
-    } else if (active.status !== "in_progress") {
-      active.status = "in_progress";
-      active.startedAt = active.startedAt ?? nowIso();
-    }
-  }
-
-  if (!activeStepId && promoteNextRunnable) {
-    const runnable = findRunnablePendingStep(steps);
-    if (runnable) {
-      runnable.status = "in_progress";
-      runnable.startedAt = runnable.startedAt ?? nowIso();
-      activeStepId = runnable.id;
-    }
-  }
-
-  for (const step of steps) {
-    if (step.id !== activeStepId && step.status === "in_progress") {
-      step.status = "pending";
-    }
-  }
-
-  return { steps, activeStepId };
-}
-
-export function normalizeTodoPlanState(state: TodoPlanState): TodoPlanState {
-  return normalizeTodoPlanStateInternal(state);
-}
-
-function appendPlanStepNote(step: PlanStep, note?: string): void {
-  const normalized = note?.trim();
-  if (!normalized) {
-    return;
-  }
-  step.note = step.note?.trim()
-    ? `${step.note.trim()}\n${normalized}`
-    : normalized;
-}
-
-export function setActivePlanStep(state: TodoPlanState, stepId: string): string {
-  const target = state.steps.find((step) => step.id === stepId);
-  if (!target) {
-    return `未找到步骤 ${stepId}`;
-  }
-
-  for (const step of state.steps) {
-    if (step.id !== stepId && step.status === "in_progress") {
-      step.status = "pending";
-    }
-  }
-
-  target.status = "in_progress";
-  target.startedAt = target.startedAt ?? nowIso();
-  state.activeStepId = target.id;
-  return `当前执行步骤已切换为「${target.title}」`;
-}
-
-function promoteNextRunnableStep(state: TodoPlanState): void {
-  if (state.activeStepId) {
-    return;
-  }
-  const runnable = findRunnablePendingStep(state.steps);
-  if (!runnable) {
-    return;
-  }
-  runnable.status = "in_progress";
-  runnable.startedAt = runnable.startedAt ?? nowIso();
-  state.activeStepId = runnable.id;
-}
-
-export function setPlanStepStatus(
-  state: TodoPlanState,
-  stepId: string,
-  status: Exclude<PlanStepStatus, "pending" | "in_progress">,
-  note?: string,
-): string {
-  const target = state.steps.find((step) => step.id === stepId);
-  if (!target) {
-    return `未找到步骤 ${stepId}`;
-  }
-
-  target.status = status;
-  appendPlanStepNote(target, note);
-  if (status === "completed") {
-    target.completedAt = nowIso();
-  }
-  if (state.activeStepId === stepId) {
-    state.activeStepId = undefined;
-  }
-  if (status === "completed" || status === "skipped") {
-    promoteNextRunnableStep(state);
-  }
-  return `步骤「${target.title}」已更新为 ${status}`;
-}
-
-function addPlanStep(state: TodoPlanState, params: {
-  title: string;
-  summary?: string;
-  owner?: PlanStep["owner"];
-  afterStepId?: string;
-  note?: string;
-}): PlanStep {
-  const step: PlanStep = {
-    id: createActionId("step"),
-    title: sanitizeStepTitle(params.title, params.summary ?? params.title),
-    summary: params.summary?.trim() || params.title.trim(),
-    owner: params.owner ?? "planner",
-    status: "pending",
-    note: params.note?.trim() || undefined,
-  };
-
-  const afterIndex = params.afterStepId
-    ? state.steps.findIndex((entry) => entry.id === params.afterStepId)
-    : -1;
-  if (afterIndex >= 0) {
-    state.steps.splice(afterIndex + 1, 0, step);
-  } else {
-    state.steps.push(step);
-  }
-
-  if (!state.activeStepId) {
-    promoteNextRunnableStep(state);
-  }
-  return step;
-}
-
-export function attachActionToPlanStep(state: TodoPlanState, action: ActionProposal): ActionProposal {
-  const planStepId = action.planStepId ?? state.activeStepId;
-  if (!planStepId) {
-    return action;
-  }
-  const target = state.steps.find((step) => step.id === planStepId);
-  if (!target) {
-    return action;
-  }
-  if (!target.linkedActionIds?.includes(action.id)) {
-    target.linkedActionIds = [...(target.linkedActionIds ?? []), action.id];
-  }
-  if (target.status === "pending") {
-    target.status = "in_progress";
-    target.startedAt = target.startedAt ?? nowIso();
-  }
-  return {
-    ...action,
-    planStepId,
-  };
-}
-
-export function syncPlanStateWithActions(
-  state: TodoPlanState,
-  actions: ActionProposal[],
-  options?: SyncPlanStateOptions,
-): TodoPlanState {
-  const next = clonePlanState(state);
-  for (const step of next.steps) {
-    step.linkedActionIds = [];
-  }
-  for (const action of actions) {
-    if (!action.planStepId) {
-      continue;
-    }
-    const target = next.steps.find((step) => step.id === action.planStepId);
-    if (!target) {
-      continue;
-    }
-    target.linkedActionIds = [...(target.linkedActionIds ?? []), action.id];
-  }
-  return normalizeTodoPlanStateInternal(next, options);
-}
-
-function formatTodoPlanBlock(state: TodoPlanState): string {
-  if (!state.steps.length) {
-    return "暂无 todo。";
-  }
-  return state.steps
-    .map((step) => {
-      const icon = step.status === "completed"
-        ? "✓"
-        : step.status === "in_progress"
-          ? "▶"
-          : step.status === "blocked"
-            ? "⏸"
-            : step.status === "failed"
-              ? "✕"
-              : step.status === "skipped"
-                ? "↷"
-                : "○";
-      const suffix = step.id === state.activeStepId ? " [当前]" : "";
-      return `${icon} [${step.id}] (${step.owner}/${step.status}) ${step.title}${suffix}`;
-    })
-    .join("\n");
-}
-
-export function buildTodoSystemPrompt(state: TodoPlanState): string {
-  if (!state.steps.length) {
-    return "";
-  }
-  return [
-    "[Todo Plan]",
-    "当前任务已经拆解为以下 todo。一次只推进一个步骤；完成、阻塞或失败时，必须调用 update_plan 更新状态。",
-    "如果新增了明确的子任务，可以用 update_plan 添加步骤；不要静默偏离当前 todo。",
-    formatTodoPlanBlock(state),
-  ].join("\n");
-}
-
-export function derivePlanWorkflowState(
-  proposedActions: ActionProposal[],
-  planState: TodoPlanState,
-): OrchestrationPlan["state"] {
-  if (proposedActions.some((action) => action.status === "running")) {
-    return "executing";
-  }
-  if (proposedActions.some((action) => action.status === "pending" || action.status === "failed")) {
-    return "human_review";
-  }
-  if (planState.steps.some((step) => step.status === "in_progress")) {
-    return "executing";
-  }
-  if (planState.steps.some((step) => step.status === "pending" || step.status === "blocked" || step.status === "failed")) {
-    return "planning";
-  }
-  return "done";
-}
-
-interface ChatCompletionChoiceMessage {
-  content?: unknown;
-  tool_calls?: unknown;
-  reasoning_content?: unknown;
-}
-
-interface ChatCompletionPayload {
-  id?: string;
-  choices?: Array<{
-    message?: ChatCompletionChoiceMessage;
-    finish_reason?: string;
-  }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-}
-
-interface FileEntry {
-  name: string;
-  is_dir: boolean;
-  size: number;
-  modified: number;
-}
-
-interface PatchApplyResult {
-  success: boolean;
-  message: string;
-  files: string[];
-}
 
 const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
   {
@@ -1418,37 +965,6 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
   {
     type: "function",
     function: {
-      name: "task",
-      description:
-        "Delegate a sub-task to a specialized sub-agent. The sub-agent runs an independent tool-calling loop with its own context and returns a summary of results. " +
-        "Multiple task calls in the same turn will be executed in parallel. Use this for independent tasks that don't depend on each other's results.\n\n" +
-        "The sub-agent inherits the current workspace and tool permissions but operates with a focused system prompt based on its role. " +
-        "Sub-agent results (including any proposed actions) are collected and returned to you. " +
-        "If a sub-agent needs clarification, it will be automatically retried with additional context.\n\n" +
-        "Example: task(role='coder', description='Implement the UserService class with CRUD methods in src/services/userService.ts')",
-      parameters: {
-        type: "object",
-        required: ["description"],
-        additionalProperties: false,
-        properties: {
-          role: {
-            type: "string",
-            enum: ["planner", "coder", "tester"],
-            description: "The role of the sub-agent to delegate to.",
-          },
-          description: {
-            type: "string",
-            minLength: 1,
-            description:
-              "Detailed description of the sub-task for the sub-agent or team to execute.",
-          },
-        },
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
       name: "update_plan",
       description:
         "Update the internal todo plan for the current task. Use this to mark a step as active, completed, blocked, failed, skipped, add notes, or append a new step. This tool has no side effects on the workspace and never requires approval.",
@@ -1600,22 +1116,6 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
 
 export type PlanningSessionPhase = "default";
 
-const ALL_TOOL_NAMES = [
-  "list_files",
-  "read_file",
-  "git_status",
-  "git_diff",
-  "grep",
-  "glob",
-  "propose_file_edit",
-  "propose_apply_patch",
-  "propose_shell",
-  "task",
-  "update_plan",
-  "diagnostics",
-  "fetch",
-  "ask_user",
-];
 
 export function estimateRequestedArtifactCount(prompt: string): number {
   const normalized = prompt.trim();
@@ -1801,21 +1301,6 @@ function hashText(value: string): string {
   return hash.toString(16).padStart(8, "0");
 }
 
-function smartTruncateWithHint(
-  text: string,
-  limit: number,
-  hint: string
-): { text: string; truncated: boolean; hint?: string } {
-  if (text.length <= limit) {
-    return { text, truncated: false };
-  }
-  const truncatedText = smartTruncate(text, limit);
-  return {
-    text: truncatedText,
-    truncated: true,
-    hint,
-  };
-}
 
 function stableMessageHashKey(
   messages: LiteLLMMessage[],
@@ -1861,42 +1346,9 @@ function markSummarizedNow(workspacePath: string | undefined): void {
 }
 
 
-function selectToolDefinitions(toolNames: string[]): LiteLLMToolDefinition[] {
-  const enabled = new Set(toolNames);
-  return TOOL_DEFINITIONS.filter((tool) => enabled.has(tool.function.name));
-}
-
-/**
- * Build tool definitions tailored for a specific agent runtime.
- * The `task` tool's role enum is set to the agent's allowedSubAgents;
- * if the agent has no allowed sub-agents, `task` is excluded entirely.
- */
 function buildAgentToolDefs(runtime: ResolvedAgentRuntime): LiteLLMToolDefinition[] {
-  const allowedRoles = runtime.allowedSubAgents;
   const enabled = new Set<string>([...runtime.enabledTools, ...INTERNAL_TOOL_NAMES]);
-  return TOOL_DEFINITIONS.map((td) => {
-    if (!enabled.has(td.function.name)) {
-      return null;
-    }
-    if (td.function.name !== "task") return td;
-    if (allowedRoles.length === 0) return null;
-    return {
-      ...td,
-      function: {
-        ...td.function,
-        parameters: {
-          ...td.function.parameters,
-          properties: {
-            ...(td.function.parameters as any).properties,
-            role: {
-              ...(td.function.parameters as any).properties.role,
-              enum: [...allowedRoles],
-            },
-          },
-        },
-      },
-    };
-  }).filter((td): td is LiteLLMToolDefinition => td !== null);
+  return TOOL_DEFINITIONS.filter((td) => enabled.has(td.function.name));
 }
 
 export class LocalOnlyPolicyError extends Error {
@@ -1938,8 +1390,6 @@ export interface RunPlanningSessionInput {
   onToolCallEvent?: (event: ToolCallEvent) => void;
   /** Called with the estimated context token count after each LLM turn (including tool results). */
   onContextUpdate?: (estimatedTokens: number) => void;
-  /** Called with sub-agent progress events during task tool execution. */
-  onSubAgentProgress?: (role: string, event: SubAgentProgressEvent) => void;
   /** Called periodically during the tool loop with partial results for incremental checkpoint persistence. */
   onLoopCheckpoint?: (checkpoint: {
     turn: number;
@@ -1975,49 +1425,8 @@ export interface PlanningSessionResult {
   };
 }
 
-interface RequestRecord {
-  requestId: string;
-  inputLength: number;
-  outputLength: number;
-  inputTokens?: number;
-  outputTokens?: number;
-}
 
-export type ToolErrorCategory =
-  | "validation"
-  | "workspace"
-  | "permission"
-  | "timeout"
-  | "allowlist"
-  | "transport"
-  | "guardrail"
-  | "tool_not_found"
-  | "unknown";
 
-export interface ToolExecutionTrace {
-  callId: string;
-  name: string;
-  arguments: string;
-  startedAt: string;
-  finishedAt: string;
-  attempts: number;
-  status: ToolExecutionStatus;
-  retried: boolean;
-  errorCategory?: ToolErrorCategory;
-  errorMessage?: string;
-  resultPreview?: string;
-}
-
-function createRequestId(prefix: string): string {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-}
 
 function normalizeMessageContent(content: unknown): string {
   if (typeof content === "string") {
@@ -2048,22 +1457,8 @@ function normalizeMessageContent(content: unknown): string {
   return "";
 }
 
-function buildAssistantDisplayContent(message: ChatCompletionChoiceMessage): string {
-  const content = normalizeMessageContent(message.content);
-  const reasoning = normalizeMessageContent(message.reasoning_content);
 
-  if (!reasoning.trim()) {
-    return content;
-  }
-  if (content.includes("<think>")) {
-    return content;
-  }
-  return `<think>${reasoning}</think>${content}`;
-}
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 function formatVendorProtocolLabel(protocol: string): string {
   switch (protocol) {
@@ -2075,109 +1470,6 @@ function formatVendorProtocolLabel(protocol: string): string {
     default:
       return "OpenAI Chat Completions";
   }
-}
-
-function detectPseudoToolCallNarration(
-  content: string,
-  availableToolNames: string[],
-): string | null {
-  const normalized = content.trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const lower = normalized.toLowerCase();
-  const mentionedTool = availableToolNames.find((toolName) =>
-    new RegExp(`\\b${escapeRegex(toolName.toLowerCase())}\\b`, "i").test(lower),
-  );
-  if (!mentionedTool) {
-    return null;
-  }
-
-  const pseudoPatterns: Array<{ pattern: RegExp; reason: string }> = [
-    {
-      pattern: /\b(?:let'?s|i(?:'|’)ll|i will|need to|must|should|going to)\s+(?:call|use|invoke|run|execute)\b/i,
-      reason: "narrated_tool_intent",
-    },
-    {
-      pattern: /\btool\s*call\b/i,
-      reason: "mentions_tool_call_literal",
-    },
-    {
-      pattern: /\b(?:call|use|invoke)\s+(?:the\s+)?[a-z_][a-z0-9_]*\b/i,
-      reason: "direct_call_phrase",
-    },
-    {
-      pattern: /\b(?:functions?\.|to=functions\.)[a-z_][a-z0-9_]*\b/i,
-      reason: "sdk_style_tool_reference",
-    },
-    {
-      pattern: /\bcalling\s+(?:the\s+)?(?:tool|function)\b/i,
-      reason: "calling_tool_phrase",
-    },
-    {
-      pattern: /```(?:json|tool_call|function_call)?\s*\n?\s*\{\s*"(?:name|function|tool)"/i,
-      reason: "code_block_tool_call",
-    },
-    {
-      pattern: /\bI(?:'m| am)\s+(?:now\s+)?(?:going to|about to)\s+(?:call|use|invoke|run)\b/i,
-      reason: "self_narration_intent",
-    },
-  ];
-
-  const matched = pseudoPatterns.find(({ pattern }) => pattern.test(normalized));
-  return matched ? `${matched.reason}:${mentionedTool}` : null;
-}
-
-function detectPseudoToolJsonTranscript(content: string): string | null {
-  const normalized = content.trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const looksJsonish =
-    normalized.startsWith("{") ||
-    normalized.startsWith("[") ||
-    /}\s*,?\s*\{/.test(normalized);
-
-  const toolArgumentPatterns = [
-    /"relative_path"\s*:/i,
-    /"start_line"\s*:/i,
-    /"end_line"\s*:/i,
-    /"include_glob"\s*:/i,
-    /"pattern"\s*:/i,
-    /"shell"\s*:/i,
-    /"patch"\s*:/i,
-    /"url"\s*:/i,
-    /"question"\s*:/i,
-    /"step_id"\s*:/i,
-    /"operation"\s*:/i,
-  ];
-  const toolResultPatterns = [
-    /"ok"\s*:\s*(?:true|false)/i,
-    /"error"\s*:/i,
-    /"content_preview"\s*:/i,
-    /"showing_lines"\s*:/i,
-    /"approval_required"\s*:/i,
-    /\b(?:read_file|list_files|grep|glob|git_status|git_diff|propose_file_edit|propose_apply_patch|propose_shell|fetch|ask_user)\s+failed\b/i,
-  ];
-
-  const hasToolArguments = toolArgumentPatterns.some((pattern) => pattern.test(normalized));
-  const hasToolResults = toolResultPatterns.some((pattern) => pattern.test(normalized));
-
-  if (looksJsonish && hasToolArguments && hasToolResults) {
-    return "json_tool_io_transcript";
-  }
-  if (looksJsonish && hasToolArguments) {
-    return "json_tool_arguments";
-  }
-  if (looksJsonish && hasToolResults) {
-    return "json_tool_results";
-  }
-  if (hasToolArguments && hasToolResults) {
-    return "tool_io_transcript";
-  }
-  return null;
 }
 
 
@@ -2428,396 +1720,7 @@ function normalizeConversationHistory(
   });
 }
 
-function inputLengthOf(messages: LiteLLMMessage[]): number {
-  return messages.reduce((total, message) => total + message.content.length, 0);
-}
 
-function parseErrorMessage(raw: string, status: number): string {
-  if (!raw.trim()) {
-    return `${status}`;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as { error?: { message?: string } };
-    return parsed.error?.message ?? raw.slice(0, 240);
-  } catch (_error) {
-    return raw.slice(0, 240);
-  }
-}
-
-function parseCompletionPayload(raw: string): ChatCompletionPayload {
-  const trimmed = raw.trim();
-
-  // Handle empty response
-  if (!trimmed) {
-    throw new Error("模型响应为空。");
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed) as ChatCompletionPayload;
-    if (!parsed || typeof parsed !== "object") {
-      throw new Error("completion payload invalid");
-    }
-    return parsed;
-  } catch (primaryError) {
-    // Some streaming responses may have trailing garbage after the JSON object.
-    // Try to extract the first valid JSON object from the response.
-    const firstBrace = trimmed.indexOf("{");
-    if (firstBrace >= 0) {
-      let depth = 0;
-      let inStr = false;
-      let escape = false;
-      for (let i = firstBrace; i < trimmed.length; i++) {
-        const char = trimmed[i];
-        if (escape) { escape = false; continue; }
-        if (char === "\\") { escape = true; continue; }
-        if (char === '"') { inStr = !inStr; continue; }
-        if (inStr) continue;
-        if (char === "{") depth++;
-        else if (char === "}") {
-          depth--;
-          if (depth === 0) {
-            try {
-              const extracted = JSON.parse(trimmed.slice(firstBrace, i + 1)) as ChatCompletionPayload;
-              if (extracted && typeof extracted === "object") {
-                console.warn("[parseCompletionPayload] Recovered valid JSON from partial response");
-                return extracted;
-              }
-            } catch {
-              // Continue to throw original error
-            }
-            break;
-          }
-        }
-      }
-    }
-
-    throw new Error("模型响应不是有效 JSON。");
-  }
-}
-
-/**
- * Attempt to repair truncated or malformed JSON arguments from streaming responses.
- * Some models (especially during streaming) may produce incomplete JSON that can be
- * salvaged by closing open brackets/braces.
- */
-function tryRepairJsonArguments(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-
-  // Already valid JSON
-  try {
-    JSON.parse(trimmed);
-    return trimmed;
-  } catch {
-    // Continue to repair attempts
-  }
-
-  // Count unmatched brackets/braces and try to close them
-  let openBraces = 0;
-  let openBrackets = 0;
-  let inString = false;
-  let escapeNext = false;
-
-  for (const char of trimmed) {
-    if (escapeNext) {
-      escapeNext = false;
-      continue;
-    }
-    if (char === "\\") {
-      escapeNext = true;
-      continue;
-    }
-    if (char === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-
-    if (char === "{") openBraces++;
-    else if (char === "}") openBraces--;
-    else if (char === "[") openBrackets++;
-    else if (char === "]") openBrackets--;
-  }
-
-  // If we're inside a string, close it first
-  let repaired = trimmed;
-  if (inString) {
-    repaired += '"';
-  }
-
-  // Close any remaining open brackets/braces
-  while (openBrackets > 0) {
-    repaired += "]";
-    openBrackets--;
-  }
-  while (openBraces > 0) {
-    repaired += "}";
-    openBraces--;
-  }
-
-  // Validate the repaired JSON
-  try {
-    JSON.parse(repaired);
-    console.warn(`[parseToolCalls] Repaired truncated JSON arguments: "${trimmed.slice(0, 60)}..." → valid`);
-    return repaired;
-  } catch {
-    return null;
-  }
-}
-
-function parseToolCalls(raw: unknown): { parsed: ToolCallRecord[]; droppedCount: number } {
-  if (!Array.isArray(raw)) {
-    return { parsed: [], droppedCount: 0 };
-  }
-
-  let dropped = 0;
-  const parsed = raw
-    .map((item, index) => {
-      if (!item || typeof item !== "object") {
-        dropped += 1;
-        return null;
-      }
-      const record = item as Record<string, unknown>;
-      const fn = record.function;
-      if (!fn || typeof fn !== "object") {
-        dropped += 1;
-        return null;
-      }
-      const fnRecord = fn as Record<string, unknown>;
-
-      // Validate tool name
-      if (typeof fnRecord.name !== "string" || !fnRecord.name.trim()) {
-        dropped += 1;
-        return null;
-      }
-
-      // Handle arguments: allow empty object "{}" as valid (some models send this for no-arg tools)
-      let argsStr = typeof fnRecord.arguments === "string"
-        ? fnRecord.arguments.trim()
-        : "";
-
-      // If arguments is an object (some providers return parsed JSON instead of string)
-      if (!argsStr && fnRecord.arguments && typeof fnRecord.arguments === "object") {
-        argsStr = JSON.stringify(fnRecord.arguments);
-      }
-
-      // Default to empty object for tools with no required parameters
-      if (!argsStr) {
-        argsStr = "{}";
-      }
-
-      // Attempt to repair truncated JSON from streaming responses
-      const repairedArgs = tryRepairJsonArguments(argsStr);
-      if (!repairedArgs) {
-        console.warn(
-          `[parseToolCalls] Dropping tool call "${fnRecord.name}" with unparseable arguments: "${argsStr.slice(0, 100)}"`
-        );
-        dropped += 1;
-        return null;
-      }
-
-      const id =
-        typeof record.id === "string" && record.id.trim()
-          ? record.id
-          : `toolcall-${index + 1}-${Date.now()}`;
-      return {
-        id,
-        type: "function" as const,
-        function: {
-          name: fnRecord.name.trim(),
-          arguments: repairedArgs,
-        },
-      };
-    })
-    .filter((item): item is ToolCallRecord => Boolean(item));
-  return { parsed, droppedCount: dropped };
-}
-
-function normalizeRelativePath(value: unknown): string {
-  if (typeof value !== "string") {
-    return "";
-  }
-  return value.trim();
-}
-
-function asString(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-/**
- * Strip line-number prefixes that read_file adds (e.g. "487│  code" → "  code").
- * Models may accidentally copy these into search/anchor fields.
- */
-function stripLineNumberPrefixes(text: string): string {
-  // \s* handles optional leading spaces that some models copy from the display format (e.g. "  10│")
-  return text.replace(/^\s*[0-9]+│/gm, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-}
-
-function asNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function asBoolean(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function normalizeOptionalPositiveInt(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return null;
-  }
-
-  const normalized = Math.floor(value);
-  return normalized > 0 ? normalized : null;
-}
-
-function countOccurrences(content: string, snippet: string): number {
-  if (!snippet) {
-    return 0;
-  }
-
-  let total = 0;
-  let offset = 0;
-  while (offset <= content.length) {
-    const index = content.indexOf(snippet, offset);
-    if (index < 0) {
-      break;
-    }
-    total += 1;
-    offset = index + Math.max(1, snippet.length);
-  }
-  return total;
-}
-
-function splitPatchLines(content: string): {
-  lines: string[];
-  hasTrailingNewline: boolean;
-} {
-  if (!content.length) {
-    return {
-      lines: [],
-      hasTrailingNewline: false,
-    };
-  }
-
-  const hasTrailingNewline = content.endsWith("\n");
-  const body = hasTrailingNewline ? content.slice(0, -1) : content;
-
-  return {
-    lines: body.length > 0 ? body.split("\n") : [""],
-    hasTrailingNewline,
-  };
-}
-
-function splitContentSegments(content: string): string[] {
-  if (!content.length) {
-    return [];
-  }
-
-  const segments: string[] = [];
-  let start = 0;
-  for (let index = 0; index < content.length; index += 1) {
-    if (content[index] === "\n") {
-      segments.push(content.slice(start, index + 1));
-      start = index + 1;
-    }
-  }
-  if (start < content.length) {
-    segments.push(content.slice(start));
-  }
-  return segments;
-}
-
-function replaceByLineRange(
-  content: string,
-  startLine: number,
-  endLine: number,
-  replacement: string
-): string {
-  const segments = splitContentSegments(content);
-  if (!segments.length) {
-    throw new Error("文件为空，无法按行定位编辑。");
-  }
-  if (startLine < 1 || endLine < 1 || startLine > endLine) {
-    throw new Error("非法行号范围。");
-  }
-  if (startLine > segments.length || endLine > segments.length) {
-    throw new Error(`行号超出文件范围（总行数 ${segments.length}）。`);
-  }
-
-  return (
-    segments.slice(0, startLine - 1).join("") +
-    replacement +
-    segments.slice(endLine).join("")
-  );
-}
-
-function insertByLine(
-  content: string,
-  line: number,
-  insertContent: string,
-  position: "before" | "after"
-): string {
-  const segments = splitContentSegments(content);
-  if (!segments.length) {
-    throw new Error("文件为空，无法按行定位插入。");
-  }
-  if (line < 1 || line > segments.length) {
-    throw new Error(`line 超出文件范围（总行数 ${segments.length}）。`);
-  }
-
-  const insertionIndex = position === "before" ? line - 1 : line;
-  return (
-    segments.slice(0, insertionIndex).join("") +
-    insertContent +
-    segments.slice(insertionIndex).join("")
-  );
-}
-
-function formatUnifiedRange(start: number, count: number): string {
-  if (count === 1) {
-    return `${start}`;
-  }
-  return `${start},${count}`;
-}
-
-async function buildReplacementPatch(
-  relativePath: string,
-  before: string,
-  after: string
-): Promise<string> {
-  if (before === after) {
-    throw new Error("编辑结果为空，未产生文件变更。");
-  }
-  return invoke<string>("build_workspace_edit_patch", {
-    relativePath,
-    before,
-    after,
-  });
-}
-
-function buildCreateFilePatch(relativePath: string, content: string): string {
-  const next = splitPatchLines(content);
-  if (next.lines.length < 1) {
-    throw new Error("create 操作要求 content 至少包含一行。");
-  }
-
-  const hunkLines = next.lines.map((line) => `+${line}`);
-  if (!next.hasTrailingNewline) {
-    hunkLines.push("\\ No newline at end of file");
-  }
-
-  return (
-    [
-      `diff --git a/${relativePath} b/${relativePath}`,
-      "new file mode 100644",
-      "--- /dev/null",
-      `+++ b/${relativePath}`,
-      `@@ -0,0 +${formatUnifiedRange(1, next.lines.length)} @@`,
-      ...hunkLines,
-    ].join("\n") + "\n"
-  );
-}
 
 function createActionId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -2827,173 +1730,6 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function classifyToolError(message: string): ToolErrorCategory {
-  const lower = message.toLowerCase();
-  if (
-    lower.includes("不能为空") ||
-    lower.includes("invalid json") ||
-    lower.includes("arguments") ||
-    lower.includes("未找到") ||
-    lower.includes("出现多次") ||
-    lower.includes("预检失败") ||
-    lower.includes("已存在") ||
-    lower.includes("未产生文件变更") ||
-    lower.includes("不支持的 file edit") ||
-    lower.includes("行号") ||
-    lower.includes("文件为空") ||
-    lower.includes("invalid target path") ||
-    lower.includes("no such file or directory") ||
-    lower.includes("line 超出")
-  ) {
-    return "validation";
-  }
-  if (lower.includes("未选择工作区") || lower.includes("workspace")) {
-    return "workspace";
-  }
-  if (
-    lower.includes("allowlist") ||
-    lower.includes("guardrail") ||
-    lower.includes("shell 控制符") ||
-    lower.includes("工作区越界路径") ||
-    lower.includes("受限目录") ||
-    lower.includes("命中被禁止的可执行程序") ||
-    lower.includes("命中高风险关键字") ||
-    lower.includes("解释器内联执行") ||
-    lower.includes("propose_apply_patch") ||
-    lower.includes("直接改文件")
-  ) {
-    return "guardrail";
-  }
-  if (
-    lower.includes("patch does not apply") ||
-    lower.includes("corrupt patch")
-  ) {
-    return "validation";
-  }
-  if (lower.includes("timed out") || lower.includes("超时")) {
-    return "timeout";
-  }
-  if (lower.includes("permission") || lower.includes("not permitted")) {
-    return "permission";
-  }
-  if (lower.includes("未知工具")) {
-    return "tool_not_found";
-  }
-  if (
-    lower.includes("fetch") ||
-    lower.includes("network") ||
-    lower.includes("http")
-  ) {
-    return "transport";
-  }
-  return "unknown";
-}
-
-function shouldRetryToolCall(category: ToolErrorCategory): boolean {
-  switch (category) {
-    case "transport":
-    case "timeout":
-      return true;
-    case "workspace":
-      // Workspace errors (e.g. file temporarily locked) may resolve on retry
-      return true;
-    case "validation":
-    case "permission":
-    case "allowlist":
-    case "guardrail":
-    case "tool_not_found":
-      // These are deterministic failures — retrying won't help
-      return false;
-    case "unknown":
-      // Unknown errors get one retry in case they're transient
-      return true;
-    default:
-      return false;
-  }
-}
-
-/**
- * Compute exponential backoff delay for tool call retries.
- * Uses a shorter base than LLM retries since tool calls are local operations.
- */
-function computeToolRetryDelay(attempt: number): number {
-  const baseDelayMs = 500;
-  const maxDelayMs = 5000;
-  const delay = baseDelayMs * Math.pow(2, attempt - 1);
-  const jitter = delay * 0.2 * Math.random();
-  return Math.min(delay + jitter, maxDelayMs);
-}
-
-/**
- * Build a contextual error recovery hint for the LLM based on the tool error category.
- * This helps the model understand what went wrong and how to fix it.
- */
-function buildToolErrorRecoveryHint(
-  toolName: string,
-  category: ToolErrorCategory,
-  errorMessage: string,
-): string {
-  const hints: string[] = [
-    `工具 "${toolName}" 执行失败。`,
-    `错误类别: ${category}`,
-    `错误信息: ${errorMessage}`,
-  ];
-
-  switch (category) {
-    case "validation":
-      hints.push(
-        "恢复建议: 参数格式或值不正确。请检查工具参数是否符合要求，特别注意：",
-        "- relative_path 必须是工作区相对路径，不能是绝对路径",
-        "- search 字段必须与文件中的实际内容完全匹配（包括空格和缩进）",
-        "- 必填参数不能省略",
-      );
-      break;
-    case "workspace":
-      hints.push(
-        "恢复建议: 工作区操作失败。可能的原因：",
-        "- 文件或目录不存在 — 先用 list_files 或 glob 确认路径",
-        "- 文件被锁定或权限不足 — 尝试其他文件或等待后重试",
-        "- 路径拼写错误 — 使用 glob 搜索正确的文件名",
-      );
-      break;
-    case "timeout":
-      hints.push(
-        "恢复建议: 操作超时。对于耗时操作：",
-        "- 缩小操作范围（如减少 grep 的 max_results）",
-        "- 对于 shell 命令，增加 timeout_ms 参数",
-        "- 将大操作拆分为多个小操作",
-      );
-      break;
-    case "transport":
-      hints.push(
-        "恢复建议: 网络或传输错误，通常是暂时性的。系统会自动重试。",
-      );
-      break;
-    case "tool_not_found":
-      hints.push(
-        "恢复建议: 调用了不存在的工具。请检查工具名称拼写，可用工具列表见系统提示。",
-      );
-      break;
-    case "permission":
-    case "allowlist":
-    case "guardrail":
-      hints.push(
-        "恢复建议: 权限或安全策略阻止了此操作。请：",
-        "- 使用其他方式完成任务",
-        "- 如果是 shell 命令被阻止，尝试使用更安全的替代命令",
-      );
-      break;
-    default:
-      hints.push(
-        "恢复建议: 发生未知错误。请尝试：",
-        "- 检查参数是否正确",
-        "- 使用 read_file 确认目标文件的当前状态",
-        "- 尝试不同的方法完成任务",
-      );
-  }
-
-  return hints.join("\n");
-}
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -3048,907 +1784,20 @@ function computeRetryDelay(attempt: number): number {
   return Math.min(delay + jitter, LLM_RETRY_MAX_DELAY_MS);
 }
 
-function resultPreview(content: string): string {
-  return content.slice(0, MAX_TOOL_RESULT_PREVIEW);
-}
 
-function buildAutoApprovalMeta(
-  source: "tool_permission" | "workspace_rule" | null,
-  matchedRule?: ApprovalRule | null,
-): Record<string, unknown> {
-  if (!source) {
-    return {};
-  }
 
-  return {
-    approval_source: source,
-    approval_rule_matched: source === "workspace_rule",
-    approval_rule_kind:
-      source === "workspace_rule" ? matchedRule?.kind ?? null : null,
-    approval_rule_label:
-      source === "workspace_rule" && matchedRule
-        ? describeApprovalRule(matchedRule)
-        : null,
-  };
-}
 
-function resolveSensitiveActionAutoApprovalSource(params: {
-  permissionLevel: "auto" | "ask";
-  matchedRule?: ApprovalRule | null;
-  autoExecutionPolicy: SensitiveWriteAutoExecutionPolicy;
-}): "tool_permission" | "workspace_rule" | null {
-  if (params.autoExecutionPolicy === "disabled") {
-    return null;
-  }
-  if (params.permissionLevel === "auto") {
-    return "tool_permission";
-  }
-  return params.matchedRule ? "workspace_rule" : null;
-}
-
-async function autoExecutePatchProposal(params: {
-  workspacePath: string;
-  patch: string;
-  responseMeta?: Record<string, unknown>;
-  autoApprovalMeta?: Record<string, unknown>;
-}): Promise<ToolExecutionResult> {
-  const snapshot = await invoke<{
-    success: boolean;
-    snapshot_id: string;
-    files: string[];
-  }>("create_workspace_snapshot", {
-    workspacePath: params.workspacePath,
-    patch: params.patch,
-  });
-  const applyResult = await invoke<PatchApplyResult>(
-    "apply_workspace_patch",
-    { workspacePath: params.workspacePath, patch: params.patch }
-  );
-  if (!applyResult.success && snapshot.success) {
-    await invoke<PatchApplyResult>("restore_workspace_snapshot", {
-      workspacePath: params.workspacePath,
-      snapshotId: snapshot.snapshot_id,
-    });
-  }
-
-  const responsePayload: Record<string, unknown> = {
-    ok: applyResult.success,
-    action_type: "apply_patch",
-    auto_executed: true,
-    patch_length: params.patch.length,
-    files: applyResult.files,
-    message: applyResult.message,
-    ...(params.responseMeta ?? {}),
-    ...(params.autoApprovalMeta ?? {}),
-  };
-  if (applyResult.success) {
-    const diagnostics = await fetchPostPatchDiagnostics(
-      params.workspacePath,
-      applyResult.files
-    );
-    if (diagnostics.hasDiagnostics) {
-      responsePayload.diagnostics = diagnostics.summary;
-    }
-  }
-
-  return {
-    content: JSON.stringify(responsePayload),
-    success: applyResult.success,
-    errorCategory: applyResult.success ? undefined : "validation",
-    errorMessage: applyResult.success ? undefined : applyResult.message,
-  };
-}
-
-async function autoExecuteShellProposal(params: {
-  workspacePath: string;
-  shell: string;
-  timeoutMs: number;
-  blockUntilMs: number;
-  autoApprovalMeta?: Record<string, unknown>;
-  signal?: AbortSignal;
-}): Promise<ToolExecutionResult> {
-  // For install/build commands the default blockUntilMs is 90 000 ms.
-  // If the caller left timeoutMs at the default (120 000), the JS deadline and
-  // the Rust hard-kill would fire almost simultaneously. Raise the hard timeout
-  // so the command keeps running in the background after the deadline.
-  const effectiveTimeoutMs =
-    params.blockUntilMs === INSTALL_BUILD_BLOCK_UNTIL_MS &&
-    params.timeoutMs <= INSTALL_BUILD_BLOCK_UNTIL_MS
-      ? INSTALL_BUILD_TIMEOUT_MS
-      : Math.max(params.timeoutMs, params.blockUntilMs + 5_000);
-
-  const deadlineResult = await awaitShellCommandWithDeadline({
-    workspacePath: params.workspacePath,
-    shell: params.shell,
-    timeoutMs: effectiveTimeoutMs,
-    blockUntilMs: params.blockUntilMs,
-    maxOutputBytes: DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
-    signal: params.signal,
-  });
-
-  if (deadlineResult.moved_to_background) {
-    return {
-      content: JSON.stringify({
-        ok: true,
-        action_type: "shell",
-        auto_executed: true,
-        shell: params.shell,
-        moved_to_background: true,
-        job_id: deadlineResult.job_id,
-        stdout: deadlineResult.partial_stdout,
-        stderr: deadlineResult.partial_stderr,
-        exit_code: null,
-        timed_out: false,
-        message: `命令在 ${params.blockUntilMs}ms 内未完成，已自动转为后台运行。如需检查进程状态，可使用 propose_shell(shell='kill -0 <pid>') 或重新运行相关命令。`,
-        ...(params.autoApprovalMeta ?? {}),
-      }),
-      success: true,
-    };
-  }
-
-  const cmdResult = deadlineResult.result;
-
-  return {
-    content: JSON.stringify({
-      ok: cmdResult.success,
-      action_type: "shell",
-      auto_executed: true,
-      shell: params.shell,
-      stdout: cmdResult.stdout,
-      stderr: cmdResult.stderr,
-      stdout_truncated: cmdResult.stdout_truncated ?? false,
-      stderr_truncated: cmdResult.stderr_truncated ?? false,
-      stdout_total_bytes: cmdResult.stdout_total_bytes ?? cmdResult.stdout.length,
-      stderr_total_bytes: cmdResult.stderr_total_bytes ?? cmdResult.stderr.length,
-      output_limit_bytes: cmdResult.output_limit_bytes ?? DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
-      exit_code: cmdResult.status,
-      timed_out: cmdResult.timed_out,
-      ...(params.autoApprovalMeta ?? {}),
-    }),
-    success: cmdResult.success,
-    errorCategory: cmdResult.success ? undefined : "validation",
-    errorMessage: cmdResult.success
-      ? undefined
-      : `命令执行失败 (exit ${cmdResult.status})`,
-  };
-}
-
-function parseJsonObject(value: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(value);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-function buildShellDialectRepairInstruction(
-  toolCall: ToolCallRecord,
-  toolResult: ToolExecutionResult,
-): string | null {
-  if (toolCall.function.name !== "propose_shell" || toolResult.success !== false) {
-    return null;
-  }
-
-  const args = parseJsonObject(toolCall.function.arguments);
-  const shell = typeof args?.shell === "string" ? args.shell.trim() : "";
-  if (!shell) {
-    return null;
-  }
-
-  const payload = parseJsonObject(toolResult.content);
-  if (payload?.auto_executed !== true) {
-    return null;
-  }
-
-  const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
-  const stdout = typeof payload.stdout === "string" ? payload.stdout : "";
-  const rawError = [toolResult.errorMessage, stderr, stdout]
-    .filter((value): value is string => Boolean(value))
-    .join("\n");
-  const normalizedError = rawError.toLowerCase();
-  const normalizedShell = shell.toLowerCase();
-  const usesDialectSpecificSyntax =
-    normalizedShell.includes("&&") || normalizedShell.includes("mkdir -p");
-  const looksLikePowerShellFailure = [
-    "parsererror",
-    "at line:",
-    "categoryinfo",
-    "fullyqualifiederrorid",
-    "not a valid statement separator",
-    "parameterbindingexception",
-    "positional parameter cannot be found that accepts argument '-p'",
-  ].some((marker) => normalizedError.includes(marker));
-
-  if (!usesDialectSpecificSyntax || !looksLikePowerShellFailure) {
-    return null;
-  }
-
-  return [
-    "系统提示：上一轮自动执行的 propose_shell 失败，错误看起来像 shell 方言不匹配。",
-    `失败命令：${shell}`,
-    `错误信息：${rawError.trim().slice(0, 1200) || "命令执行失败"}`,
-    "当前 Windows 执行器实际使用 PowerShell（powershell -NoProfile -Command）。不要重复使用 bash/cmd 风格写法如 mkdir -p 或 &&。",
-    "请保持任务目标不变，依据 stderr 改写为 PowerShell 语法后重新调用 propose_shell：创建目录用 New-Item -ItemType Directory -Force <目录>，命令串联用 ;，删除目录用 Remove-Item -Recurse -Force <路径>。",
-    "仅允许一次自动修复重试。",
-  ].join("\n");
-}
-
-/**
- * Generate a short human-readable preview of tool call arguments.
- */
-function extractStringArg(
-  argsJson: string,
-  keys: string[],
-): string {
-  try {
-    const parsed = JSON.parse(argsJson) as Record<string, unknown>;
-    for (const key of keys) {
-      const value = parsed[key];
-      if (typeof value === "string" && value.trim()) {
-        return value.trim();
-      }
-    }
-  } catch {
-    // Fall through to partial-JSON extraction below.
-  }
-
-  for (const key of keys) {
-    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = argsJson.match(
-      new RegExp(`"${escapedKey}"\\s*:\\s*"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)`)
-    );
-    if (match?.[1]) {
-      return match[1].replace(/\\"/g, "\"").trim();
-    }
-  }
-
-  return "";
-}
-
-function summarizeToolArgs(toolName: string, argsJson: string): string {
-  const pathPreview = extractStringArg(argsJson, [
-    "relative_path",
-    "file_path",
-    "path",
-  ]);
-
-  switch (toolName) {
-    case "read_file":
-      return pathPreview;
-    case "list_files":
-      return pathPreview || "/";
-    case "grep": {
-      const pattern = extractStringArg(argsJson, ["pattern"]);
-      const includeGlob = extractStringArg(argsJson, ["include_glob"]);
-      return pattern
-        ? `"${pattern.slice(0, 30)}"${includeGlob ? ` in ${includeGlob}` : ""}`
-        : "";
-    }
-    case "glob":
-      return extractStringArg(argsJson, ["pattern"]).slice(0, 40);
-    case "git_status":
-      return "";
-    case "git_diff":
-      return pathPreview || "(all)";
-    case "propose_file_edit":
-      return pathPreview;
-    case "propose_apply_patch": {
-      const patch = extractStringArg(argsJson, ["patch"]);
-      const match = patch.match(/^diff --git a\/(.+?) b\//m);
-      return match ? match[1] : "(patch)";
-    }
-    case "propose_shell": {
-      const cmd = extractStringArg(argsJson, ["shell"]);
-      return cmd.length > 50 ? cmd.slice(0, 47) + "..." : cmd;
-    }
-    case "task": {
-      const role = extractStringArg(argsJson, ["role"]);
-      const description = extractStringArg(argsJson, ["description"]);
-      return role ? `${role}: ${description.slice(0, 30)}...` : "";
-    }
-    case "update_plan": {
-      const operation = extractStringArg(argsJson, ["operation"]);
-      const stepId = extractStringArg(argsJson, ["step_id"]);
-      return `${operation}: ${stepId}`.trim();
-    }
-    case "diagnostics":
-      return argsJson.includes("\"changed_files\"") ? "changed files" : "(all)";
-    case "fetch":
-      return extractStringArg(argsJson, ["url"]).slice(0, 50);
-    default:
-      return "";
-  }
-}
-
-function limitJsonField(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  return value.slice(0, maxChars) + "\n...[truncated]";
-}
-
-function trimToolContentForContext(toolName: string, jsonText: string): string {
-  // Tool content is JSON string. We structurally trim heavy fields per tool.
-  try {
-    const obj = JSON.parse(jsonText) as Record<string, any>;
-
-    if (toolName === "read_file") {
-      if (typeof obj.content_preview === "string") {
-        obj.content_preview = limitJsonField(
-          obj.content_preview,
-          MAX_TOOL_OUTPUT_CHARS
-        );
-      }
-      // Keep hint/metadata; never include any full raw file contents field.
-    }
-
-    if (toolName === "grep") {
-      if (typeof obj.matches_preview === "string") {
-        obj.matches_preview = limitJsonField(
-          obj.matches_preview,
-          MAX_GREP_PREVIEW_CHARS
-        );
-      }
-      if (
-        typeof obj.match_count === "number" &&
-        obj.match_count > MAX_GREP_PREVIEW_MATCHES
-      ) {
-        obj.note = `matches_preview 已限制为前 ${MAX_GREP_PREVIEW_MATCHES} 条，并做了字符裁剪。`;
-      }
-    }
-
-    if (toolName === "glob") {
-      if (typeof obj.files_preview === "string") {
-        obj.files_preview = limitJsonField(
-          obj.files_preview,
-          MAX_GLOB_PREVIEW_CHARS
-        );
-      }
-      if (
-        typeof obj.file_count === "number" &&
-        obj.file_count > MAX_GLOB_PREVIEW_FILES
-      ) {
-        obj.note = `files_preview 已限制为前 ${MAX_GLOB_PREVIEW_FILES} 条，并做了字符裁剪。`;
-      }
-    }
-
-    if (toolName === "diagnostics") {
-      // diagnostics tool already aggregates; just cap preview.
-      if (typeof obj.diagnostics_preview === "string") {
-        obj.diagnostics_preview = limitJsonField(
-          obj.diagnostics_preview,
-          MAX_TOOL_OUTPUT_CHARS
-        );
-      }
-    }
-
-    if (toolName === "fetch") {
-      if (typeof obj.content_preview === "string") {
-        obj.content_preview = limitJsonField(
-          obj.content_preview,
-          MAX_FETCH_PREVIEW_CHARS
-        );
-      }
-    }
-
-    if (toolName === "propose_shell") {
-      if (typeof obj.stdout === "string") {
-        obj.stdout = limitJsonField(
-          obj.stdout,
-          MAX_SHELL_TOOL_PREVIEW_CHARS
-        );
-      }
-      if (typeof obj.stderr === "string") {
-        obj.stderr = limitJsonField(
-          obj.stderr,
-          MAX_SHELL_TOOL_PREVIEW_CHARS
-        );
-      }
-    }
-
-    const stringified = JSON.stringify(obj);
-    if (stringified.length <= MAX_TOOL_OUTPUT_CHARS) {
-      return stringified;
-    }
-
-    // Absolute hard cap
-    const hard = smartTruncateWithHint(
-      stringified,
-      MAX_TOOL_OUTPUT_CHARS,
-      `tool(${toolName}) 输出过长，已做硬裁剪。`
-    );
-    return hard.text;
-  } catch {
-    // Not JSON or parse failed: fallback to char cap
-    const hard = smartTruncateWithHint(
-      jsonText,
-      MAX_TOOL_OUTPUT_CHARS,
-      `tool(${toolName}) 输出过长，已做硬裁剪。`
-    );
-    return hard.text;
-  }
-}
-
-function renderListEntries(entries: FileEntry[]): string {
-  const sorted = [...entries].sort((left, right) => {
-    if (left.is_dir !== right.is_dir) {
-      return left.is_dir ? -1 : 1;
-    }
-    return left.name.localeCompare(right.name);
-  });
-  const preview = sorted.slice(0, MAX_LIST_ENTRIES).map((entry) => {
-    if (entry.is_dir) {
-      return `[DIR] ${entry.name}/`;
-    }
-    return `[FILE] ${entry.name} (${entry.size}B)`;
-  });
-  if (sorted.length > MAX_LIST_ENTRIES) {
-    preview.push(`... ${sorted.length - MAX_LIST_ENTRIES} entries omitted`);
-  }
-  return preview.join("\n");
-}
-
-const SUB_AGENT_MAX_TURNS_DEFAULT = 20;
-const MAX_SUB_AGENT_RETRIES = 2;
-
-export interface SubAgentResult {
-  reply: string;
-  status: SubAgentCompletionStatus;
-  proposedActions: ActionProposal[];
-  toolTrace: ToolExecutionTrace[];
-  turnCount: number;
-  structuredOutput?: StructuredSubAgentOutput;
-  feedback?: SubAgentFeedback;
-  verdict?: "pass" | "fail";
-}
-
-export async function executeSubAgentTask(
-  role: string,
-  taskDescription: string,
-  workspacePath: string,
-  settings: AppSettings,
-  toolPermissions: ToolPermissions,
-  workingMemory?: WorkingMemory,
-  onProgress?: (event: SubAgentProgressEvent) => void,
-  signal?: AbortSignal,
-  focusedPaths?: string[],
-  existingProjectConfig?: CofreeRcConfig,
-): Promise<SubAgentResult> {
-  const agentDef = DEFAULT_AGENTS.find(
-    (agent) => agent.role === role && agent.allowAsSubAgent
-  );
-  if (!agentDef) {
-    return {
-      reply: `角色 "${role}" 不可用作 Sub-Agent。`,
-      status: "failed" as SubAgentCompletionStatus,
-      proposedActions: [],
-      toolTrace: [],
-      turnCount: 0,
-    };
-  }
-
-  const maxTurns = agentDef.subAgentMaxTurns ?? SUB_AGENT_MAX_TURNS_DEFAULT;
-  const subAgentTools = selectToolDefinitions(
-    agentDef.tools.filter((toolName) => toolName !== "task")
-  );
-
-  // Compute context budgets for sub-agent
-  const limitTokens = resolveEffectiveContextTokenLimit(settings);
-  const adaptiveParams = computeAdaptiveCompressionParams(limitTokens);
-  const outputBufferTokens = Math.min(8000, Math.max(512, Math.floor(limitTokens * adaptiveParams.outputReserveRatio)));
-  const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
-  const softPromptBudget = Math.floor(hardPromptBudget * adaptiveParams.softBudgetRatio);
-  const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
-  const inferredFocusedPaths = collectSubAgentFocusedPaths(
-    taskDescription,
-    workingMemory,
-    role as SubAgentRole,
-    focusedPaths,
-  );
-  let matchedRuleContext = "";
-
-  if (workspacePath.trim()) {
-    try {
-      const projectConfig = existingProjectConfig ?? await loadCofreeRc(workspacePath);
-      matchedRuleContext = await buildMatchedContextRuleNote({
-        targetPaths: inferredFocusedPaths,
-        settings: {
-          ...settings,
-          workspacePath,
-        },
-        projectConfig,
-        ignorePatterns:
-          projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
-            ? projectConfig.ignorePatterns
-            : null,
-        excludedPaths: inferredFocusedPaths,
-        heading: "[命中的项目规则]",
-      });
-    } catch (error) {
-      console.warn("[SubAgent] Failed to load matched project rules", error);
-    }
-  }
-
-  // Inject shared Working Memory context (at most 15% of token budget)
-  const memoryContext = workingMemory
-    ? serializeWorkingMemory(
-      workingMemory,
-      Math.floor(promptBudgetTarget * 0.15),
-      role as SubAgentRole,
-      {
-        query: taskDescription,
-        focusedPaths: inferredFocusedPaths,
-      },
-    )
-    : "";
-
-  const subAgentSystemPrompt = [
-    `你是 Cofree 的 ${agentDef.displayName} Sub-Agent。`,
-    `你的专长：${agentDef.promptIntent}`,
-    `当前工作区: ${workspacePath}`,
-    agentDef.workflowTemplate ? `\n## 标准工作流\n${agentDef.workflowTemplate}` : "",
-    matchedRuleContext ? `\n${matchedRuleContext}` : "",
-    memoryContext ? `\n## 已知上下文\n${memoryContext}` : "",
-    "你正在执行一个被委派的子任务。请专注于完成任务并返回结果。",
-    "完成任务后，请简洁地汇报结果。不要提出超出任务范围的额外建议。",
-    "严禁输出伪工具调用标签。回复语言与任务描述保持一致。",
-    [
-      "\n如果你发现任务描述不够清晰或缺少必要信息，请在回复中使用以下 JSON 格式标记：",
-      '```json',
-      '{"status": "need_clarification", "reason": "...", "missingContext": ["..."]}',
-      '```',
-      "如果遇到阻塞无法继续，请标记：",
-      '```json',
-      '{"status": "blocked", "reason": "...", "blockedBy": "...", "suggestedAction": "..."}',
-      '```',
-    ].join("\n"),
-  ].filter(Boolean).join("\n");
-
-  const messages: LiteLLMMessage[] = [
-    { role: "system", content: subAgentSystemPrompt },
-    { role: "user", content: taskDescription },
-  ];
-
-  const proposedActions: ActionProposal[] = [];
-  const toolTrace: ToolExecutionTrace[] = [];
-  let subToolNotFoundStrikes = 0;
-  let subConsecutiveFailureTurns = 0;
-
-  // P2-1: Force propose-only mode for sub-agents — never auto-execute write operations.
-  // All write side effects must bubble back to the parent for approval.
-  const subAgentToolPermissions: ToolPermissions = {
-    ...toolPermissions,
-    propose_file_edit: "ask",
-    propose_apply_patch: "ask",
-    propose_shell: "ask",
-  };
-
-  // P0-2: Include tool definition overhead for sub-agent.
-  const subToolDefTokens = estimateTokensForToolDefinitions(subAgentTools);
-  const compressionPolicy = {
-    maxPromptTokens: promptBudgetTarget,
-    minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
-    minRecentMessagesToKeep: adaptiveParams.minRecentMessagesToKeep,
-    recentTokensMinRatio: adaptiveParams.recentTokensMinRatio,
-    toolMessageMaxChars: adaptiveParams.toolMessageMaxChars,
-    mergeToolMessages: true,
-    toolDefinitionTokens: subToolDefTokens,
-  };
-  const summarizer = {
-    canSummarize: () => {
-      const estTokens = estimateTokensForMessages(messages);
-      return canSummarizeNow(workspacePath, estTokens);
-    },
-    summarize: (messagesToSummarize: LiteLLMMessage[]) =>
-      requestSummary(messagesToSummarize, settings, { workspacePath }),
-    markSummarized: () => markSummarizedNow(workspacePath),
-  };
-
-  console.log(`[SubAgent] 启动 | role=${role} | maxTurns=${maxTurns} | tools=${subAgentTools.length}`);
-  onProgress?.({ kind: "summary", message: `${agentDef.displayName} Sub-Agent 已启动` });
-
-  for (let turn = 0; turn < maxTurns; turn += 1) {
-    // Check for user abort
-    if (signal?.aborted) {
-      console.log(`[SubAgent] 用户中断 | turn=${turn}`);
-      onProgress?.({ kind: "summary", message: `${agentDef.displayName} 已被用户中断` });
-      return {
-        reply: "Sub-Agent 已被用户中断。",
-        status: "partial" as SubAgentCompletionStatus,
-        proposedActions,
-        toolTrace,
-        turnCount: turn,
-      };
-    }
-
-    console.log(`[SubAgent] ── Turn ${turn + 1}/${maxTurns} ── messages=${messages.length}`);
-
-    const pinnedPrefixLen = initialSystemPrefixLength(messages);
-
-    const compression = await compressMessagesToFitBudget({
-      messages,
-      policy: compressionPolicy,
-      summarizer,
-      pinnedPrefixLen,
-    });
-    if (compression.compressed && compression.messages !== messages) {
-      const beforeLen = messages.length;
-      messages.splice(0, messages.length, ...compression.messages);
-      console.log(`[SubAgent] 上下文压缩: ${beforeLen} → ${messages.length} messages`);
-    }
-
-
-    const completion = await requestToolCompletion(
-      messages,
-      settings,
-      subAgentTools
-    );
-    messages.push(completion.assistantMessage);
-
-    // P1-3: Calibrate token estimates from sub-agent API responses (per-model).
-    if (completion.requestRecord.inputTokens) {
-      const estBeforeCall = estimateTokensForMessages(messages) + subToolDefTokens;
-      updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens, settings.model);
-    }
-
-    if (!completion.toolCalls.length) {
-      if (completion.droppedToolCalls > 0) {
-        console.warn(`[SubAgent] ${completion.droppedToolCalls} 个工具调用因格式畸形被丢弃`);
-        messages.push({
-          role: "system",
-          content: `系统提示：${completion.droppedToolCalls} 个工具调用因格式畸形被丢弃。请使用正确格式重试。`,
-        });
-        continue;
-      }
-      console.log(`[SubAgent] 完成 | turns=${turn + 1}`);
-      const finalReply = completion.assistantMessage.content.trim();
-      const structuredOutput = tryExtractStructuredOutput(role, finalReply);
-      if (structuredOutput) {
-        console.log(`[SubAgent] 提取到结构化输出 | role=${structuredOutput.role}`);
-      }
-      const feedbackResult = tryExtractFeedback(finalReply);
-      const resolvedStatus: SubAgentCompletionStatus = feedbackResult?.status ?? "completed";
-      if (feedbackResult) {
-        console.log(`[SubAgent] 提取到反馈 | status=${resolvedStatus} | reason=${feedbackResult.feedback?.reason}`);
-      }
-      return {
-        reply: finalReply,
-        status: resolvedStatus,
-        proposedActions,
-        toolTrace,
-        turnCount: turn + 1,
-        structuredOutput,
-        feedback: feedbackResult?.feedback,
-      };
-    }
-
-    const subToolNames = completion.toolCalls.map((tc) => tc.function.name);
-    console.log(`[SubAgent] Turn ${turn + 1} 收到 ${completion.toolCalls.length} 个工具调用: [${subToolNames.join(", ")}]`);
-
-    let subTurnHasToolNotFound = false;
-    let subTurnSuccessCount = 0;
-    let subTurnFailureCount = 0;
-    for (const toolCall of completion.toolCalls) {
-      onProgress?.({ kind: "tool_start", toolName: toolCall.function.name, turn, maxTurns });
-      const subToolT0 = performance.now();
-      const { result: toolResult, trace } = await executeToolCallWithRetry(
-        toolCall,
-        workspacePath,
-        subAgentToolPermissions,
-        settings,
-        undefined,
-        [],
-        agentDef.tools,
-        undefined,
-        workingMemory,
-        undefined,
-        signal,
-        turn,
-        inferredFocusedPaths,
-        undefined,
-        undefined,
-        "disabled",
-      );
-      const subToolDurationMs = performance.now() - subToolT0;
-      const subToolMs = subToolDurationMs.toFixed(0);
-      onProgress?.({
-        kind: "tool_complete",
-        toolName: toolCall.function.name,
-        success: toolResult.success !== false,
-        durationMs: Math.round(subToolDurationMs),
-      });
-      console.log(
-        `[SubAgent][Tool] ${toolCall.function.name} → ${trace.status} | ${subToolMs}ms` +
-        (trace.status === "failed" ? ` | ${trace.errorMessage}` : "")
-      );
-      toolTrace.push(trace);
-
-      if (toolResult.success === false) {
-        subTurnFailureCount += 1;
-        if (toolResult.errorCategory === "tool_not_found") {
-          subTurnHasToolNotFound = true;
-        }
-      } else {
-        subTurnSuccessCount += 1;
-        // Feed successful tool results back into shared Working Memory
-        if (workingMemory) {
-          try {
-            const parsedArgs = JSON.parse(toolCall.function.arguments || "{}");
-            const knowledge = extractFileKnowledge(
-              toolCall.function.name,
-              parsedArgs,
-              toolResult.content,
-              role,
-            );
-            if (knowledge) {
-              workingMemory.fileKnowledge.set(knowledge.relativePath, knowledge);
-            }
-          } catch {
-            // Ignore parse errors for working memory extraction
-          }
-        }
-      }
-
-      if (toolResult.proposedAction) {
-        proposedActions.push(toolResult.proposedAction);
-        onProgress?.({
-          kind: "action_proposed",
-          actionType: toolResult.proposedAction.type,
-          description: toolResult.proposedAction.description,
-        });
-      }
-
-      messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
-        name: toolCall.function.name,
-        content: trimToolContentForContext(
-          toolCall.function.name,
-          toolResult.content
-        ),
-      });
-    }
-
-    // --- Circuit breaker: tool_not_found ---
-    if (subTurnHasToolNotFound) {
-      subToolNotFoundStrikes += 1;
-    } else {
-      subToolNotFoundStrikes = 0;
-    }
-    if (subToolNotFoundStrikes >= MAX_TOOL_NOT_FOUND_STRIKES) {
-      console.warn(`[SubAgent] 熔断: tool_not_found 连续 ${subToolNotFoundStrikes} 轮`);
-      return {
-        reply: "Sub-Agent 多次调用不存在的工具，已自动终止。",
-        status: "failed" as SubAgentCompletionStatus,
-        proposedActions,
-        toolTrace,
-        turnCount: turn + 1,
-      };
-    }
-    if (subToolNotFoundStrikes > 0) {
-      const subToolNames = subAgentTools.map((t) => t.function.name);
-      messages.push({
-        role: "system",
-        content: [
-          `系统提示：你调用了不存在的工具（连续 ${subToolNotFoundStrikes} 轮）。`,
-          `你只能使用以下工具: [${subToolNames.join(", ")}]`,
-          "请严格从上述列表中选择工具，不要臆造工具名称。",
-        ].join("\n"),
-      });
-    }
-
-    // --- Circuit breaker: consecutive all-failure turns ---
-    if (subTurnSuccessCount === 0 && subTurnFailureCount > 0) {
-      subConsecutiveFailureTurns += 1;
-    } else {
-      subConsecutiveFailureTurns = 0;
-    }
-    if (subConsecutiveFailureTurns >= MAX_CONSECUTIVE_FAILURE_TURNS) {
-      console.warn(`[SubAgent] 熔断: 连续 ${subConsecutiveFailureTurns} 轮全部失败`);
-      return {
-        reply: "Sub-Agent 连续多轮工具调用全部失败，已自动终止。",
-        status: "failed" as SubAgentCompletionStatus,
-        proposedActions,
-        toolTrace,
-        turnCount: turn + 1,
-      };
-    }
-  }
-
-  console.warn(`[SubAgent] 达到轮次上限 (${maxTurns})，强制返回`);
-  return {
-    reply: "Sub-Agent 达到工具调用轮次上限，已返回当前进度。",
-    status: "partial" as SubAgentCompletionStatus,
-    proposedActions,
-    toolTrace,
-    turnCount: maxTurns,
-  };
-}
-
-function buildRetryDescription(
-  originalDescription: string,
-  previousResult: SubAgentResult,
-  workingMemory?: WorkingMemory,
-): string {
-  const parts = [originalDescription];
-
-  if (previousResult.feedback) {
-    parts.push(
-      "\n## 上一次尝试的反馈",
-      `状态: ${previousResult.status}`,
-      `原因: ${previousResult.feedback.reason}`,
-    );
-    if (previousResult.feedback.missingContext?.length) {
-      parts.push(`缺少的上下文: ${previousResult.feedback.missingContext.join(", ")}`);
-      // Try to supplement from Working Memory
-      if (workingMemory) {
-        for (const ctx of previousResult.feedback.missingContext) {
-          const matchingFile = [...workingMemory.fileKnowledge.values()].find(
-            (fk) => fk.relativePath.includes(ctx) || ctx.includes(fk.relativePath),
-          );
-          if (matchingFile) {
-            parts.push(`补充信息 - ${matchingFile.relativePath}: ${matchingFile.summary}`);
-          }
-        }
-      }
-    }
-    if (previousResult.feedback.suggestedAction) {
-      parts.push(`建议: ${previousResult.feedback.suggestedAction}`);
-    }
-  }
-
-  return parts.join("\n");
-}
-
-interface DiagnosticEntry {
-  file: string;
-  line: number;
-  column: number;
-  severity: string;
-  message: string;
-}
-
-interface DiagnosticsResult {
-  success: boolean;
-  diagnostics: DiagnosticEntry[];
-  tool_used: string;
-  raw_output: string;
-}
-
-async function fetchPostPatchDiagnostics(
-  workspacePath: string,
-  changedFiles: string[]
-): Promise<{ hasDiagnostics: boolean; summary: string }> {
-  try {
-    const result = await invoke<DiagnosticsResult>(
-      "get_workspace_diagnostics",
-      {
-        workspacePath,
-        changedFiles,
-      }
-    );
-    if (
-      !result.success ||
-      result.tool_used === "none" ||
-      result.diagnostics.length === 0
-    ) {
-      return { hasDiagnostics: false, summary: "" };
-    }
-    const relevantDiagnostics = result.diagnostics.slice(0, 10);
-    const lines = relevantDiagnostics.map(
-      (d) =>
-        `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${d.message
-        }`
-    );
-    const summary = `[诊断反馈 via ${result.tool_used}] 发现 ${result.diagnostics.length
-      } 个问题:\n${lines.join("\n")}`;
-    return { hasDiagnostics: true, summary };
-  } catch {
-    return { hasDiagnostics: false, summary: "" };
-  }
-}
+const toolExecutorDeps: ToolExecutorDeps = {
+  createActionId,
+  nowIso,
+  actionFingerprint,
+  setActivePlanStep,
+  setPlanStepStatus,
+  addPlanStep,
+  appendPlanStepNote,
+  formatTodoPlanBlock,
+  smartTruncate,
+};
 
 async function executeToolCall(
   call: ToolCallRecord,
@@ -3956,1380 +1805,33 @@ async function executeToolCall(
   toolPermissions: ToolPermissions = DEFAULT_TOOL_PERMISSIONS,
   settings?: AppSettings,
   projectConfig?: CofreeRcConfig,
-  allowedSubAgents?: SubAgentRole[],
   enabledToolNames?: string[],
   planState?: TodoPlanState,
   workingMemory?: WorkingMemory,
-  onSubAgentProgress?: (event: SubAgentProgressEvent) => void,
   signal?: AbortSignal,
   turn?: number,
-  focusedPaths?: string[],
+  _focusedPaths?: string[],
   sessionId?: string,
   onAskUserRequest?: (request: AskUserRequest) => void,
   autoExecutionPolicy: SensitiveWriteAutoExecutionPolicy = "allow",
 ): Promise<ToolExecutionResult> {
-  const safeWorkspace = workspacePath.trim();
-  if (!safeWorkspace) {
-    const message = "未选择工作区。";
-    return {
-      content: JSON.stringify({ error: message }),
-      success: false,
-      errorCategory: "workspace",
-      errorMessage: message,
-    };
-  }
-
-  let args: Record<string, unknown> = {};
-  try {
-    args = JSON.parse(call.function.arguments) as Record<string, unknown>;
-  } catch (_error) {
-    const message = "tool arguments 不是合法 JSON";
-    return {
-      content: JSON.stringify({ error: message }),
-      success: false,
-      errorCategory: "validation",
-      errorMessage: message,
-    };
-  }
-
-  try {
-    if (call.function.name === "list_files") {
-      const relativePath = normalizeRelativePath(args.relative_path);
-      const ignorePatterns =
-        projectConfig?.ignorePatterns && projectConfig.ignorePatterns.length > 0
-          ? projectConfig.ignorePatterns
-          : null;
-      const entries = await invoke<FileEntry[]>("list_workspace_files", {
-        workspacePath: safeWorkspace,
-        relativePath,
-        ignorePatterns,
-      });
-      const resultContent = JSON.stringify({
-        ok: true,
-        relative_path: relativePath,
-        entry_count: entries.length,
-        entries_preview: renderListEntries(entries),
-      });
-
-      return {
-        content: resultContent,
-        success: true,
-      };
-    }
-
-    if (call.function.name === "read_file") {
-      const relativePath = normalizeRelativePath(args.relative_path);
-      const startLine = normalizeOptionalPositiveInt(args.start_line);
-      const endLine = normalizeOptionalPositiveInt(args.end_line);
-      if (!relativePath) {
-        const message = "relative_path 不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      if (startLine && endLine && startLine > endLine) {
-        const message = "start_line 不能大于 end_line";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-
-      // --- 读取去重：仅对无行范围的全文读取进行去重 ---
-      if (!startLine && !endLine && workingMemory && turn !== undefined) {
-        const existing = workingMemory.fileKnowledge.get(relativePath);
-        if (existing && existing.lastReadTurn !== undefined
-          && (turn - existing.lastReadTurn) < DEDUP_TURN_WINDOW) {
-          return {
-            success: true,
-            content: JSON.stringify({
-              status: "cached",
-              message: `此文件已在第 ${existing.lastReadTurn + 1} 轮读取过（当前第 ${turn + 1} 轮）。`,
-              cached_summary: existing.summary,
-              total_lines: existing.totalLines,
-              language: existing.language || "unknown",
-              hint: "如需查看特定区域，请使用 start_line/end_line 参数精确读取。如需更新信息，请使用 grep 搜索特定内容。",
-            }),
-          };
-        }
-      }
-
-      const result = await invoke<{
-        content: string;
-        total_lines: number;
-        start_line: number;
-        end_line: number;
-      }>("read_workspace_file", {
-        workspacePath: safeWorkspace,
-        relativePath,
-        startLine,
-        endLine,
-        ignorePatterns:
-          projectConfig?.ignorePatterns &&
-            projectConfig.ignorePatterns.length > 0
-            ? projectConfig.ignorePatterns
-            : null,
-      });
-
-      // Add line numbers to content for model orientation
-      const lines = result.content.split("\n");
-      // Remove trailing empty line from split if content ends with \n
-      if (lines.length > 0 && lines[lines.length - 1] === "") {
-        lines.pop();
-      }
-      const numbered = lines
-        .map((line, i) => `${result.start_line + i}│${line}`)
-        .join("\n");
-      const trimmed = smartTruncate(numbered, MAX_FILE_PREVIEW_CHARS);
-      const wasTruncated = numbered.length > MAX_FILE_PREVIEW_CHARS;
-
-      const resultContent = JSON.stringify({
-        ok: true,
-        relative_path: relativePath,
-        total_lines: result.total_lines,
-        showing_lines: `${result.start_line}-${result.end_line}`,
-        content_preview: trimmed,
-        truncated: wasTruncated,
-        ...(wasTruncated
-          ? {
-            hint: `文件共 ${result.total_lines} 行，当前预览已被截断（仅显示头部和尾部）。` +
-              `若需编辑此文件，请勿直接从预览中复制长段落作为 search 片段（可能与实际内容不一致）。` +
-              `推荐：先用 read_file 的 start_line/end_line 读取目标区域的精确内容，再用 propose_file_edit 的 start_line/end_line 行范围方式编辑。`,
-          }
-          : {}),
-      });
-
-      return {
-        content: resultContent,
-        success: true,
-      };
-    }
-
-    if (call.function.name === "git_status") {
-      const status = await invoke<{
-        modified: string[];
-        added: string[];
-        deleted: string[];
-        untracked: string[];
-      }>("git_status_workspace", {
-        workspacePath: safeWorkspace,
-      });
-
-      const resultContent = JSON.stringify({
-        ok: true,
-        ...status,
-      });
-
-      return {
-        content: resultContent,
-        success: true,
-      };
-    }
-
-    if (call.function.name === "git_diff") {
-      const filePath = normalizeRelativePath(args.file_path);
-      const diff = await invoke<string>("git_diff_workspace", {
-        workspacePath: safeWorkspace,
-        filePath: filePath || null,
-      });
-
-      const resultContent = JSON.stringify({
-        ok: true,
-        file_path: filePath || null,
-        diff_preview: smartTruncate(diff, MAX_FILE_PREVIEW_CHARS),
-        truncated: diff.length > MAX_FILE_PREVIEW_CHARS,
-      });
-
-      return {
-        content: resultContent,
-        success: true,
-      };
-    }
-
-    if (call.function.name === "grep") {
-      const pattern = asString(args.pattern).trim();
-      if (!pattern) {
-        const message = "pattern 不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      const includeGlob = asString(args.include_glob).trim() || null;
-      const maxResults = normalizeOptionalPositiveInt(args.max_results) ?? 50;
-      const result = await invoke<{
-        matches: Array<{ file: string; line: number; content: string }>;
-        truncated: boolean;
-      }>("grep_workspace_files", {
-        workspacePath: safeWorkspace,
-        pattern,
-        includeGlob,
-        maxResults,
-        ignorePatterns:
-          projectConfig?.ignorePatterns &&
-            projectConfig.ignorePatterns.length > 0
-            ? projectConfig.ignorePatterns
-            : null,
-      });
-      const matchCount = result.matches.length;
-      const preview = result.matches
-        .slice(0, 30)
-        .map((m) => `${m.file}:${m.line}│${m.content}`)
-        .join("\n");
-
-      const resultContent = JSON.stringify({
-        ok: true,
-        pattern,
-        include_glob: includeGlob,
-        match_count: matchCount,
-        truncated: result.truncated,
-        matches_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
-      });
-
-      return {
-        content: resultContent,
-        success: true,
-      };
-    }
-
-    if (call.function.name === "glob") {
-      const pattern = asString(args.pattern).trim();
-      if (!pattern) {
-        const message = "pattern 不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      const maxResults = normalizeOptionalPositiveInt(args.max_results) ?? 100;
-      const entries = await invoke<
-        Array<{ path: string; size: number; modified: number }>
-      >("glob_workspace_files", {
-        workspacePath: safeWorkspace,
-        pattern,
-        maxResults,
-        ignorePatterns:
-          projectConfig?.ignorePatterns &&
-            projectConfig.ignorePatterns.length > 0
-            ? projectConfig.ignorePatterns
-            : null,
-      });
-      const preview = entries
-        .slice(0, 60)
-        .map((e) => `${e.path} (${e.size}B)`)
-        .join("\n");
-
-      const resultContent = JSON.stringify({
-        ok: true,
-        pattern,
-        file_count: entries.length,
-        files_preview: smartTruncate(preview, MAX_FILE_PREVIEW_CHARS),
-      });
-
-      return {
-        content: resultContent,
-        success: true,
-      };
-    }
-
-    if (call.function.name === "update_plan") {
-      if (!planState) {
-        const message = "update_plan 缺少当前计划上下文";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-
-      const operation = asString(args.operation).trim();
-      const stepId = asString(args.step_id).trim();
-      const note = asString(args.note).trim();
-      if (!operation) {
-        const message = "operation 不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      if (!stepId) {
-        const message = "step_id 不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-
-      let message = "";
-      switch (operation) {
-        case "set_active":
-          message = setActivePlanStep(planState, stepId);
-          break;
-        case "complete":
-          message = setPlanStepStatus(planState, stepId, "completed", note);
-          break;
-        case "block":
-          message = setPlanStepStatus(planState, stepId, "blocked", note);
-          break;
-        case "fail":
-          message = setPlanStepStatus(planState, stepId, "failed", note);
-          break;
-        case "skip":
-          message = setPlanStepStatus(planState, stepId, "skipped", note);
-          break;
-        case "note": {
-          const target = planState.steps.find((step) => step.id === stepId);
-          if (!target) {
-            message = `未找到步骤 ${stepId}`;
-          } else {
-            appendPlanStepNote(target, note || asString(args.summary).trim());
-            message = `步骤「${target.title}」备注已更新`;
-          }
-          break;
-        }
-        case "add": {
-          const title = asString(args.title).trim() || stepId;
-          if (!title) {
-            message = "operation=add 时必须提供 title";
-            break;
-          }
-          const added = addPlanStep(planState, {
-            title,
-            summary: asString(args.summary).trim(),
-            owner: (["planner", "coder", "tester", "debugger", "reviewer"].includes(asString(args.owner).trim())
-              ? (asString(args.owner).trim() as PlanStep["owner"])
-              : undefined),
-            afterStepId: asString(args.after_step_id).trim() || undefined,
-            note,
-          });
-          message = `已新增步骤「${added.title}」`;
-          break;
-        }
-        default:
-          message = `不支持的 update_plan operation: ${operation}`;
-      }
-
-      const isError = message.startsWith("未找到") || message.startsWith("不支持") || message.startsWith("operation=");
-      return {
-        content: JSON.stringify({
-          ok: !isError,
-          action_type: "update_plan",
-          operation,
-          step_id: stepId,
-          message,
-          active_step_id: planState.activeStepId ?? null,
-          plan_summary: formatTodoPlanBlock(planState),
-          steps: planState.steps.map((step) => ({
-            id: step.id,
-            title: step.title,
-            owner: step.owner,
-            status: step.status,
-            linkedActionIds: step.linkedActionIds ?? [],
-          })),
-        }),
-        success: !isError,
-        errorCategory: isError ? "validation" : undefined,
-        errorMessage: isError ? message : undefined,
-      };
-    }
-
-    if (call.function.name === "propose_apply_patch") {
-      const patch = asString(args.patch).trim();
-      if (!patch) {
-        const message = "patch 不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      const preflight = await invoke<PatchApplyResult>(
-        "check_workspace_patch",
-        {
-          workspacePath: safeWorkspace,
-          patch,
-        }
-      );
-      if (!preflight.success) {
-        const message = `Patch 预检失败: ${preflight.message}`;
-        return {
-          content: JSON.stringify({
-            error: message,
-            files: preflight.files,
-          }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      if (preflight.files.length > 1) {
-        const message = `propose_apply_patch 仅允许单文件 patch；当前 patch 涉及 ${preflight.files.length} 个文件。请改用 propose_file_edit 按文件逐个提交。`;
-        return {
-          content: JSON.stringify({
-            error: message,
-            files: preflight.files,
-          }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      const actionBase: ActionProposal = {
-        id: createActionId("gate-a-apply-patch"),
-        toolCallId: call.id,
-        toolName: call.function.name,
-        planStepId: planState?.activeStepId,
-        type: "apply_patch",
-        description: asString(
-          args.description,
-          "Apply generated patch to workspace (Gate A)"
-        ),
-        gateRequired: true,
-        status: "pending",
-        executed: false,
-        payload: {
-          patch,
-        },
-      };
-      const action: ActionProposal = {
-        ...actionBase,
-        fingerprint: actionFingerprint(actionBase),
-      };
-      const matchedRule = findMatchingApprovalRule(safeWorkspace, action);
-      const autoApprovalSource = resolveSensitiveActionAutoApprovalSource({
-        permissionLevel: toolPermissions.propose_apply_patch,
-        matchedRule,
-        autoExecutionPolicy,
-      });
-      if (autoApprovalSource) {
-        return autoExecutePatchProposal({
-          workspacePath: safeWorkspace,
-          patch,
-          autoApprovalMeta: buildAutoApprovalMeta(autoApprovalSource, matchedRule),
-        });
-      }
-      return {
-        content: JSON.stringify({
-          ok: true,
-          action_type: "apply_patch",
-          action_id: action.id,
-          patch_length: patch.length,
-          files: preflight.files,
-        }),
-        success: true,
-        proposedAction: action,
-      };
-    }
-
-    if (call.function.name === "propose_file_edit") {
-      const relativePath = normalizeRelativePath(args.relative_path);
-      const operationRaw = asString(args.operation, "replace")
-        .trim()
-        .toLowerCase();
-      const operation = operationRaw || "replace";
-      const applyAll = asBoolean(
-        args.apply_all,
-        asBoolean(args.replace_all, false)
-      );
-      const positionCandidate = asString(args.position, "after")
-        .trim()
-        .toLowerCase();
-      const insertPosition =
-        positionCandidate === "before" ? "before" : "after";
-      const line = normalizeOptionalPositiveInt(args.line);
-      const startLine = normalizeOptionalPositiveInt(args.start_line);
-      const endLine = normalizeOptionalPositiveInt(args.end_line);
-      if (!relativePath) {
-        const message = "relative_path 不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      let patch = "";
-      const responseMeta: Record<string, unknown> = {
-        mode: "file_edit",
-        operation,
-        relative_path: relativePath,
-        apply_all: applyAll,
-      };
-      if (line) {
-        responseMeta.line = line;
-      }
-      if (startLine) {
-        responseMeta.start_line = startLine;
-      }
-      if (endLine) {
-        responseMeta.end_line = endLine;
-      }
-
-      if (endLine && !startLine) {
-        const message = "提供 end_line 时必须同时提供 start_line";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      if (startLine && endLine && startLine > endLine) {
-        const message = "start_line 不能大于 end_line";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-
-      if (operation === "create") {
-        const createContent = asString(args.content, asString(args.replace));
-        const overwrite = asBoolean(args.overwrite, false);
-        if (!createContent) {
-          const message = "create 操作要求 content 非空。operation='create' 必须提供 content 参数，包含要写入的完整文件内容。";
-          return {
-            content: JSON.stringify({ error: message }),
-            success: false,
-            errorCategory: "validation",
-            errorMessage: message,
-          };
-        }
-
-        let existingContent: string | null = null;
-        try {
-          existingContent = (
-            await invoke<{
-              content: string;
-              total_lines: number;
-              start_line: number;
-              end_line: number;
-            }>("read_workspace_file", {
-              workspacePath: safeWorkspace,
-              relativePath,
-            })
-          ).content;
-        } catch (_error) {
-          existingContent = null;
-        }
-
-        if (existingContent !== null && !overwrite) {
-          const message = `目标文件已存在: ${relativePath}（如需覆盖请设置 overwrite=true）`;
-          return {
-            content: JSON.stringify({ error: message }),
-            success: false,
-            errorCategory: "validation",
-            errorMessage: message,
-          };
-        }
-
-        patch =
-          existingContent === null
-            ? buildCreateFilePatch(relativePath, createContent)
-            : await buildReplacementPatch(
-              relativePath,
-              existingContent,
-              createContent
-            );
-        responseMeta.created = existingContent === null;
-        responseMeta.overwrite = overwrite;
-      } else {
-        let original = "";
-        let fileExists = true;
-        try {
-          original = (
-            await invoke<{
-              content: string;
-              total_lines: number;
-              start_line: number;
-              end_line: number;
-            }>("read_workspace_file", {
-              workspacePath: safeWorkspace,
-              relativePath,
-            })
-          ).content;
-          // Normalize CRLF → LF so search snippets (which models always generate with \n) match correctly
-          original = original.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-        } catch (_readError) {
-          fileExists = false;
-          // File doesn't exist — auto-detect as create intent
-          const createContent = asString(args.content, asString(args.replace));
-          if (createContent) {
-            patch = buildCreateFilePatch(relativePath, createContent);
-            responseMeta.auto_create = true;
-            responseMeta.operation = "create";
-          } else {
-            const message = `文件不存在: ${relativePath}。若要创建新文件，请使用 operation='create' 并提供 content 参数`;
-            return {
-              content: JSON.stringify({ error: message }),
-              success: false,
-              errorCategory: "validation",
-              errorMessage: message,
-            };
-          }
-        }
-        if (!patch && fileExists) {
-          let nextContent = original;
-
-          if (operation === "replace") {
-            if (startLine) {
-              const replacement = asString(
-                args.content,
-                asString(args.replace)
-              );
-              nextContent = replaceByLineRange(
-                original,
-                startLine,
-                endLine ?? startLine,
-                replacement
-              );
-              responseMeta.selection_mode = "line_range";
-            } else {
-              const search = stripLineNumberPrefixes(asString(args.search));
-              const replace = asString(args.replace);
-              if (!search) {
-                const message =
-                  "replace 操作要求 search 非空，或提供 start_line/end_line。若要创建新文件，请改用 operation='create' 并提供 content 参数";
-                return {
-                  content: JSON.stringify({ error: message }),
-                  success: false,
-                  errorCategory: "validation",
-                  errorMessage: message,
-                };
-              }
-              const hits = countOccurrences(original, search);
-              if (hits < 1) {
-                const message = `search 片段未找到: ${relativePath}。search 必须精确匹配文件内容（不含行号前缀）。建议改用 start_line/end_line 行范围方式编辑。`;
-                return {
-                  content: JSON.stringify({ error: message }),
-                  success: false,
-                  errorCategory: "validation",
-                  errorMessage: message,
-                };
-              }
-              if (!applyAll && hits > 1) {
-                const message = `search 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
-                return {
-                  content: JSON.stringify({ error: message }),
-                  success: false,
-                  errorCategory: "validation",
-                  errorMessage: message,
-                };
-              }
-
-              nextContent = applyAll
-                ? original.split(search).join(replace)
-                : original.replace(search, replace);
-              responseMeta.matched = hits;
-            }
-          } else if (operation === "insert") {
-            const insertContent = asString(
-              args.content,
-              asString(args.replace)
-            );
-            if (!insertContent) {
-              const message = "insert 操作要求 content 非空";
-              return {
-                content: JSON.stringify({ error: message }),
-                success: false,
-                errorCategory: "validation",
-                errorMessage: message,
-              };
-            }
-            if (line) {
-              nextContent = insertByLine(
-                original,
-                line,
-                insertContent,
-                insertPosition
-              );
-              responseMeta.selection_mode = "line_anchor";
-              responseMeta.position = insertPosition;
-            } else {
-              const anchor = stripLineNumberPrefixes(
-                asString(args.anchor, asString(args.search))
-              );
-              if (!anchor) {
-                const message = "insert 操作要求 anchor 非空，或提供 line";
-                return {
-                  content: JSON.stringify({ error: message }),
-                  success: false,
-                  errorCategory: "validation",
-                  errorMessage: message,
-                };
-              }
-              const hits = countOccurrences(original, anchor);
-              if (hits < 1) {
-                const message = `anchor 片段未找到: ${relativePath}。anchor 必须精确匹配文件内容（不含行号前缀）。建议改用 line 参数指定插入位置。`;
-                return {
-                  content: JSON.stringify({ error: message }),
-                  success: false,
-                  errorCategory: "validation",
-                  errorMessage: message,
-                };
-              }
-              if (!applyAll && hits > 1) {
-                const message = `anchor 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
-                return {
-                  content: JSON.stringify({ error: message }),
-                  success: false,
-                  errorCategory: "validation",
-                  errorMessage: message,
-                };
-              }
-
-              const anchored =
-                insertPosition === "before"
-                  ? `${insertContent}${anchor}`
-                  : `${anchor}${insertContent}`;
-              nextContent = applyAll
-                ? original.split(anchor).join(anchored)
-                : original.replace(anchor, anchored);
-              responseMeta.matched = hits;
-              responseMeta.position = insertPosition;
-            }
-          } else if (operation === "delete") {
-            if (startLine) {
-              nextContent = replaceByLineRange(
-                original,
-                startLine,
-                endLine ?? startLine,
-                ""
-              );
-              responseMeta.selection_mode = "line_range";
-            } else {
-              const search = stripLineNumberPrefixes(
-                asString(args.search, asString(args.anchor))
-              );
-              if (!search) {
-                const message =
-                  "delete 操作要求 search 非空，或提供 start_line/end_line。若目标是删除整个文件，请改用 propose_run_command 执行 rm <relative_path>。";
-                return {
-                  content: JSON.stringify({ error: message }),
-                  success: false,
-                  errorCategory: "validation",
-                  errorMessage: message,
-                };
-              }
-              const hits = countOccurrences(original, search);
-              if (hits < 1) {
-                const message = `search 片段未找到: ${relativePath}。search 必须精确匹配文件内容（不含行号前缀）。建议改用 start_line/end_line 行范围方式编辑。`;
-                return {
-                  content: JSON.stringify({ error: message }),
-                  success: false,
-                  errorCategory: "validation",
-                  errorMessage: message,
-                };
-              }
-              if (!applyAll && hits > 1) {
-                const message = `search 片段出现多次（${hits} 次）；请提供更精确片段或设置 apply_all=true`;
-                return {
-                  content: JSON.stringify({ error: message }),
-                  success: false,
-                  errorCategory: "validation",
-                  errorMessage: message,
-                };
-              }
-
-              nextContent = applyAll
-                ? original.split(search).join("")
-                : original.replace(search, "");
-              responseMeta.matched = hits;
-            }
-          } else {
-            const message = `不支持的 file edit operation: ${operation}`;
-            return {
-              content: JSON.stringify({ error: message }),
-              success: false,
-              errorCategory: "validation",
-              errorMessage: message,
-            };
-          }
-
-          patch = await buildReplacementPatch(
-            relativePath,
-            original,
-            nextContent
-          );
-        } // end if (!patch && fileExists)
-      }
-
-      const preflight = await invoke<PatchApplyResult>(
-        "check_workspace_patch",
-        {
-          workspacePath: safeWorkspace,
-          patch,
-        }
-      );
-      if (!preflight.success) {
-        const message = `Patch 预检失败: ${preflight.message}`;
-        return {
-          content: JSON.stringify({
-            error: message,
-            files: preflight.files,
-          }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-
-      const action: ActionProposal = {
-        id: createActionId("gate-a-apply-patch"),
-        toolCallId: call.id,
-        toolName: call.function.name,
-        planStepId: planState?.activeStepId,
-        type: "apply_patch",
-        description: asString(
-          args.description,
-          `Apply structured edit for ${relativePath} (Gate A)`
-        ),
-        gateRequired: true,
-        status: "pending",
-        executed: false,
-        payload: {
-          patch,
-        },
-      };
-      action.fingerprint = actionFingerprint(action);
-      const matchedRule = findMatchingApprovalRule(safeWorkspace, action);
-      const autoApprovalSource = resolveSensitiveActionAutoApprovalSource({
-        permissionLevel: toolPermissions.propose_file_edit,
-        matchedRule,
-        autoExecutionPolicy,
-      });
-      if (autoApprovalSource) {
-        return autoExecutePatchProposal({
-          workspacePath: safeWorkspace,
-          patch,
-          responseMeta,
-          autoApprovalMeta: buildAutoApprovalMeta(autoApprovalSource, matchedRule),
-        });
-      }
-      return {
-        content: JSON.stringify({
-          ok: true,
-          action_type: "apply_patch",
-          action_id: action.id,
-          patch_length: patch.length,
-          files: preflight.files,
-          ...responseMeta,
-        }),
-        success: true,
-        proposedAction: action,
-      };
-    }
-
-    if (call.function.name === "propose_shell") {
-      const shell = asString(args.shell).trim();
-      if (!shell) {
-        const message = "shell 命令不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      const timeout = Math.max(
-        1000,
-        Math.min(600000, asNumber(args.timeout_ms, 120000))
-      );
-      if (timeout < 1000 || timeout > 600000) {
-        const message = "timeout_ms 必须在 1000-600000 之间";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      const blockUntilMs = inferBlockUntilMs(shell, args.block_until_ms);
-      const executionMode = resolveShellExecutionMode(shell, args.execution_mode);
-      const readyUrl = resolveShellReadyUrl({
-        shell,
-        preferredUrl: args.ready_url,
-        executionMode,
-      });
-      const readyTimeoutMs = resolveShellReadyTimeoutMs(
-        args.ready_timeout_ms,
-        executionMode,
-      );
-      const action: ActionProposal = {
-        id: createActionId("gate-shell"),
-        toolCallId: call.id,
-        toolName: call.function.name,
-        planStepId: planState?.activeStepId,
-        type: "shell",
-        description: asString(
-          args.description,
-          executionMode === "background"
-            ? "Launch background service (Gate)"
-            : "Execute shell command (Gate)",
-        ),
-        gateRequired: true,
-        status: "pending",
-        executed: false,
-        payload: {
-          shell,
-          timeoutMs: timeout,
-          blockUntilMs,
-          executionMode,
-          readyUrl,
-          readyTimeoutMs,
-        },
-      };
-      action.fingerprint = actionFingerprint(action);
-      const matchedRule = findMatchingApprovalRule(safeWorkspace, action);
-      const autoApprovalSource = resolveSensitiveActionAutoApprovalSource({
-        permissionLevel: toolPermissions.propose_shell,
-        matchedRule,
-        autoExecutionPolicy,
-      });
-      if (autoApprovalSource && executionMode === "foreground") {
-        return autoExecuteShellProposal({
-          workspacePath: safeWorkspace,
-          shell,
-          timeoutMs: timeout,
-          blockUntilMs,
-          autoApprovalMeta: buildAutoApprovalMeta(autoApprovalSource, matchedRule),
-          signal,
-        });
-      }
-      return {
-        content: JSON.stringify({
-          action_type: "shell",
-          action_id: action.id,
-          shell,
-          timeout_ms: timeout,
-          execution_mode: executionMode,
-          ready_url: readyUrl,
-          ready_timeout_ms: readyTimeoutMs,
-          approval_required: true,
-          proposal_created: true,
-          execution_state: "pending_approval",
-          command_executed: false,
-          action_status: action.status,
-          message:
-            executionMode === "background"
-              ? "后台 Shell 命令已创建待审批动作，将在审批后异步启动。"
-              : "Shell 命令已创建待审批动作，尚未执行。",
-        }),
-        success: true,
-        traceStatus: "pending_approval",
-        proposedAction: action,
-      };
-    }
-
-    if (call.function.name === "check_shell_job") {
-      const jobId = asString(args.job_id).trim();
-      if (!jobId) {
-        return {
-          content: JSON.stringify({ error: "job_id 不能为空" }),
-          success: false,
-          errorCategory: "validation" as const,
-          errorMessage: "job_id 不能为空",
-        };
-      }
-      try {
-        const status = await checkShellJob(jobId);
-        const message = !status.found
-          ? "该 job 未找到（从未存在或早于当前会话）"
-          : status.completed
-          ? status.success
-            ? `进程已完成（exit_code=${status.exit_code ?? 0}）`
-            : `进程已失败（exit_code=${status.exit_code ?? -1}，timed_out=${status.timed_out ?? false}）`
-          : status.running
-          ? "进程仍在运行中"
-          : "进程已退出（结果尚未记录）";
-        return {
-          content: JSON.stringify({
-            job_id: jobId,
-            running: status.running,
-            found: status.found,
-            completed: status.completed,
-            cancelled: status.cancelled ?? false,
-            ...(status.completed
-              ? {
-                  success: status.success,
-                  exit_code: status.exit_code,
-                  timed_out: status.timed_out ?? false,
-                  stdout: status.stdout ?? "",
-                  stderr: status.stderr ?? "",
-                }
-              : {}),
-            message,
-          }),
-          success: true,
-        };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return {
-          content: JSON.stringify({ error: msg }),
-          success: false,
-          errorCategory: "validation" as const,
-          errorMessage: msg,
-        };
-      }
-    }
-
-    if (call.function.name === "task") {
-      const role = asString(args.role).trim();
-      const description = asString(args.description).trim();
-      if (!role) {
-        const message = "role 不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      if (!description) {
-        const message = "description 不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-
-      const validRoles: string[] = allowedSubAgents !== undefined
-        ? [...allowedSubAgents]
-        : DEFAULT_AGENTS.filter((agent) => agent.allowAsSubAgent).map((agent) => agent.role);
-      if (!validRoles.includes(role)) {
-        const message = allowedSubAgents !== undefined
-          ? `当前 Agent 不允许委派给 "${role}" 角色。可用角色: ${validRoles.join(", ") || "(无)"}`
-          : `无效的 Sub-Agent 角色: "${role}"。可用角色: ${validRoles.join(", ")}`;
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      if (!settings) {
-        const message = "task 工具需要 settings 上下文，当前调用缺少 settings";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      // --- Retry loop: Sub-Agent may request clarification ---
-      let lastResult: SubAgentResult | null = null;
-      for (let attempt = 0; attempt <= MAX_SUB_AGENT_RETRIES; attempt++) {
-        const enrichedDescription = attempt === 0
-          ? description
-          : buildRetryDescription(description, lastResult!, workingMemory);
-
-        const subResult = await executeSubAgentTask(
-          role,
-          enrichedDescription,
-          safeWorkspace,
-          settings,
-          toolPermissions,
-          workingMemory,
-          onSubAgentProgress,
-          signal,
-          focusedPaths,
-          projectConfig,
-        );
-        lastResult = subResult;
-
-        if (subResult.status === "completed" || attempt >= MAX_SUB_AGENT_RETRIES) {
-          break;
-        }
-        if (subResult.status === "need_clarification" && subResult.feedback) {
-          console.log(`[SubAgent] 需要澄清 (attempt ${attempt + 1}): ${subResult.feedback.reason}`);
-          continue;
-        }
-        if (subResult.status === "blocked") {
-          break;
-        }
-        // For partial/failed without feedback, no point retrying
-        break;
-      }
-
-      const subResult = lastResult!;
-
-      // Record sub-agent execution in Working Memory
-      if (workingMemory) {
-        const keyFindings: string[] = [];
-        if (subResult.structuredOutput?.role === "planner") {
-          const plannerData = subResult.structuredOutput.data;
-          if (plannerData.architectureNotes) {
-            addDiscoveredFact(workingMemory, {
-              category: "architecture",
-              content: plannerData.architectureNotes,
-              source: `planner:${description.slice(0, 100)}`,
-              confidence: "high",
-            });
-          }
-          keyFindings.push(...plannerData.tasks.map((t) => t.title));
-        }
-        recordSubAgentExecution(workingMemory, {
-          role: role as SubAgentRole,
-          taskDescription: description,
-          replySummary: subResult.reply.slice(0, 500),
-          proposedActionCount: subResult.proposedActions.length,
-          keyFindings,
-        });
-      }
-
-      // P1-1 & P1-3: Return full result with multi-action support and correct success mapping
-      const isSuccess = subResult.status === "completed" || subResult.status === "partial";
-      const responsePayload: Record<string, unknown> = {
-        ok: subResult.status === "completed",
-        action_type: "sub_agent_task",
-        role,
-        status: subResult.status,
-        completionStatus: subResult.status,
-        turn_count: subResult.turnCount,
-        reply: subResult.reply,
-        proposed_action_count: subResult.proposedActions.length,
-        tool_call_count: subResult.toolTrace.length,
-        structured_output: subResult.structuredOutput?.data ?? null,
-        feedback: subResult.feedback ?? null,
-        child_action_count: subResult.proposedActions.length,
-        child_failure_count: subResult.toolTrace.filter((t) => t.status === "failed").length,
-      };
-      const result: ToolExecutionResult = {
-        content: JSON.stringify(responsePayload),
-        success: isSuccess,
-        completionStatus: subResult.status,
-      };
-      // P1-1: Return all proposed actions, not just the first
-      if (subResult.proposedActions.length > 0) {
-        result.proposedActions = subResult.proposedActions;
-        result.proposedAction = subResult.proposedActions[0];
-      }
-      return result;
-    }
-
-    if (call.function.name === "diagnostics") {
-      const changedFiles = Array.isArray(args.changed_files)
-        ? (args.changed_files as string[])
-          .map((f) => String(f).trim())
-          .filter(Boolean)
-        : undefined;
-      const result = await invoke<{
-        success: boolean;
-        diagnostics: Array<{
-          file: string;
-          line: number;
-          column: number;
-          severity: string;
-          message: string;
-        }>;
-        tool_used: string;
-        raw_output: string;
-      }>("get_workspace_diagnostics", {
-        workspacePath: safeWorkspace,
-        changedFiles:
-          changedFiles && changedFiles.length > 0 ? changedFiles : null,
-      });
-
-      const errorCount = result.diagnostics.filter(
-        (d) => d.severity === "error"
-      ).length;
-      const warningCount = result.diagnostics.filter(
-        (d) => d.severity === "warning"
-      ).length;
-      const diagnosticsPreview = result.diagnostics
-        .slice(0, 50)
-        .map(
-          (d) =>
-            `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${d.message
-            }`
-        )
-        .join("\n");
-
-      return {
-        content: JSON.stringify({
-          ok: true,
-          tool_used: result.tool_used,
-          error_count: errorCount,
-          warning_count: warningCount,
-          total_diagnostics: result.diagnostics.length,
-          diagnostics_preview: smartTruncate(
-            diagnosticsPreview,
-            MAX_FILE_PREVIEW_CHARS
-          ),
-        }),
-        success: true,
-      };
-    }
-
-    if (call.function.name === "fetch") {
-      const url = asString(args.url).trim();
-      if (!url) {
-        const message = "url 不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-      const maxSize = normalizeOptionalPositiveInt(args.max_size);
-      const result = await invoke<{
-        success: boolean;
-        url: string;
-        content_type: string | null;
-        content: string;
-        truncated: boolean;
-        error: string | null;
-      }>("fetch_url", {
-        url,
-        maxSize: maxSize || null,
-        proxy: settings?.proxy ?? null,
-      });
-
-      if (!result.success) {
-        const errorMsg = result.error || "请求失败";
-        return {
-          content: JSON.stringify({
-            ok: false,
-            url: result.url,
-            error: errorMsg,
-          }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: errorMsg,
-        };
-      }
-
-      return {
-        content: JSON.stringify({
-          ok: true,
-          url: result.url,
-          content_type: result.content_type,
-          truncated: result.truncated,
-          content_preview: smartTruncate(
-            result.content,
-            MAX_FILE_PREVIEW_CHARS
-          ),
-        }),
-        success: true,
-      };
-    }
-
-    if (call.function.name === "ask_user") {
-      const question = asString(args.question).trim();
-      if (!question) {
-        const message = "question 不能为空";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-
-      const context = asString(args.context).trim() || undefined;
-      const options = Array.isArray(args.options)
-        ? (args.options as string[]).map((opt) => String(opt).trim()).filter(Boolean)
-        : undefined;
-      const allowMultiple = args.allow_multiple !== undefined ? asBoolean(args.allow_multiple, false) : false;
-      const required = args.required !== undefined ? asBoolean(args.required, true) : true;
-
-      if (!sessionId) {
-        const message = "ask_user 工具需要 sessionId，当前调用缺少 session 上下文";
-        return {
-          content: JSON.stringify({ error: message }),
-          success: false,
-          errorCategory: "validation",
-          errorMessage: message,
-        };
-      }
-
-      const requestId = createAskUserRequest(
-        sessionId,
-        question,
-        context,
-        options,
-        allowMultiple,
-        required
-      );
-
-      // Notify UI so it can show the dialog
-      onAskUserRequest?.({
-        id: requestId,
-        sessionId,
-        question,
-        context,
-        options,
-        allowMultiple,
-        required,
-        timestamp: new Date().toISOString(),
-      });
-
-      // Block tool loop until user responds (or cancels / signal aborts)
-      let userResponse;
-      try {
-        userResponse = await waitForUserResponse(requestId, signal);
-      } catch (_err) {
-        return {
-          content: JSON.stringify({
-            ok: false,
-            request_id: requestId,
-            skipped: true,
-            response: null,
-            message: "用户取消了输入请求。",
-          }),
-          success: true,
-        };
-      }
-
-      return {
-        content: JSON.stringify({
-          ok: true,
-          request_id: requestId,
-          question,
-          response: userResponse.response || null,
-          skipped: userResponse.skipped,
-          options: options || null,
-        }),
-        success: true,
-      };
-    }
-
-    return {
-      content: JSON.stringify({
-        error: `"${call.function.name}" is not a valid tool, try one of [${(enabledToolNames ?? ALL_TOOL_NAMES).join(", ")}].`,
-      }),
-      success: false,
-      errorCategory: "tool_not_found",
-      errorMessage: `未知工具: ${call.function.name}`,
-    };
-  } catch (error) {
-    const message = String(error || "Unknown error");
-    return {
-      content: JSON.stringify({ error: message }),
-      success: false,
-      errorCategory: classifyToolError(message),
-      errorMessage: message,
-    };
-  }
+  return executeToolCallInternal(
+    call,
+    workspacePath,
+    toolExecutorDeps,
+    toolPermissions,
+    settings,
+    projectConfig,
+    enabledToolNames,
+    planState,
+    workingMemory,
+    signal,
+    turn,
+    _focusedPaths,
+    sessionId,
+    onAskUserRequest,
+    autoExecutionPolicy,
+  );
 }
 
 async function executeToolCallWithRetry(
@@ -5338,14 +1840,12 @@ async function executeToolCallWithRetry(
   toolPermissions: ToolPermissions = DEFAULT_TOOL_PERMISSIONS,
   settings?: AppSettings,
   projectConfig?: CofreeRcConfig,
-  allowedSubAgents?: SubAgentRole[],
   enabledToolNames?: string[],
   planState?: TodoPlanState,
   workingMemory?: WorkingMemory,
-  onSubAgentProgress?: (event: SubAgentProgressEvent) => void,
   signal?: AbortSignal,
   turn?: number,
-  focusedPaths?: string[],
+  _focusedPaths?: string[],
   sessionId?: string,
   onAskUserRequest?: (request: AskUserRequest) => void,
   autoExecutionPolicy: SensitiveWriteAutoExecutionPolicy = "allow",
@@ -5353,504 +1853,25 @@ async function executeToolCallWithRetry(
   result: ToolExecutionResult;
   trace: ToolExecutionTrace;
 }> {
-  const startedAt = nowIso();
-  let attempts = 0;
-  let lastResult: ToolExecutionResult = {
-    content: JSON.stringify({ error: "工具调用未执行" }),
-    success: false,
-    errorCategory: "unknown",
-    errorMessage: "工具调用未执行",
-  };
-
-  while (attempts < MAX_TOOL_RETRY) {
-    attempts += 1;
-
-    // Apply exponential backoff delay between retry attempts
-    if (attempts > 1) {
-      const retryDelay = computeToolRetryDelay(attempts);
-      console.log(
-        `[ToolRetry] 工具 "${call.function.name}" 第 ${attempts} 次重试，延迟 ${Math.round(retryDelay)}ms`
-      );
-      await sleep(retryDelay, signal);
-    }
-
-    const current = await executeToolCall(
-      call,
-      workspacePath,
-      toolPermissions,
-      settings,
-      projectConfig,
-      allowedSubAgents,
-      enabledToolNames,
-      planState,
-      workingMemory,
-      onSubAgentProgress,
-      signal,
-      turn,
-      focusedPaths,
-      sessionId,
-      onAskUserRequest,
-      autoExecutionPolicy,
-    );
-    const success = current.success !== false;
-    const traceStatus: ToolExecutionStatus = success
-      ? current.traceStatus ?? "success"
-      : "failed";
-    const errorCategory =
-      current.errorCategory ?? (success ? undefined : "unknown");
-    const errorMessage =
-      current.errorMessage ?? (success ? undefined : "工具调用失败");
-    lastResult = {
-      ...current,
-      success,
-      errorCategory,
-      errorMessage,
-      traceStatus,
-    };
-
-    if (success) {
-      return {
-        result: lastResult,
-        trace: {
-          callId: call.id,
-          name: call.function.name,
-          arguments: call.function.arguments,
-          startedAt,
-          finishedAt: nowIso(),
-          attempts,
-          status: traceStatus,
-          retried: attempts > 1,
-          resultPreview: resultPreview(current.content),
-        },
-      };
-    }
-
-    if (!shouldRetryToolCall(errorCategory ?? "unknown")) {
-      break;
-    }
-  }
-
-  // Append contextual error recovery hint to help the LLM self-correct
-  const recoveryHint = buildToolErrorRecoveryHint(
-    call.function.name,
-    lastResult.errorCategory ?? "unknown",
-    lastResult.errorMessage ?? "未知错误",
-  );
-  const enrichedContent = (() => {
-    try {
-      const parsed = JSON.parse(lastResult.content);
-      parsed._recovery_hint = recoveryHint;
-      return JSON.stringify(parsed);
-    } catch {
-      return JSON.stringify({
-        error: lastResult.errorMessage ?? "工具调用失败",
-        _recovery_hint: recoveryHint,
-      });
-    }
-  })();
-
-  return {
-    result: {
-      ...lastResult,
-      content: enrichedContent,
-    },
-    trace: {
-      callId: call.id,
-      name: call.function.name,
-      arguments: call.function.arguments,
-      startedAt,
-      finishedAt: nowIso(),
-      attempts,
-      status: "failed",
-      retried: attempts > 1,
-      errorCategory: lastResult.errorCategory,
-      errorMessage: lastResult.errorMessage,
-      resultPreview: resultPreview(enrichedContent),
-    },
-  };
-}
-
-/* requestToolCompletion: Non-streaming variant (retained for local-only fallback) */
-export async function requestToolCompletion(
-  messages: LiteLLMMessage[],
-  settings: AppSettings,
-  activeTools: LiteLLMToolDefinition[],
-  signal?: AbortSignal,
-  toolChoiceOverride?: "auto" | "none",
-  runtime?: ResolvedAgentRuntime | null,
-): Promise<{
-  assistantMessage: LiteLLMMessage;
-  toolCalls: ToolCallRecord[];
-  droppedToolCalls: number;
-  requestRecord: RequestRecord;
-  finishReason?: string;
-}> {
-  if (signal?.aborted) {
-    throw new DOMException("The operation was aborted.", "AbortError");
-  }
-
-  const sanitizedMessages = sanitizeMessagesForToolCalling(messages);
-  const effectiveToolChoice = toolChoiceOverride ?? "model-adapted";
-  const requestModel = runtime?.modelRef || settings.model;
-
-  const t0 = performance.now();
-  console.log(
-    `[LLM] 发送请求 (非流式) | model=${requestModel} | messages=${sanitizedMessages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
-  );
-
-  const response = await gatewayComplete(sanitizedMessages, settings, runtime ?? null, {
-    stream: false,
-    temperature: 0.1,
-    tools: effectiveToolChoice === "none" ? undefined : activeTools,
-    toolChoice:
-      toolChoiceOverride === undefined || toolChoiceOverride === "none"
-        ? undefined
-        : toolChoiceOverride,
-    signal,
-  });
-  const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
-
-  if (response.status < 200 || response.status >= 300) {
-    console.warn(`[LLM] 请求失败 | status=${response.status} | ${elapsed}s`);
-    const detail = parseErrorMessage(response.body, response.status);
-    throw new Error(`服务员响应失败: ${detail}`);
-  }
-
-  const payload = parseCompletionPayload(response.body);
-  const requestId =
-    typeof payload.id === "string" && payload.id.trim()
-      ? payload.id
-      : createRequestId("chat");
-
-  const firstChoice = payload.choices?.[0];
-  const rawMessage = firstChoice?.message;
-  if (!rawMessage) {
-    throw new Error("模型响应缺少 message。");
-  }
-
-  const finishReason = firstChoice?.finish_reason ?? undefined;
-  const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
-  const assistantContent = buildAssistantDisplayContent(rawMessage);
-
-  const inTok = payload.usage?.prompt_tokens;
-  const outTok = payload.usage?.completion_tokens;
-  console.log(
-    `[LLM] 收到响应 | ${elapsed}s | toolCalls=${toolCalls.length}` +
-    (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
-    (finishReason ? ` | finish_reason=${finishReason}` : "") +
-    (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
-    ` | id=${requestId}`
-  );
-
-  if (finishReason === "length") {
-    console.warn(
-      `[LLM] 响应被截断 (finish_reason=length) | 工具调用可能不完整 | id=${requestId}`
-    );
-  }
-
-  const assistantMessage: LiteLLMMessage = {
-    role: "assistant",
-    content: assistantContent,
-    tool_calls: toolCalls.length ? toolCalls : undefined,
-  };
-
-  return {
-    assistantMessage,
-    toolCalls,
-    droppedToolCalls: droppedCount,
-    finishReason,
-    requestRecord: {
-      requestId,
-      inputLength: inputLengthOf(messages),
-      outputLength: response.body.length,
-      inputTokens: inTok ?? undefined,
-      outputTokens: outTok ?? undefined,
-    },
-  };
-}
-
-async function requestToolCompletionWithStream(
-  messages: LiteLLMMessage[],
-  settings: AppSettings,
-  activeTools: LiteLLMToolDefinition[],
-  signal?: AbortSignal,
-  onChunk?: (content: string) => void,
-  onToolCallEvent?: (event: ToolCallEvent) => void,
-  toolChoiceOverride?: "auto" | "none",
-  runtime?: ResolvedAgentRuntime | null,
-): Promise<{
-  assistantMessage: LiteLLMMessage;
-  toolCalls: ToolCallRecord[];
-  droppedToolCalls: number;
-  requestRecord: RequestRecord;
-  finishReason?: string;
-}> {
-  if (signal?.aborted) {
-    throw new DOMException("The operation was aborted.", "AbortError");
-  }
-
-  const sanitizedMessages = sanitizeMessagesForToolCalling(messages);
-  const effectiveToolChoice = toolChoiceOverride ?? "model-adapted";
-  const requestModel = runtime?.modelRef || settings.model;
-
-  const t0 = performance.now();
-  console.log(
-    `[LLM] 发送请求 (流式) | model=${requestModel} | messages=${sanitizedMessages.length} | tools=${activeTools.length} | toolChoice=${effectiveToolChoice}`
-  );
-
-  const response = await gatewayStream(
-    sanitizedMessages,
+  return executeToolCallWithRetryInternal(
+    call,
+    workspacePath,
+    toolExecutorDeps,
+    toolPermissions,
     settings,
-    runtime ?? null,
-    {
-      stream: true,
-      temperature: 0.1,
-      tools: effectiveToolChoice === "none" ? undefined : activeTools,
-      toolChoice:
-        toolChoiceOverride === undefined || toolChoiceOverride === "none"
-          ? undefined
-          : toolChoiceOverride,
-      signal,
-    },
-    (content) => {
-      onChunk?.(content);
-    },
-    (toolCall) => {
-      onToolCallEvent?.({
-        type: "start",
-        callId: toolCall.callId,
-        toolName: toolCall.toolName,
-        argsPreview: summarizeToolArgs(toolCall.toolName, toolCall.arguments),
-      });
-    },
-  );
-
-  const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
-
-  if (response.status < 200 || response.status >= 300) {
-    console.warn(`[LLM] 请求失败 | status=${response.status} | ${elapsed}s`);
-    const detail = parseErrorMessage(response.body, response.status);
-    throw new Error(`服务员响应失败: ${detail}`);
-  }
-
-  const payload = parseCompletionPayload(response.body);
-  const requestId =
-    typeof payload.id === "string" && payload.id.trim()
-      ? payload.id
-      : createRequestId("chat");
-
-  const firstChoice = payload.choices?.[0];
-  const rawMessage = firstChoice?.message;
-  if (!rawMessage) {
-    throw new Error("模型响应缺少 message。");
-  }
-
-  const finishReason = firstChoice?.finish_reason ?? undefined;
-  const { parsed: toolCalls, droppedCount } = parseToolCalls(rawMessage.tool_calls);
-  const assistantContent = buildAssistantDisplayContent(rawMessage);
-
-  const inTok = payload.usage?.prompt_tokens;
-  const outTok = payload.usage?.completion_tokens;
-  console.log(
-    `[LLM] 收到响应 | ${elapsed}s | toolCalls=${toolCalls.length}` +
-    (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
-    (finishReason ? ` | finish_reason=${finishReason}` : "") +
-    (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
-    ` | id=${requestId}`
-  );
-
-  if (finishReason === "length") {
-    console.warn(
-      `[LLM] 响应被截断 (finish_reason=length) | 工具调用可能不完整 | id=${requestId}`
-    );
-  }
-
-  if (!assistantContent.trim() && toolCalls.length === 0) {
-    console.warn("[LLM] 流式响应未解析出文本或工具调用，触发非流式回退");
-    throw new Error("stream returned empty assistant response");
-  }
-
-  const assistantMessage: LiteLLMMessage = {
-    role: "assistant",
-    content: assistantContent,
-    tool_calls: toolCalls.length ? toolCalls : undefined,
-  };
-
-  return {
-    assistantMessage,
-    toolCalls,
-    droppedToolCalls: droppedCount,
-    finishReason,
-    requestRecord: {
-      requestId,
-      inputLength: inputLengthOf(messages),
-      outputLength: response.body.length,
-      inputTokens: inTok ?? undefined,
-      outputTokens: outTok ?? undefined,
-    },
-  };
-}
-
-function hasPreviousAssistantToolCalls(messages: LiteLLMMessage[]): boolean {
-  return messages.some(
-    (message) => message.role === "assistant" && (message.tool_calls?.length ?? 0) > 0,
+    projectConfig,
+    enabledToolNames,
+    planState,
+    workingMemory,
+    signal,
+    turn,
+    _focusedPaths,
+    sessionId,
+    onAskUserRequest,
+    autoExecutionPolicy,
   );
 }
 
-function shouldFallbackToNonStreamingForToolTurn(error: unknown): boolean {
-  const raw = error instanceof Error ? error.message : String(error);
-  const normalized = raw.toLowerCase();
-
-  // Gateway / server errors (streaming infrastructure failure)
-  if (
-    /(?:^|\D)(502|503|504)(?:\D|$)/.test(normalized) ||
-    normalized.includes("bad gateway") ||
-    normalized.includes("gateway") ||
-    normalized.includes("server error") ||
-    normalized.includes("upstream")
-  ) {
-    return true;
-  }
-
-  // Network / transport errors from browser-side streaming fetches. In the
-  // desktop app, non-streaming uses the Rust HTTP bridge and is often able to
-  // recover from these transport-specific failures.
-  if (
-    normalized.includes("connection error") ||
-    normalized.includes("network error") ||
-    normalized.includes("fetch failed") ||
-    normalized.includes("failed to fetch") ||
-    normalized.includes("econn") ||
-    normalized.includes("socket") ||
-    normalized.includes("tls") ||
-    normalized.includes("dns")
-  ) {
-    return true;
-  }
-
-  // JSON parse errors from streamed response assembly
-  if (
-    normalized.includes("json") ||
-    normalized.includes("unexpected token") ||
-    normalized.includes("unexpected end") ||
-    normalized.includes("不是有效 json") ||
-    normalized.includes("模型响应不是有效") ||
-    normalized.includes("invalid json")
-  ) {
-    return true;
-  }
-
-  // Stream-specific errors
-  if (
-    normalized.includes("stream") ||
-    normalized.includes("sse") ||
-    normalized.includes("event source") ||
-    normalized.includes("chunk") ||
-    normalized.includes("incomplete")
-  ) {
-    return true;
-  }
-
-  // Missing message in response (can happen when streaming drops data)
-  if (
-    normalized.includes("缺少 message") ||
-    normalized.includes("missing message") ||
-    normalized.includes("模型响应缺少")
-  ) {
-    return true;
-  }
-
-  return false;
-}
-
-async function executeToolCompletionForTurn(
-  messages: LiteLLMMessage[],
-  settings: AppSettings,
-  runtime: ResolvedAgentRuntime,
-  activeTools: LiteLLMToolDefinition[],
-  turn: number,
-  signal?: AbortSignal,
-  onChunk?: (content: string) => void,
-  onToolCallEvent?: (event: ToolCallEvent) => void,
-  toolChoiceOverride?: "auto" | "none",
-): Promise<{
-  completion: {
-    assistantMessage: LiteLLMMessage;
-    toolCalls: ToolCallRecord[];
-    droppedToolCalls: number;
-    requestRecord: RequestRecord;
-    finishReason?: string;
-  };
-  requestMode: "stream" | "nonstream";
-  highRisk: boolean;
-  highRiskReasons: string[];
-  fallbackTriggered: boolean;
-}> {
-  // Collect risk signals for logging, but always prefer streaming.
-  // Streaming is more resilient to gateway timeouts (no need to wait for
-  // the full response body) and provides a better UX with incremental output.
-  const highRiskReasons: string[] = [];
-  if (hasPreviousAssistantToolCalls(messages)) {
-    highRiskReasons.push("previous_assistant_tool_calls");
-  }
-  const activeVendor = getActiveVendor(settings);
-  if (isHighRiskToolCallingModelCombo(
-    (activeVendor?.protocol || runtime.vendorProtocol || "openai-chat-completions") as import("../lib/settingsStore").VendorProtocol,
-    runtime.modelRef || settings.model,
-  )) {
-    highRiskReasons.push("anthropic_openai_chat_compat");
-  }
-  const highRisk = highRiskReasons.length > 0;
-  // Always prefer streaming; fall back to non-streaming only on failure.
-  const requestMode: "stream" | "nonstream" = "stream";
-
-  console.log(
-    `[Loop][Mode] turn=${turn + 1} | mode=${requestMode} | highRisk=${highRisk}` +
-    ` | reasons=${highRiskReasons.length ? highRiskReasons.join(",") : "none"}`,
-  );
-
-  try {
-    const completion = await requestToolCompletionWithStream(
-      messages,
-      settings,
-      activeTools,
-      signal,
-      onChunk,
-      onToolCallEvent,
-      toolChoiceOverride,
-      runtime,
-    );
-    return {
-      completion,
-      requestMode,
-      highRisk,
-      highRiskReasons,
-      fallbackTriggered: false,
-    };
-  } catch (error) {
-    if (!shouldFallbackToNonStreamingForToolTurn(error)) {
-      throw error;
-    }
-    console.warn(
-      `[Loop][Fallback] turn=${turn + 1} | from=stream | to=nonstream | reason=${error instanceof Error ? error.message : String(error)}`,
-    );
-    const completion = await requestToolCompletion(
-      messages,
-      settings,
-      activeTools,
-      signal,
-      toolChoiceOverride,
-      runtime,
-    );
-    return {
-      completion,
-      requestMode: "nonstream",
-      highRisk,
-      highRiskReasons,
-      fallbackTriggered: true,
-    };
-  }
-}
 
 async function runNativeToolCallingLoop(
   prompt: string,
@@ -5867,7 +1888,6 @@ async function runNativeToolCallingLoop(
   projectConfig?: CofreeRcConfig,
   onToolCallEvent?: (event: ToolCallEvent) => void,
   onContextUpdate?: (estimatedTokens: number) => void,
-  onSubAgentProgress?: (role: string, event: SubAgentProgressEvent) => void,
   onLoopCheckpoint?: RunPlanningSessionInput["onLoopCheckpoint"],
   onPlanStateUpdate?: RunPlanningSessionInput["onPlanStateUpdate"],
   focusedPaths: string[] = [],
@@ -5895,19 +1915,7 @@ async function runNativeToolCallingLoop(
       ...projectConfig.toolPermissions,
     } as ToolPermissions)
     : basePermissions;
-  const patchRepairInstruction =
-    "请读取必要文件片段后，仅针对一个文件重新调用 propose_file_edit；不要再次提交多文件 raw patch。";
-  const createPathRepairInstruction =
-    "若目标是新建文件，请调用 propose_file_edit 并设置 operation='create'；若目录不存在，可先调用 propose_shell 创建目录。Windows/PowerShell 下使用 New-Item -ItemType Directory -Force <目录>；Unix 下可用 mkdir -p <目录>。";
-  const searchNotFoundRepairInstruction =
-    "search/anchor 片段在完整文件中未匹配到（search 必须精确匹配文件内容）。这通常是因为文件较大、read_file 返回的内容被截断，你基于截断视图构造的 search 片段与实际文件内容不一致。" +
-    "\n请改用以下策略之一：" +
-    "\n1. 使用 start_line/end_line 行号范围方式编辑（推荐）：先用 read_file 的 start_line/end_line 参数读取目标区域的精确内容，再用 propose_file_edit 的 start_line/end_line 参数做行范围替换。" +
-    "\n2. 缩短 search 片段：只使用你确定在文件中唯一存在的短片段（1-3 行），避免包含可能被截断的长段落。" +
-    "\n3. 先用 read_file 分段读取目标区域获取精确内容，再构造精确匹配的 search 片段。" +
-    "\n注意：search 中不要包含行号前缀（如 '  10│'），这些仅用于显示。";
-  const taskType = classifyTaskType(prompt);
-  const agentSystemPrompt = assembleSystemPrompt(runtime, taskType);
+  const agentSystemPrompt = assembleSystemPrompt(runtime);
   const effectiveRuntimeContext = assembleRuntimeContext(runtime, settings.workspacePath, INTERNAL_TOOL_NAMES);
   const requestedArtifactCount =
     phase === "default" ? estimateRequestedArtifactCount(prompt) : 0;
@@ -5949,7 +1957,7 @@ async function runNativeToolCallingLoop(
       : [{ role: "user" as const, content: prompt }]),
   ];
   console.log(
-    `[Loop] 会话开始 | phase=${phase} | taskType=${taskType} | continuation=${isContinuation ? "yes" : "no"}`
+    `[Loop] 会话开始 | phase=${phase} | continuation=${isContinuation ? "yes" : "no"}`
   );
   let lastTodoPlanPrompt = upsertTodoPlanContextMessage(messages, planState);
 
@@ -5966,7 +1974,6 @@ async function runNativeToolCallingLoop(
   let searchNotFoundRepairRounds = 0;
   let pseudoToolCallRepairRounds = 0;
   let fileEditFailureTracker = new Map<string, number>(); // relativePath → consecutive fail count
-  const MAX_SAME_FILE_EDIT_FAILURES = 4;
   let consecutiveReadOnlyTurns = 0;
   let toolChoiceOverride: "auto" | "none" | undefined = undefined;
   let lastWorkingMemoryFingerprint = "";
@@ -5991,7 +1998,7 @@ async function runNativeToolCallingLoop(
       });
   if (restoredWorkingMemory) {
     console.log(
-      `[Loop] Working memory restored from checkpoint | files=${workingMemory.fileKnowledge.size} | facts=${workingMemory.discoveredFacts.length} | history=${workingMemory.subAgentHistory.length}`
+      `[Loop] Working memory restored from checkpoint | files=${workingMemory.fileKnowledge.size}`
     );
   }
   const currentWorkingMemorySnapshot = (): WorkingMemorySnapshot | undefined =>
@@ -6011,6 +2018,22 @@ async function runNativeToolCallingLoop(
   // Incremental token tracker — avoids re-scanning all messages on every call.
   const tokenTracker = new MessageTokenTracker();
 
+  const estimateCurrentTokens = (): number => tokenTracker.update(messages);
+
+  const replaceMessages = (nextMessages: LiteLLMMessage[]): void => {
+    if (nextMessages === messages) {
+      return;
+    }
+    messages.splice(0, messages.length, ...nextMessages);
+    tokenTracker.invalidate();
+  };
+
+  const emitContextUpdate = (): number => {
+    const estimatedTokens = estimateCurrentTokens();
+    onContextUpdate?.(estimatedTokens);
+    return estimatedTokens;
+  };
+
   const compressionPolicy = {
     maxPromptTokens: promptBudgetTarget,
     minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
@@ -6022,10 +2045,7 @@ async function runNativeToolCallingLoop(
   };
 
   const summarizer = {
-    canSummarize: () => {
-      const estTokens = tokenTracker.update(messages);
-      return canSummarizeNow(settings.workspacePath, estTokens);
-    },
+    canSummarize: () => canSummarizeNow(settings.workspacePath, estimateCurrentTokens()),
     summarize: (messagesToSummarize: LiteLLMMessage[]) =>
       requestSummary(messagesToSummarize, settings, {
         workspacePath: settings.workspacePath,
@@ -6138,22 +2158,10 @@ async function runNativeToolCallingLoop(
 
     const pinnedPrefixLen = initialSystemPrefixLength(messages);
 
-    const estTokensAtTurnStart = tokenTracker.update(messages);
+    const estTokensAtTurnStart = estimateCurrentTokens();
     console.log(
-      `[Loop] ── Turn ${turn + 1} ── taskType=${taskType} | messages=${messages.length} | ~${estTokensAtTurnStart} tokens`
+      `[Loop] ── Turn ${turn + 1} ── messages=${messages.length} | ~${estTokensAtTurnStart} tokens`
     );
-
-    // Inject task progress summary every 5 turns or when failures accumulate
-    const failedCount = workingMemory.taskProgress.filter((e) => e.status === "failed").length;
-    if (turn > 0 && (turn % 5 === 0 || failedCount >= 3)) {
-      const progressBlock = formatTaskProgressBlock(workingMemory);
-      if (progressBlock) {
-        messages.push({
-          role: "system",
-          content: progressBlock,
-        });
-      }
-    }
 
     if (turn === TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD) {
       messages.push({
@@ -6197,15 +2205,14 @@ async function runNativeToolCallingLoop(
     const prunedMessages = pruneStaleSystemMessages(messages, pinnedPrefixLen, maxInterstitialSysMsgs);
     if (prunedMessages.length < messages.length) {
       const removed = messages.length - prunedMessages.length;
-      messages.splice(0, messages.length, ...prunedMessages);
-      tokenTracker.invalidate();
+      replaceMessages(prunedMessages);
       console.log(`[Loop] 清理陈旧系统消息: 移除 ${removed} 条`);
     }
 
     // --- Context Editing: 主动淘汰旧 tool-use 对 ---
     const shouldEditByTurns = adaptiveParams.contextEditTriggerEveryNTurns > 0
       && turn > 0 && turn % adaptiveParams.contextEditTriggerEveryNTurns === 0;
-    const shouldEditByTokens = tokenTracker.update(messages) >
+    const shouldEditByTokens = estimateCurrentTokens() >
       promptBudgetTarget * adaptiveParams.contextEditTriggerTokenRatio;
 
     if (shouldEditByTurns || shouldEditByTokens) {
@@ -6215,8 +2222,7 @@ async function runNativeToolCallingLoop(
         pinnedPrefixLen,
       });
       if (editResult.cleared) {
-        messages.splice(0, messages.length, ...editResult.messages);
-        tokenTracker.invalidate();
+        replaceMessages(editResult.messages);
         console.log(
           `[Loop] Context Editing: 清除 ${editResult.pairsRemoved} 个旧 tool-use 轮次 | ` +
           `释放 ~${editResult.tokensFreed} tokens | 剩余 ${messages.length} messages`
@@ -6250,9 +2256,8 @@ async function runNativeToolCallingLoop(
       });
     if (compression.compressed && compression.messages !== messages) {
       const beforeLen = messages.length;
-      messages.splice(0, messages.length, ...compression.messages);
-      tokenTracker.invalidate();
-      const afterTokens = tokenTracker.update(messages);
+      replaceMessages(compression.messages);
+      const afterTokens = estimateCurrentTokens();
       console.log(
         `[Loop] 上下文压缩: ${beforeLen} → ${messages.length} messages | ~${afterTokens} tokens`
       );
@@ -6273,7 +2278,7 @@ async function runNativeToolCallingLoop(
         ].join("\n"),
       });
     }
-    onContextUpdate?.(tokenTracker.update(messages));
+    emitContextUpdate();
 
     let completion;
     {
@@ -6296,20 +2301,19 @@ async function runNativeToolCallingLoop(
           toolChoiceOverride = undefined;
           completion = turnRequest.completion;
           console.log(
-            `[Loop][ModeResult] turn=${turn + 1} | mode=${turnRequest.requestMode} | highRisk=${turnRequest.highRisk} | fallback=${turnRequest.fallbackTriggered}` +
-            (llmRetryAttempt > 0 ? ` | retryAttempt=${llmRetryAttempt}` : "") +
-            ` | reasons=${turnRequest.highRiskReasons.length ? turnRequest.highRiskReasons.join(",") : "none"}`,
+            `[Loop][ModeResult] turn=${turn + 1} | mode=${turnRequest.requestMode} | fallback=${turnRequest.fallbackTriggered}` +
+            (llmRetryAttempt > 0 ? ` | retryAttempt=${llmRetryAttempt}` : ""),
           );
           break;
         } catch (error) {
           lastLLMError = error;
-          const currentTokens = tokenTracker.update(messages);
+          const currentTokens = estimateCurrentTokens();
           const errorMsg = error instanceof Error ? error.message : String(error);
           const retriable = isRetriableLLMError(error);
           const hasRetriesLeft = llmRetryAttempt + 1 < MAX_LLM_REQUEST_RETRIES;
           console.error(
             `[Loop][Failure] tool completion failed | turn=${turn + 1} | attempt=${llmRetryAttempt + 1}/${MAX_LLM_REQUEST_RETRIES}` +
-            ` | taskType=${taskType} | retriable=${retriable} | ~tokens=${currentTokens} | messages=${messages.length}` +
+            ` | retriable=${retriable} | ~tokens=${currentTokens} | messages=${messages.length}` +
             ` | model=${settings.model} | error=${errorMsg}`,
           );
           if (!retriable || !hasRetriesLeft) {
@@ -6317,7 +2321,7 @@ async function runNativeToolCallingLoop(
           }
           const delay = computeRetryDelay(llmRetryAttempt);
           console.log(
-            `[Loop][Retry] taskType=${taskType} | 等待 ${Math.round(delay)}ms 后重试 (attempt ${llmRetryAttempt + 2}/${MAX_LLM_REQUEST_RETRIES})`
+            `[Loop][Retry] 等待 ${Math.round(delay)}ms 后重试 (attempt ${llmRetryAttempt + 2}/${MAX_LLM_REQUEST_RETRIES})`
           );
           await sleep(delay, signal);
         }
@@ -6334,7 +2338,7 @@ async function runNativeToolCallingLoop(
 
     // P1-3: Update token calibration with actual API-reported values (per-model).
     if (completion.requestRecord.inputTokens) {
-      const estBeforeCall = tokenTracker.update(messages) + toolDefTokens;
+      const estBeforeCall = estimateCurrentTokens() + toolDefTokens;
       updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens, settings.model);
     }
 
@@ -6395,7 +2399,7 @@ async function runNativeToolCallingLoop(
         : null;
       if (
         pseudoToolCallReason &&
-        pseudoToolCallRepairRounds < MAX_PSEUDO_TOOL_CALL_REPAIR_ROUNDS
+        shouldRetryPseudoToolCall(pseudoToolCallRepairRounds)
       ) {
         pseudoToolCallRepairRounds += 1;
         messages.pop();
@@ -6404,12 +2408,7 @@ async function runNativeToolCallingLoop(
         );
         messages.push({
           role: "system",
-          content: [
-            "系统提示：你刚才在普通文本里描述、转储了工具调用，或直接输出了工具参数/工具结果，但并没有发送原生 tool_calls，所以系统无法执行。",
-            `本轮可用工具: [${enabledToolNames.join(", ")}]`,
-            "如果需要继续使用工具，请直接发送原生工具调用，不要输出任何类似“我将调用 read_file / let's call ... / tool call now”的描述文本，也不要把 JSON 参数对象或工具错误结果直接打到聊天内容里。",
-            "如果任务其实已经完成且不需要工具，请直接给出最终答案。",
-          ].join("\n"),
+          content: buildPseudoToolCallRepairMessage(enabledToolNames),
         });
         continue;
       }
@@ -6417,18 +2416,11 @@ async function runNativeToolCallingLoop(
       if (pseudoToolCallReason) {
         const protocol = (runtime.vendorProtocol || "openai-chat-completions");
         const protocolLabel = formatVendorProtocolLabel(protocol);
-        const providerHint = protocol === "openai-responses"
-          ? "如果你正在使用 OpenAI Responses 兼容端点，建议优先切回 OpenAI Chat Completions 再试。"
-          : "建议切换到对原生工具调用支持更稳定的协议或模型后重试。";
         console.warn(
           `[Loop] Turn ${turn + 1}: pseudo tool-call output persisted after repair (${pseudoToolCallReason}); returning compatibility diagnostic`,
         );
         return {
-          assistantReply: [
-            `当前模型在 ${protocolLabel} 协议下连续把工具调用写成了普通文本或 JSON，而不是原生 tool_calls。`,
-            `Cofree 无法把这些文本当成真实工具调用执行，所以本轮已停止自动继续，避免把伪造的工具参数/结果直接当最终工作产物。`,
-            providerHint,
-          ].join("\n"),
+          assistantReply: buildPseudoToolCallCompatibilityDiagnostic(protocolLabel),
           requestRecords,
           proposedActions,
           planState,
@@ -6459,7 +2451,7 @@ async function runNativeToolCallingLoop(
 
     const toolNames = completion.toolCalls.map((tc) => tc.function.name);
     console.log(
-      `[Loop] Turn ${turn + 1} | taskType=${taskType} | 收到 ${completion.toolCalls.length} 个工具调用: [${toolNames.join(", ")}]`
+      `[Loop] Turn ${turn + 1} | 收到 ${completion.toolCalls.length} 个工具调用: [${toolNames.join(", ")}]`
     );
 
     const actionCountBeforeTurn = proposedActions.length;
@@ -6481,29 +2473,6 @@ async function runNativeToolCallingLoop(
         argsPreview: summarizeToolArgs(toolCall.function.name, toolCall.function.arguments),
       });
 
-      // Build role-scoped progress callback for sub-agent tasks
-      let progressForCall: ((event: SubAgentProgressEvent) => void) | undefined;
-      if (onSubAgentProgress && toolCall.function.name === "task") {
-        try {
-          const taskArgs = JSON.parse(toolCall.function.arguments || "{}");
-          const taskTeam = typeof taskArgs.team === "string" ? taskArgs.team : undefined;
-          const taskRole = String(taskArgs.role ?? taskTeam ?? "unknown");
-          progressForCall = (event: SubAgentProgressEvent) =>
-            onSubAgentProgress(taskRole, {
-              ...event,
-              teamId: taskTeam ?? event.teamId,
-              agentRole:
-                (typeof taskArgs.role === "string" ? taskArgs.role : undefined) ??
-                event.agentRole,
-              sourceLabel:
-                event.sourceLabel ??
-                (taskTeam ? `Team ${taskTeam}` : taskRole),
-            });
-        } catch {
-          // Ignore parse errors
-        }
-      }
-
       const toolT0 = performance.now();
       const { result: toolResult, trace } = await executeToolCallWithRetry(
         toolCall,
@@ -6511,11 +2480,9 @@ async function runNativeToolCallingLoop(
         toolPermissions,
         settings,
         projectConfig,
-        runtime.allowedSubAgents,
         enabledToolNames,
         planState,
         workingMemory,
-        progressForCall,
         signal,
         turn,
         focusedPaths,
@@ -6584,28 +2551,6 @@ async function runNativeToolCallingLoop(
           }
         } catch {
           // Ignore parse errors for working memory extraction
-        }
-      }
-
-      // Record task progress for propose_* tools (always) and read tools (on failure only)
-      const toolName = toolCall.function.name;
-      const isProposeTool = toolName.startsWith("propose_");
-      const isReadTool = ["read_file", "grep", "glob", "list_files", "git_status", "git_diff"].includes(toolName);
-      if (isProposeTool || (isReadTool && toolResult.success === false)) {
-        try {
-          const parsedArgs = JSON.parse(toolCall.function.arguments || "{}");
-          recordTaskProgress(workingMemory, {
-            description: isProposeTool
-              ? `${toolName}(${parsedArgs.relative_path || parsedArgs.shell || ""})`
-              : `${toolName} failed`,
-            toolName,
-            targetFile: parsedArgs.relative_path || parsedArgs.path || undefined,
-            status: toolResult.success === false ? "failed" : "completed",
-            turnNumber: turn,
-            errorHint: toolResult.success === false ? toolResult.errorMessage?.slice(0, 100) : undefined,
-          });
-        } catch {
-          // Ignore parse errors for progress recording
         }
       }
 
@@ -6687,15 +2632,7 @@ async function runNativeToolCallingLoop(
         }
         // P5-2: Mark action origin for audit trail
         if (!action.origin) {
-          if (toolCall.function.name === "task") {
-            try {
-              const taskArgs = JSON.parse(toolCall.function.arguments || "{}");
-              action.origin = taskArgs.team ? "team_stage" : "sub_agent";
-              action.originDetail = taskArgs.team || taskArgs.role || undefined;
-            } catch { /* ignore */ }
-          } else {
-            action.origin = "main_agent";
-          }
+          action.origin = "main_agent";
         }
         const linkedAction = attachActionToPlanStep(planState, action);
         proposedActions.push(linkedAction);
@@ -6706,7 +2643,8 @@ async function runNativeToolCallingLoop(
         name: toolCall.function.name,
         content: trimToolContentForContext(
           toolCall.function.name,
-          toolResult.content
+          toolResult.content,
+          { smartTruncate },
         ),
       });
     };
@@ -6724,12 +2662,11 @@ async function runNativeToolCallingLoop(
     ]);
     const MAX_PARALLEL_READ_TOOLS = 15;
 
-    const taskCalls = completion.toolCalls.filter((tc) => tc.function.name === "task");
     const readOnlyCalls = completion.toolCalls.filter(
-      (tc) => tc.function.name !== "task" && PARALLEL_SAFE_TOOL_NAMES.has(tc.function.name),
+      (tc) => PARALLEL_SAFE_TOOL_NAMES.has(tc.function.name),
     );
     const mutationCalls = completion.toolCalls.filter(
-      (tc) => tc.function.name !== "task" && !PARALLEL_SAFE_TOOL_NAMES.has(tc.function.name),
+      (tc) => !PARALLEL_SAFE_TOOL_NAMES.has(tc.function.name),
     );
 
     let planMutatedThisTurn = false;
@@ -6766,66 +2703,6 @@ async function runNativeToolCallingLoop(
       }
     }
 
-    // 3. Execute task calls with handoffPolicy enforcement (P0-3)
-    const effectiveHandoffPolicy = runtime.handoffPolicy ?? "parallel";
-    if (effectiveHandoffPolicy === "none" && taskCalls.length > 0) {
-      // "none": forbid all task delegation in this turn
-      for (const tc of taskCalls) {
-        const msg = `当前 Agent 的 handoffPolicy 为 "none"，禁止使用 task 委派。`;
-        console.warn(`[Planning][P0-3] ${msg}`);
-        const trace: ToolExecutionTrace = {
-          callId: tc.id,
-          name: tc.function.name,
-          arguments: tc.function.arguments,
-          startedAt: nowIso(),
-          finishedAt: nowIso(),
-          attempts: 1,
-          status: "failed",
-          retried: false,
-          errorCategory: "permission",
-          errorMessage: msg,
-        };
-        processToolResult(tc, {
-          content: JSON.stringify({ error: msg }),
-          success: false,
-          errorCategory: "permission",
-          errorMessage: msg,
-        }, trace);
-      }
-    } else if (effectiveHandoffPolicy === "sequential" && taskCalls.length > 0) {
-      // "sequential": execute task calls one-by-one, no parallelism
-      for (const tc of taskCalls) {
-        const { toolCall, toolResult, trace } = await executeSingleToolCall(tc);
-        processToolResult(toolCall, toolResult, trace);
-        if (toolResult.proposedAction || (toolResult.proposedActions && toolResult.proposedActions.length > 0)) {
-          planMutatedThisTurn = true;
-        }
-      }
-    } else if (taskCalls.length > 1) {
-      // "parallel" (default): execute task calls in parallel with concurrency limit
-      console.log(`[Orchestrator] 并行执行 ${taskCalls.length} 个 Sub-Agent 任务`);
-      const parallelResults = await runWithConcurrencyLimit(
-        taskCalls.map((tc) => () => executeSingleToolCall(tc)),
-        MAX_PARALLEL_SUB_AGENTS,
-      );
-      for (const settled of parallelResults) {
-        if (settled.status === "fulfilled") {
-          const { toolCall, toolResult, trace } = settled.value;
-          processToolResult(toolCall, toolResult, trace);
-          if (toolResult.proposedAction || (toolResult.proposedActions && toolResult.proposedActions.length > 0)) {
-            planMutatedThisTurn = true;
-          }
-        } else {
-          console.error(`[Orchestrator] 并行 Sub-Agent 执行异常:`, settled.reason);
-        }
-      }
-    } else if (taskCalls.length === 1) {
-      const { toolCall, toolResult, trace } = await executeSingleToolCall(taskCalls[0]);
-      processToolResult(toolCall, toolResult, trace);
-      if (toolResult.proposedAction || (toolResult.proposedActions && toolResult.proposedActions.length > 0)) {
-        planMutatedThisTurn = true;
-      }
-    }
 
     if (planMutatedThisTurn && onPlanStateUpdate) {
       try {
@@ -6837,8 +2714,7 @@ async function runNativeToolCallingLoop(
     }
 
     // Notify caller of updated context size after all tool results are added
-    const postToolTokens = tokenTracker.update(messages);
-    onContextUpdate?.(postToolTokens);
+    emitContextUpdate();
 
     // --- 重复读取提醒：当本轮大部分 read_file 都命中缓存时，注入已知文件清单 ---
     if (turnDedupHitCount > 0 && turnDedupHitCount >= Math.ceil(turnSuccessCount * 0.5)) {
@@ -6869,14 +2745,11 @@ async function runNativeToolCallingLoop(
       consecutiveReadOnlyTurns = 0;
     }
 
-    if (consecutiveReadOnlyTurns >= MAX_CONSECUTIVE_READ_ONLY_TURNS) {
+    if (shouldForceReadOnlySummary(consecutiveReadOnlyTurns)) {
       console.log(`[Loop] 连续 ${consecutiveReadOnlyTurns} 轮纯读取，强制要求总结`);
       messages.push({
         role: "system",
-        content: [
-          `系统警告：你已连续 ${consecutiveReadOnlyTurns} 轮只在读取文件而没有给出任何回复或提出动作。`,
-          "请立即基于已收集的信息给出回答。如果信息不足以完成任务，请说明已了解的内容和还需要什么信息，而不是继续读取更多文件。",
-        ].join("\n"),
+        content: buildReadOnlyTurnsWarningMessage(consecutiveReadOnlyTurns),
       });
       toolChoiceOverride = "none";
       consecutiveReadOnlyTurns = 0;
@@ -6888,7 +2761,7 @@ async function runNativeToolCallingLoop(
     } else {
       toolNotFoundStrikes = 0;
     }
-    if (toolNotFoundStrikes >= MAX_TOOL_NOT_FOUND_STRIKES) {
+    if (shouldStopForToolNotFound(toolNotFoundStrikes)) {
       console.warn(`[Loop] 熔断: tool_not_found 连续 ${toolNotFoundStrikes} 轮，终止循环`);
       return {
         assistantReply:
@@ -6900,14 +2773,10 @@ async function runNativeToolCallingLoop(
         workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
-    if (toolNotFoundStrikes > 0 && toolNotFoundStrikes < MAX_TOOL_NOT_FOUND_STRIKES) {
+    if (shouldWarnForToolNotFound(toolNotFoundStrikes)) {
       messages.push({
         role: "system",
-        content: [
-          `系统提示：你调用了不存在的工具（连续 ${toolNotFoundStrikes} 轮）。`,
-          `你只能使用以下工具: [${enabledToolNames.join(", ")}]`,
-          "请严格从上述列表中选择工具，不要臆造工具名称。",
-        ].join("\n"),
+        content: buildToolNotFoundWarningMessage(toolNotFoundStrikes, enabledToolNames),
       });
     }
 
@@ -6917,7 +2786,7 @@ async function runNativeToolCallingLoop(
     } else {
       consecutiveFailureTurns = 0;
     }
-    if (consecutiveFailureTurns >= MAX_CONSECUTIVE_FAILURE_TURNS) {
+    if (shouldStopForConsecutiveFailures(consecutiveFailureTurns)) {
       console.warn(`[Loop] 熔断: 连续 ${consecutiveFailureTurns} 轮全部失败，终止循环`);
       return {
         assistantReply:
@@ -6936,13 +2805,7 @@ async function runNativeToolCallingLoop(
         console.warn(`[Loop] 熔断: 文件 ${filePath} 连续编辑失败 ${failCount} 次`);
         messages.push({
           role: "system",
-          content: [
-            `系统提示：对文件 "${filePath}" 的编辑已连续失败 ${failCount} 次，继续重试不太可能成功。`,
-            "请放弃 search/replace 方式，改用以下方案之一：",
-            "1. 使用 read_file 的 start_line/end_line 精确读取目标区域，然后用 propose_file_edit 的 start_line/end_line 做行范围替换。",
-            "2. 如果编辑内容较多，考虑用 operation='create' + overwrite=true 重写整个文件。",
-            "3. 将大编辑拆分为多个小编辑，每次只修改一小段。",
-          ].join("\n"),
+          content: buildSameFileEditFailureMessage(filePath, failCount),
         });
         fileEditFailureTracker.delete(filePath);
         break;
@@ -6962,12 +2825,7 @@ async function runNativeToolCallingLoop(
       patchRepairRounds += 1;
       messages.push({
         role: "system",
-        content: [
-          "系统提示：上一轮 patch 预检失败。",
-          `错误信息：${patchPreflightFailure}`,
-          patchRepairInstruction,
-          "仅允许一次自动修复重试，并保持最小改动。",
-        ].join("\n"),
+        content: buildPatchPreflightRepairMessage(patchPreflightFailure),
       });
       continue;
     }
@@ -6980,11 +2838,7 @@ async function runNativeToolCallingLoop(
       createHintRepairRounds += 1;
       messages.push({
         role: "system",
-        content: [
-          "系统提示：检测到文件创建路径问题。",
-          `错误信息：${createPathUsageFailure}`,
-          createPathRepairInstruction,
-        ].join("\n"),
+        content: buildCreatePathRepairMessage(createPathUsageFailure),
       });
       continue;
     }
@@ -6997,11 +2851,7 @@ async function runNativeToolCallingLoop(
       searchNotFoundRepairRounds += 1;
       messages.push({
         role: "system",
-        content: [
-          "系统提示：文件编辑失败 — search/anchor 片段在文件中未匹配。",
-          `错误信息：${searchNotFoundFailure}`,
-          searchNotFoundRepairInstruction,
-        ].join("\n"),
+        content: buildSearchNotFoundRepairMessage(searchNotFoundFailure),
       });
       continue;
     }
@@ -7117,67 +2967,8 @@ function sanitizeStepsFromPrompt(prompt: string): PlanStep[] {
   }).steps;
 }
 
-function inferStepOwnerFromPlannerTask(task: PlannerOutput["tasks"][number]): PlanStep["owner"] {
-  const corpus = `${task.title} ${task.description}`.toLowerCase();
-  if (/(test|verify|validation|验证|回归|检查)/.test(corpus)) {
-    return "tester";
-  }
-  if (/(review|audit|审查)/.test(corpus)) {
-    return "reviewer";
-  }
-  if (/(debug|diagnose|排查|调试)/.test(corpus)) {
-    return "debugger";
-  }
-  if (/(analy|plan|investig|梳理|分析|确认)/.test(corpus)) {
-    return "planner";
-  }
-  return "coder";
-}
-
-function mapPlannerTasksToPlanSeed(
-  plannerOutput: PlannerOutput,
-): InitialPlanSeed | null {
-  if (!plannerOutput.tasks.length) {
-    return null;
-  }
-
-  const titleToId = new Map<string, string>();
-  const stepMeta = plannerOutput.tasks.map((task, index) => {
-    const title = sanitizeStepTitle(task.title, task.description || `步骤 ${index + 1}`);
-    const id = `step-${index + 1}-${hashText(title).slice(0, 6)}`;
-    titleToId.set(task.title.trim().toLowerCase(), id);
-    return { task, index, title, id };
-  });
-
-  const rawSteps = stepMeta.map(({ task, index, title, id }) => {
-    const summaryParts = [task.description.trim() || title];
-    if (task.targetFiles.length > 0) {
-      summaryParts.push(`目标文件: ${task.targetFiles.join(", ")}`);
-    }
-    return {
-      id,
-      title,
-      summary: summaryParts.join("\n"),
-      owner: inferStepOwnerFromPlannerTask(task),
-      status: index === 0 ? "in_progress" as const : "pending" as const,
-      dependsOn: task.dependencies
-        ?.map((dep) => titleToId.get(dep.trim().toLowerCase()) ?? null)
-        .filter((dep): dep is string => Boolean(dep)),
-    };
-  });
-
-  return {
-    ...normalizeTodoPlanState({
-      steps: rawSteps,
-      activeStepId: rawSteps[0]?.id,
-    }),
-    source: "planner",
-  };
-}
-
 function shouldUseTodoPlanning(
   prompt: string,
-  taskType: ReturnType<typeof classifyTaskType>,
   requestedArtifactCount: number,
 ): boolean {
   const normalized = prompt.trim();
@@ -7190,10 +2981,7 @@ function shouldUseTodoPlanning(
   if (requestedArtifactCount >= 2) {
     return true;
   }
-  if (taskType === "code_edit" || taskType === "mixed") {
-    return normalized.length >= 50;
-  }
-  return false;
+  return normalized.length >= 50;
 }
 
 function buildProposedActions(
@@ -7705,9 +3493,8 @@ export async function runPlanningSession(
   }
 
   if (!input.existingPlan?.steps?.length) {
-    const taskType = classifyTaskType(normalizedPrompt);
     const requestedArtifactCount = estimateRequestedArtifactCount(normalizedPrompt);
-    if (shouldUseTodoPlanning(normalizedPrompt, taskType, requestedArtifactCount)) {
+    if (shouldUseTodoPlanning(normalizedPrompt, requestedArtifactCount)) {
       initialPlanSeed = {
         ...normalizeTodoPlanState({
           steps: sanitizeStepsFromPrompt(normalizedPrompt),
@@ -7715,42 +3502,6 @@ export async function runPlanningSession(
         }),
         source: "fallback",
       };
-      try {
-        const plannerMemory = createWorkingMemory({
-          maxTokenBudget: 4000,
-          projectContext: initialInternalNote?.slice(0, 1200) ?? "",
-        });
-        const plannerDescription = [
-          "请先将下面的用户任务拆解为一个可执行的 todo 列表。",
-          `用户请求：${normalizedPrompt}`,
-          initialInternalNote?.trim()
-            ? `补充上下文：\n${initialInternalNote.trim().slice(0, 1500)}`
-            : "",
-          "要求：步骤必须可执行、粒度适中、顺序清晰；若有验证步骤请显式列出。",
-        ].filter(Boolean).join("\n\n");
-
-        const plannerResult = await executeSubAgentTask(
-          "planner",
-          plannerDescription,
-          input.settings.workspacePath,
-          input.settings,
-          DEFAULT_TOOL_PERMISSIONS,
-          plannerMemory,
-          undefined,
-          input.signal,
-          sessionFocusedPaths,
-          projectConfig,
-        );
-
-        if (plannerResult.structuredOutput?.role === "planner") {
-          const plannerSeed = mapPlannerTasksToPlanSeed(plannerResult.structuredOutput.data);
-          if (plannerSeed) {
-            initialPlanSeed = plannerSeed;
-          }
-        }
-      } catch (error) {
-        console.warn("Failed to bootstrap planner todo list", error);
-      }
     }
   }
 
@@ -7770,7 +3521,6 @@ export async function runPlanningSession(
       projectConfig,
       input.onToolCallEvent,
       input.onContextUpdate,
-      input.onSubAgentProgress,
       input.onLoopCheckpoint,
       input.onPlanStateUpdate,
       sessionFocusedPaths,

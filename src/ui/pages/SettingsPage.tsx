@@ -46,7 +46,7 @@ import {
   getBuiltinChatAgent,
   hasBuiltinOverride,
 } from "../../agents/builtinChatAgents";
-import { AGENT_TOOL_CATALOG, type SubAgentRole } from "../../agents/types";
+import { AGENT_TOOL_CATALOG } from "../../agents/types";
 import {
   clearAllConversations,
   clearWorkspaceConversations,
@@ -55,7 +55,6 @@ import { SettingsNav as SettingsNavRail } from "./SettingsNav";
 import { SettingsFooter as SettingsPageFooter } from "./SettingsFooter";
 import { ToolPermissionRow as SettingsToolPermissionRow } from "./ToolPermissionRow";
 import {
-  SUB_AGENT_ROLES,
   type AgentEditorProps,
   type ModelPickerOverlayProps,
   type SettingsPageProps,
@@ -949,8 +948,6 @@ function AgentEditor({
   );
   const allToolsEnabled =
     !agent.toolPolicy.enabledTools || agent.toolPolicy.enabledTools.length === 0;
-  const handoffPolicy = agent.handoffPolicy ?? "none";
-  const delegationEnabled = handoffPolicy !== "none" && agent.allowedSubAgents.length > 0;
 
   const handleToolToggle = (toolName: string, checked: boolean) => {
     let next: string[];
@@ -970,14 +967,6 @@ function AgentEditor({
         enabledTools: allSelected ? undefined : next,
       },
     });
-  };
-
-  const handleSubAgentToggle = (role: SubAgentRole, checked: boolean) => {
-    const current = agent.allowedSubAgents ?? [];
-    const next = checked
-      ? [...current.filter((r) => r !== role), role]
-      : current.filter((r) => r !== role);
-    onUpdate({ allowedSubAgents: next });
   };
 
   return (
@@ -1109,58 +1098,6 @@ function AgentEditor({
                 />
                 <span className="agent-tool-name">{tool.name}</span>
                 <span className="agent-tool-label">{tool.label}</span>
-              </label>
-            ))}
-          </div>
-          <div className="agent-field-hint">
-            `task` 的真实可用性由下面的“委派策略”和“可委派的子 Agent”共同决定；当策略为
-            `none` 时，运行时不会暴露 `task`。
-          </div>
-        </div>
-
-        <div className="field">
-          <label className="field-label">委派策略</label>
-          <select
-            className="input"
-            value={handoffPolicy}
-            onChange={(e) =>
-              onUpdate({
-                handoffPolicy:
-                  e.target.value === "parallel"
-                    ? "parallel"
-                    : e.target.value === "sequential"
-                      ? "sequential"
-                      : "none",
-              })
-            }
-          >
-            <option value="none">none: 禁用子 Agent / team 委派</option>
-            <option value="sequential">sequential: 允许委派，按顺序执行</option>
-            <option value="parallel">parallel: 允许并行委派（实验性）</option>
-          </select>
-          <div className="agent-field-hint">
-            当前内置 Agent 默认使用 `none`，这是为了避免在配置、恢复和审批可观测性尚未完全收口前误触发多 Agent 自动化。
-          </div>
-          <div className="agent-field-hint">
-            {delegationEnabled
-              ? `当前策略会暴露 task 工具；允许委派给 ${agent.allowedSubAgents.length} 个子 Agent 角色。`
-              : agent.allowedSubAgents.length === 0
-                ? "当前未选择任何可委派角色，即使切换到 sequential/parallel 也不会暴露 task。"
-                : "当前策略已禁用委派；如果需要启用多 Agent，请切换到 sequential 或 parallel。"}
-          </div>
-        </div>
-
-        <div className="field">
-          <label className="field-label">可委派的子 Agent</label>
-          <div className="agent-subagent-row">
-            {SUB_AGENT_ROLES.map(({ role, label }) => (
-              <label key={role} className="agent-tool-item">
-                <input
-                  type="checkbox"
-                  checked={agent.allowedSubAgents.includes(role)}
-                  onChange={(e) => handleSubAgentToggle(role, e.target.checked)}
-                />
-                <span className="agent-tool-name">{label}</span>
               </label>
             ))}
           </div>

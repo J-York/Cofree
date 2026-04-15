@@ -2,6 +2,11 @@
 @media (max-width: 900px) {
   .conv-panel { width: 200px; }
 
+  .titlebar-sep,
+  .titlebar-branch {
+    display: none;
+  }
+
   .grid-2 { grid-template-columns: 1fr; }
   .action-grid { grid-template-columns: 1fr; }
   .diff-split-container { grid-template-columns: 1fr; }

@@ -21,50 +21,40 @@ function createRuntime(
     vendorProtocol: "openai-chat-completions",
     baseUrl: "http://localhost:4000",
     apiKey: "",
-    allowedSubAgents: [],
-    handoffPolicy: "none",
     ...overrides,
   };
 }
 
-describe("promptAssembly task delegation guidance", () => {
-  it("includes delegation rules when task delegation is enabled", () => {
-    const prompt = assembleSystemPrompt(
-      createRuntime({
-        enabledTools: ["read_file", "task"],
-        allowedSubAgents: ["planner"],
-        handoffPolicy: "sequential",
-      }),
-    );
-
-    expect(prompt).toContain("## Sub-Agent 委派");
-    expect(prompt).toContain("可使用 task 工具委派给专业 Sub-Agent");
-  });
-
-  it("omits delegation rules when handoffPolicy disables task delegation", () => {
+describe("promptAssembly system prompt", () => {
+  it("includes agent system prompt", () => {
     const prompt = assembleSystemPrompt(
       createRuntime({
         enabledTools: ["read_file"],
-        allowedSubAgents: ["planner"],
-        handoffPolicy: "none",
+      }),
+    );
+
+    expect(prompt).toContain("system prompt");
+  });
+
+  it("does not include sub-agent delegation rules (removed)", () => {
+    const prompt = assembleSystemPrompt(
+      createRuntime({
+        enabledTools: ["read_file"],
       }),
     );
 
     expect(prompt).not.toContain("## Sub-Agent 委派");
   });
 
-  it("explains disabled delegation in runtime context", () => {
+  it("includes runtime context tools", () => {
     const runtimeContext = assembleRuntimeContext(
       createRuntime({
         enabledTools: ["read_file"],
-        allowedSubAgents: ["planner", "coder"],
-        handoffPolicy: "none",
       }),
       "/workspace",
       ["update_plan"],
     );
 
-    expect(runtimeContext).toContain("委派策略: none（禁用委派）");
-    expect(runtimeContext).toContain("当前已禁用 Sub-Agent 委派，不要调用 task 工具。");
+    expect(runtimeContext).toContain("本轮可用工具");
   });
 });

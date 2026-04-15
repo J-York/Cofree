@@ -2,75 +2,10 @@
  * Cofree - AI Programming Cafe
  * File: src/agents/types.ts
  * Description: Agent domain types shared across the application.
- *
- * Two distinct agent layers:
- *   - ChatAgent: user-selectable top-level agent that drives a conversation.
- *   - SubAgentRole: internal planner/coder/tester used by the orchestrator.
  */
 
 import type { ToolPermissionLevel } from "../lib/settingsStore";
 import type { ModelSelection } from "../lib/modelSelection";
-
-// ---------------------------------------------------------------------------
-// Sub-agent layer (internal orchestrator roles, NOT user-selectable)
-// ---------------------------------------------------------------------------
-
-export type SubAgentRole = "planner" | "coder" | "tester" | "debugger" | "reviewer" | "verifier";
-
-export interface SubAgentDefinition {
-  role: SubAgentRole;
-  displayName: string;
-  promptIntent: string;
-  tools: string[];
-  sensitiveActionAllowed: boolean;
-  allowAsSubAgent?: boolean;
-  subAgentMaxTurns?: number;
-  /** Hint appended to sub-agent system prompt to guide structured JSON output. */
-  outputSchemaHint?: string;
-  /** Phase 6: Sub-agent specific workflow instructions to inject into system prompt. */
-  workflowTemplate?: string;
-  /** Phase 6: Specific context keys to inject from working memory. */
-  requiredContextKeys?: string[];
-}
-
-// ---------------------------------------------------------------------------
-// Sub-agent structured output (Phase 2)
-// ---------------------------------------------------------------------------
-
-export interface PlannerOutput {
-  tasks: Array<{
-    title: string;
-    description: string;
-    targetFiles: string[];
-    estimatedComplexity: "low" | "medium" | "high";
-    dependencies?: string[];
-  }>;
-  riskAssessment?: string;
-  architectureNotes?: string;
-}
-
-export type StructuredSubAgentOutput =
-  | { role: "planner"; data: PlannerOutput };
-
-// ---------------------------------------------------------------------------
-// Sub-agent completion status and feedback (Phase 3)
-// ---------------------------------------------------------------------------
-
-export type SubAgentCompletionStatus =
-  | "completed"
-  | "partial"
-  | "need_clarification"
-  | "blocked"
-  | "failed"
-  /** Stage was not run because its condition evaluated to false (Team executor synthetic row). */
-  | "skipped";
-
-export interface SubAgentFeedback {
-  reason: string;
-  missingContext?: string[];
-  suggestedAction?: string;
-  blockedBy?: string;
-}
 
 // ---------------------------------------------------------------------------
 // ChatAgent layer (user-selectable, top-level)
@@ -93,12 +28,6 @@ export interface ChatAgentDefinition {
   modelSelection?: ModelSelection;
   /** Whether this agent should use the global model settings by default */
   useGlobalModel?: boolean;
-  /** Sub-agent roles this agent is allowed to delegate to via `task`. */
-  allowedSubAgents: SubAgentRole[];
-  /** Reserved for future Agent Teams orchestration. */
-  handoffPolicy?: "none" | "sequential" | "parallel";
-  /** Reserved for future team composition. */
-  teamMembers?: ChatAgentId[];
   builtin: boolean;
 }
 
@@ -118,8 +47,6 @@ export interface ResolvedAgentRuntime {
   vendorProtocol: string;
   baseUrl: string;
   apiKey: string;
-  allowedSubAgents: SubAgentRole[];
-  handoffPolicy: "none" | "sequential" | "parallel";
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +62,7 @@ export const ALL_AGENT_TOOL_NAMES = [
   "git_status", "git_diff",
   "propose_file_edit", "propose_apply_patch", "propose_shell",
   "check_shell_job",
-  "diagnostics", "fetch", "task",
+  "diagnostics", "fetch",
 ] as const;
 
 export const AGENT_TOOL_CATALOG: ReadonlyArray<{
@@ -155,7 +82,6 @@ export const AGENT_TOOL_CATALOG: ReadonlyArray<{
   { name: "propose_apply_patch", label: "应用补丁", category: "write" },
   { name: "propose_shell", label: "执行命令", category: "write" },
   { name: "fetch", label: "网络请求", category: "write" },
-  { name: "task", label: "委派子任务", category: "write" },
 ];
 
 // ---------------------------------------------------------------------------

@@ -55,8 +55,7 @@
   line-height: 1.45;
   padding: 2px 8px;
   border-radius: var(--r-full);
-  border: 1px solid var(--border-1);
-  background: var(--surface-2);
+  background: transparent;
   color: var(--text-2);
   font-weight: 500;
   white-space: nowrap;
@@ -65,37 +64,28 @@
 button.conversation-topbar-badge {
   cursor: pointer;
   font: inherit;
-  transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast);
+  transition: background var(--t-fast), color var(--t-fast);
 }
 
 button.conversation-topbar-badge:hover {
-  border-color: var(--border-2);
   color: var(--text-1);
-  background: var(--surface-3);
+  background: var(--surface-1);
 }
 
 .conversation-topbar-badge--info {
-  border-color: color-mix(in srgb, var(--accent-solid) 28%, var(--border-1));
   color: var(--accent-solid);
-  background: color-mix(in srgb, var(--accent-solid) 8%, var(--surface-2));
 }
 
 .conversation-topbar-badge--warning {
-  border-color: color-mix(in srgb, var(--color-warning) 35%, var(--border-1));
   color: var(--color-warning);
-  background: var(--color-warning-bg);
 }
 
 .conversation-topbar-badge--blocked {
-  border-color: color-mix(in srgb, var(--color-error) 35%, var(--border-1));
   color: var(--color-error);
-  background: var(--color-error-bg);
 }
 
 .conversation-topbar-badge--success {
-  border-color: color-mix(in srgb, var(--color-success) 35%, var(--border-1));
   color: var(--color-success);
-  background: var(--color-success-bg);
 }
 
 .conversation-topbar-progress {

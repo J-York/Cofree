@@ -4,7 +4,6 @@ import type { ModelSelection } from "./modelSelection";
 import type {
   ChatAgentDefinition,
   ChatAgentOverride,
-  SubAgentRole,
   ChatAgentToolPolicy,
 } from "../agents/types";
 
@@ -799,16 +798,6 @@ function migrateLegacyProfilesToManagedResources(parsed: Partial<PersistedSettin
   };
 }
 
-function isValidSubAgentRole(v: unknown): v is SubAgentRole {
-  return (
-    v === "planner" ||
-    v === "coder" ||
-    v === "tester" ||
-    v === "debugger" ||
-    v === "reviewer"
-  );
-}
-
 function normalizeToolPolicy(raw: unknown): ChatAgentToolPolicy {
   if (!isRecord(raw)) return {};
   const result: ChatAgentToolPolicy = {};
@@ -822,15 +811,6 @@ function normalizeToolPolicy(raw: unknown): ChatAgentToolPolicy {
     ) as ChatAgentToolPolicy["toolPermissionOverrides"];
   }
   return result;
-}
-
-function normalizeHandoffPolicy(
-  value: unknown,
-): ChatAgentDefinition["handoffPolicy"] | undefined {
-  if (value === "none" || value === "sequential" || value === "parallel") {
-    return value;
-  }
-  return undefined;
 }
 
 function normalizeAgentModelSelection(
@@ -878,10 +858,6 @@ function normalizeCustomAgents(
         typeof item.systemPromptTemplate === "string" ? item.systemPromptTemplate : "",
       toolPolicy: normalizeToolPolicy(item.toolPolicy),
       modelSelection: normalizeAgentModelSelection(item, legacyProfileSelections),
-      allowedSubAgents: Array.isArray(item.allowedSubAgents)
-        ? (item.allowedSubAgents as unknown[]).filter(isValidSubAgentRole)
-        : ["planner", "coder", "tester"],
-      handoffPolicy: normalizeHandoffPolicy(item.handoffPolicy),
       builtin: false as const,
     }));
 }
@@ -905,13 +881,6 @@ function normalizeBuiltinAgentOverrides(
       entry.modelSelection = modelSelection;
     }
     if (value.toolPolicy) entry.toolPolicy = normalizeToolPolicy(value.toolPolicy);
-    if (Array.isArray(value.allowedSubAgents)) {
-      entry.allowedSubAgents = (value.allowedSubAgents as unknown[]).filter(isValidSubAgentRole);
-    }
-    const handoffPolicy = normalizeHandoffPolicy(value.handoffPolicy);
-    if (handoffPolicy) {
-      entry.handoffPolicy = handoffPolicy;
-    }
     if (Object.keys(entry).length > 0) result[key] = entry;
   }
   return result;
@@ -1222,8 +1191,6 @@ export function createCustomAgent(
     description?: string;
     systemPromptTemplate?: string;
     enabledTools?: string[];
-    allowedSubAgents?: SubAgentRole[];
-    handoffPolicy?: ChatAgentDefinition["handoffPolicy"];
     modelSelection?: ModelSelection;
     useGlobalModel?: boolean;
   },
@@ -1236,8 +1203,6 @@ export function createCustomAgent(
     toolPolicy: params.enabledTools ? { enabledTools: params.enabledTools } : {},
     modelSelection: normalizeModelSelection(settings, params.modelSelection),
     useGlobalModel: params.useGlobalModel !== undefined ? params.useGlobalModel : true,
-    allowedSubAgents: params.allowedSubAgents ?? ["planner", "coder", "tester"],
-    handoffPolicy: params.handoffPolicy ?? "none",
     builtin: false,
   };
   return {

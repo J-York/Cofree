@@ -41,7 +41,7 @@
 /* ── Floating Sidebar Toggle ───────────────────────────── */
 .chat-sidebar-fab {
   position: absolute;
-  top: 24px;
+  top: 12px;
   left: 12px;
   z-index: 2;
   display: flex;  align-items: center;
@@ -95,7 +95,7 @@
   justify-content: center;
   gap: 16px;
   color: var(--text-3);
-  padding: 80px 0;
+  padding: 40px 0;
   animation: fade-in-up 600ms var(--t-spring) both;
 }
 
@@ -134,21 +134,17 @@
   display: inline-flex;
   align-items: center;
   padding: 10px 20px;
-  background: var(--surface-1);
-  border: 1px solid var(--border-1);
+  background: transparent;
   border-radius: var(--r-full);
   font-size: 14px;
   font-weight: 500;
   color: var(--text-2);
   cursor: pointer;
   transition: all var(--t-med);
-  box-shadow: var(--shadow-sm);
 }
 
 .chat-suggestion-chip:hover {
-  background: var(--surface-2);
-  border-color: var(--border-2);
+  background: var(--surface-1);
   color: var(--text-1);
   transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
 }

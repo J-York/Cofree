@@ -7,7 +7,7 @@
  */
 
 import { createContext, useContext } from "react";
-import type { ToolExecutionTrace } from "../orchestrator/planningService";
+import type { ToolExecutionTrace } from "../orchestrator/toolTraceTypes";
 
 export type WorkflowPhase =
   | "idle"

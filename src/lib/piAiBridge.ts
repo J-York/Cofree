@@ -680,20 +680,6 @@ export async function fetchVendorModelIds(params: {
   }
 }
 
-// ── Anthropic model detection (kept for backward compat) ─────────────────────
-
-export function isAnthropicModelName(modelName: string): boolean {
-  const normalized = modelName.trim().toLowerCase();
-  return normalized.includes("claude") || normalized.startsWith("anthropic/");
-}
-
-export function isHighRiskToolCallingModelCombo(
-  protocol: VendorProtocol,
-  modelName: string,
-): boolean {
-  return protocol === "openai-chat-completions" && isAnthropicModelName(modelName);
-}
-
 // ── LiteLLMClientConfig compat (used by SettingsPage UI) ─────────────────────
 
 export interface LiteLLMClientConfig {
@@ -724,24 +710,6 @@ export function createLiteLLMClientConfig(settings: AppSettings): LiteLLMClientC
 // runtime, options) and internally route through pi-ai.
 
 import type { ResolvedAgentRuntime } from "../agents/types";
-import {
-  adaptRequestParams,
-  getModelCapabilities,
-  type ModelCapabilities,
-} from "./modelCapabilities";
-
-/**
- * Re-export getGatewayModelCapabilities so orchestrator can query model
- * capabilities without importing modelCapabilities.ts directly.
- */
-export function getGatewayModelCapabilities(
-  runtime: ResolvedAgentRuntime | null,
-  settings: AppSettings,
-): ModelCapabilities {
-  const modelRef = runtime?.modelRef || settings.model;
-  const protocol = (runtime?.vendorProtocol || "openai-chat-completions") as VendorProtocol;
-  return getModelCapabilities(modelRef, protocol);
-}
 
 function resolveModelFromSettings(
   settings: AppSettings,
@@ -792,16 +760,67 @@ const THINKING_LEVEL_MAP: Record<ManagedModelThinkingLevel, string> = {
   high: "high",
 };
 
+function resolveManagedModelForRuntime(
+  settings: AppSettings,
+  runtime: ResolvedAgentRuntime | null,
+): ManagedModel | null {
+  const effectiveModelId = runtime?.modelId || settings.activeModelId;
+  return (
+    (effectiveModelId
+      ? settings.managedModels.find((m) => m.id === effectiveModelId)
+      : getActiveManagedModel(settings)) ?? null
+  );
+}
+
 function resolveThinkingLevel(
   settings: AppSettings,
   runtime: ResolvedAgentRuntime | null,
 ): string | undefined {
-  const effectiveModelId = runtime?.modelId || settings.activeModelId;
-  const managedModel = effectiveModelId
-    ? settings.managedModels.find((m) => m.id === effectiveModelId)
-    : getActiveManagedModel(settings);
+  const managedModel = resolveManagedModelForRuntime(settings, runtime);
   if (!managedModel?.supportsThinking) return undefined;
   return THINKING_LEVEL_MAP[managedModel.thinkingLevel] ?? undefined;
+}
+
+function resolveEffectiveTemperature(
+  settings: AppSettings,
+  runtime: ResolvedAgentRuntime | null,
+  overrideTemperature?: number,
+): number | undefined {
+  if (overrideTemperature !== undefined) {
+    return overrideTemperature;
+  }
+  const managedModel = resolveManagedModelForRuntime(settings, runtime);
+  return managedModel?.metaSettings.temperature ?? undefined;
+}
+
+function resolveEffectiveMaxTokens(
+  settings: AppSettings,
+  runtime: ResolvedAgentRuntime | null,
+): number | undefined {
+  const managedModel = resolveManagedModelForRuntime(settings, runtime);
+  const maxTokens = managedModel?.metaSettings.maxOutputTokens ?? 0;
+  return maxTokens > 0 ? maxTokens : undefined;
+}
+
+function normalizeToolChoiceForProtocol(
+  protocol: VendorProtocol,
+  toolChoice: GatewayRequestOptions["toolChoice"],
+): unknown {
+  if (toolChoice === undefined) {
+    return undefined;
+  }
+  if (protocol !== "anthropic-messages") {
+    return toolChoice;
+  }
+  if (toolChoice === "auto") {
+    return { type: "auto" };
+  }
+  if (toolChoice === "none") {
+    return { type: "none" };
+  }
+  return typeof toolChoice === "object"
+    ? { type: "tool", name: toolChoice.function.name }
+    : { type: "auto" };
 }
 
 export interface GatewayRequestOptions {
@@ -823,19 +842,13 @@ export async function gatewayComplete(
   options?: GatewayRequestOptions,
 ): Promise<LiteLLMHttpResponse> {
   const { model, apiKey, protocol } = resolveModelFromSettings(settings, runtime);
-  const modelRef = runtime?.modelRef || settings.model;
   const hasTools = (options?.tools?.length ?? 0) > 0;
-  const adapted = adaptRequestParams(modelRef, protocol, hasTools, options?.temperature);
-
-  const activeManagedModel = settings.managedModels.find(
-    (m) => m.id === (runtime?.modelId || settings.activeModelId),
-  );
-  const hasModelTemperature =
-    activeManagedModel?.metaSettings.temperature !== null &&
-    activeManagedModel?.metaSettings.temperature !== undefined;
-
-  const effectiveTemp = options?.temperature ?? (hasModelTemperature ? undefined : adapted.temperature);
-  const effectiveToolChoice = options?.toolChoice ?? adapted.toolChoice;
+  const effectiveTemp = resolveEffectiveTemperature(settings, runtime, options?.temperature);
+  const effectiveMaxTokens = resolveEffectiveMaxTokens(settings, runtime);
+  const effectiveToolChoice = options?.toolChoice;
+  const normalizedToolChoice = hasTools
+    ? normalizeToolChoiceForProtocol(protocol, effectiveToolChoice)
+    : undefined;
   const thinking = resolveThinkingLevel(settings, runtime);
 
   const context = toPiAiContext(messages, hasTools ? options?.tools : undefined);
@@ -844,24 +857,14 @@ export async function gatewayComplete(
     const result = await withTauriHttpFetch(() => piComplete(model, context, {
       apiKey,
       temperature: effectiveTemp,
-      maxTokens: adapted.maxTokens,
+      maxTokens: effectiveMaxTokens,
       signal: options?.signal,
       reasoning: thinking as Parameters<typeof piComplete>[2] extends { reasoning?: infer R } ? R : never,
       onPayload: (payload: unknown) => {
         if (payload && typeof payload === "object") {
           const p = payload as Record<string, unknown>;
-          if (effectiveToolChoice !== undefined && hasTools) {
-            if (protocol === "anthropic-messages") {
-              p.tool_choice = effectiveToolChoice === "auto" ? { type: "auto" } :
-                effectiveToolChoice === "none" ? { type: "none" } :
-                  typeof effectiveToolChoice === "object" ? { type: "tool", name: effectiveToolChoice.function.name } :
-                    { type: "auto" };
-            } else {
-              p.tool_choice = effectiveToolChoice;
-            }
-          }
-          if (adapted.parallelToolCalls !== undefined && hasTools && protocol === "openai-chat-completions") {
-            p.parallel_tool_calls = adapted.parallelToolCalls;
+          if (normalizedToolChoice !== undefined && hasTools) {
+            p.tool_choice = normalizedToolChoice;
           }
         }
         return undefined;
@@ -894,19 +897,13 @@ export async function gatewayStream(
   onToolCall?: (event: StreamToolCallEvent) => void,
 ): Promise<LiteLLMHttpResponse> {
   const { model, apiKey, protocol } = resolveModelFromSettings(settings, runtime);
-  const modelRef = runtime?.modelRef || settings.model;
   const hasTools = (options?.tools?.length ?? 0) > 0;
-  const adapted = adaptRequestParams(modelRef, protocol, hasTools, options?.temperature);
-
-  const activeManagedModel = settings.managedModels.find(
-    (m) => m.id === (runtime?.modelId || settings.activeModelId),
-  );
-  const hasModelTemperature =
-    activeManagedModel?.metaSettings.temperature !== null &&
-    activeManagedModel?.metaSettings.temperature !== undefined;
-
-  const effectiveTemp = options?.temperature ?? (hasModelTemperature ? undefined : adapted.temperature);
-  const effectiveToolChoice = options?.toolChoice ?? adapted.toolChoice;
+  const effectiveTemp = resolveEffectiveTemperature(settings, runtime, options?.temperature);
+  const effectiveMaxTokens = resolveEffectiveMaxTokens(settings, runtime);
+  const effectiveToolChoice = options?.toolChoice;
+  const normalizedToolChoice = hasTools
+    ? normalizeToolChoiceForProtocol(protocol, effectiveToolChoice)
+    : undefined;
   const thinking = resolveThinkingLevel(settings, runtime);
 
   const context = toPiAiContext(messages, hasTools ? options?.tools : undefined);
@@ -916,24 +913,14 @@ export async function gatewayStream(
       const s = piStream(model, context, {
         apiKey,
         temperature: effectiveTemp,
-        maxTokens: adapted.maxTokens,
+        maxTokens: effectiveMaxTokens,
         signal: options?.signal,
         reasoning: thinking as Parameters<typeof piStream>[2] extends { reasoning?: infer R } ? R : never,
         onPayload: (payload: unknown) => {
           if (payload && typeof payload === "object") {
             const p = payload as Record<string, unknown>;
-            if (effectiveToolChoice !== undefined && hasTools) {
-              if (protocol === "anthropic-messages") {
-                p.tool_choice = effectiveToolChoice === "auto" ? { type: "auto" } :
-                  effectiveToolChoice === "none" ? { type: "none" } :
-                    typeof effectiveToolChoice === "object" ? { type: "tool", name: effectiveToolChoice.function.name } :
-                      { type: "auto" };
-              } else {
-                p.tool_choice = effectiveToolChoice;
-              }
-            }
-            if (adapted.parallelToolCalls !== undefined && hasTools && protocol === "openai-chat-completions") {
-              p.parallel_tool_calls = adapted.parallelToolCalls;
+            if (normalizedToolChoice !== undefined && hasTools) {
+              p.tool_choice = normalizedToolChoice;
             }
           }
           return undefined;

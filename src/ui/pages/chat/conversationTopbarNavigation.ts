@@ -54,10 +54,10 @@ function plansLooselyEqual(a: OrchestrationPlan, b: OrchestrationPlan): boolean 
 
 function expertSpeakerIdFromStageMeta(ev: {
   teamId?: string;
-  stageLabel: string;
-  agentRole: string;
+  stageLabel?: string;
+  agentRole?: string;
 }): string {
-  return `${ev.teamId ?? "task"}:${ev.stageLabel}:${ev.agentRole}`;
+  return `${ev.teamId ?? "task"}:${ev.stageLabel ?? "unknown"}:${ev.agentRole ?? "agent"}`;
 }
 
 function findLatestPlanMessageId(

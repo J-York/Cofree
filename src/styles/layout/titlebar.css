@@ -1,18 +1,18 @@
 /* ── Custom Titlebar ────────────────────────────────────── */
 .titlebar {
-  height: 48px;
+  height: 38px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
-  padding-left: 80px; /* macOS traffic lights */
+  padding-left: 70px;
   background: var(--surface-1);
-  border-bottom: 1px solid var(--border-1);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-1) 50%, transparent);
   flex-shrink: 0;
   user-select: none;
   -webkit-app-region: drag;
   z-index: 10;
-  position: relative; /* For absolute centering */
+  gap: 12px;
 }
 
 .titlebar-left {
@@ -20,7 +20,7 @@
   align-items: center;
   gap: 16px;
   -webkit-app-region: drag;
-  flex: 1; /* Take up space to help center item */
+  flex: 1;
   min-width: 0;
 }
 
@@ -48,7 +48,6 @@
   background: var(--surface-1);
   padding: 0 12px;
   border-radius: var(--r-full);
-  border: 1px solid var(--border-1);
   transition: all var(--t-med);
   cursor: pointer;
 }
@@ -67,6 +66,9 @@
 .titlebar-workspace-name {
   color: var(--text-1);
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .titlebar-sep {
@@ -90,12 +92,11 @@
 }
 
 .titlebar-center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
   display: flex;
   align-items: center;
   justify-content: center;
+  flex: 0 1 auto;
+  min-width: 0;
   -webkit-app-region: drag;
   pointer-events: none;
 }
@@ -113,8 +114,9 @@
   box-sizing: border-box;
   gap: 6px;
   padding: 0 12px;
+  max-width: 100%;
+  min-width: 0;
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border-1);
   border-radius: var(--r-full);
   pointer-events: auto;
   cursor: pointer;
@@ -144,6 +146,9 @@
   font-family: var(--font-sans, sans-serif);
   font-size: 11px;
   color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .titlebar-model-sub {
@@ -152,6 +157,11 @@
   color: var(--text-3, var(--text-muted));
   opacity: 0.7;
   margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 .titlebar-right {
@@ -159,7 +169,7 @@
   align-items: center;
   gap: 6px;
   -webkit-app-region: no-drag;
-  flex: 1; /* Take up space to help center item */
+  flex: 0 0 auto;
   justify-content: flex-end;
 }
 

@@ -27,14 +27,14 @@ import type {
   PlanStep,
   WorkflowState,
 } from "./types";
+import { actionFingerprint } from "./planningService";
 import {
-  actionFingerprint,
   derivePlanWorkflowState,
   setActivePlanStep,
   setPlanStepStatus,
   syncPlanStateWithActions,
   type TodoPlanState,
-} from "./planningService";
+} from "./todoPlanState";
 
 interface PatchApplyResult {
   success: boolean;
@@ -642,22 +642,41 @@ export function deriveWorkflowState(
   return "done";
 }
 
+function applyActionTransition(
+  plan: OrchestrationPlan,
+  actionId: string,
+  updateAction: (action: ActionProposal) => ActionProposal,
+  updatePlanState?: (
+    planState: TodoPlanState,
+    nextAction: ActionProposal | undefined,
+    nextActions: ActionProposal[],
+  ) => void,
+): OrchestrationPlan {
+  const nextActions = mapActions(plan, actionId, updateAction);
+  const nextAction = nextActions.find((action) => action.id === actionId);
+  return applyPlanStateUpdate(plan, nextActions, (planState) => {
+    updatePlanState?.(planState, nextAction, nextActions);
+  });
+}
+
 export function markActionRunning(
   plan: OrchestrationPlan,
   actionId: string
 ): OrchestrationPlan {
-  const nextActions = mapActions(plan, actionId, (action) => ({
-    ...action,
-    status: "running",
-    executed: false,
-  }));
-
-  const nextAction = nextActions.find((action) => action.id === actionId);
-  return applyPlanStateUpdate(plan, nextActions, (planState) => {
-    if (nextAction?.planStepId) {
-      setActivePlanStep(planState, nextAction.planStepId);
-    }
-  });
+  return applyActionTransition(
+    plan,
+    actionId,
+    (action) => ({
+      ...action,
+      status: "running",
+      executed: false,
+    }),
+    (planState, nextAction) => {
+      if (nextAction?.planStepId) {
+        setActivePlanStep(planState, nextAction.planStepId);
+      }
+    },
+  );
 }
 
 export function markShellActionRunning(
@@ -675,27 +694,29 @@ export function markShellActionRunning(
     return markActionRunning(plan, actionId);
   }
 
-  const nextActions = mapActions(plan, actionId, (action) => ({
-    ...action,
-    status: "running",
-    executed: false,
-    executionResult: createExecutionResult(
-      true,
-      options?.message ?? "命令执行中…",
-      {
-        ...(action.executionResult?.metadata ?? {}),
-        ...(options?.metadata ?? {}),
-        command: targetAction.payload.shell,
-      },
-    ),
-  }));
-
-  const nextAction = nextActions.find((action) => action.id === actionId);
-  return applyPlanStateUpdate(plan, nextActions, (planState) => {
-    if (nextAction?.planStepId) {
-      setActivePlanStep(planState, nextAction.planStepId);
-    }
-  });
+  return applyActionTransition(
+    plan,
+    actionId,
+    (action) => ({
+      ...action,
+      status: "running",
+      executed: false,
+      executionResult: createExecutionResult(
+        true,
+        options?.message ?? "命令执行中…",
+        {
+          ...(action.executionResult?.metadata ?? {}),
+          ...(options?.metadata ?? {}),
+          command: targetAction.payload.shell,
+        },
+      ),
+    }),
+    (planState, nextAction) => {
+      if (nextAction?.planStepId) {
+        setActivePlanStep(planState, nextAction.planStepId);
+      }
+    },
+  );
 }
 
 export function rejectAction(
@@ -711,20 +732,22 @@ export function rejectAction(
     return plan;
   }
 
-  const nextActions = mapActions(plan, actionId, (action) => ({
-    ...action,
-    fingerprint: ensureFingerprint(action),
-    status: "rejected",
-    executed: false,
-    executionResult: createExecutionResult(false, normalizedReason),
-  }));
-
-  const nextAction = nextActions.find((action) => action.id === actionId);
-  return applyPlanStateUpdate(plan, nextActions, (planState) => {
-    if (nextAction?.planStepId) {
-      setPlanStepStatus(planState, nextAction.planStepId, "blocked", normalizedReason);
-    }
-  });
+  return applyActionTransition(
+    plan,
+    actionId,
+    (action) => ({
+      ...action,
+      fingerprint: ensureFingerprint(action),
+      status: "rejected",
+      executed: false,
+      executionResult: createExecutionResult(false, normalizedReason),
+    }),
+    (planState, nextAction) => {
+      if (nextAction?.planStepId) {
+        setPlanStepStatus(planState, nextAction.planStepId, "blocked", normalizedReason);
+      }
+    },
+  );
 }
 
 export function commentAction(
@@ -744,18 +767,20 @@ export function commentAction(
     return plan;
   }
 
-  const nextActions = mapActions(plan, actionId, (action) => ({
-    ...action,
-    fingerprint: ensureFingerprint(action),
-    executionResult: createExecutionResult(true, normalizedComment, {
-      commentOnly: true,
+  return applyActionTransition(
+    plan,
+    actionId,
+    (action) => ({
+      ...action,
+      fingerprint: ensureFingerprint(action),
+      executionResult: createExecutionResult(true, normalizedComment, {
+        commentOnly: true,
+      }),
     }),
-  }));
-
-  const nextAction = nextActions.find((action) => action.id === actionId);
-  return applyPlanStateUpdate(plan, nextActions, (planState) => {
-    appendPlanStepNote(linkedPlanStep(planState, nextAction), normalizedComment);
-  });
+    (planState, nextAction) => {
+      appendPlanStepNote(linkedPlanStep(planState, nextAction), normalizedComment);
+    },
+  );
 }
 
 export function updateActionPayload(

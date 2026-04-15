@@ -2,13 +2,9 @@
  * Cofree - AI Programming Cafe
  * File: src/agents/toolPolicy.ts
  * Description: Tool schema selection and permission enforcement for agents.
- *
- * Given a ResolvedAgentRuntime, filters the full tool definition list
- * to only the tools the agent is allowed to see and determines which
- * tools require human approval.
  */
 
-import type { ResolvedAgentRuntime, SubAgentRole } from "./types";
+import type { ResolvedAgentRuntime } from "./types";
 import type { ToolPermissionLevel } from "../lib/settingsStore";
 import type { LiteLLMToolDefinition } from "../lib/piAiBridge";
 
@@ -16,7 +12,6 @@ export interface AgentToolContext {
   visibleToolDefs: LiteLLMToolDefinition[];
   autoTools: string[];
   askTools: string[];
-  allowedSubAgentRoles: SubAgentRole[];
 }
 
 /**
@@ -48,7 +43,6 @@ export function selectAgentTools(
     visibleToolDefs,
     autoTools,
     askTools,
-    allowedSubAgentRoles: runtime.allowedSubAgents,
   };
 }
 

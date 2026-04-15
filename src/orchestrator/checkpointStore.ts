@@ -13,7 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { OrchestrationPlan } from "./types";
 import { redactSensitiveText, sanitizeForPersistence } from "../lib/redaction";
 import { normalizeOrchestrationPlan } from "./planGuards";
-import type { ToolErrorCategory, ToolExecutionTrace } from "./planningService";
+import type { ToolErrorCategory, ToolExecutionTrace } from "./toolTraceTypes";
 import { normalizeHitlContinuationMemory, type HitlContinuationMemory } from "./hitlContinuationMachine";
 import {
   type WorkingMemorySnapshot,
