@@ -38,38 +38,7 @@
   gap: 0;
 }
 
-/* ── Floating Sidebar Toggle ───────────────────────────── */
-.chat-sidebar-fab {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  z-index: 2;
-  display: flex;  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  background: var(--surface-1);
-  border: 1px solid var(--border-1);
-  border-radius: var(--r-sm);
-  color: var(--text-2);
-  cursor: pointer;
-  transition: all var(--t-med);
-  box-shadow: var(--shadow-sm);
-  opacity: 0.7;
-}
-
-.chat-sidebar-fab:hover {
-  background: var(--surface-2);
-  border-color: var(--border-2);
-  color: var(--text-1);
-  opacity: 1;
-  box-shadow: var(--shadow-md);
-}
-
-/* Keep the floating sidebar toggle from sitting on top of the topbar content. */
-.chat-layout .conversation-topbar {
-  padding-left: 52px;
-}
+/* Sidebar toggle is now in the TitleBar — no floating FAB needed. */
 
 /* ── Chat Thread ────────────────────────────────────────── */
 .chat-thread {
@@ -134,7 +103,8 @@
   display: inline-flex;
   align-items: center;
   padding: 10px 20px;
-  background: transparent;
+  background: var(--surface-1);
+  border: 1px solid var(--border-1);
   border-radius: var(--r-full);
   font-size: 14px;
   font-weight: 500;
@@ -144,7 +114,9 @@
 }
 
 .chat-suggestion-chip:hover {
-  background: var(--surface-1);
+  background: var(--surface-2);
+  border-color: var(--border-2);
   color: var(--text-1);
   transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
 }

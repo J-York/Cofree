@@ -209,6 +209,8 @@ export default function App(): ReactElement {
           activeAgentId={settings.activeAgentId}
           onToggleTerminal={() => setTerminalOpen((v) => !v)}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
+          onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
+          sidebarCollapsed={sidebarCollapsed}
           onSwitchModel={(id) => void handleSwitchModel(id)}
           onSwitchAgent={handleSwitchAgent}
           onSelectWorkspace={() => void handleSelectWorkspace()}
@@ -222,7 +224,6 @@ export default function App(): ReactElement {
             activeAgent={getChatAgentFromSettings(settings.activeAgentId, settings)}
             isVisible={true}
             sidebarCollapsed={sidebarCollapsed}
-            onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
           />
         </div>
 

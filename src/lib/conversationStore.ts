@@ -32,6 +32,7 @@ export interface ConversationMetadata {
   messageCount: number;
   agentId?: string;
   agentName?: string;
+  lastMessagePreview?: string;
 }
 
 
@@ -129,6 +130,17 @@ function normalizeConversation(value: unknown, fallbackConversationId: string): 
   };
 }
 
+function extractLastMessagePreview(messages: ChatMessageRecord[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if ((message.role === "user" || message.role === "assistant") && message.content.trim()) {
+      const cleaned = message.content.replace(/\s+/g, " ").trim();
+      return cleaned.length > 60 ? cleaned.slice(0, 60) + "…" : cleaned;
+    }
+  }
+  return "";
+}
+
 function toConversationMetadata(conversation: Conversation): ConversationMetadata {
   return {
     id: conversation.id,
@@ -138,6 +150,7 @@ function toConversationMetadata(conversation: Conversation): ConversationMetadat
     messageCount: conversation.messages.length,
     agentId: conversation.agentBinding?.agentId,
     agentName: conversation.agentBinding?.agentNameSnapshot,
+    lastMessagePreview: extractLastMessagePreview(conversation.messages),
   };
 }
 

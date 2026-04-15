@@ -67,7 +67,7 @@ function baseState(over: Partial<ConversationTopbarState> = {}): ConversationTop
 }
 
 describe("ConversationTopbar", () => {
-  it("row 1 always renders agent label, primary label, and badge region", () => {
+  it("row 1 always renders primary label and badge region", () => {
     const tree = ConversationTopbar({
       state: baseState({
         agentLabel: "编排 Agent",
@@ -78,7 +78,6 @@ describe("ConversationTopbar", () => {
     const elements = collectElements(tree);
     const rows = elements.filter((el) => hasClassName(el, "conversation-topbar-row"));
     expect(rows.length).toBeGreaterThanOrEqual(1);
-    expect(collectText(tree)).toContain("编排 Agent");
     expect(collectText(tree)).toContain("当前：实现");
     expect(collectText(tree)).toContain("工具 2");
   });
@@ -102,9 +101,9 @@ describe("ConversationTopbar", () => {
     expect(collectText(shown)).toContain("3/5");
   });
 
-  it("renders row 3 only when attention is non-null", () => {
+  it("renders attention toast only when attention is non-null", () => {
     const none = ConversationTopbar({ state: baseState({ attention: null }) });
-    expect(collectElements(none).some((el) => hasClassName(el, "conversation-topbar-attention"))).toBe(
+    expect(collectElements(none).some((el) => hasClassName(el, "conversation-topbar-attention-toast"))).toBe(
       false,
     );
 
@@ -118,7 +117,7 @@ describe("ConversationTopbar", () => {
       }),
     });
     expect(
-      collectElements(withAttention).some((el) => hasClassName(el, "conversation-topbar-attention")),
+      collectElements(withAttention).some((el) => hasClassName(el, "conversation-topbar-attention-toast")),
     ).toBe(true);
     expect(collectText(withAttention)).toContain("提示信息");
   });

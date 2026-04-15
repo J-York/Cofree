@@ -1,6 +1,6 @@
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { WindowControls } from "./WindowControls";
-import { IconSettings, IconTerminal, IconBranch, IconFolder, IconSun, IconMoon, IconMonitor } from "./Icons";
+import { IconSettings, IconTerminal, IconBranch, IconFolder, IconSun, IconMoon, IconMonitor, IconSidebar } from "./Icons";
 import { useTheme, getThemeLabel, getNextTheme, type ThemeMode } from "../../hooks/useTheme";
 import type { ChatAgentDefinition } from "../../agents/types";
 
@@ -26,6 +26,8 @@ interface TitleBarProps {
   onSwitchAgent: (agentId: string) => void;
   onSelectWorkspace: () => void;
   onSwitchWorkspace: (workspacePath: string) => void;
+  onToggleSidebar: () => void;
+  sidebarCollapsed: boolean;
   terminalOpen: boolean;
 }
 
@@ -80,6 +82,8 @@ export function TitleBar({
   onSwitchAgent,
   onSelectWorkspace,
   onSwitchWorkspace,
+  onToggleSidebar,
+  sidebarCollapsed,
   terminalOpen,
 }: TitleBarProps): ReactElement {
   const folderName = workspacePath ? getWorkspaceLabel(workspacePath) : "";
@@ -110,7 +114,14 @@ export function TitleBar({
   return (
     <header className="titlebar" data-tauri-drag-region>
       <div className="titlebar-left" data-tauri-drag-region>
-        <span className="titlebar-brand" data-tauri-drag-region>Cofree</span>
+        <button
+          className={`titlebar-btn titlebar-sidebar-btn${sidebarCollapsed ? "" : " active"}`}
+          onClick={onToggleSidebar}
+          type="button"
+          title="对话列表 (⌘B)"
+        >
+          <IconSidebar size={14} />
+        </button>
         <div className="titlebar-workspace-wrap" ref={wsRef}>
           <div
             className={`titlebar-workspace${wsPopover ? " active" : ""}`}
@@ -200,9 +211,9 @@ export function TitleBar({
             tabIndex={0}
             onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setAgentPopover((value) => !value); }}
           >
-            <span className="titlebar-model-dot" />
-            <span className="titlebar-model-text">{activeAgent?.name ?? "Agent"}</span>
-            <span className="titlebar-model-sub">{displayModel}</span>
+            <span className="titlebar-agent-name">{activeAgent?.name ?? "Agent"}</span>
+            <span className="titlebar-model-divider">·</span>
+            <span className="titlebar-model-name">{displayModel}</span>
             <svg className="titlebar-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none">
               <path d="M2.5 3.75L5 6.25L7.5 3.75" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
@@ -296,6 +307,14 @@ export function TitleBar({
           <IconTerminal size={14} />
         </button>
         <ThemeToggleButton />
+        <button
+          className="titlebar-btn"
+          onClick={onToggleSettings}
+          type="button"
+          title="设置 (⌘,)"
+        >
+          <IconSettings size={14} />
+        </button>
         <WindowControls />
       </div>
     </header>

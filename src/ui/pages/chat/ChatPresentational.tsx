@@ -1248,19 +1248,13 @@ export function TokenUsageRing({
 
   return (
     <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "6px",
-        fontSize: "13px",
-        color: "var(--text-3)",
-      }}
+      className="token-usage-ring"
       title={`${isStreaming ? "预估" : "已用"} ${used.toLocaleString()} / ${max.toLocaleString()} tokens (${percentage.toFixed(1)}%)`}
     >
       <svg
         width={size}
         height={size}
-        style={{ transform: "rotate(-90deg)" }}
+        className="token-usage-ring-svg"
       >
         <circle
           cx={size / 2}
@@ -1280,9 +1274,7 @@ export function TokenUsageRing({
           strokeDasharray={circumference}
           strokeDashoffset={strokeDashoffset}
           strokeLinecap="round"
-          style={{
-            transition: isStreaming ? "none" : "stroke-dashoffset 0.3s ease",
-          }}
+          className={isStreaming ? "" : "token-usage-ring-animated"}
         />
       </svg>
       <span>{formatTokens(used)}</span>

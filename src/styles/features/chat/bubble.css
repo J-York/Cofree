@@ -82,28 +82,29 @@
 }
 
 .chat-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-full);
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-sm);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 700;
   flex-shrink: 0;
   box-shadow: none;
+  letter-spacing: 0.02em;
 }
 
 .chat-avatar.user {
-  background: var(--accent-muted);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-solid) 25%, var(--surface-3)) 0%, var(--surface-3) 100%);
   border: 1px solid rgba(143,166,208,0.2);
   color: var(--accent-solid);
 }
 
 .chat-avatar.assistant {
-  background: var(--surface-2);
-  border: 1px solid var(--border-1);
-  color: var(--text-2);
+  background: var(--accent-muted);
+  border: 1px solid color-mix(in srgb, var(--accent-solid) 15%, var(--border-1));
+  color: var(--accent-solid);
 }
 
 .chat-bubble-wrap {

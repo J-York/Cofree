@@ -49,13 +49,12 @@ function badgeToneClass(tone: ConversationTopbarBadge["tone"] | undefined): stri
 const PROGRESS_ROW_ARIA_LABEL = "查看进度，跳转至进度详情";
 
 export function ConversationTopbar({ state, onAction }: ConversationTopbarProps): ReactNode {
-  const { agentLabel, primaryLabel, badges, progress, attention } = state;
+  const { primaryLabel, badges, progress, attention } = state;
   const progressDisabled = progress.disabled === true;
 
   return (
     <div className="conversation-topbar">
       <div className="conversation-topbar-row" data-conversation-topbar-row="1">
-        <span className="conversation-topbar-agent">{agentLabel}</span>
         <div className="conversation-topbar-primary" aria-live="polite">
           {primaryLabel}
         </div>
@@ -142,7 +141,7 @@ export function ConversationTopbar({ state, onAction }: ConversationTopbarProps)
       ) : null}
 
       {attention !== null ? (
-        <div className="conversation-topbar-row conversation-topbar-attention" data-attention-level={attention.level}>
+        <div className="conversation-topbar-attention-toast" data-attention-level={attention.level}>
           <div className="conversation-topbar-attention-live" aria-live="polite">
             <span className="conversation-topbar-attention-level">{attentionLevelPrefix(attention.level)}</span>{" "}
             <span className="conversation-topbar-attention-message">{attention.message}</span>

@@ -75,7 +75,6 @@ export function ConversationSidebar({
   return (
     <aside className="conv-panel">
       <div className="conv-panel-header">
-        <span className="conv-panel-title">对话</span>
         <button
           className="conv-panel-new-btn"
           onClick={onNewConversation}
@@ -83,6 +82,7 @@ export function ConversationSidebar({
           title="新建对话 (⌘N)"
         >
           <IconPlus size={14} />
+          <span className="conv-panel-new-label">新对话</span>
         </button>
       </div>
 
@@ -128,6 +128,9 @@ export function ConversationSidebar({
                     onKeyDown={(e) => e.key === "Enter" && onSelectConversation(conv.id)}
                   >
                     <div className="conv-panel-item-title">{conv.title}</div>
+                    {conv.lastMessagePreview && (
+                      <div className="conv-panel-item-preview">{conv.lastMessagePreview}</div>
+                    )}
                     <div className="conv-panel-item-meta">
                       {formatDate(conv.updatedAt)}
                       {conv.messageCount > 0 && (

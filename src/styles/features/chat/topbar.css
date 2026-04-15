@@ -2,10 +2,15 @@
 .conversation-topbar {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 0 10px;
+  gap: 4px;
+  padding: 6px 0 8px;
   margin-bottom: 4px;
   border-bottom: 1px solid var(--border-1);
+}
+
+.conversation-topbar:empty,
+.conversation-topbar:has(> :only-child:empty) {
+  display: none;
 }
 
 .conversation-topbar-row {
@@ -24,21 +29,12 @@
   color: var(--text-1);
 }
 
-.conversation-topbar-agent {
-  flex-shrink: 0;
-  font-weight: 600;
-  color: var(--text-1);
-  max-width: 42%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .conversation-topbar-primary {
   flex: 1;
-  min-width: 120px;
+  min-width: 80px;
   font-weight: 500;
-  color: var(--text-1);
+  font-size: 12px;
+  color: var(--text-2);
 }
 
 .conversation-topbar-badges {
@@ -172,28 +168,39 @@ button.conversation-topbar-badge:hover {
   padding: 2px 0;
 }
 
-.conversation-topbar-attention {
+/* ── Floating toast for attention messages ──────────────── */
+.conversation-topbar-attention-toast {
+  display: flex;
   align-items: center;
   gap: 10px;
   font-size: 12px;
   line-height: 1.45;
   color: var(--text-2);
-  padding: 6px 8px;
-  border-radius: var(--r-sm);
-  background: var(--surface-1);
-  border: 1px solid var(--border-1);
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  box-shadow: var(--shadow-md);
+  animation: attention-toast-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.conversation-topbar-attention[data-attention-level="info"] {
-  border-left: 2px solid var(--accent-solid);
+@keyframes attention-toast-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-.conversation-topbar-attention[data-attention-level="warning"] {
-  border-left: 2px solid var(--color-warning);
+.conversation-topbar-attention-toast[data-attention-level="info"] {
+  border-color: color-mix(in srgb, var(--accent-solid) 30%, var(--border-2));
 }
 
-.conversation-topbar-attention[data-attention-level="blocked"] {
-  border-left: 2px solid var(--color-error);
+.conversation-topbar-attention-toast[data-attention-level="warning"] {
+  border-color: color-mix(in srgb, var(--color-warning) 30%, var(--border-2));
+  background: color-mix(in srgb, var(--color-warning-bg) 40%, var(--surface-2));
+}
+
+.conversation-topbar-attention-toast[data-attention-level="blocked"] {
+  border-color: color-mix(in srgb, var(--color-error) 30%, var(--border-2));
+  background: color-mix(in srgb, var(--color-error-bg) 40%, var(--surface-2));
 }
 
 .conversation-topbar-attention-live {

@@ -212,7 +212,6 @@ interface ChatPageProps {
   activeAgent: ChatAgentDefinition;
   isVisible?: boolean;
   sidebarCollapsed?: boolean;
-  onToggleSidebar?: () => void;
 }
 
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 48;
@@ -709,7 +708,7 @@ function waitForDelay(ms: number): Promise<void> {
 }
 
 /* ── Main ChatPage ────────────────────────────────────────── */
-export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, onToggleSidebar }: ChatPageProps): ReactElement {
+export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }: ChatPageProps): ReactElement {
   const { actions: session, state: sessionState } = useSession();
 
   const wsPath = settings.workspacePath;
@@ -4023,20 +4022,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed, o
       />
       <div className="chat-main-area">
         <div className="page-content chat-layout">
-          {/* ── Floating sidebar toggle ── */}
-          <button
-            className="chat-sidebar-fab"
-            onClick={onToggleSidebar}
-            type="button"
-            aria-label="对话列表 (⌘B)"
-            title="对话列表 (⌘B)"
-          >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <rect x="2" y="2" width="12" height="12" rx="1" stroke="currentColor" strokeWidth="1.4" />
-              <path d="M6 2v12" stroke="currentColor" strokeWidth="1.4" />
-            </svg>
-          </button>
-
           {/* ── Alerts ── */}
           {localOnlyBlocked && (
             <div className="chat-alert chat-alert-error">

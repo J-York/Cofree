@@ -8,7 +8,7 @@
 }
 
 .chat-input-box {
-  background: var(--surface-1);
+  background: var(--surface-2);
   border: 1px solid var(--border-2);
   border-radius: var(--r-xl);
   transition: all var(--t-med);
@@ -116,7 +116,7 @@
 
 .chat-input-box:focus-within {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 1px var(--border-focus);
+  box-shadow: 0 0 0 3px var(--accent-muted);
   background: var(--surface-2);
 }
 
@@ -154,4 +154,21 @@
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+/* ── Token Usage Ring ───────────────────────────────────── */
+.token-usage-ring {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.token-usage-ring-svg {
+  transform: rotate(-90deg);
+}
+
+.token-usage-ring-animated {
+  transition: stroke-dashoffset 0.3s ease;
 }
