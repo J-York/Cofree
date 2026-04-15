@@ -1,4 +1,4 @@
-/* ── Terminal Dock ─────────────────────────────────────── */
+/* ── Terminal Dock — glass terminal panel ───────────────── */
 .terminal-dock {
   flex-shrink: 0;
   height: 0;
@@ -7,7 +7,7 @@
   overflow: hidden;
   pointer-events: none;
   border-top: 1px solid transparent;
-  background: var(--surface-0);
+  background: transparent;
   transition:
     height var(--t-med),
     opacity var(--t-fast),
@@ -18,12 +18,12 @@
   height: 340px;
   opacity: 1;
   pointer-events: auto;
-  border-top-color: var(--border-1);
-  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.28);
+  border-top-color: rgba(122, 231, 161, 0.12);
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(122, 231, 161, 0.08);
 }
 
 .terminal-shell {
-  --terminal-bg: #0d1319;
+  --terminal-bg: rgba(10, 16, 22, 0.85);
   --terminal-surface: rgba(255, 255, 255, 0.04);
   --terminal-border: rgba(255, 255, 255, 0.08);
   --terminal-text: #e8edf4;
@@ -34,9 +34,12 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  backdrop-filter: var(--glass-blur-xl);
+  -webkit-backdrop-filter: var(--glass-blur-xl);
   background:
-    radial-gradient(circle at top right, rgba(122, 231, 161, 0.10), transparent 26%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 22%),
+    radial-gradient(circle at top right, rgba(122, 231, 161, 0.12), transparent 30%),
+    radial-gradient(circle at bottom left, rgba(56, 189, 248, 0.06), transparent 40%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 22%),
     var(--terminal-bg);
 }
 
@@ -46,9 +49,11 @@
   justify-content: space-between;
   gap: 12px;
   padding: 12px 20px;
-  border-bottom: 1px solid var(--terminal-border);
-  background: rgba(6, 10, 14, 0.55);
-  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(122, 231, 161, 0.08);
+  background: rgba(6, 10, 14, 0.45);
+  backdrop-filter: var(--glass-blur-lg);
+  -webkit-backdrop-filter: var(--glass-blur-lg);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .terminal-shell-title-row,
@@ -117,14 +122,17 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px 14px;
-  border: 1px solid var(--terminal-border);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: var(--r-md);
-  background: var(--terminal-surface);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .terminal-entry-running {
-  border-color: rgba(122, 231, 161, 0.18);
+  border-color: rgba(122, 231, 161, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 16px rgba(122, 231, 161, 0.08);
 }
 
 .terminal-entry-head,
@@ -193,8 +201,10 @@
   justify-content: space-between;
   gap: 14px;
   padding: 14px 20px 18px;
-  border-top: 1px solid var(--terminal-border);
-  background: rgba(6, 10, 14, 0.58);
+  border-top: 1px solid rgba(122, 231, 161, 0.08);
+  background: rgba(6, 10, 14, 0.45);
+  backdrop-filter: var(--glass-blur-lg);
+  -webkit-backdrop-filter: var(--glass-blur-lg);
 }
 
 .terminal-composer-field {
@@ -234,9 +244,9 @@
   color: var(--terminal-muted);
 }
 
-/* ── Terminal Light Mode ──────────────────────────────────── */
+/* ── Terminal Light Mode — frosted light glass ─────────── */
 [data-theme="light"] .terminal-shell {
-  --terminal-bg: #F8FAFB;
+  --terminal-bg: rgba(248, 250, 251, 0.75);
   --terminal-surface: rgba(0, 0, 0, 0.03);
   --terminal-border: rgba(0, 0, 0, 0.08);
   --terminal-text: #1a1f26;
@@ -246,13 +256,14 @@
 
 [data-theme="light"] .terminal-shell {
   background:
-    radial-gradient(circle at top right, rgba(22, 163, 74, 0.08), transparent 26%),
-    linear-gradient(180deg, rgba(0, 0, 0, 0.01), transparent 22%),
+    radial-gradient(circle at top right, rgba(22, 163, 74, 0.08), transparent 30%),
+    radial-gradient(circle at bottom left, rgba(37, 99, 235, 0.05), transparent 40%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.40), transparent 22%),
     var(--terminal-bg);
 }
 
 [data-theme="light"] .terminal-shell-header {
-  background: rgba(248, 250, 251, 0.85);
+  background: rgba(248, 250, 251, 0.60);
 }
 
 [data-theme="light"] .terminal-shell-close {
@@ -264,7 +275,8 @@
 }
 
 [data-theme="light"] .terminal-entry {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.40);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.60);
 }
 
 [data-theme="light"] .terminal-entry-output {
@@ -279,20 +291,20 @@
 }
 
 [data-theme="light"] .terminal-composer {
-  background: rgba(248, 250, 251, 0.88);
+  background: rgba(248, 250, 251, 0.60);
 }
 
 [data-theme="light"] .terminal-input {
-  background: rgba(0, 0, 0, 0.03);
+  background: rgba(255, 255, 255, 0.50);
   border-color: rgba(0, 0, 0, 0.08);
 }
 
 [data-theme="light"] .terminal-input:focus {
-  background: rgba(0, 0, 0, 0.02);
+  background: rgba(255, 255, 255, 0.60);
   border-color: rgba(22, 163, 74, 0.4);
-  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12);
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12), 0 0 16px rgba(22, 163, 74, 0.08);
 }
 
 [data-theme="light"] .terminal-dock.open {
-  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(22, 163, 74, 0.06);
 }

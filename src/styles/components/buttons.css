@@ -1,4 +1,4 @@
-/* ── Buttons ────────────────────────────────────────────── */
+/* ── Buttons — glass style ──────────────────────────────── */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -11,53 +11,59 @@
   font-weight: 500;
   font-family: var(--font-sans);
   cursor: pointer;
-  transition: all var(--t-spring);
+  transition: all var(--t-med);
   white-space: nowrap;
   outline: none;
   box-shadow: var(--shadow-sm);
+  position: relative;
 }
 
 .btn:active {
-  transform: scale(0.96);
+  transform: scale(0.98);
 }
 
-.btn:focus-visible { box-shadow: 0 0 0 3px rgba(143,166,208,0.25); }
+.btn:focus-visible { box-shadow: 0 0 0 3px rgba(124,159,232,0.30); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; box-shadow: none; }
 
 .btn-primary {
   background: var(--accent-solid);
   color: var(--accent-text);
-  border: 1px solid transparent;
+  border: 1px solid rgba(255,255,255,0.15);
   font-weight: 600;
+  box-shadow: var(--shadow-sm), var(--accent-glow-sm);
 }
 .btn-primary:hover:not(:disabled) {
-  filter: brightness(1.1);
-  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--accent-muted);
+  filter: brightness(1.15);
+  box-shadow: var(--shadow-md), var(--accent-glow);
 }
 
 .btn-ghost {
-  background: transparent;
+  background: var(--surface-1);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
   color: var(--text-2);
-  border: 1px solid var(--border-1);
+  border: var(--glass-border);
   box-shadow: none;
 }
 .btn-ghost:hover:not(:disabled) {
-  background: var(--surface-2);
+  background: var(--surface-3);
   color: var(--text-1);
-  border-color: var(--border-2);
+  border-color: rgba(255,255,255,0.14);
   box-shadow: var(--shadow-sm);
 }
 
 .btn-danger {
   background: var(--color-error-bg);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
   color: var(--color-error);
-  border: 1px solid rgba(248,113,113,0.15);
+  border: 1px solid rgba(248,113,113,0.18);
   box-shadow: none;
 }
 .btn-danger:hover:not(:disabled) {
-  background: rgba(248,113,113,0.15);
-  border-color: rgba(248,113,113,0.25);
-  box-shadow: var(--shadow-sm);
+  background: rgba(248,113,113,0.18);
+  border-color: rgba(248,113,113,0.30);
+  box-shadow: 0 0 16px rgba(248,113,113,0.15);
 }
 
 .btn-sm { padding: 5px 12px; font-size: 12px; border-radius: var(--r-sm); }

@@ -1,10 +1,10 @@
-/* ── Chat Layout ────────────────────────────────────────── */
+/* ── Chat Layout — glass canvas ─────────────────────────── */
 .chat-layout-with-sidebar {
   display: flex;
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background: var(--surface-0);
+  background: transparent;
 }
 
 .chat-main-area {
@@ -55,7 +55,7 @@
 .chat-thread::-webkit-scrollbar-thumb { background: transparent; border-radius: var(--r-full); }
 .chat-thread:hover::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); }
 
-/* ── Chat Empty State ───────────────────────────────────── */
+/* ── Chat Empty State — floating glass welcome ─────────── */
 .chat-empty {
   display: flex;
   flex: 1;
@@ -74,11 +74,12 @@
 }
 
 .chat-empty-text {
-  font-size: 20px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 700;
   color: var(--text-1);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   margin: 0;
+  text-shadow: 0 0 40px rgba(124,159,232,0.15);
 }
 
 .chat-empty-subtext {
@@ -104,7 +105,9 @@
   align-items: center;
   padding: 10px 20px;
   background: var(--surface-1);
-  border: 1px solid var(--border-1);
+  backdrop-filter: var(--glass-blur-md);
+  -webkit-backdrop-filter: var(--glass-blur-md);
+  border: var(--glass-border);
   border-radius: var(--r-full);
   font-size: 14px;
   font-weight: 500;
@@ -114,9 +117,9 @@
 }
 
 .chat-suggestion-chip:hover {
-  background: var(--surface-2);
-  border-color: var(--border-2);
+  background: var(--surface-3);
+  border-color: rgba(255,255,255,0.16);
   color: var(--text-1);
   transform: translateY(-2px);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md), var(--accent-glow-sm);
 }

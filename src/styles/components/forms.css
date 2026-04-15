@@ -1,11 +1,13 @@
-/* ── Form Elements ──────────────────────────────────────── */
+/* ── Form Elements — glass inputs ───────────────────────── */
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field-label { font-size: 13px; font-weight: 500; color: var(--text-2); letter-spacing: 0.01em; }
 
 .input, .select, .textarea {
   width: 100%;
   background: var(--surface-1);
-  border: 1px solid var(--border-2);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+  border: var(--glass-border);
   border-radius: var(--r-md);
   padding: 8px 12px;
   font-size: 13px;
@@ -13,14 +15,14 @@
   color: var(--text-1);
   transition: all var(--t-fast);
   outline: none;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--glass-inner-glow);
 }
 
 .input::placeholder, .textarea::placeholder { color: var(--text-3); font-weight: 400; }
 
 .input:focus, .select:focus, .textarea:focus { 
   border-color: var(--border-focus); 
-  box-shadow: var(--shadow-sm), 0 0 0 3px var(--accent-muted);
+  box-shadow: var(--glass-inner-glow), 0 0 0 3px var(--accent-muted), var(--accent-glow-sm);
   background: var(--surface-2);
 }
 

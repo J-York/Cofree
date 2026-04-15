@@ -1,9 +1,10 @@
-/* ── App Shell ──────────────────────────────────────────── */
+/* ── App Shell — glass container ────────────────────────── */
 .app-shell {
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  position: relative;
 }
 
 .app-body {
@@ -25,9 +26,9 @@
 .page-header { margin-bottom: 4px; }
 .page-title {
   font-size: 20px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-1);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   margin: 0 0 6px;
 }
 .page-subtitle { font-size: 13px; color: var(--text-3); margin: 0; }

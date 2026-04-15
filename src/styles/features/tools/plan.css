@@ -1,14 +1,17 @@
-/* ── Inline Plan / HITL ─────────────────────────────────── */
+/* ── Inline Plan / HITL — glass plan card ───────────────── */
 .inline-plan {
   margin-top: 12px;
   padding: 14px 16px;
   background: var(--surface-1);
-  border: 1px solid var(--border-1);
+  backdrop-filter: var(--glass-blur-md);
+  -webkit-backdrop-filter: var(--glass-blur-md);
+  border: var(--glass-border);
   border-left: 2px solid var(--accent-solid);
   border-radius: var(--r-sm);
   display: flex;
   flex-direction: column;
   gap: 10px;
+  box-shadow: var(--glass-inner-glow);
 }
 
 /* Inline plan / HITL: softer emphasis when topbar carries plan / attention signals */
@@ -95,15 +98,17 @@
 }
 
 .plan-step {
-  border: 1px solid var(--border-1);
+  border: var(--glass-border);
   border-radius: var(--r-sm);
   background: var(--surface-2);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
   padding: 10px 12px;
 }
 
 .plan-step.is-active {
-  border-color: var(--accent-solid);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-solid) 16%, transparent);
+  border-color: rgba(124,159,232,0.25);
+  box-shadow: var(--accent-glow-sm), var(--glass-inner-glow);
 }
 
 .plan-step-header {
@@ -203,15 +208,18 @@
 }
 
 .action-item {
-  border: 1px solid var(--border-1);
+  border: var(--glass-border);
   border-radius: var(--r-md);
   background: var(--surface-1);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  box-shadow: var(--glass-inner-glow);
 }
-.action-item:hover { border-color: var(--border-2); }
+.action-item:hover { border-color: rgba(255,255,255,0.14); box-shadow: var(--shadow-sm); }
 
 .action-header {
   display: flex;

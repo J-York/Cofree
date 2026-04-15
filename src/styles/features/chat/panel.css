@@ -1,11 +1,13 @@
-/* ── Conversation Panel (permanent sidebar) ─────────────── */
+/* ── Conversation Panel — frosted glass sidebar ─────────── */
 .conv-panel {
   width: 260px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   background: var(--surface-1);
-  border-right: 1px solid var(--border-1);
+  backdrop-filter: var(--glass-blur-lg);
+  -webkit-backdrop-filter: var(--glass-blur-lg);
+  border-right: var(--glass-border);
   overflow: hidden;
   transition: width var(--t-slow), opacity var(--t-med);
   z-index: 5;
@@ -22,7 +24,7 @@
   display: flex;
   align-items: center;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border-1);
+  border-bottom: var(--glass-border);
   flex-shrink: 0;
 }
 
@@ -33,9 +35,11 @@
   gap: 6px;
   width: 100%;
   height: 32px;
-  border: 1px solid var(--border-1);
+  border: var(--glass-border);
   border-radius: var(--r-sm);
   background: var(--surface-2);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
   color: var(--text-2);
   cursor: pointer;
   transition: all var(--t-fast);
@@ -47,8 +51,8 @@
 .conv-panel-new-btn:hover {
   background: var(--surface-3);
   color: var(--text-1);
-  border-color: var(--border-2);
-  box-shadow: var(--shadow-sm);
+  border-color: rgba(255,255,255,0.14);
+  box-shadow: var(--accent-glow-sm);
 }
 
 .conv-panel-new-label {
@@ -96,8 +100,10 @@
 
 .conv-panel-item.active {
   background: var(--surface-2);
-  border-color: var(--border-2);
-  box-shadow: var(--shadow-sm);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+  border-color: rgba(124,159,232,0.20);
+  box-shadow: var(--accent-glow-sm);
 }
 
 .conv-panel-item.active::before {
@@ -109,6 +115,7 @@
   width: 4px;
   background: var(--accent-solid);
   border-radius: var(--r-full);
+  box-shadow: 0 0 8px rgba(124,159,232,0.40);
 }
 
 .conv-panel-item-body {
@@ -178,8 +185,10 @@
   justify-content: center;
   width: 28px;
   height: 28px;
-  background: var(--surface-3);
-  border: 1px solid var(--border-1);
+  background: var(--surface-2);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+  border: var(--glass-border);
   border-radius: var(--r-sm);
   color: var(--text-2);
   cursor: pointer;
@@ -187,9 +196,10 @@
 }
 
 .conv-panel-action-btn:hover {
-  background: var(--surface-4);
+  background: var(--surface-3);
   color: var(--text-1);
   transform: scale(1.05);
+  box-shadow: var(--accent-glow-sm);
 }
 
 .conv-panel-action-btn.danger:hover {

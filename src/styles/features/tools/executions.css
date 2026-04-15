@@ -1,12 +1,14 @@
-/* ── Live Tool Status ───────────────────────────────────── */
+/* ── Live Tool Status — glass status panel ──────────────── */
 .live-tool-status {
   display: flex;
   flex-direction: column;
   gap: 3px;
   margin-top: 8px;
   padding: 8px 10px;
-  background: var(--surface-0);
-  border: 1px solid color-mix(in srgb, var(--border-1) 85%, transparent);
+  background: var(--surface-1);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+  border: var(--glass-border);
   border-radius: var(--r-sm);
 }
 
@@ -107,9 +109,11 @@
 }
 
 .tool-trace-item {
-  border: 1px solid color-mix(in srgb, var(--border-1) 80%, transparent);
+  border: var(--glass-border);
   border-radius: var(--r-sm);
-  background: var(--surface-0);
+  background: var(--surface-1);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
   padding: 6px 10px;
   display: flex;
   flex-direction: column;
@@ -156,12 +160,15 @@
   border: 1px solid var(--border-1);
 }
 
-/* ── Shell Result ───────────────────────────────────────── */
+/* ── Shell Result — glass terminal card ─────────────────── */
 .shell-result {
-  border: 1px solid var(--border-1);
+  border: var(--glass-border);
   border-radius: var(--r-sm);
   background: var(--surface-1);
+  backdrop-filter: var(--glass-blur-md);
+  -webkit-backdrop-filter: var(--glass-blur-md);
   overflow: hidden;
+  box-shadow: var(--glass-inner-glow);
 }
 
 .shell-result-header {
@@ -170,7 +177,7 @@
   justify-content: space-between;
   padding: 8px 12px;
   background: var(--surface-2);
-  border-bottom: 1px solid var(--border-1);
+  border-bottom: var(--glass-border);
 }
 
 .shell-result-label {

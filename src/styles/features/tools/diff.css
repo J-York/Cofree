@@ -1,5 +1,5 @@
-/* ── Patch / Diff ───────────────────────────────────────── */
-.patch-summary-card { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--border-1); border-radius: var(--r-sm); background: var(--surface-2); }
+/* ── Patch / Diff — glass diff panels ───────────────────── */
+.patch-summary-card { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: var(--glass-border); border-radius: var(--r-sm); background: var(--surface-1); backdrop-filter: var(--glass-blur-sm); -webkit-backdrop-filter: var(--glass-blur-sm); }
 .patch-summary-kpis { display: flex; flex-wrap: wrap; gap: 6px; }
 .patch-kpi { display: inline-flex; align-items: center; padding: 2px 6px; border-radius: var(--r-xs); border: 1px solid var(--border-1); background: var(--surface-1); color: var(--text-2); font-family: var(--font-mono); font-size: 10px; }
 .patch-kpi-add { color: var(--color-success); background: var(--color-success-bg); }
@@ -10,7 +10,7 @@
 .patch-summary-file-stats { flex-shrink: 0; font-family: var(--font-mono); font-size: 10px; color: var(--text-3); }
 .patch-summary-empty, .patch-summary-more, .patch-preview-note { margin: 0; font-size: 10px; color: var(--text-3); }
 
-.patch-preview { max-height: 240px; overflow: auto; border: 1px solid var(--border-1); border-radius: var(--r-sm); background: var(--surface-0); }
+.patch-preview { max-height: 240px; overflow: auto; border: var(--glass-border); border-radius: var(--r-sm); background: rgba(0,0,0,0.20); backdrop-filter: var(--glass-blur-sm); -webkit-backdrop-filter: var(--glass-blur-sm); }
 .patch-line { padding: 2px 8px; border-bottom: 1px solid var(--border-1); }
 .patch-line:last-child { border-bottom: none; }
 .patch-line code { display: block; font-family: var(--font-mono); font-size: 11px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
@@ -29,15 +29,15 @@
 .diff-viewer { display: flex; flex-direction: column; gap: 6px; }
 .diff-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; }
 .diff-mode-toggle { display: flex; gap: 3px; }
-.diff-file-block { border: 1px solid var(--border-1); border-radius: var(--r-sm); overflow: hidden; }
-.diff-file-header { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: var(--surface-1); border-bottom: 1px solid var(--border-1); cursor: pointer; user-select: none; }
+.diff-file-block { border: var(--glass-border); border-radius: var(--r-sm); overflow: hidden; backdrop-filter: var(--glass-blur-sm); -webkit-backdrop-filter: var(--glass-blur-sm); }
+.diff-file-header { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: var(--surface-1); border-bottom: var(--glass-border); cursor: pointer; user-select: none; }
 .diff-file-header:hover { background: var(--surface-2); }
 .diff-file-toggle { font-size: 7px; color: var(--text-3); transition: transform var(--t-fast); flex-shrink: 0; }
 .diff-file-path { font-family: var(--font-mono); font-size: 11px; color: var(--text-1); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diff-file-stats { display: flex; gap: 6px; font-family: var(--font-mono); font-size: 10px; flex-shrink: 0; }
 .diff-stat-add { color: var(--color-success); }
 .diff-stat-del { color: var(--color-error); }
-.diff-file-content { max-height: 360px; overflow: auto; background: var(--surface-0); }
+.diff-file-content { max-height: 360px; overflow: auto; background: rgba(0,0,0,0.15); }
 
 .diff-inline-view .patch-line { display: flex; gap: 0; padding: 0; }
 .diff-line-no { display: inline-block; width: 36px; min-width: 36px; padding: 1px 4px; text-align: right; font-family: var(--font-mono); font-size: 10px; color: var(--text-3); background: var(--surface-1); border-right: 1px solid var(--border-1); user-select: none; flex-shrink: 0; }

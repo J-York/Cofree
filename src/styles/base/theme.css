@@ -1,36 +1,65 @@
 /* ============================================================
-   Cofree Design System — v5  "Elegant Card"
-   Floating surfaces · Gentle shadows · Spacious typography
+   Cofree Design System — v6  "Frosted Glass"
+   Glassmorphism · Backdrop blur · Gradient glow · Neon accents
    ============================================================ */
 
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 
 /* ── Tokens (Dark Mode - Default) ─────────────────────────── */
 :root {
-  /* Surface hierarchy - refined gradient for better depth */
-  --surface-0: #0F0F11;
-  --surface-1: #161618;
-  --surface-2: #1E1E21;
-  --surface-3: #26262B;
-  --surface-4: #2E2E35;
-  --surface-5: #38383F;
+  /* Background — deep gradient base that shines through glass */
+  --bg-gradient: linear-gradient(135deg, #0a0a12 0%, #0d1020 35%, #111428 65%, #0a0e1a 100%);
+  --bg-gradient-accent: radial-gradient(ellipse at 20% 50%, rgba(99,102,241,0.08) 0%, transparent 60%),
+                         radial-gradient(ellipse at 80% 20%, rgba(56,189,248,0.06) 0%, transparent 50%),
+                         radial-gradient(ellipse at 60% 80%, rgba(168,85,247,0.05) 0%, transparent 50%);
+
+  /* Glass surface hierarchy — translucent layers */
+  --surface-0: rgba(10,10,18,0.85);
+  --surface-1: rgba(255,255,255,0.04);
+  --surface-2: rgba(255,255,255,0.07);
+  --surface-3: rgba(255,255,255,0.10);
+  --surface-4: rgba(255,255,255,0.13);
+  --surface-5: rgba(255,255,255,0.17);
+
+  /* Glass blur levels */
+  --glass-blur-sm: blur(12px);
+  --glass-blur-md: blur(20px);
+  --glass-blur-lg: blur(32px);
+  --glass-blur-xl: blur(48px);
+
+  /* Glass border — subtle highlight / gradient stroke */
+  --glass-border: 1px solid rgba(255,255,255,0.08);
+  --glass-border-highlight: 1px solid rgba(255,255,255,0.14);
+  --glass-border-glow: 1px solid rgba(147,180,232,0.25);
+
+  /* Inner glow for glass surfaces */
+  --glass-inner-glow: inset 0 1px 0 rgba(255,255,255,0.06);
+  --glass-inner-glow-strong: inset 0 1px 0 rgba(255,255,255,0.10), inset 0 0 20px rgba(255,255,255,0.02);
 
   /* Text hierarchy */
-  --text-1: #F4F4F5;
-  --text-2: #A1A1AA;
-  --text-3: #71717A;
+  --text-1: #F0F0F5;
+  --text-2: rgba(255,255,255,0.60);
+  --text-3: rgba(255,255,255,0.38);
   --text-link: #93B4E8;
 
   /* Borders */
   --border-1: rgba(255,255,255,0.06);
   --border-2: rgba(255,255,255,0.10);
   --border-3: rgba(255,255,255,0.16);
-  --border-focus: rgba(147,180,232,0.45);
+  --border-focus: rgba(147,180,232,0.50);
 
-  /* Accent - more vibrant blue-gray */
-  --accent-solid: #93B4E8;
-  --accent-muted: rgba(147,180,232,0.15);
-  --accent-text: #0F0F11;
+  /* Accent — vibrant blue with neon glow capability */
+  --accent-solid: #7C9FE8;
+  --accent-bright: #93B4F0;
+  --accent-muted: rgba(124,159,232,0.15);
+  --accent-text: #0a0a12;
+  --accent-glow: 0 0 20px rgba(124,159,232,0.25), 0 0 40px rgba(124,159,232,0.10);
+  --accent-glow-sm: 0 0 10px rgba(124,159,232,0.18);
+
+  /* Neon highlight palette */
+  --neon-blue: rgba(56,189,248,0.7);
+  --neon-purple: rgba(168,85,247,0.7);
+  --neon-cyan: rgba(34,211,238,0.7);
 
   /* Semantic colors */
   --color-success: #4ADE80;
@@ -43,15 +72,15 @@
   --color-info: #60A5FA;
   --color-info-bg: rgba(96,165,250,0.10);
 
-  /* User bubble */
-  --user-bubble-bg: linear-gradient(135deg, #2A3038 0%, #222830 100%);
-  --user-bubble-border: rgba(255,255,255,0.08);
+  /* User bubble — frosted glass variant */
+  --user-bubble-bg: rgba(255,255,255,0.06);
+  --user-bubble-border: rgba(255,255,255,0.12);
 
   /* Typography */
   --font-sans: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
 
-  /* Radii */
+  /* Radii — slightly larger for glass aesthetic */
   --r-xs: 6px;
   --r-sm: 10px;
   --r-md: 14px;
@@ -59,17 +88,17 @@
   --r-xl: 24px;
   --r-full: 9999px;
 
-  /* Shadows - dark mode */
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.24), 0 1px 2px rgba(0,0,0,0.16);
-  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.35), 0 2px 4px -2px rgba(0,0,0,0.24);
-  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.45), 0 4px 6px -4px rgba(0,0,0,0.25);
-  --shadow-float: 0 20px 25px -5px rgba(0,0,0,0.55), 0 8px 10px -6px rgba(0,0,0,0.35), 0 0 0 1px var(--border-2);
+  /* Shadows — glass-appropriate with color tinting */
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.30), var(--glass-inner-glow);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.35), 0 2px 4px rgba(0,0,0,0.20), var(--glass-inner-glow);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.45), 0 4px 8px rgba(0,0,0,0.25), var(--glass-inner-glow-strong);
+  --shadow-float: 0 20px 60px rgba(0,0,0,0.55), 0 8px 20px rgba(0,0,0,0.30), var(--glass-inner-glow-strong);
 
-  /* Transitions */
+  /* Transitions — smooth, no bounce */
   --t-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
-  --t-med: 250ms cubic-bezier(0.4, 0, 0.2, 1);
-  --t-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
-  --t-spring: 400ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  --t-med: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --t-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  --t-spring: 250ms cubic-bezier(0.22, 0.68, 0.36, 1);
 
   color-scheme: dark;
   font-family: var(--font-sans);
@@ -79,34 +108,52 @@
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Light Mode ───────────────────────────────────────────── */
+/* ── Light Mode — frosted glass on bright gradient ────────── */
 [data-theme="light"] {
-  /* Surface hierarchy - white to light gray */
-  --surface-0: #FFFFFF;
-  --surface-1: #FAFAFA;
-  --surface-2: #F5F5F6;
-  --surface-3: #EBEBED;
-  --surface-4: #E1E1E4;
-  --surface-5: #D4D4D8;
+  --bg-gradient: linear-gradient(135deg, #e8ecf4 0%, #dfe6f0 35%, #eae0f0 65%, #e4ecf4 100%);
+  --bg-gradient-accent: radial-gradient(ellipse at 20% 50%, rgba(99,102,241,0.06) 0%, transparent 60%),
+                         radial-gradient(ellipse at 80% 20%, rgba(56,189,248,0.05) 0%, transparent 50%),
+                         radial-gradient(ellipse at 60% 80%, rgba(168,85,247,0.04) 0%, transparent 50%);
+
+  /* Glass surfaces — white translucent */
+  --surface-0: rgba(255,255,255,0.70);
+  --surface-1: rgba(255,255,255,0.50);
+  --surface-2: rgba(255,255,255,0.60);
+  --surface-3: rgba(255,255,255,0.70);
+  --surface-4: rgba(255,255,255,0.78);
+  --surface-5: rgba(255,255,255,0.85);
+
+  --glass-border: 1px solid rgba(255,255,255,0.50);
+  --glass-border-highlight: 1px solid rgba(255,255,255,0.70);
+  --glass-border-glow: 1px solid rgba(75,106,155,0.30);
+  --glass-inner-glow: inset 0 1px 0 rgba(255,255,255,0.60);
+  --glass-inner-glow-strong: inset 0 1px 0 rgba(255,255,255,0.80), inset 0 0 20px rgba(255,255,255,0.10);
 
   /* Text hierarchy */
   --text-1: #18181B;
-  --text-2: #52525B;
-  --text-3: #71717A;
+  --text-2: rgba(0,0,0,0.55);
+  --text-3: rgba(0,0,0,0.35);
   --text-link: #4B6A9B;
 
-  /* Borders - using black alpha */
+  /* Borders */
   --border-1: rgba(0,0,0,0.06);
   --border-2: rgba(0,0,0,0.10);
   --border-3: rgba(0,0,0,0.16);
-  --border-focus: rgba(75,106,155,0.40);
+  --border-focus: rgba(75,106,155,0.45);
 
-  /* Accent - darker for light background */
+  /* Accent */
   --accent-solid: #4B6A9B;
+  --accent-bright: #5A7DB5;
   --accent-muted: rgba(75,106,155,0.12);
   --accent-text: #FFFFFF;
+  --accent-glow: 0 0 20px rgba(75,106,155,0.20), 0 0 40px rgba(75,106,155,0.08);
+  --accent-glow-sm: 0 0 10px rgba(75,106,155,0.15);
 
-  /* Semantic colors - adjusted for light mode */
+  --neon-blue: rgba(37,99,235,0.5);
+  --neon-purple: rgba(139,92,246,0.5);
+  --neon-cyan: rgba(6,182,212,0.5);
+
+  /* Semantic colors */
   --color-success: #16A34A;
   --color-success-bg: rgba(22,163,74,0.10);
   --color-error: #DC2626;
@@ -117,15 +164,15 @@
   --color-info: #2563EB;
   --color-info-bg: rgba(37,99,235,0.08);
 
-  /* User bubble - light mode */
-  --user-bubble-bg: linear-gradient(135deg, #EEF2F7 0%, #E8ECF2 100%);
-  --user-bubble-border: rgba(0,0,0,0.08);
+  /* User bubble */
+  --user-bubble-bg: rgba(255,255,255,0.55);
+  --user-bubble-border: rgba(255,255,255,0.70);
 
-  /* Shadows - softer for light mode */
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.10), 0 2px 4px -2px rgba(0,0,0,0.06);
-  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.12), 0 4px 6px -4px rgba(0,0,0,0.08);
-  --shadow-float: 0 20px 25px -5px rgba(0,0,0,0.15), 0 8px 10px -6px rgba(0,0,0,0.10), 0 0 0 1px var(--border-2);
+  /* Shadows — light mode glass */
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.06), var(--glass-inner-glow);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04), var(--glass-inner-glow);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.10), 0 4px 8px rgba(0,0,0,0.06), var(--glass-inner-glow-strong);
+  --shadow-float: 0 20px 60px rgba(0,0,0,0.12), 0 8px 20px rgba(0,0,0,0.06), var(--glass-inner-glow-strong);
 
   color-scheme: light;
   color: var(--text-1);

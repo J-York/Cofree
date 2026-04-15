@@ -1,4 +1,4 @@
-/* ── Settings Modal ─────────────────────────────────────── */
+/* ── Settings Modal — frosted glass overlay ────────────── */
 .settings-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -6,14 +6,15 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0,0,0,0.5);
-  backdrop-filter: blur(12px);
+  background: rgba(0,0,0,0.40);
+  backdrop-filter: var(--glass-blur-lg);
+  -webkit-backdrop-filter: var(--glass-blur-lg);
   animation: modal-fade 200ms ease-out both;
 }
 
 @keyframes modal-fade {
   from { opacity: 0; backdrop-filter: blur(0px); }
-  to { opacity: 1; backdrop-filter: blur(12px); }
+  to { opacity: 1; backdrop-filter: blur(32px); }
 }
 
 .settings-modal {
@@ -22,12 +23,13 @@
   height: 600px;
   max-height: 85vh;
   background: var(--surface-1);
-  border: 1px solid var(--border-1);
+  backdrop-filter: var(--glass-blur-xl);
+  -webkit-backdrop-filter: var(--glass-blur-xl);
+  border: var(--glass-border-highlight);
   border-radius: var(--r-xl);
   box-shadow: var(--shadow-float);
   overflow: hidden;
   animation: modal-scale 300ms var(--t-spring) both;
-  /* Fix Safari border-radius rendering issue with transform */
   transform: translateZ(0); 
 }
 
@@ -44,8 +46,10 @@
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--surface-0);
-  border-right: 1px solid var(--border-1);
+  background: var(--surface-1);
+  backdrop-filter: var(--glass-blur-md);
+  -webkit-backdrop-filter: var(--glass-blur-md);
+  border-right: var(--glass-border);
   overflow: hidden;
 }
 
@@ -54,14 +58,16 @@
   align-items: center;
   justify-content: space-between;
   padding: 14px 14px 12px;
-  border-bottom: 1px solid var(--border-1);
+  border-bottom: var(--glass-border);
 }
 
 .settings-nav-title { font-size: 14px; font-weight: 600; color: var(--text-2); }
 
 .settings-close-btn {
   background: var(--surface-2);
-  border: 1px solid var(--border-1);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+  border: var(--glass-border);
   color: var(--text-2);
   cursor: pointer;
   font-size: 16px;
@@ -73,7 +79,7 @@
   border-radius: var(--r-full);
   transition: all var(--t-fast);
 }
-.settings-close-btn:hover { background: var(--surface-3); color: var(--text-1); transform: scale(1.05); }
+.settings-close-btn:hover { background: var(--surface-3); color: var(--text-1); transform: scale(1.05); box-shadow: var(--accent-glow-sm); }
 
 .settings-nav-tabs {
   flex: 1;
@@ -102,7 +108,7 @@
 }
 
 .settings-tab-btn:hover { color: var(--text-1); background: var(--surface-2); }
-.settings-tab-btn.active { color: var(--text-1); background: var(--surface-3); box-shadow: var(--shadow-sm); }
+.settings-tab-btn.active { color: var(--text-1); background: var(--surface-3); box-shadow: var(--accent-glow-sm); }
 .settings-tab-btn.active::before {
   content: "";
   position: absolute;
@@ -112,6 +118,7 @@
   width: 4px;
   background: var(--accent-solid);
   border-radius: var(--r-full);
+  box-shadow: 0 0 8px rgba(124,159,232,0.40);
 }
 
 .settings-tab-icon { font-size: 16px; flex-shrink: 0; opacity: 0.5; margin-right: 10px; }
@@ -126,7 +133,7 @@
 .settings-workspace-mini-branch { font-size: 11px; color: var(--text-3); }
 .settings-workspace-error { font-size: 12px; color: var(--color-error); margin: 0; padding: 0 4px; }
 
-.settings-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; background: var(--surface-0); }
+.settings-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; background: transparent; }
 
 .settings-pane {
   flex: 1;
@@ -141,7 +148,7 @@
 .settings-pane::-webkit-scrollbar-track { background: transparent; }
 .settings-pane::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: var(--r-full); }
 
-.settings-pane-header { display: flex; flex-direction: column; gap: 4px; padding-bottom: 14px; border-bottom: 1px solid var(--border-1); }
+.settings-pane-header { display: flex; flex-direction: column; gap: 4px; padding-bottom: 14px; border-bottom: var(--glass-border); }
 .settings-pane-title { font-size: 16px; font-weight: 600; color: var(--text-1); margin: 0; display: flex; align-items: center; gap: 8px; letter-spacing: -0.01em; }
 .settings-pane-desc { font-size: 13px; color: var(--text-3); margin: 0; line-height: 1.5; }
 
@@ -152,7 +159,7 @@
 
 .settings-section-tag { font-size: 12px; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--accent-solid); background: var(--accent-muted); padding: 4px 10px; border-radius: var(--r-full); }
 
-.settings-runtime-info { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--surface-1); border: 1px solid var(--border-1); border-radius: var(--r-md); box-shadow: var(--shadow-sm); }
+.settings-runtime-info { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--surface-1); backdrop-filter: var(--glass-blur-sm); -webkit-backdrop-filter: var(--glass-blur-sm); border: var(--glass-border); border-radius: var(--r-md); box-shadow: var(--glass-inner-glow); }
 .settings-runtime-label { font-size: 12px; color: var(--text-3); white-space: nowrap; flex-shrink: 0; }
 .settings-runtime-value { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -444,8 +451,10 @@
   align-items: center;
   gap: 12px;
   padding: 12px 24px;
-  border-top: 1px solid var(--border-1);
+  border-top: var(--glass-border);
   background: var(--surface-1);
+  backdrop-filter: var(--glass-blur-md);
+  -webkit-backdrop-filter: var(--glass-blur-md);
   flex-shrink: 0;
 }
 
@@ -484,8 +493,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0,0,0,0.55);
-  backdrop-filter: blur(8px);
+  background: rgba(0,0,0,0.40);
+  backdrop-filter: var(--glass-blur-lg);
+  -webkit-backdrop-filter: var(--glass-blur-lg);
   animation: modal-fade 150ms ease-out both;
 }
 
@@ -496,7 +506,9 @@
   display: flex;
   flex-direction: column;
   background: var(--surface-1);
-  border: 1px solid var(--border-1);
+  backdrop-filter: var(--glass-blur-xl);
+  -webkit-backdrop-filter: var(--glass-blur-xl);
+  border: var(--glass-border-highlight);
   border-radius: var(--r-xl);
   box-shadow: var(--shadow-float);
   overflow: hidden;
@@ -636,16 +648,19 @@
   gap: 6px;
   padding: 12px 14px;
   text-align: left;
-  border: 1px solid var(--border-1);
+  border: var(--glass-border);
   border-radius: var(--r-lg);
-  background: var(--surface-0);
+  background: var(--surface-1);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
   color: var(--text-1);
   cursor: pointer;
   transition: all var(--t-fast);
   font-family: var(--font-sans);
+  box-shadow: var(--glass-inner-glow);
 }
-.agent-card:hover { border-color: var(--border-2); background: var(--surface-2); }
-.agent-card.active { border-color: var(--accent-solid); background: var(--surface-2); box-shadow: 0 0 0 1px var(--accent-muted); }
+.agent-card:hover { border-color: rgba(255,255,255,0.14); background: var(--surface-2); box-shadow: var(--shadow-sm); }
+.agent-card.active { border-color: rgba(124,159,232,0.25); background: var(--surface-2); box-shadow: var(--accent-glow-sm); }
 
 .agent-card-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .agent-card-name { font-size: 13px; font-weight: 600; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -758,7 +773,7 @@
 }
 
 /* ── Danger Zone ────────────────────────────────────────── */
-.settings-danger-zone { border: 1px solid rgba(248,113,113,0.15); border-radius: var(--r-lg); overflow: hidden; background: var(--color-error-bg); }
+.settings-danger-zone { border: 1px solid rgba(248,113,113,0.18); border-radius: var(--r-lg); overflow: hidden; background: rgba(248,113,113,0.06); backdrop-filter: var(--glass-blur-sm); -webkit-backdrop-filter: var(--glass-blur-sm); }
 .settings-danger-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; }
 .settings-danger-info { flex: 1; min-width: 0; }
 .settings-danger-title { font-size: 14px; font-weight: 600; color: var(--text-1); margin: 0 0 4px; }

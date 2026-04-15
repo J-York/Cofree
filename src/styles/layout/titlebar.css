@@ -1,4 +1,4 @@
-/* ── Custom Titlebar ────────────────────────────────────── */
+/* ── Custom Titlebar — frosted glass bar ────────────────── */
 .titlebar {
   height: 42px;
   display: flex;
@@ -7,7 +7,10 @@
   padding: 0 16px;
   padding-left: 78px;
   background: var(--surface-1);
-  border-bottom: 1px solid color-mix(in srgb, var(--border-1) 50%, transparent);
+  backdrop-filter: var(--glass-blur-lg);
+  -webkit-backdrop-filter: var(--glass-blur-lg);
+  border-bottom: var(--glass-border);
+  box-shadow: var(--glass-inner-glow), 0 1px 0 rgba(0,0,0,0.15);
   flex-shrink: 0;
   user-select: none;
   -webkit-app-region: drag;
@@ -39,7 +42,10 @@
   font-size: 13px;
   color: var(--text-3);
   -webkit-app-region: no-drag;
-  background: var(--surface-1);
+  background: var(--surface-2);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+  border: var(--glass-border);
   padding: 0 12px;
   border-radius: var(--r-full);
   transition: all var(--t-med);
@@ -47,13 +53,14 @@
 }
 
 .titlebar-workspace:hover {
-  background: var(--surface-2);
-  border-color: var(--border-2);
+  background: var(--surface-3);
+  border-color: rgba(255,255,255,0.14);
+  box-shadow: var(--accent-glow-sm);
 }
 
 .titlebar-workspace.active {
-  background: var(--surface-2);
-  border-color: var(--border-2);
+  background: var(--surface-3);
+  border-color: rgba(255,255,255,0.14);
   box-shadow: var(--shadow-sm);
 }
 
@@ -111,7 +118,9 @@
   max-width: 100%;
   min-width: 0;
   background: var(--surface-2);
-  border: 1px solid var(--border-1);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+  border: var(--glass-border);
   border-radius: var(--r-full);
   pointer-events: auto;
   cursor: pointer;
@@ -120,13 +129,13 @@
 
 .titlebar-model-badge:hover {
   background: var(--surface-3);
-  border-color: var(--border-2);
-  box-shadow: var(--shadow-sm);
+  border-color: rgba(255,255,255,0.14);
+  box-shadow: var(--accent-glow-sm);
 }
 
 .titlebar-model-badge.active {
   background: var(--surface-3);
-  border-color: var(--border-2);
+  border-color: rgba(255,255,255,0.14);
   box-shadow: var(--shadow-sm);
 }
 
@@ -182,23 +191,28 @@
 
 .titlebar-btn:hover {
   background: var(--surface-2);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
   color: var(--text-1);
-  border-color: var(--border-1);
+  border-color: rgba(255,255,255,0.10);
+  box-shadow: var(--accent-glow-sm);
 }
 
 .titlebar-btn.active {
-  color: var(--accent-solid);
-  background: var(--surface-2);
-  border-color: var(--border-2);
-  box-shadow: var(--shadow-sm);
+  color: var(--accent-bright);
+  background: var(--accent-muted);
+  border-color: rgba(124,159,232,0.20);
+  box-shadow: var(--accent-glow-sm);
 }
 
-/* ── Titlebar Popovers ─────────────────────────────────── */
+/* ── Titlebar Popovers — glass dropdown ─────────────────── */
 .titlebar-popover {
   position: absolute;
   top: calc(100% + 8px);
   background: var(--surface-2);
-  border: 1px solid var(--border-2);
+  backdrop-filter: var(--glass-blur-lg);
+  -webkit-backdrop-filter: var(--glass-blur-lg);
+  border: var(--glass-border-highlight);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-float);
   z-index: 1000;
@@ -398,7 +412,9 @@
 }
 
 .window-control-btn:hover {
-  background: var(--surface-2);
+  background: var(--surface-3);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
   color: var(--text-1);
 }
 

@@ -1,16 +1,20 @@
-/* ── Cards ──────────────────────────────────────────────── */
+/* ── Cards — frosted glass panels ───────────────────────── */
 .card {
   background: var(--surface-1);
-  border: 1px solid var(--border-2);
+  backdrop-filter: var(--glass-blur-md);
+  -webkit-backdrop-filter: var(--glass-blur-md);
+  border: var(--glass-border);
   border-radius: var(--r-md);
   padding: 24px;
   box-shadow: var(--shadow-sm);
   transition: all var(--t-med);
+  position: relative;
 }
 
 .card:hover {
   box-shadow: var(--shadow-md);
-  border-color: var(--border-3);
+  border-color: rgba(255,255,255,0.14);
+  background: var(--surface-2);
 }
 
 .card-title {
@@ -22,7 +26,7 @@
   margin: 0 0 16px;
 }
 
-/* ── Badge ──────────────────────────────────────────────── */
+/* ── Badge — glass pill ────────────────────────────────── */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -33,9 +37,11 @@
   font-weight: 500;
   font-family: var(--font-sans);
   letter-spacing: 0.02em;
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
 }
-.badge-default { background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border-1); }
-.badge-success { background: var(--color-success-bg); color: var(--color-success); border: 1px solid rgba(74,222,128,0.15); }
-.badge-error { background: var(--color-error-bg); color: var(--color-error); border: 1px solid rgba(248,113,113,0.15); }
-.badge-warning { background: var(--color-warning-bg); color: var(--color-warning); border: 1px solid rgba(250,204,21,0.15); }
-.badge-accent { background: var(--accent-muted); color: var(--accent-solid); border: 1px solid rgba(143,166,208,0.15); }
+.badge-default { background: var(--surface-2); color: var(--text-2); border: var(--glass-border); }
+.badge-success { background: rgba(74,222,128,0.12); color: var(--color-success); border: 1px solid rgba(74,222,128,0.18); }
+.badge-error { background: rgba(248,113,113,0.12); color: var(--color-error); border: 1px solid rgba(248,113,113,0.18); }
+.badge-warning { background: rgba(250,204,21,0.12); color: var(--color-warning); border: 1px solid rgba(250,204,21,0.18); }
+.badge-accent { background: var(--accent-muted); color: var(--accent-solid); border: 1px solid rgba(124,159,232,0.18); }

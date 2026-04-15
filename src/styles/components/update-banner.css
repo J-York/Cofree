@@ -13,8 +13,10 @@
   align-items: center;
   gap: 10px;
   padding: 12px 16px;
-  background: var(--surface-3);
-  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  backdrop-filter: var(--glass-blur-lg);
+  -webkit-backdrop-filter: var(--glass-blur-lg);
+  border: var(--glass-border-highlight);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-float);
   font-size: 13px;

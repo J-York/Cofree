@@ -8,12 +8,14 @@
 }
 
 .chat-input-box {
-  background: var(--surface-2);
-  border: 1px solid var(--border-2);
+  background: var(--surface-1);
+  backdrop-filter: var(--glass-blur-lg);
+  -webkit-backdrop-filter: var(--glass-blur-lg);
+  border: var(--glass-border-highlight);
   border-radius: var(--r-xl);
   transition: all var(--t-med);
   overflow: hidden;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md), var(--glass-inner-glow-strong);
   position: relative;
 }
 
@@ -76,8 +78,10 @@
   flex-direction: column;
   gap: 4px;
   padding: 10px 10px 6px;
-  border-bottom: 1px solid var(--border-1);
-  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  border-bottom: var(--glass-border);
+  background: var(--surface-1);
+  backdrop-filter: var(--glass-blur-md);
+  -webkit-backdrop-filter: var(--glass-blur-md);
   max-height: 220px;
   overflow-y: auto;
 }
@@ -99,9 +103,10 @@
 
 .chat-mention-item:hover,
 .chat-mention-item.active {
-  background: var(--surface-1);
+  background: var(--surface-2);
   border-color: var(--border-focus);
   color: var(--text-1);
+  box-shadow: var(--accent-glow-sm);
 }
 
 .chat-mention-item-name {
@@ -116,7 +121,7 @@
 
 .chat-input-box:focus-within {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px var(--accent-muted);
+  box-shadow: 0 0 0 3px var(--accent-muted), var(--accent-glow);
   background: var(--surface-2);
 }
 

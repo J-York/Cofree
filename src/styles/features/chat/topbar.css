@@ -1,11 +1,11 @@
-/* ── Conversation topbar (page-level status) ──────────── */
+/* ── Conversation topbar — glass status bar ───────────── */
 .conversation-topbar {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 6px 0 8px;
   margin-bottom: 4px;
-  border-bottom: 1px solid var(--border-1);
+  border-bottom: var(--glass-border);
 }
 
 .conversation-topbar:empty,
@@ -179,7 +179,9 @@ button.conversation-topbar-badge:hover {
   padding: 8px 12px;
   border-radius: var(--r-md);
   background: var(--surface-2);
-  border: 1px solid var(--border-2);
+  backdrop-filter: var(--glass-blur-md);
+  -webkit-backdrop-filter: var(--glass-blur-md);
+  border: var(--glass-border-highlight);
   box-shadow: var(--shadow-md);
   animation: attention-toast-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
