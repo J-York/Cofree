@@ -120,22 +120,7 @@ jobs:
 
     runs-on: ${{ matrix.platform.os }}
     env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-      WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
-      WINDOWS_DIGEST_ALGORITHM: ${{ secrets.WINDOWS_DIGEST_ALGORITHM }}
-      WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout repository
@@ -169,6 +154,20 @@ jobs:
       - name: Resolve signing modes
         id: signing_modes
         shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
         run: |
           has_tauri_signing=false
           has_macos_signing=false
@@ -208,7 +207,7 @@ jobs:
           fi
 
           if [ "${{ matrix.platform.os }}" = "windows-latest" ]; then
-            if [ -n "$WINDOWS_CERTIFICATE" ] && [ -n "$WINDOWS_CERTIFICATE_PASSWORD" ] && [ -n "$WINDOWS_CERTIFICATE_THUMBPRINT" ] && [ -n "$WINDOWS_DIGEST_ALGORITHM" ] && [ -n "$WINDOWS_TIMESTAMP_URL" ]; then
+            if [ -n "$WINDOWS_CERTIFICATE" ] && [ -n "$WINDOWS_CERTIFICATE_PASSWORD" ] && [ -n "$WINDOWS_CERTIFICATE_THUMBPRINT" ]; then
               has_windows_signing=true
             else
               echo "::warning::Windows signing secrets are not fully configured; Windows artifacts will be built without Authenticode signing."
@@ -230,6 +229,10 @@ jobs:
       - name: Import Apple Developer Certificate
         if: startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_macos_signing == 'true'
         shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
           if [ ! -s certificate.p12 ]; then
@@ -262,6 +265,9 @@ jobs:
       - name: Prepare macOS notarization credentials
         if: startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_apple_api_notarization == 'true'
         shell: bash
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         run: |
           KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
           printf '%s' "$APPLE_API_PRIVATE_KEY" > "$KEY_PATH"
@@ -270,6 +276,9 @@ jobs:
       - name: Import Windows certificate
         if: matrix.platform.os == 'windows-latest' && steps.signing_modes.outputs.has_windows_signing == 'true'
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           New-Item -ItemType Directory -Force -Path certificate | Out-Null
           Set-Content -Path certificate/tempCert.txt -Value $env:WINDOWS_CERTIFICATE
@@ -279,6 +288,10 @@ jobs:
 
       - name: Write release config
         shell: bash
+        env:
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+          WINDOWS_DIGEST_ALGORITHM: ${{ secrets.WINDOWS_DIGEST_ALGORITHM }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
         run: |
           node <<'EOF'
           const fs = require('node:fs');
@@ -296,8 +309,8 @@ jobs:
               ...(config.bundle ?? {}),
               windows: {
                 certificateThumbprint: process.env.WINDOWS_CERTIFICATE_THUMBPRINT,
-                digestAlgorithm: process.env.WINDOWS_DIGEST_ALGORITHM,
-                timestampUrl: process.env.WINDOWS_TIMESTAMP_URL,
+                digestAlgorithm: process.env.WINDOWS_DIGEST_ALGORITHM || 'sha256',
+                timestampUrl: process.env.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com',
               },
             };
           }
@@ -322,15 +335,15 @@ jobs:
         uses: tauri-apps/tauri-action@44a5bf1eaeeebdabfd8951645f567c83b0ae02a3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_ISSUER: ${{ env.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ env.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
-          APPLE_ID: ${{ env.APPLE_ID }}
-          APPLE_PASSWORD: ${{ env.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ env.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           releaseId: ${{ needs.prepare_release.outputs.release_id }}
           uploadUpdaterJson: true
@@ -343,12 +356,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_ISSUER: ${{ env.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ env.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
-          APPLE_ID: ${{ env.APPLE_ID }}
-          APPLE_PASSWORD: ${{ env.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ env.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           releaseId: ${{ needs.prepare_release.outputs.release_id }}
           uploadUpdaterJson: false
