@@ -215,6 +215,18 @@ jobs:
             fi
           fi
 
+          if [[ "${{ matrix.platform.os }}" == macos-* ]] && [ "$has_macos_signing" = true ]; then
+            if [ "$has_apple_api_notarization" = true ]; then
+              echo "TAURI_APPLE_API_ISSUER=$APPLE_API_ISSUER" >> "$GITHUB_ENV"
+              echo "TAURI_APPLE_API_KEY=$APPLE_API_KEY" >> "$GITHUB_ENV"
+            fi
+            if [ "$has_apple_id_notarization" = true ]; then
+              echo "TAURI_APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
+              echo "TAURI_APPLE_PASSWORD=$APPLE_PASSWORD" >> "$GITHUB_ENV"
+              echo "TAURI_APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+            fi
+          fi
+
           echo "has_tauri_signing=$has_tauri_signing" >> "$GITHUB_OUTPUT"
           echo "has_macos_signing=$has_macos_signing" >> "$GITHUB_OUTPUT"
           echo "has_apple_api_notarization=$has_apple_api_notarization" >> "$GITHUB_OUTPUT"
@@ -264,7 +276,7 @@ jobs:
           fi
 
       - name: Prepare macOS notarization credentials
-        if: startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_apple_api_notarization == 'true'
+        if: startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_macos_signing == 'true' && steps.signing_modes.outputs.has_apple_api_notarization == 'true'
         shell: bash
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -339,12 +351,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ env.TAURI_APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ env.TAURI_APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ env.TAURI_APPLE_ID }}
+          APPLE_PASSWORD: ${{ env.TAURI_APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ env.TAURI_APPLE_TEAM_ID }}
         with:
           releaseId: ${{ needs.prepare_release.outputs.release_id }}
           uploadUpdaterJson: true
@@ -357,12 +369,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ env.TAURI_APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ env.TAURI_APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ env.TAURI_APPLE_ID }}
+          APPLE_PASSWORD: ${{ env.TAURI_APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ env.TAURI_APPLE_TEAM_ID }}
         with:
           releaseId: ${{ needs.prepare_release.outputs.release_id }}
           uploadUpdaterJson: false
