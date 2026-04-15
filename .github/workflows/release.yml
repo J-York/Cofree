@@ -183,10 +183,11 @@ jobs:
           fi
 
           if [[ "${{ matrix.platform.os }}" == macos-* ]]; then
-            if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$KEYCHAIN_PASSWORD" ]; then
+            if [ -n "$APPLE_CERTIFICATE" ] && [ "$APPLE_CERTIFICATE" != "none" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$KEYCHAIN_PASSWORD" ]; then
               has_macos_signing=true
             else
-              echo "::warning::macOS signing secrets are not fully configured; macOS artifacts will be built without Developer ID signing."
+              has_macos_signing=false
+              echo "::warning::macOS signing secrets are not configured; building unsigned artifacts."
             fi
 
             if [ -n "$APPLE_API_ISSUER" ] && [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_PRIVATE_KEY" ]; then
