@@ -12,16 +12,11 @@ export const MAX_CONSECUTIVE_READ_ONLY_TURNS = 8;
 export const MAX_SAME_FILE_EDIT_FAILURES = 4;
 
 const PATCH_REPAIR_INSTRUCTION =
-  "请读取必要文件片段后，仅针对一个文件重新调用 propose_file_edit；不要再次提交多文件 raw patch。";
+  "请读取文件片段后，用 propose_file_edit 重新编辑单个文件。";
 const CREATE_PATH_REPAIR_INSTRUCTION =
-  "若目标是新建文件，请调用 propose_file_edit 并设置 operation='create'；若目录不存在，可先调用 propose_shell 创建目录。Windows/PowerShell 下使用 New-Item -ItemType Directory -Force <目录>；Unix 下可用 mkdir -p <目录>。";
+  "新建文件用 propose_file_edit + operation='create'；目录不存在则先用 propose_shell 创建。";
 const SEARCH_NOT_FOUND_REPAIR_INSTRUCTION =
-  "search/anchor 片段在完整文件中未匹配到（search 必须精确匹配文件内容）。这通常是因为文件较大、read_file 返回的内容被截断，你基于截断视图构造的 search 片段与实际文件内容不一致。" +
-  "\n请改用以下策略之一：" +
-  "\n1. 使用 start_line/end_line 行号范围方式编辑（推荐）：先用 read_file 的 start_line/end_line 参数读取目标区域的精确内容，再用 propose_file_edit 的 start_line/end_line 参数做行范围替换。" +
-  "\n2. 缩短 search 片段：只使用你确定在文件中唯一存在的短片段（1-3 行），避免包含可能被截断的长段落。" +
-  "\n3. 先用 read_file 分段读取目标区域获取精确内容，再构造精确匹配的 search 片段。" +
-  "\n注意：search 中不要包含行号前缀（如 '  10│'），这些仅用于显示。";
+  "search 未匹配。改用 start_line/end_line 行范围编辑（推荐），或缩短 search 到 1-3 行唯一片段。不要包含行号前缀。";
 
 function parseJsonObject(value: string): Record<string, unknown> | null {
   try {
@@ -57,26 +52,18 @@ export function shouldStopForConsecutiveFailures(consecutiveFailureTurns: number
 
 export function buildPseudoToolCallRepairMessage(enabledToolNames: string[]): string {
   return [
-    "系统提示：你刚才在普通文本里描述、转储了工具调用，或直接输出了工具参数/工具结果，但并没有发送原生 tool_calls，所以系统无法执行。",
-    `本轮可用工具: [${enabledToolNames.join(", ")}]`,
-    "如果需要继续使用工具，请直接发送原生工具调用，不要输出任何类似“我将调用 read_file / let's call ... / tool call now”的描述文本，也不要把 JSON 参数对象或工具错误结果直接打到聊天内容里。",
-    "如果任务其实已经完成且不需要工具，请直接给出最终答案。",
+    "系统提示：你在文本中描述了工具调用但未发送原生 tool_calls，系统无法执行。",
+    `可用工具: [${enabledToolNames.join(", ")}]`,
+    "请直接发送原生工具调用，或给出最终答案。",
   ].join("\n");
 }
 
 export function buildPseudoToolCallCompatibilityDiagnostic(protocolLabel: string): string {
-  return [
-    `当前模型在 ${protocolLabel} 协议下连续把工具调用写成了普通文本或 JSON，而不是原生 tool_calls。`,
-    "Cofree 无法把这些文本当成真实工具调用执行，所以本轮已停止自动继续，避免把伪造的工具参数/结果直接当最终工作产物。",
-    "建议改用当前协议下工具调用更稳定的模型，或先收窄任务范围后重试。",
-  ].join("\n");
+  return `当前模型在 ${protocolLabel} 协议下连续输出伪工具调用。已停止自动继续。建议换用工具调用更稳定的模型。`;
 }
 
 export function buildReadOnlyTurnsWarningMessage(consecutiveReadOnlyTurns: number): string {
-  return [
-    `系统警告：你已连续 ${consecutiveReadOnlyTurns} 轮只在读取文件而没有给出任何回复或提出动作。`,
-    "请立即基于已收集的信息给出回答。如果信息不足以完成任务，请说明已了解的内容和还需要什么信息，而不是继续读取更多文件。",
-  ].join("\n");
+  return `系统警告：已连续 ${consecutiveReadOnlyTurns} 轮只读取文件。请立即基于已有信息给出回答或提出动作。`;
 }
 
 export function buildToolNotFoundWarningMessage(
@@ -91,13 +78,7 @@ export function buildToolNotFoundWarningMessage(
 }
 
 export function buildSameFileEditFailureMessage(filePath: string, failCount: number): string {
-  return [
-    `系统提示：对文件 "${filePath}" 的编辑已连续失败 ${failCount} 次，继续重试不太可能成功。`,
-    "请放弃 search/replace 方式，改用以下方案之一：",
-    "1. 使用 read_file 的 start_line/end_line 精确读取目标区域，然后用 propose_file_edit 的 start_line/end_line 做行范围替换。",
-    "2. 如果编辑内容较多，考虑用 operation='create' + overwrite=true 重写整个文件。",
-    "3. 将大编辑拆分为多个小编辑，每次只修改一小段。",
-  ].join("\n");
+  return `系统提示：对 "${filePath}" 编辑已连续失败 ${failCount} 次。改用 start_line/end_line 行范围编辑，或 operation='create' + overwrite=true 重写文件。`;
 }
 
 export function buildPatchPreflightRepairMessage(patchPreflightFailure: string): string {
@@ -168,11 +149,9 @@ export function buildShellDialectRepairInstruction(
   }
 
   return [
-    "系统提示：上一轮自动执行的 propose_shell 失败，错误看起来像 shell 方言不匹配。",
+    "系统提示：shell 方言不匹配。当前执行器是 PowerShell。",
     `失败命令：${shell}`,
-    `错误信息：${rawError.trim().slice(0, 1200) || "命令执行失败"}`,
-    "当前 Windows 执行器实际使用 PowerShell（powershell -NoProfile -Command）。不要重复使用 bash/cmd 风格写法如 mkdir -p 或 &&。",
-    "请保持任务目标不变，依据 stderr 改写为 PowerShell 语法后重新调用 propose_shell：创建目录用 New-Item -ItemType Directory -Force <目录>，命令串联用 ;，删除目录用 Remove-Item -Recurse -Force <路径>。",
-    "仅允许一次自动修复重试。",
+    `错误：${rawError.trim().slice(0, 600) || "命令执行失败"}`,
+    "请改写为 PowerShell 语法（; 串联，New-Item 创建目录，Remove-Item 删除）后重试。",
   ].join("\n");
 }

@@ -213,10 +213,9 @@ describe("planningService approval-flow repair", () => {
             },
         } as any);
 
-        expect(prompt).toContain("宿主系统的 Shell 环境约束（Windows=PowerShell，Unix=sh）");
-        expect(prompt).toContain("Windows/PowerShell 下优先用 'Remove-Item -Recurse -Force <路径>'");
-        expect(prompt).toContain("Remove-Item -Recurse -Force");
-        expect(prompt).toContain("必须先获得精确上下文，通常通过 read_file/grep 完成");
+        expect(prompt).toContain("Windows=PowerShell，Unix=sh");
+        expect(prompt).toContain("Remove-Item");
+        expect(prompt).toContain("修改前必须有精确上下文");
     });
 
     it("uses conditional completion-summary wording for review tasks", async () => {
@@ -236,8 +235,8 @@ describe("planningService approval-flow repair", () => {
             },
         } as any);
 
-        expect(prompt).toContain("若本轮包含代码或文件修改");
-        expect(prompt).toContain("若本轮是审查/信息类任务且没有文件变更");
+        expect(prompt).toContain("修改了什么");
+        expect(prompt).toContain("如何验证");
         expect(prompt).not.toContain("明确告诉用户：你修改了哪些文件");
     });
 
@@ -258,7 +257,7 @@ describe("planningService approval-flow repair", () => {
             },
         } as any);
 
-        expect(prompt).toContain("若本轮包含代码或文件修改，请明确说明修改了哪些文件");
+        expect(prompt).toContain("给出结构化总结");
     });
 
     it("passes update_plan as an internal tool to assembleRuntimeContext so it appears in 本轮可用工具", async () => {
@@ -736,12 +735,11 @@ describe("planningService approval-flow repair", () => {
         );
 
         expect(shellTool?.function.description).toContain("PowerShell");
-        expect(shellTool?.function.description).toContain("New-Item -ItemType Directory -Force");
-        expect(shellTool?.function.description).toContain("Read stderr carefully and retry with corrected syntax");
+        expect(shellTool?.function.description).toContain("Non-interactive");
         expect(shellTool?.function.parameters.properties.shell.description).toContain(
-            "On Windows prefer PowerShell syntax",
+            "Windows",
         );
-        expect(planTool?.function.description).toContain("internal todo plan");
+        expect(planTool?.function.description).toContain("todo plan");
     });
 
     it("passes task description and focused paths into repo-map generation on first turn", async () => {
@@ -1589,9 +1587,9 @@ describe("planningService approval-flow repair", () => {
                 toolPermissions: DEFAULT_SETTINGS.toolPermissions,
             } as any,
         );
-        expect(prompt).toContain("审查/评估任务策略");
+        expect(prompt).toContain("审查策略");
         expect(prompt).toContain("禁止穷举");
-        expect(prompt).toContain("抽样阅读");
+        expect(prompt).toContain("精读 10 个");
     });
 
     it("returns cached result for deduplicated read_file calls", async () => {
@@ -1850,13 +1848,10 @@ describe("planningService approval-flow repair", () => {
             shell: "New-Item -ItemType Directory -Force logs; npm test",
         });
         expect(repairMessage?.content).toContain(
-            "当前 Windows 执行器实际使用 PowerShell",
+            "当前执行器是 PowerShell",
         );
         expect(repairMessage?.content).toContain(
-            "不要重复使用 bash/cmd 风格写法如 mkdir -p 或 &&",
-        );
-        expect(repairMessage?.content).toContain(
-            "New-Item -ItemType Directory -Force <目录>",
+            "PowerShell 语法",
         );
         expect(result.assistantReply).toBe("done");
     });

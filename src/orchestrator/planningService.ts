@@ -292,10 +292,10 @@ const MAX_ABSOLUTE_TURNS = 150;
 
 const WORKING_MEMORY_NOTE_PREFIX = "[工作记忆刷新]";
 const TODO_PLAN_NOTE_PREFIX = "[Todo Plan]";
-const WORKING_MEMORY_REFRESH_INTERVAL = 3;
+const WORKING_MEMORY_REFRESH_INTERVAL = 6;
 
 // --- Tool-calling reinforcement interval ---
-const TOOL_CALLING_REINFORCEMENT_INTERVAL = 10;
+const TOOL_CALLING_REINFORCEMENT_INTERVAL = 20;
 const TOOL_CALLING_REINFORCEMENT_NOTE_PREFIX = "[工具调用提醒]";
 
 function computeWorkingMemoryFingerprint(wm: WorkingMemory): string {
@@ -564,12 +564,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "list_files",
       description:
-        "List files and directories under a workspace-relative path. Returns name, type (file/dir), size, and modification time for each entry. " +
-        "Use this to understand project structure, find configuration files, or explore unfamiliar directories before reading specific files.\n\n" +
-        "Returns up to 120 entries sorted alphabetically. For deeper exploration, call with subdirectory paths.\n\n" +
-        "Examples:\n" +
-        "- list_files() — list workspace root\n" +
-        "- list_files(relative_path='src/components') — list a specific directory",
+        "List files and directories under a workspace-relative path. Returns name, type, size, modification time. Up to 120 entries.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -577,7 +572,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           relative_path: {
             type: "string",
             description:
-              "Workspace-relative directory path. Empty or omitted means workspace root. Must be a directory, not a file.",
+              "Workspace-relative directory path. Empty means workspace root.",
           },
         },
       },
@@ -588,15 +583,9 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "read_file",
       description:
-        "Read a text file by workspace-relative path. Returns content with line number prefixes (format: '行号│内容'), total_lines (file total line count), and showing_lines (current range displayed).\n\n" +
-        "IMPORTANT: Line number prefixes ('行号│') are for reference only — do NOT include them in propose_file_edit search/anchor fields.\n\n" +
-        "Reading strategy:\n" +
-        "- Small files (<400 lines): call without start_line/end_line to read entire file\n" +
-        "- Large files (400+ lines): read in segments of ~300 lines. First call without range to see the beginning and total_lines, then use start_line/end_line for subsequent parts\n" +
-        "- If you only need a specific function: use grep first to find the line number, then read that range\n\n" +
-        "Examples:\n" +
-        "- read_file(relative_path='src/app.ts') — read entire small file\n" +
-        "- read_file(relative_path='src/large.ts', start_line=301, end_line=600) — read a segment",
+        "Read a text file. Returns content with line number prefixes ('行号│内容'), total_lines, showing_lines. " +
+        "Line number prefixes are display-only — do NOT include them in propose_file_edit search/anchor. " +
+        "Large files (400+ lines): use start_line/end_line to read in ~300-line segments.",
       parameters: {
         type: "object",
         required: ["relative_path"],
@@ -605,17 +594,17 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           relative_path: {
             type: "string",
             minLength: 1,
-            description: "Workspace-relative file path. Must point to a file, not a directory.",
+            description: "Workspace-relative file path.",
           },
           start_line: {
             type: "number",
             minimum: 1,
-            description: "1-based start line for partial read. Must be used together with end_line.",
+            description: "1-based start line for partial read.",
           },
           end_line: {
             type: "number",
             minimum: 1,
-            description: "1-based end line (inclusive) for partial read. Must be used together with start_line.",
+            description: "1-based end line (inclusive) for partial read.",
           },
         },
       },
@@ -626,9 +615,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "git_status",
       description:
-        "Get git status summary showing modified, staged, untracked, and deleted files in the workspace repository. " +
-        "Returns empty result for non-git directories (this is normal, not an error).\n\n" +
-        "Use this to understand what has changed before proposing edits, or to verify changes after edits are applied.",
+        "Get git status: modified, staged, untracked, deleted files. Returns empty for non-git directories.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -641,19 +628,14 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "git_diff",
       description:
-        "Get unified diff of uncommitted changes in the workspace. Optionally filter to a single file. " +
-        "Returns empty result for non-git directories (this is normal, not an error).\n\n" +
-        "Use this to review what has been modified, verify applied patches, or understand the scope of recent changes.\n\n" +
-        "Examples:\n" +
-        "- git_diff() — show all uncommitted changes\n" +
-        "- git_diff(file_path='src/app.ts') — show changes in a specific file",
+        "Get unified diff of uncommitted changes. Optionally filter to a single file. Returns empty for non-git directories.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
           file_path: {
             type: "string",
-            description: "Optional workspace-relative file path to filter diff to a single file.",
+            description: "Optional file path to filter diff.",
           },
         },
       },
@@ -664,18 +646,8 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "grep",
       description:
-        "Search file contents in workspace using a regular expression pattern. Returns matching lines with file paths and line numbers (format: 'file:line: content').\n\n" +
-        "This is the fastest way to locate code — use it BEFORE read_file to find the right file and line range. " +
-        "Ideal for finding function definitions, variable usages, imports, error messages, configuration values, etc.\n\n" +
-        "Tips:\n" +
-        "- Use simple patterns for broad search: grep(pattern='functionName')\n" +
-        "- Use regex for precise matching: grep(pattern='export (function|const) myFunc')\n" +
-        "- Filter by file type: grep(pattern='import.*React', include_glob='*.tsx')\n" +
-        "- Automatically excludes .git, node_modules, target, dist, build directories\n\n" +
-        "Examples:\n" +
-        "- grep(pattern='handleSubmit') — find all usages of handleSubmit\n" +
-        "- grep(pattern='class UserService', include_glob='*.ts') — find class definition in TypeScript files\n" +
-        "- grep(pattern='TODO|FIXME|HACK') — find code annotations",
+        "Search file contents using regex. Returns matching lines with file paths and line numbers. " +
+        "Use BEFORE read_file to locate code. Auto-excludes .git, node_modules, target, dist, build.",
       parameters: {
         type: "object",
         required: ["pattern"],
@@ -684,20 +656,17 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           pattern: {
             type: "string",
             minLength: 1,
-            description:
-              "Regular expression pattern to search for. Supports standard regex syntax (|, *, +, ?, [], (), etc.).",
+            description: "Regex pattern to search for.",
           },
           include_glob: {
             type: "string",
-            description:
-              "Optional glob pattern to restrict search to matching files. Examples: '*.ts', '*.py', 'src/**/*.tsx'. Matches against both file name and relative path.",
+            description: "Optional glob to restrict search (e.g. '*.ts').",
           },
           max_results: {
             type: "number",
             minimum: 1,
             maximum: 200,
-            description:
-              "Maximum number of matching lines to return. Defaults to 50. Increase for broad searches, decrease for focused ones.",
+            description: "Max matching lines. Defaults to 50.",
           },
         },
       },
@@ -708,17 +677,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "glob",
       description:
-        "Find files in workspace by glob pattern matching. Returns matching file paths sorted by modification time (most recent first).\n\n" +
-        "Use this to discover project structure, find files by extension, naming convention, or directory pattern. " +
-        "Automatically excludes .git, node_modules, target, dist, build, __pycache__ directories.\n\n" +
-        "Common patterns:\n" +
-        "- '**/*.tsx' — all TSX files in any directory\n" +
-        "- 'src/**/*.test.ts' — all test files under src/\n" +
-        "- '**/package.json' — find all package.json files\n" +
-        "- 'src/components/*.tsx' — components in a specific directory\n\n" +
-        "Examples:\n" +
-        "- glob(pattern='**/*.py') — find all Python files\n" +
-        "- glob(pattern='**/Dockerfile*') — find all Dockerfiles",
+        "Find files by glob pattern. Returns paths sorted by modification time. Auto-excludes .git, node_modules, etc.",
       parameters: {
         type: "object",
         required: ["pattern"],
@@ -727,15 +686,13 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           pattern: {
             type: "string",
             minLength: 1,
-            description:
-              "Glob pattern to match files. Use ** for recursive directory matching, * for single-level wildcard. Examples: '**/*.tsx', 'src/**/*.py', '**/test_*.js'.",
+            description: "Glob pattern (e.g. '**/*.tsx', 'src/**/*.test.ts').",
           },
           max_results: {
             type: "number",
             minimum: 1,
             maximum: 500,
-            description:
-              "Maximum number of matching files to return. Defaults to 100.",
+            description: "Max files to return. Defaults to 100.",
           },
         },
       },
@@ -746,7 +703,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "propose_apply_patch",
       description:
-        "Advanced raw patch path. Propose a write action by submitting a SINGLE-FILE unified diff patch for HITL approval (does not execute). Use only when explicit patch/diff is requested or structured edits cannot express the task. Multi-file patches are rejected; for multi-file work, use propose_file_edit sequentially.\n\nMinimal example:\ndiff --git a/src/foo.ts b/src/foo.ts\n--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1,3 +1,3 @@\n-old line\n+new line",
+        "Submit a SINGLE-FILE unified diff patch for HITL approval. Use only when explicit patch is requested. Multi-file patches rejected.",
       parameters: {
         type: "object",
         required: ["patch"],
@@ -755,11 +712,11 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           patch: {
             type: "string",
             description:
-              "Unified diff patch content for exactly ONE file. MUST include 'diff --git' header. For new files: 'diff --git a/file b/file' then '--- /dev/null' and '+++ b/file'. For edits: 'diff --git a/file b/file' then '--- a/file' and '+++ b/file'. For delete-file patches: include 'deleted file mode 100644', then '--- a/file' and '+++ /dev/null'. Multi-file patches are rejected.",
+              "Unified diff for ONE file. Must include 'diff --git' header. New files: '--- /dev/null'. Deletes: '+++ /dev/null'.",
           },
           description: {
             type: "string",
-            description: "Optional short description for reviewers.",
+            description: "Optional description.",
           },
         },
       },
@@ -770,40 +727,13 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "propose_file_edit",
       description: [
-        "Propose a deterministic single-file text edit. System generates and validates a patch for HITL approval.",
+        "Propose a single-file text edit for HITL approval. Operations:",
+        "- REPLACE (default): relative_path + (search OR start_line/end_line) + replace/content",
+        "- INSERT: operation='insert', content + (anchor OR line), position='before'|'after'",
+        "- DELETE: operation='delete' + (search OR start_line/end_line)",
+        "- CREATE: operation='create', content (+ overwrite=true to overwrite existing)",
         "",
-        "## Mode 1: REPLACE (default operation)",
-        "Replace existing text in a file.",
-        "  Required: relative_path + (search OR start_line/end_line)",
-        "  Optional: replace (new text), replace_all/apply_all",
-        "  Example A — search-based: {relative_path:'src/foo.ts', search:'old text', replace:'new text'}",
-        "  Example B — line-range:   {relative_path:'src/foo.ts', start_line:10, end_line:15, content:'replacement lines'}",
-        "",
-        "## Mode 2: INSERT",
-        "Insert new content before/after an anchor point.",
-        "  Required: relative_path, operation:'insert', content + (anchor OR line)",
-        "  Optional: position ('before'|'after', default 'after'), apply_all",
-        "  Example: {relative_path:'src/foo.ts', operation:'insert', line:5, content:'new line', position:'after'}",
-        "",
-        "## Mode 3: DELETE",
-        "Remove text from a file.",
-        "  Required: relative_path, operation:'delete' + (search OR start_line/end_line)",
-        "  Optional: apply_all",
-        "  Example: {relative_path:'src/foo.ts', operation:'delete', search:'text to remove'}",
-        "",
-        "## Mode 4: CREATE",
-        "Create a new file (or overwrite existing with overwrite:true).",
-        "  Required: relative_path, operation:'create', content",
-        "  Optional: overwrite (boolean)",
-        "  Example: {relative_path:'src/new.ts', operation:'create', content:'export const x = 1;'}",
-        "",
-        "## COMMON MISTAKES — avoid these:",
-        "- Do NOT include line number prefixes (e.g. '  10│') in search/anchor — they are display-only.",
-        "- Do NOT use operation:'replace' on a file that does not exist — use operation:'create' instead.",
-        "- Do NOT omit content when using operation:'create' — content is required.",
-        "- Do NOT use start_line/end_line without first reading the file to confirm current line numbers.",
-        "",
-        "IMPORTANT: relative_path is REQUIRED for ALL operations.",
+        "Rules: search/anchor must exactly match file content (no line number prefixes '行号│'). relative_path is REQUIRED.",
       ].join("\n"),
       parameters: {
         type: "object",
@@ -891,7 +821,9 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "propose_shell",
       description:
-        "Propose a shell command execution action for HITL approval (does not execute). Match the command to the real executor: on Windows this runs via PowerShell (`powershell -NoProfile -Command`), while on Unix it runs via `sh -c`. Supports pipes, redirects, and chaining within that shell dialect.\n\nExamples:\n- propose_shell(shell='npm install; npm test')\n- propose_shell(shell='New-Item -ItemType Directory -Force logs')\n- propose_shell(shell='Remove-Item -Recurse -Force old_dir')\n- propose_shell(shell='git add .; git commit -m \"Update\"')\n- propose_shell(shell='cargo build --release')\n\nFor long-running dev servers or watch processes, set execution_mode='background' so Cofree launches the command asynchronously instead of waiting for process exit. If the port or URL is known, also pass ready_url for readiness checks.\n\nAll commands run non-interactively (stdin is /dev/null, CI=true). Commands that prompt for input (y/n, password) will receive EOF and either use defaults or fail — split interactive steps into separate commands or use flags like --yes / -y to suppress prompts.\n\nIf propose_shell is auto-executed, it waits up to block_until_ms for the command to finish. If the command is still running after that deadline (e.g. a dev server), it is automatically moved to the background and partial output is returned immediately. You do NOT need to set execution_mode='background' for known server commands — the runtime detects them automatically.\n\nRead stderr carefully and retry with corrected syntax instead of repeating the same failing command.\n\nThe command will be shown to the user for approval before execution when approval is required.",
+        "Propose a shell command for HITL approval. Windows: PowerShell; Unix: sh. " +
+        "Non-interactive (stdin=/dev/null, CI=true) — use --yes/-y for prompts. " +
+        "Long-running commands auto-move to background after block_until_ms deadline.",
       parameters: {
         type: "object",
         required: ["shell"],
@@ -900,44 +832,38 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           shell: {
             type: "string",
             minLength: 1,
-            description:
-              "Full shell command string. On Windows prefer PowerShell syntax such as ';', New-Item, Remove-Item, and $env:NAME. On Unix use POSIX shell syntax.",
+            description: "Shell command. Windows: PowerShell syntax; Unix: POSIX shell.",
           },
           timeout_ms: {
             type: "number",
             minimum: 1000,
             maximum: 600000,
-            description:
-              "Optional hard execution timeout in milliseconds. The process is killed after this time. Defaults to 120000 (2 minutes).",
+            description: "Hard timeout in ms. Defaults to 120000.",
           },
           block_until_ms: {
             type: "number",
             minimum: 1000,
             maximum: 600000,
-            description:
-              "Maximum time (ms) to wait for the command to complete before returning. If the command is still running after this deadline it is automatically moved to the background and partial output is returned. Defaults are inferred by command type: install/build commands get 120000, server/dev commands get 15000, others get 30000. Only set this explicitly if you need different behavior.",
+            description: "Max wait before moving to background. Auto-inferred by command type.",
           },
           execution_mode: {
             type: "string",
             enum: ["foreground", "background"],
-            description:
-              "Use 'background' for long-running services such as dev servers, watchers, and local HTTP servers. Foreground waits for process exit up to block_until_ms then moves to background automatically. You generally do NOT need to set this — it is auto-detected from the command.",
+            description: "'background' for dev servers/watchers. Usually auto-detected.",
           },
           ready_url: {
             type: "string",
-            description:
-              "Optional local URL to probe when execution_mode='background', for example 'http://127.0.0.1:5173'.",
+            description: "URL to probe for background command readiness.",
           },
           ready_timeout_ms: {
             type: "number",
             minimum: 1000,
             maximum: 120000,
-            description:
-              "Optional readiness timeout for background commands. Defaults to 20000.",
+            description: "Readiness timeout for background commands. Defaults to 20000.",
           },
           description: {
             type: "string",
-            description: "Optional short description for reviewers.",
+            description: "Optional description.",
           },
         },
       },
@@ -948,7 +874,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "check_shell_job",
       description:
-        "Check whether a background shell job (started via propose_shell that moved to background) is still running. Returns running status and whether the job was found in the active job registry.\n\nWhen the job has completed (completed=true), the result also includes success, exit_code, timed_out, stdout, and stderr so you can determine whether a build or install succeeded without needing to re-run it.\n\nWhen the job is still running (running=true), you can poll again later. When found=false the job was never registered or predates the current app session.",
+        "Check if a background shell job is still running. Returns status, exit_code, stdout, stderr when completed.",
       parameters: {
         type: "object",
         required: ["job_id"],
@@ -956,7 +882,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
         properties: {
           job_id: {
             type: "string",
-            description: "The job_id returned by the propose_shell result when moved_to_background was true.",
+            description: "The job_id from propose_shell background result.",
           },
         },
       },
@@ -967,7 +893,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "update_plan",
       description:
-        "Update the internal todo plan for the current task. Use this to mark a step as active, completed, blocked, failed, skipped, add notes, or append a new step. This tool has no side effects on the workspace and never requires approval.",
+        "Update the todo plan: mark steps active/completed/blocked/failed/skipped, add notes, or append new steps. No workspace side effects.",
       parameters: {
         type: "object",
         required: ["operation", "step_id"],
@@ -976,33 +902,33 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           operation: {
             type: "string",
             enum: ["set_active", "complete", "block", "fail", "skip", "note", "add"],
-            description: "Plan update operation to perform.",
+            description: "Operation to perform.",
           },
           step_id: {
             type: "string",
             minLength: 1,
-            description: "Target step id. For operation='add', this acts as the new step id hint and can be any non-empty string.",
+            description: "Target step id.",
           },
           title: {
             type: "string",
-            description: "Required when operation='add'. Short title for the new todo step.",
+            description: "Required for 'add'. Step title.",
           },
           summary: {
             type: "string",
-            description: "Optional step summary when operation='add'.",
+            description: "Optional step summary for 'add'.",
           },
           owner: {
             type: "string",
             enum: ["planner", "coder", "tester", "debugger", "reviewer"],
-            description: "Optional owner for operation='add'.",
+            description: "Optional owner for 'add'.",
           },
           note: {
             type: "string",
-            description: "Optional note or rationale for the step update.",
+            description: "Optional note.",
           },
           after_step_id: {
             type: "string",
-            description: "Optional insertion anchor when operation='add'.",
+            description: "Insertion anchor for 'add'.",
           },
         },
       },
@@ -1013,11 +939,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "diagnostics",
       description:
-        "Get compilation errors and warnings for the workspace. " +
-        "Automatically detects project type (TypeScript, Rust, Python, Go) and runs the appropriate checker (tsc, cargo check, py_compile, etc.). " +
-        "Use this after making code changes to verify correctness, or to understand existing issues in the codebase.\n\n" +
-        "Example: diagnostics() - returns all errors/warnings\n" +
-        "Example: diagnostics(changed_files=['src/foo.ts', 'src/bar.ts']) - filter to specific files",
+        "Get compilation errors/warnings. Auto-detects project type (TypeScript, Rust, Python, Go).",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1025,8 +947,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           changed_files: {
             type: "array",
             items: { type: "string" },
-            description:
-              "Optional list of workspace-relative file paths to filter diagnostics to.",
+            description: "Optional file paths to filter diagnostics.",
           },
         },
       },
@@ -1037,10 +958,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "fetch",
       description:
-        "Fetch content from a URL. Any accessible URL is allowed.\n\n" +
-        "Use this to retrieve API documentation, code examples, library READMEs, technical references, or any web content. " +
-        "Maximum response size is 512KB, content will be truncated if larger.\n\n" +
-        "Example: fetch(url='https://raw.githubusercontent.com/user/repo/main/README.md')",
+        "Fetch content from a URL. Max 512KB, truncated if larger.",
       parameters: {
         type: "object",
         required: ["url"],
@@ -1049,14 +967,13 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           url: {
             type: "string",
             minLength: 1,
-            description: "The URL to fetch. Must be from an allowed domain.",
+            description: "URL to fetch.",
           },
           max_size: {
             type: "number",
             minimum: 1024,
             maximum: 524288,
-            description:
-              "Optional maximum content size in bytes. Defaults to 512KB.",
+            description: "Max content size in bytes. Defaults to 512KB.",
           },
         },
       },
@@ -1067,20 +984,8 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
     function: {
       name: "ask_user",
       description:
-        "Ask the user a question and wait for their response. Use this when you need human input, clarification, or decision-making that cannot be inferred from context.\n\n" +
-        "The tool will pause execution until the user provides an answer. The user's response will be returned as a string (single-select / free text) or a JSON array of strings (multi-select).\n\n" +
-        "An '其他' (Other) option is always appended automatically when options are provided; if the user picks it, they can type a free-form answer.\n\n" +
-        "Best practices:\n" +
-        "- Ask clear, specific questions\n" +
-        "- Provide context to help the user understand why you're asking\n" +
-        "- Use options for multiple-choice questions to make it easier for users\n" +
-        "- Set allow_multiple=true when the user may choose more than one option\n" +
-        "- Mark questions as optional (required=false) when appropriate\n\n" +
-        "Examples:\n" +
-        "- ask_user(question='Which database should I use?', options=['PostgreSQL', 'MongoDB', 'SQLite'])\n" +
-        "- ask_user(question='Which features should I implement?', options=['Auth', 'Search', 'Notifications'], allow_multiple=true)\n" +
-        "- ask_user(question='What should the API endpoint be named?', context='Creating a new user registration endpoint')\n" +
-        "- ask_user(question='Should I proceed with this approach?', required=false)",
+        "Ask the user a question and wait for response. Pauses execution until answered. " +
+        "Provide options for multiple-choice. '其他' option auto-appended when options given.",
       parameters: {
         type: "object",
         required: ["question"],
@@ -1089,24 +994,24 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           question: {
             type: "string",
             minLength: 1,
-            description: "The question to ask the user. Should be clear and specific.",
+            description: "Question to ask.",
           },
           context: {
             type: "string",
-            description: "Optional context or background information to help the user understand the question.",
+            description: "Optional context.",
           },
           options: {
             type: "array",
             items: { type: "string" },
-            description: "Optional list of predefined answer choices for the user to select from. An '其他' (Other) option is always appended automatically.",
+            description: "Optional predefined choices.",
           },
           allow_multiple: {
             type: "boolean",
-            description: "Whether the user can select multiple options. Defaults to false. When true, the response will be a JSON array of selected values.",
+            description: "Allow multiple selections. Defaults to false.",
           },
           required: {
             type: "boolean",
-            description: "Whether the user must provide an answer. Defaults to true. Set to false for optional questions.",
+            description: "Whether answer is required. Defaults to true.",
           },
         },
       },
@@ -1493,11 +1398,6 @@ const SUMMARY_SYSTEM_PROMPT = [
   "【当前进展与下一步】任务停在哪里？接下来立即需要解决的是什么？",
 ].join("\n");
 
-const CHUNK_SUMMARY_SYSTEM_PROMPT = [
-  "你是一个代码助手内置的上下文压缩引擎。你的任务是将以下对话片段压缩为简洁的摘要要点。",
-  "保留所有关键技术细节：文件名、函数名、错误信息、架构决策。",
-  "使用简洁的中文输出，严格控制在 400 字以内。",
-].join("\n");
 
 function formatMessagesForSummary(msgs: LiteLLMMessage[]): string {
   return msgs
@@ -1516,31 +1416,6 @@ function formatMessagesForSummary(msgs: LiteLLMMessage[]): string {
     .join("\n---\n");
 }
 
-function splitMessagesIntoChunks(
-  messages: LiteLLMMessage[],
-  maxCharsPerChunk: number,
-): LiteLLMMessage[][] {
-  const chunks: LiteLLMMessage[][] = [];
-  let currentChunk: LiteLLMMessage[] = [];
-  let currentChars = 0;
-
-  for (const msg of messages) {
-    const msgChars = (msg.content ?? "").length + 20; // +20 for role label overhead
-    if (currentChunk.length > 0 && currentChars + msgChars > maxCharsPerChunk) {
-      chunks.push(currentChunk);
-      currentChunk = [];
-      currentChars = 0;
-    }
-    currentChunk.push(msg);
-    currentChars += msgChars;
-  }
-
-  if (currentChunk.length > 0) {
-    chunks.push(currentChunk);
-  }
-
-  return chunks;
-}
 
 async function summarizeSingleChunk(
   content: string,
@@ -1589,72 +1464,23 @@ async function requestSummary(
 
   const combinedContent = formatMessagesForSummary(messagesToSummarize);
 
-  // If content fits in a single chunk, use direct summarization (fast path).
-  if (combinedContent.length <= SUMMARY_CHUNK_MAX_CHARS) {
-    const result = await summarizeSingleChunk(
-      combinedContent,
-      settings,
-      SUMMARY_SYSTEM_PROMPT,
-    );
-    if (result) {
-      const elapsed = ((performance.now() - sumT0) / 1000).toFixed(2);
-      console.log(`[Context] 摘要完成 (直接) | ${elapsed}s | ${result.length} chars`);
-      summaryCache.set(cacheKey, result);
-      return result;
-    }
-  } else {
-    // P1-2: Map-Reduce — split into chunks, summarize each, then reduce.
-    const chunks = splitMessagesIntoChunks(messagesToSummarize, SUMMARY_CHUNK_MAX_CHARS);
-    console.log(`[Context] Map-Reduce 摘要: ${chunks.length} chunks`);
+  // Single-pass summarization: truncate to fit budget, then one LLM call.
+  // For long content, keep the tail (most recent context is most relevant).
+  const contentForSummary =
+    combinedContent.length <= SUMMARY_CHUNK_MAX_CHARS
+      ? combinedContent
+      : "(早期对话已省略)...\n" + combinedContent.slice(-SUMMARY_CHUNK_MAX_CHARS);
 
-    // Map phase: summarize chunks in parallel (up to 3 concurrent LLM calls)
-    const chunkTasks = chunks.map((chunk, chunkIndex) => async () => {
-      const chunkContent = formatMessagesForSummary(chunk);
-      const chunkSummary = await summarizeSingleChunk(
-        chunkContent,
-        settings,
-        CHUNK_SUMMARY_SYSTEM_PROMPT,
-      );
-      if (chunkSummary) {
-        return `[片段 ${chunkIndex + 1}/${chunks.length}]\n${chunkSummary}`;
-      }
-      return `[片段 ${chunkIndex + 1}/${chunks.length}]\n${chunkContent.slice(0, 500)}...`;
-    });
-
-    const MAX_PARALLEL_SUMMARY_CHUNKS = 5;
-    const settledResults = await runWithConcurrencyLimit(chunkTasks, MAX_PARALLEL_SUMMARY_CHUNKS);
-    const chunkSummaries: string[] = settledResults.map((result, idx) => {
-      if (result.status === "fulfilled") {
-        return result.value;
-      }
-      console.warn(`[Context] Map-Reduce chunk ${idx + 1} 摘要失败:`, result.reason);
-      const fallbackContent = formatMessagesForSummary(chunks[idx]);
-      return `[片段 ${idx + 1}/${chunks.length}]\n${fallbackContent.slice(0, 500)}...`;
-    });
-
-    // Reduce phase: combine chunk summaries into final summary.
-    // When truncation is needed, keep the *latest* chunks (tail) because
-    // recent context is more relevant for the model's next action.
-    const combinedChunkSummaries = chunkSummaries.join("\n\n");
-    const reducedContent =
-      combinedChunkSummaries.length <= SUMMARY_CHUNK_MAX_CHARS
-        ? combinedChunkSummaries
-        : "(早期片段已省略)...\n" + combinedChunkSummaries.slice(-SUMMARY_CHUNK_MAX_CHARS);
-
-    const finalSummary = await summarizeSingleChunk(
-      `以下是对话历史分段摘要，请合并为一份完整、结构化的最终摘要：\n\n${reducedContent}`,
-      settings,
-      SUMMARY_SYSTEM_PROMPT,
-    );
-
-    if (finalSummary) {
-      const elapsed = ((performance.now() - sumT0) / 1000).toFixed(2);
-      console.log(
-        `[Context] Map-Reduce 摘要完成 | ${elapsed}s | ${chunks.length} chunks → ${finalSummary.length} chars`,
-      );
-      summaryCache.set(cacheKey, finalSummary);
-      return finalSummary;
-    }
+  const result = await summarizeSingleChunk(
+    contentForSummary,
+    settings,
+    SUMMARY_SYSTEM_PROMPT,
+  );
+  if (result) {
+    const elapsed = ((performance.now() - sumT0) / 1000).toFixed(2);
+    console.log(`[Context] 摘要完成 | ${elapsed}s | ${result.length} chars`);
+    summaryCache.set(cacheKey, result);
+    return result;
   }
 
   // Fallback when summarization fails
@@ -2132,7 +1958,7 @@ async function runNativeToolCallingLoop(
         const shouldRefreshByTurn = refreshEnabled && refreshInterval > 0 &&
           (turn - lastWorkspaceRefreshTurn) >= refreshInterval;
         const shouldRefreshByFileChange = refreshEnabled && refreshOnFileChange &&
-          hasModifiedFiles && (turn - lastWorkspaceRefreshTurn) >= 3; // Min 3 turns between refreshes
+          hasModifiedFiles && (turn - lastWorkspaceRefreshTurn) >= 5; // Min 5 turns between refreshes
 
         if (shouldRefreshByTurn || shouldRefreshByFileChange) {
           try {
@@ -2262,22 +2088,8 @@ async function runNativeToolCallingLoop(
         `[Loop] 上下文压缩: ${beforeLen} → ${messages.length} messages | ~${afterTokens} tokens`
       );
     }
-    if (compression.compressed && workingMemory.fileKnowledge.size > 0) {
-      const knownFiles = [...workingMemory.fileKnowledge.entries()]
-        .sort((a, b) => (b[1].lastReadTurn ?? 0) - (a[1].lastReadTurn ?? 0))
-        .slice(0, 30)
-        .map(([path, fk]) => `- ${path} (${fk.totalLines}行, ${fk.language ?? "?"}): ${fk.summary}`)
-        .join("\n");
-
-      messages.push({
-        role: "system",
-        content: [
-          "上下文已压缩。以下是你在本次会话中已读取过的文件清单，无需重复读取：",
-          knownFiles,
-          "如需特定文件的详细内容，请使用 start_line/end_line 精确读取目标区域，而非重新全文读取。",
-        ].join("\n"),
-      });
-    }
+    // File knowledge is already tracked in working memory; no need to inject
+    // a separate "known files" system message after compression.
     emitContextUpdate();
 
     let completion;
