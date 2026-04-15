@@ -230,13 +230,24 @@ jobs:
         if: startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_macos_signing == 'true'
         shell: bash
         run: |
-          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          if [ ! -s certificate.p12 ]; then
+            echo "::error::Decoded certificate file is empty. Check APPLE_CERTIFICATE secret."
+            exit 1
+          fi
+
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
           security list-keychains -d user -s build.keychain
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security set-keychain-settings -t 3600 -u build.keychain
-          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          
+          # Use -A to allow all applications to access the items, or keep targeted -T
+          if ! security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security; then
+            echo "::error::Failed to import certificate.p12. Verify APPLE_CERTIFICATE_PASSWORD and certificate validity."
+            exit 1
+          fi
+          
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
 
           CERT_ID=$(security find-identity -v -p codesigning build.keychain | awk -F '"' '/Developer ID Application|Apple Distribution|Apple Development/ {print $2; exit}')
@@ -244,6 +255,7 @@ jobs:
             echo "::warning::Unable to locate a usable Apple code signing identity in the imported keychain; proceeding without macOS signing."
           else
             echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+            echo "Successfully found identity: $CERT_ID"
           fi
 
       - name: Prepare macOS notarization credentials
