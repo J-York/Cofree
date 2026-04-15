@@ -343,8 +343,8 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Build Tauri app with updater artifacts
-        if: steps.signing_modes.outputs.has_tauri_signing == 'true'
+      - name: Build Tauri app with updater artifacts (API notarization)
+        if: steps.signing_modes.outputs.has_tauri_signing == 'true' && startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_macos_signing == 'true' && steps.signing_modes.outputs.has_apple_api_notarization == 'true'
         uses: tauri-apps/tauri-action@44a5bf1eaeeebdabfd8951645f567c83b0ae02a3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -354,6 +354,20 @@ jobs:
           APPLE_API_ISSUER: ${{ env.TAURI_APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ env.TAURI_APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+        with:
+          releaseId: ${{ needs.prepare_release.outputs.release_id }}
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          args: ${{ env.TAURI_BUILD_ARGS }}
+
+      - name: Build Tauri app with updater artifacts (Apple ID notarization)
+        if: steps.signing_modes.outputs.has_tauri_signing == 'true' && startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_macos_signing == 'true' && steps.signing_modes.outputs.has_apple_api_notarization != 'true' && steps.signing_modes.outputs.has_apple_id_notarization == 'true'
+        uses: tauri-apps/tauri-action@44a5bf1eaeeebdabfd8951645f567c83b0ae02a3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ env.TAURI_APPLE_ID }}
           APPLE_PASSWORD: ${{ env.TAURI_APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ env.TAURI_APPLE_TEAM_ID }}
@@ -363,8 +377,22 @@ jobs:
           uploadUpdaterSignatures: true
           args: ${{ env.TAURI_BUILD_ARGS }}
 
-      - name: Build Tauri app without updater artifacts
-        if: steps.signing_modes.outputs.has_tauri_signing != 'true'
+      - name: Build Tauri app with updater artifacts (without notarization env)
+        if: steps.signing_modes.outputs.has_tauri_signing == 'true' && !(startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_macos_signing == 'true' && (steps.signing_modes.outputs.has_apple_api_notarization == 'true' || steps.signing_modes.outputs.has_apple_id_notarization == 'true'))
+        uses: tauri-apps/tauri-action@44a5bf1eaeeebdabfd8951645f567c83b0ae02a3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+        with:
+          releaseId: ${{ needs.prepare_release.outputs.release_id }}
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          args: ${{ env.TAURI_BUILD_ARGS }}
+
+      - name: Build Tauri app without updater artifacts (API notarization)
+        if: steps.signing_modes.outputs.has_tauri_signing != 'true' && startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_macos_signing == 'true' && steps.signing_modes.outputs.has_apple_api_notarization == 'true'
         uses: tauri-apps/tauri-action@44a5bf1eaeeebdabfd8951645f567c83b0ae02a3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -372,9 +400,33 @@ jobs:
           APPLE_API_ISSUER: ${{ env.TAURI_APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ env.TAURI_APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+        with:
+          releaseId: ${{ needs.prepare_release.outputs.release_id }}
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
+          args: ${{ env.TAURI_BUILD_ARGS }}
+
+      - name: Build Tauri app without updater artifacts (Apple ID notarization)
+        if: steps.signing_modes.outputs.has_tauri_signing != 'true' && startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_macos_signing == 'true' && steps.signing_modes.outputs.has_apple_api_notarization != 'true' && steps.signing_modes.outputs.has_apple_id_notarization == 'true'
+        uses: tauri-apps/tauri-action@44a5bf1eaeeebdabfd8951645f567c83b0ae02a3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ env.TAURI_APPLE_ID }}
           APPLE_PASSWORD: ${{ env.TAURI_APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ env.TAURI_APPLE_TEAM_ID }}
+        with:
+          releaseId: ${{ needs.prepare_release.outputs.release_id }}
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
+          args: ${{ env.TAURI_BUILD_ARGS }}
+
+      - name: Build Tauri app without updater artifacts (without notarization env)
+        if: steps.signing_modes.outputs.has_tauri_signing != 'true' && !(startsWith(matrix.platform.os, 'macos-') && steps.signing_modes.outputs.has_macos_signing == 'true' && (steps.signing_modes.outputs.has_apple_api_notarization == 'true' || steps.signing_modes.outputs.has_apple_id_notarization == 'true'))
+        uses: tauri-apps/tauri-action@44a5bf1eaeeebdabfd8951645f567c83b0ae02a3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
         with:
           releaseId: ${{ needs.prepare_release.outputs.release_id }}
           uploadUpdaterJson: false
