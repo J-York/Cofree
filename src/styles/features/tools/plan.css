@@ -107,7 +107,7 @@
 }
 
 .plan-step.is-active {
-  border-color: rgba(124,159,232,0.25);
+  border-color: rgba(139,142,232,0.25);
   box-shadow: var(--accent-glow-sm), var(--glass-inner-glow);
 }
 

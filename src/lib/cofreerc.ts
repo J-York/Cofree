@@ -15,7 +15,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-
+import type { SkillEntry } from "./skillStore";
 export interface OverviewBudgetConfig {
   maxDirectories?: number;
   maxFiles?: number;
@@ -45,6 +45,23 @@ export interface WorkspaceRefreshConfig {
   onFileChange?: boolean;
 }
 
+export interface CofreeRcSkillConfig {
+  /** Skill identifier (kebab-case) */
+  id?: string;
+  /** Human-readable display name */
+  name: string;
+  /** When to activate this skill — used for keyword/intent matching */
+  description: string;
+  /** Path to the SKILL.md file (relative to workspace root) */
+  filePath?: string;
+  /** Inline instructions (alternative to filePath) */
+  instructions?: string;
+  /** Glob patterns — auto-activate when editing matching files */
+  filePatterns?: string[];
+  /** Keyword triggers for automatic matching */
+  keywords?: string[];
+}
+
 export interface CofreeRcConfig {
   /** Additional system prompt instructions appended to the base prompt */
   systemPrompt?: string;
@@ -64,6 +81,8 @@ export interface CofreeRcConfig {
   contextRules?: ContextRuleConfig[];
   /** Workspace context refresh configuration for dynamic updates during conversation */
   workspaceRefresh?: WorkspaceRefreshConfig;
+  /** Skill definitions for domain-specific capabilities */
+  skills?: CofreeRcSkillConfig[];
 }
 
 const COFREERC_FILENAMES = [".cofreerc", ".cofreerc.json"];
@@ -316,6 +335,76 @@ export function parseCofreeRc(raw: string): CofreeRcConfig {
     }
   }
 
+  // skills
+  if (Array.isArray(obj.skills)) {
+    const skills: CofreeRcSkillConfig[] = [];
+    for (const [index, entry] of obj.skills.entries()) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        continue;
+      }
+      const record = entry as Record<string, unknown>;
+      if (typeof record.name !== "string" || !record.name.trim()) {
+        continue;
+      }
+
+      const skill: CofreeRcSkillConfig = {
+        name: record.name.trim().slice(0, 100),
+        description:
+          typeof record.description === "string"
+            ? record.description.trim().slice(0, 500)
+            : "",
+      };
+
+      if (typeof record.id === "string" && record.id.trim()) {
+        skill.id = record.id.trim().slice(0, 80);
+      } else {
+        skill.id = `skill-${index + 1}`;
+      }
+
+      if (typeof record.filePath === "string" && record.filePath.trim()) {
+        skill.filePath = record.filePath
+          .trim()
+          .replace(/\\/g, "/")
+          .replace(/^\/+/, "")
+          .slice(0, 300);
+      }
+
+      if (typeof record.instructions === "string" && record.instructions.trim()) {
+        skill.instructions = record.instructions.trim().slice(0, 8000);
+      }
+
+      if (Array.isArray(record.filePatterns)) {
+        const patterns = record.filePatterns
+          .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+          .map((item) => item.trim().slice(0, 100))
+          .slice(0, 20);
+        if (patterns.length > 0) {
+          skill.filePatterns = patterns;
+        }
+      }
+
+      if (Array.isArray(record.keywords)) {
+        const keywords = record.keywords
+          .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+          .map((item) => item.trim().toLowerCase().slice(0, 50))
+          .slice(0, 20);
+        if (keywords.length > 0) {
+          skill.keywords = keywords;
+        }
+      }
+
+      if (skill.filePath || skill.instructions) {
+        skills.push(skill);
+      }
+      if (skills.length >= 20) {
+        break;
+      }
+    }
+    if (skills.length > 0) {
+      config.skills = skills;
+    }
+  }
+
   return config;
 }
 
@@ -441,4 +530,60 @@ export function buildCofreeRcPromptFragment(config: CofreeRcConfig): string {
   }
 
   return parts.join("\n\n");
+}
+
+/**
+ * Convert .cofreerc skill configs into plain skill definitions.
+ * File paths are resolved relative to the workspace root.
+ */
+export function convertCofreeRcSkills(
+  config: CofreeRcConfig,
+  workspacePath: string,
+): Array<{
+  id: string;
+  name: string;
+  description: string;
+  filePath?: string;
+  instructions?: string;
+  filePatterns?: string[];
+  keywords?: string[];
+}> {
+  if (!config.skills?.length) {
+    return [];
+  }
+
+  const normalizedWorkspace = workspacePath.replace(/\/+$/, "");
+  const toCofreeRcScopedId = (rawId: string): string => {
+    const normalized = rawId.trim();
+    if (!normalized) {
+      return "cofreerc:unknown";
+    }
+    return normalized.startsWith("cofreerc:")
+      ? normalized
+      : `cofreerc:${normalized}`;
+  };
+
+  return config.skills.map((skill, index) => ({
+    id: toCofreeRcScopedId(skill.id || `skill-${index + 1}`),
+    name: skill.name,
+    description: skill.description,
+    filePath: skill.filePath
+      ? `${normalizedWorkspace}/${skill.filePath}`
+      : undefined,
+    instructions: skill.instructions,
+    filePatterns: skill.filePatterns,
+    keywords: skill.keywords,
+  }));
+}
+
+export function convertCofreeRcSkillEntries(
+  config: CofreeRcConfig,
+  workspacePath: string,
+): SkillEntry[] {
+  return convertCofreeRcSkills(config, workspacePath).map((skill) => ({
+    ...skill,
+    source: "cofreerc",
+    enabled: true,
+    createdAt: new Date().toISOString(),
+  }));
 }

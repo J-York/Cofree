@@ -79,7 +79,7 @@
   color: var(--text-1);
   letter-spacing: -0.02em;
   margin: 0;
-  text-shadow: 0 0 40px rgba(124,159,232,0.15);
+  text-shadow: 0 0 40px rgba(139,142,232,0.15);
 }
 
 .chat-empty-subtext {

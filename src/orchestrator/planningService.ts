@@ -71,6 +71,16 @@ import type {
 } from "../agents/types";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { assembleSystemPrompt, assembleRuntimeContext } from "../agents/promptAssembly";
+import {
+  matchSkills,
+  resolveSkills,
+  discoverGlobalSkills,
+  discoverWorkspaceSkills,
+  mergeDiscoveredSkills,
+  type SkillEntry,
+  type ResolvedSkill,
+} from "../lib/skillStore";
+import { convertCofreeRcSkillEntries } from "../lib/cofreerc";
 import type { ChatContextAttachment } from "../lib/contextAttachments";
 import { runWithConcurrencyLimit } from "../lib/concurrency";
 import {
@@ -1699,6 +1709,59 @@ async function executeToolCallWithRetry(
 }
 
 
+/**
+ * Discover, match, and resolve skills for the current request.
+ * Merges skills from three sources: global (~/.cofree/skills/), workspace
+ * (.cofree/skills/), .cofreerc, and user-registered custom skills in settings.
+ */
+async function resolveMatchedSkills(
+  settings: AppSettings,
+  projectConfig: CofreeRcConfig | undefined,
+  userMessage: string,
+  focusedPaths: string[],
+): Promise<ResolvedSkill[]> {
+  try {
+    // 1. Collect all skill definitions from various sources
+    const allSkillDefs: SkillEntry[] = [];
+    const workspacePath = settings.workspacePath.trim();
+
+    const [globalSkills, workspaceSkills] = await Promise.all([
+      discoverGlobalSkills(),
+      workspacePath ? discoverWorkspaceSkills(workspacePath) : Promise.resolve([]),
+    ]);
+    allSkillDefs.push(...globalSkills, ...workspaceSkills);
+
+    // .cofreerc skills
+    if (projectConfig?.skills?.length && workspacePath) {
+      allSkillDefs.push(...convertCofreeRcSkillEntries(projectConfig, workspacePath));
+    }
+
+    // Merge with user-registered skills from settings (preserves enabled state)
+    const mergedRegistry = mergeDiscoveredSkills(settings.skills, allSkillDefs);
+
+    // 2. Match skills against the user message and focused files
+    const matched = matchSkills(mergedRegistry, userMessage, focusedPaths);
+    if (matched.length === 0) {
+      console.debug("[skills] No matched skills", {
+        registrySize: mergedRegistry.length,
+        focusedPathCount: focusedPaths.length,
+      });
+      return [];
+    }
+    console.debug(
+      "[skills] Matched skills",
+      matched.map((skill) => ({ id: skill.id, name: skill.name, source: skill.source })),
+    );
+
+    // 3. Resolve matched skills (load their instructions)
+    return resolveSkills(matched);
+  } catch (error) {
+    // Skill resolution should never block the main loop
+    console.warn("[skills] Failed to resolve matched skills", error);
+    return [];
+  }
+}
+
 async function runNativeToolCallingLoop(
   prompt: string,
   settings: AppSettings,
@@ -1741,7 +1804,14 @@ async function runNativeToolCallingLoop(
       ...projectConfig.toolPermissions,
     } as ToolPermissions)
     : basePermissions;
-  const agentSystemPrompt = assembleSystemPrompt(runtime);
+  // --- Skill matching & resolution ---
+  const resolvedSkills = await resolveMatchedSkills(
+    settings,
+    projectConfig,
+    prompt,
+    focusedPaths,
+  );
+  const agentSystemPrompt = assembleSystemPrompt(runtime, resolvedSkills);
   const effectiveRuntimeContext = assembleRuntimeContext(runtime, settings.workspacePath, INTERNAL_TOOL_NAMES);
   const requestedArtifactCount =
     phase === "default" ? estimateRequestedArtifactCount(prompt) : 0;

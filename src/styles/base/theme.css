@@ -30,7 +30,7 @@
   /* Glass border — subtle highlight / gradient stroke */
   --glass-border: 1px solid rgba(255,255,255,0.08);
   --glass-border-highlight: 1px solid rgba(255,255,255,0.14);
-  --glass-border-glow: 1px solid rgba(147,180,232,0.25);
+  --glass-border-glow: 1px solid rgba(139,142,232,0.25);
 
   /* Inner glow for glass surfaces */
   --glass-inner-glow: inset 0 1px 0 rgba(255,255,255,0.06);
@@ -46,15 +46,15 @@
   --border-1: rgba(255,255,255,0.06);
   --border-2: rgba(255,255,255,0.10);
   --border-3: rgba(255,255,255,0.16);
-  --border-focus: rgba(147,180,232,0.50);
+  --border-focus: rgba(139,142,232,0.50);
 
-  /* Accent — vibrant blue with neon glow capability */
-  --accent-solid: #7C9FE8;
-  --accent-bright: #93B4F0;
-  --accent-muted: rgba(124,159,232,0.15);
+  /* Accent — blue-violet with neon glow capability */
+  --accent-solid: #8B8EE8;
+  --accent-bright: #A8ABF0;
+  --accent-muted: rgba(139,142,232,0.15);
   --accent-text: #0a0a12;
-  --accent-glow: 0 0 20px rgba(124,159,232,0.25), 0 0 40px rgba(124,159,232,0.10);
-  --accent-glow-sm: 0 0 10px rgba(124,159,232,0.18);
+  --accent-glow: 0 0 20px rgba(139,142,232,0.25), 0 0 40px rgba(139,142,232,0.10);
+  --accent-glow-sm: 0 0 10px rgba(139,142,232,0.18);
 
   /* Neon highlight palette */
   --neon-blue: rgba(56,189,248,0.7);
@@ -125,7 +125,7 @@
 
   --glass-border: 1px solid rgba(255,255,255,0.50);
   --glass-border-highlight: 1px solid rgba(255,255,255,0.70);
-  --glass-border-glow: 1px solid rgba(75,106,155,0.30);
+  --glass-border-glow: 1px solid rgba(91,95,155,0.30);
   --glass-inner-glow: inset 0 1px 0 rgba(255,255,255,0.60);
   --glass-inner-glow-strong: inset 0 1px 0 rgba(255,255,255,0.80), inset 0 0 20px rgba(255,255,255,0.10);
 
@@ -139,15 +139,15 @@
   --border-1: rgba(0,0,0,0.06);
   --border-2: rgba(0,0,0,0.10);
   --border-3: rgba(0,0,0,0.16);
-  --border-focus: rgba(75,106,155,0.45);
+  --border-focus: rgba(91,95,155,0.45);
 
   /* Accent */
-  --accent-solid: #4B6A9B;
-  --accent-bright: #5A7DB5;
-  --accent-muted: rgba(75,106,155,0.12);
+  --accent-solid: #5B5F9B;
+  --accent-bright: #6E72AD;
+  --accent-muted: rgba(91,95,155,0.12);
   --accent-text: #FFFFFF;
-  --accent-glow: 0 0 20px rgba(75,106,155,0.20), 0 0 40px rgba(75,106,155,0.08);
-  --accent-glow-sm: 0 0 10px rgba(75,106,155,0.15);
+  --accent-glow: 0 0 20px rgba(91,95,155,0.20), 0 0 40px rgba(91,95,155,0.08);
+  --accent-glow-sm: 0 0 10px rgba(91,95,155,0.15);
 
   --neon-blue: rgba(37,99,235,0.5);
   --neon-purple: rgba(139,92,246,0.5);

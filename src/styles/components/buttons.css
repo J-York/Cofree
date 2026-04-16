@@ -22,7 +22,7 @@
   transform: scale(0.98);
 }
 
-.btn:focus-visible { box-shadow: 0 0 0 3px rgba(124,159,232,0.30); }
+.btn:focus-visible { box-shadow: 0 0 0 3px rgba(139,142,232,0.30); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; box-shadow: none; }
 
 .btn-primary {

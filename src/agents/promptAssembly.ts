@@ -5,6 +5,8 @@
  */
 
 import type { ResolvedAgentRuntime } from "./types";
+import type { ResolvedSkill } from "../lib/skillStore";
+import { buildSkillPromptFragment } from "../lib/skillStore";
 
 // ---------------------------------------------------------------------------
 // Rule Categories
@@ -125,13 +127,24 @@ function isWindowsHost(): boolean {
 
 /**
  * Assemble the full system prompt for a resolved agent runtime.
+ *
+ * @param resolvedSkills - Optional resolved skills to inject into the prompt.
  */
 export function assembleSystemPrompt(
   runtime: ResolvedAgentRuntime,
+  resolvedSkills?: ResolvedSkill[],
 ): string {
   const rules = SYSTEM_RULE_BLOCKS.join("\n\n");
+  const parts = [runtime.systemPrompt, rules];
 
-  return [runtime.systemPrompt, rules].join("\n\n");
+  if (resolvedSkills && resolvedSkills.length > 0) {
+    const skillFragment = buildSkillPromptFragment(resolvedSkills);
+    if (skillFragment) {
+      parts.push(skillFragment);
+    }
+  }
+
+  return parts.join("\n\n");
 }
 
 /**

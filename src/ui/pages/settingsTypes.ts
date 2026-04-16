@@ -22,10 +22,11 @@ export interface SettingsPageProps {
   onClose?: () => void;
 }
 
-export type SettingsTab = "agents" | "model" | "tools" | "advanced";
+export type SettingsTab = "agents" | "skills" | "model" | "tools" | "advanced";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "agents", label: "Agent 管理" },
+  { id: "skills", label: "Skills" },
   { id: "model", label: "模型配置" },
   { id: "tools", label: "工具权限" },
   { id: "advanced", label: "高级" },

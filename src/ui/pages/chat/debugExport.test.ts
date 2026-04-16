@@ -47,6 +47,7 @@ const baseSettings: AppSettings = {
   managedModels: [],
   customAgents: [],
   builtinAgentOverrides: {},
+  skills: [],
 };
 
 describe("debug export helpers", () => {

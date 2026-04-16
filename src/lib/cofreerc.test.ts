@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildCofreeRcPromptFragment,
+  convertCofreeRcSkillEntries,
+  convertCofreeRcSkills,
   parseCofreeRc,
   resolveMatchingContextRules,
 } from "./cofreerc";
@@ -71,4 +73,49 @@ describe("cofreerc", () => {
     expect(fragment).toContain("global-testing");
     expect(fragment).not.toContain("Do not include this eagerly");
   });
+  it("scopes converted cofreerc skill ids", () => {
+    const config = parseCofreeRc(JSON.stringify({
+      skills: [
+        {
+          id: "odps",
+          name: "odps",
+          description: "query maxcompute",
+          filePath: "skills/odps/SKILL.md",
+        },
+        {
+          name: "resume-screener",
+          description: "筛选简历",
+          instructions: "Do screening",
+        },
+      ],
+    }));
+
+    const converted = convertCofreeRcSkills(config, "/workspace/project");
+    expect(converted[0].id).toBe("cofreerc:odps");
+    expect(converted[1].id).toBe("cofreerc:skill-2");
+    expect(converted[0].filePath).toBe("/workspace/project/skills/odps/SKILL.md");
+  });
+
+  it("converts cofreerc skills into registry entries", () => {
+    const config = parseCofreeRc(JSON.stringify({
+      skills: [
+        {
+          id: "resume-screener",
+          name: "resume-screener",
+          description: "筛选简历",
+          instructions: "Do screening",
+        },
+      ],
+    }));
+
+    const entries = convertCofreeRcSkillEntries(config, "/workspace/project");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "cofreerc:resume-screener",
+      source: "cofreerc",
+      enabled: true,
+      instructions: "Do screening",
+    });
+  });
+
 });

@@ -62,6 +62,7 @@ import {
   type WorkspaceInfo,
 } from "./settingsTypes";
 import { useTheme, getThemeLabel, type ThemeMode } from "../../hooks/useTheme";
+import { SkillTab } from "./SkillTab";
 
 const SettingsModelTab = lazy(() =>
   import("./ModelTab").then((module) => ({ default: module.ModelTab }))
@@ -741,6 +742,10 @@ export function SettingsPage({
               )}
 
             </>
+          )}
+
+          {activeTab === "skills" && (
+            <SkillTab draft={draft} setDraft={setDraft} />
           )}
 
           {activeTab === "model" && (

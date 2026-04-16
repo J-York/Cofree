@@ -1814,6 +1814,57 @@ pub fn scan_workspace_structure(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Skill support: absolute file reading & home directory
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn read_absolute_file(path: String) -> Result<String, AppError> {
+    let file_path = Path::new(&path);
+
+    // Security: only allow reading regular files, reject symlinks to sensitive locations
+    if !file_path.is_absolute() {
+        return Err(AppError::validation("Path must be absolute"));
+    }
+    if !file_path.is_file() {
+        return Err(AppError::file(format!("File not found: {}", path)));
+    }
+
+    // Reject paths outside home directory for security
+    if let Some(home) = dirs::home_dir() {
+        let canonical = file_path
+            .canonicalize()
+            .map_err(|e| AppError::file(format!("Cannot resolve path: {}", e)))?;
+        if !canonical.starts_with(&home) {
+            return Err(AppError::validation(
+                "read_absolute_file is restricted to files under the user home directory",
+            ));
+        }
+    }
+
+    let content = fs::read_to_string(file_path)
+        .map_err(|e| AppError::file(format!("Failed to read file: {}", e)))?;
+
+    // Cap at 64 KB to prevent loading huge files into memory.
+    const MAX_BYTES: usize = 64 * 1024;
+    if content.len() > MAX_BYTES {
+        let mut end = MAX_BYTES;
+        while end > 0 && !content.is_char_boundary(end) {
+            end -= 1;
+        }
+        Ok(content[..end].to_string())
+    } else {
+        Ok(content)
+    }
+}
+
+#[tauri::command]
+pub fn get_home_dir() -> Result<String, AppError> {
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| AppError::file("Cannot determine home directory"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{build_workspace_edit_patch, trim_string_to_tail};

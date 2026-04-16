@@ -102,7 +102,7 @@
   background: var(--surface-2);
   backdrop-filter: var(--glass-blur-sm);
   -webkit-backdrop-filter: var(--glass-blur-sm);
-  border-color: rgba(124,159,232,0.20);
+  border-color: rgba(139,142,232,0.20);
   box-shadow: var(--accent-glow-sm);
 }
 
@@ -115,7 +115,7 @@
   width: 4px;
   background: var(--accent-solid);
   border-radius: var(--r-full);
-  box-shadow: 0 0 8px rgba(124,159,232,0.40);
+  box-shadow: 0 0 8px rgba(139,142,232,0.40);
 }
 
 .conv-panel-item-body {

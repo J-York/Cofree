@@ -96,17 +96,17 @@
 }
 
 .chat-avatar.user {
-  background: linear-gradient(135deg, rgba(124,159,232,0.20) 0%, rgba(168,85,247,0.15) 100%);
-  border: 1px solid rgba(124,159,232,0.25);
+  background: linear-gradient(135deg, rgba(139,142,232,0.20) 0%, rgba(168,85,247,0.15) 100%);
+  border: 1px solid rgba(139,142,232,0.25);
   color: var(--accent-bright);
-  box-shadow: 0 0 12px rgba(124,159,232,0.15);
+  box-shadow: 0 0 12px rgba(139,142,232,0.15);
 }
 
 .chat-avatar.assistant {
   background: var(--accent-muted);
-  border: 1px solid rgba(124,159,232,0.18);
+  border: 1px solid rgba(139,142,232,0.18);
   color: var(--accent-bright);
-  box-shadow: 0 0 12px rgba(124,159,232,0.12);
+  box-shadow: 0 0 12px rgba(139,142,232,0.12);
 }
 
 .chat-bubble-wrap {

@@ -6,6 +6,7 @@ import type {
   ChatAgentOverride,
   ChatAgentToolPolicy,
 } from "../agents/types";
+import type { SkillEntry } from "./skillStore";
 
 export const SETTINGS_STORAGE_KEY = "cofree.settings.v1";
 export const SETTINGS_STORAGE_KEY_V2 = "cofree.settings.v2";
@@ -120,6 +121,7 @@ export interface AppSettings {
   managedModels: ManagedModel[];
   customAgents: ChatAgentDefinition[];
   builtinAgentOverrides: Record<string, ChatAgentOverride>;
+  skills: SkillEntry[];
 }
 
 type PersistedSettings = Omit<AppSettings, "apiKey"> & { apiKey?: string };
@@ -304,6 +306,7 @@ function createInitialSettings(): AppSettings {
     managedModels: [defaults.model],
     customAgents: [],
     builtinAgentOverrides: {},
+    skills: [],
   };
 }
 
@@ -862,6 +865,38 @@ function normalizeCustomAgents(
     }));
 }
 
+function normalizeSkillEntries(raw: unknown): SkillEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (item): item is Record<string, unknown> =>
+        isRecord(item) && typeof item.id === "string",
+    )
+    .map((item) => ({
+      id: item.id as string,
+      name: typeof item.name === "string" ? item.name : "Skill",
+      description: typeof item.description === "string" ? item.description : "",
+      filePath: typeof item.filePath === "string" ? item.filePath : undefined,
+      instructions: typeof item.instructions === "string" ? item.instructions : undefined,
+      source: (
+        item.source === "global" ||
+        item.source === "workspace" ||
+        item.source === "cofreerc" ||
+        item.source === "custom"
+      )
+        ? (item.source as SkillEntry["source"])
+        : ("custom" as const),
+      enabled: item.enabled !== false,
+      filePatterns: Array.isArray(item.filePatterns)
+        ? item.filePatterns.filter((pattern): pattern is string => typeof pattern === "string")
+        : undefined,
+      keywords: Array.isArray(item.keywords)
+        ? item.keywords.filter((keyword): keyword is string => typeof keyword === "string")
+        : undefined,
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : nowIso(),
+    }));
+}
+
 function normalizeBuiltinAgentOverrides(
   raw: unknown,
   legacyProfileSelections: Record<string, LegacyProfileSelection>,
@@ -994,6 +1029,7 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
       (parsed as Record<string, unknown>).builtinAgentOverrides,
       legacyProfileSelections,
     ),
+    skills: normalizeSkillEntries((parsed as Record<string, unknown>).skills),
   };
 
   return {
@@ -1541,4 +1577,55 @@ export function maskApiKey(key: string): string {
   }
 
   return `${key.slice(0, 4)}${"*".repeat(Math.max(4, key.length - 8))}${key.slice(-4)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Skill management
+// ---------------------------------------------------------------------------
+
+export function addSkill(
+  settings: AppSettings,
+  skill: SkillEntry,
+): AppSettings {
+  const exists = settings.skills.some((existing) => existing.id === skill.id);
+  if (exists) {
+    return settings;
+  }
+  return {
+    ...settings,
+    skills: [...settings.skills, skill],
+  };
+}
+
+export function updateSkill(
+  settings: AppSettings,
+  skillId: string,
+  updates: Partial<Omit<SkillEntry, "id" | "createdAt">>,
+): AppSettings {
+  return {
+    ...settings,
+    skills: settings.skills.map((skill) =>
+      skill.id === skillId ? { ...skill, ...updates } : skill,
+    ),
+  };
+}
+
+export function deleteSkill(settings: AppSettings, skillId: string): AppSettings {
+  return {
+    ...settings,
+    skills: settings.skills.filter((skill) => skill.id !== skillId),
+  };
+}
+
+export function toggleSkill(settings: AppSettings, skillId: string): AppSettings {
+  return {
+    ...settings,
+    skills: settings.skills.map((skill) =>
+      skill.id === skillId ? { ...skill, enabled: !skill.enabled } : skill,
+    ),
+  };
+}
+
+export function setSkills(settings: AppSettings, skills: SkillEntry[]): AppSettings {
+  return { ...settings, skills };
 }

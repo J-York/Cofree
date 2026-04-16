@@ -44,4 +44,4 @@
 .badge-success { background: rgba(74,222,128,0.12); color: var(--color-success); border: 1px solid rgba(74,222,128,0.18); }
 .badge-error { background: rgba(248,113,113,0.12); color: var(--color-error); border: 1px solid rgba(248,113,113,0.18); }
 .badge-warning { background: rgba(250,204,21,0.12); color: var(--color-warning); border: 1px solid rgba(250,204,21,0.18); }
-.badge-accent { background: var(--accent-muted); color: var(--accent-solid); border: 1px solid rgba(124,159,232,0.18); }
+.badge-accent { background: var(--accent-muted); color: var(--accent-solid); border: 1px solid rgba(139,142,232,0.18); }

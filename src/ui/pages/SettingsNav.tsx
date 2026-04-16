@@ -24,11 +24,13 @@ export function SettingsNav({ activeTab, onTabChange, onClose }: SettingsNavProp
             <span className="settings-tab-icon">
               {tab.id === "agents"
                 ? "🧑‍💻"
-                : tab.id === "model"
-                  ? "🤖"
-                  : tab.id === "tools"
-                    ? "🛠"
-                    : "⚙️"}
+                : tab.id === "skills"
+                  ? "🧩"
+                  : tab.id === "model"
+                    ? "🤖"
+                    : tab.id === "tools"
+                      ? "🛠"
+                      : "⚙️"}
             </span>
             <span className="settings-tab-label">{tab.label}</span>
           </button>
