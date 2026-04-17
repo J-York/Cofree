@@ -198,6 +198,7 @@ import {
 } from "../../lib/skillStore";
 import type { BackgroundStreamState, LiveToolCall, SubAgentStatusItem } from "./chat/types";
 import { useChatStreaming } from "./chat/hooks/useChatStreaming";
+import { useApprovalQueue } from "./chat/hooks/useApprovalQueue";
 import {
   buildConversationDebugExport,
   buildConversationDebugExportFileName,
@@ -233,12 +234,6 @@ interface RunningShellJobMeta {
   readyTimeoutMs?: number;
   approvalContext?: ManualApprovalContext;
   detached?: boolean;
-}
-
-interface PendingShellQueue {
-  messageId: string;
-  actionIds: string[];
-  approvalContext?: ManualApprovalContext;
 }
 
 interface ShellOutputBuffer {
@@ -809,7 +804,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     abortControllersRef,
     backgroundStreamsRef,
   } = useChatStreaming();
-  const [executingActionId, setExecutingActionId] = useState<string>("");
+  const { executingActionId, setExecutingActionId, pendingShellQueuesRef } =
+    useApprovalQueue();
   const [_sidebarOpenLegacy] = useState<boolean>(false);
   const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
   const [subAgentStatus, setSubAgentStatus] = useState<SubAgentStatusItem[]>([]);
@@ -851,7 +847,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
   const skipNextTimestampRef = useRef(true);
   const runningShellJobsRef = useRef(new Map<string, RunningShellJobMeta>());
-  const pendingShellQueuesRef = useRef(new Map<string, PendingShellQueue>());
   const shellOutputBuffersRef = useRef(new Map<string, ShellOutputBuffer>());
   const workingMemoryBySessionRef = useRef(
     new Map<string, WorkingMemorySnapshot | null>(),
