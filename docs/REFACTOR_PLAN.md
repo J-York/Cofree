@@ -75,7 +75,7 @@ src/ui/pages/chat/
 **B1 子任务（按顺序）：**
 
 1. ✅ **B1.1** 建立上述目录骨架（空文件占位，纯目录）
-2. **B1.2** 抽 `useChatStreaming` — 流式回复 + abort 相关的 state/effect
+2. ✅ **B1.2** 抽 `useChatStreaming` — 流式回复 + abort 相关的 state/effect
 3. **B1.3** 抽 `useApprovalQueue` — 审批门相关的 state
 4. **B1.4** 抽 `useMentionSuggestions` + `useSkillDiscovery`
 5. **B1.5** 抽 `useConversationLifecycle` + `useWorkspaceRefresh`
@@ -101,3 +101,4 @@ src/ui/pages/chat/
 
 - 2026-04-17 [plan] 确认方向、裁剪决策、三条轨道、B1 细化方案（本文件创建）
 - 2026-04-17 [B1.1] 建立 `src/ui/pages/chat/{composer,thread,sidebar,hooks}/` 骨架（各一个 `index.ts` 占位）；432/432 tests green
+- 2026-04-17 [B1.2] 抽出 `useChatStreaming` hook：`isStreaming` + `abortControllerRef` + `abortControllersRef` + `backgroundStreamsRef` + unmount abort-all。ChatPage.tsx 4256 → 4251 行；tsc clean，432/432 tests green

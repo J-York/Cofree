@@ -13,6 +13,8 @@ pnpm install              # Install dependencies
 pnpm dev                  # Vite dev server (port 1420, standalone browser UI)
 pnpm tauri:dev            # Full Tauri desktop app (Vite + native window)
 pnpm test                 # Run Vitest tests (jsdom env, no external services)
+pnpm test -- --run <path>            # Run a single test file
+pnpm test -- --run -t "<name>"       # Run tests matching a name
 pnpm build                # Type-check + production build (tsc && vite build)
 
 cd src-tauri && cargo check  # Rust type-check
@@ -49,6 +51,8 @@ Tauri Desktop App
 | `src/orchestrator/toolExecutor.ts` | Tool execution engine |
 | `src/agents/builtinChatAgents.ts` | Built-in agent roles (engineer, reviewer, architect, QA, expert concierge) |
 | `src/agents/resolveAgentRuntime.ts` | Runtime agent resolution and task delegation |
+| `src/lib/piAiBridge.ts` | LLM gateway adapter — routes OpenAI/Anthropic requests through `@mariozechner/pi-ai`, proxied via Rust in Tauri |
+| `src/lib/skillStore.ts` | Skill discovery/registry (global + workspace); skills are context-aware capability extensions selectable via `@`-mention |
 | `src/lib/settingsStore.ts` | Settings persistence (localStorage + secure key storage via Rust) |
 | `src/lib/sessionContext.ts` | Workflow state (planning, executing, human_review, done, error) |
 
@@ -75,17 +79,15 @@ Tauri Desktop App
 
 - **Rust toolchain**: Dependencies require Rust >= 1.85. `rustup default stable` if the system version is too old.
 - **Tauri APIs in browser**: `pnpm dev` in a browser will log `__TAURI__` errors — expected since IPC is unavailable outside the desktop shell.
-- **2 known test failures** in `planningService.test.ts` (approval-flow fingerprint blocking).
 - **Vite port**: Strict port 1420.
 - **Workspace config**: `.cofreerc` / `.cofreerc.json` in workspace root customizes system prompts, ignore patterns, tool permissions, and workspace refresh behavior.
+- **Model requests**: All LLM calls funnel through `src/lib/piAiBridge.ts` (pi-ai gateway). In Tauri, HTTP is proxied through Rust so system proxy settings apply; in the browser `pnpm dev`, requests go direct and may hit CORS.
+- **Skills**: Global skills live under `~/.cofree/skills/`, workspace skills under `<workspace>/.cofree/skills/`. Users can `@`-mention a skill to force explicit selection (bypasses keyword auto-matching in `resolveMatchedSkills`).
 
 ## Documentation Index
 
 | Document | Content |
 |----------|---------|
-| `docs/INDEX.md` | Documentation overview |
 | `docs/PRD.md` | Product requirements |
 | `docs/ARCHITECTURE.md` | Technical architecture |
-| `docs/GUARDRAILS.md` | Approval gates, tool permissions, path boundaries |
-| `docs/SECURITY_PRIVACY.md` | Data egress boundaries, API key storage |
 | `docs/BUILD.md` | Build and release |

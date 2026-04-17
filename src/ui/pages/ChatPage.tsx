@@ -197,6 +197,7 @@ import {
   type SkillEntry,
 } from "../../lib/skillStore";
 import type { BackgroundStreamState, LiveToolCall, SubAgentStatusItem } from "./chat/types";
+import { useChatStreaming } from "./chat/hooks/useChatStreaming";
 import {
   buildConversationDebugExport,
   buildConversationDebugExportFileName,
@@ -801,7 +802,13 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const [sessionNote, setSessionNote] = useState<string>(
     currentConversation?.messages.length ? "已恢复历史会话" : ""
   );
-  const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  const {
+    isStreaming,
+    setIsStreaming,
+    abortControllerRef,
+    abortControllersRef,
+    backgroundStreamsRef,
+  } = useChatStreaming();
   const [executingActionId, setExecutingActionId] = useState<string>("");
   const [_sidebarOpenLegacy] = useState<boolean>(false);
   const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
@@ -827,7 +834,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const [restoredTeamTrustPromptKey, setRestoredTeamTrustPromptKey] = useState<
     string | null
   >(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<ChatMessageRecord[]>(
     currentConversation?.messages ?? []
   );
@@ -843,8 +849,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const [expandedPlanRequestKey, setExpandedPlanRequestKey] = useState(0);
 
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
-  const backgroundStreamsRef = useRef(new Map<string, BackgroundStreamState>());
-  const abortControllersRef = useRef(new Map<string, AbortController>());
   const skipNextTimestampRef = useRef(true);
   const runningShellJobsRef = useRef(new Map<string, RunningShellJobMeta>());
   const pendingShellQueuesRef = useRef(new Map<string, PendingShellQueue>());
@@ -1526,15 +1530,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     void loadSkills();
     return () => { cancelled = true; };
   }, [wsPath, settings.skills]);
-
-  useEffect(
-    () => () => {
-      for (const ctrl of abortControllersRef.current.values()) {
-        ctrl.abort();
-      }
-    },
-    []
-  );
 
   const visibleMessages = messages.filter((message) => message.role !== "tool");
   const lastVisibleMessage = visibleMessages[visibleMessages.length - 1];
