@@ -7,26 +7,13 @@ import {
   useState,
 } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import {
-  clearChatHistory,
-  loadChatHistory,
-  type ChatMessageRecord,
-} from "../../lib/chatHistoryStore";
+import { type ChatMessageRecord } from "../../lib/chatHistoryStore";
 import {
   loadConversationList,
   loadConversation,
-  createConversation,
-  deleteConversation,
-  updateConversationTitle,
   saveConversation,
-  getActiveConversationId,
-  setActiveConversationId,
-  migrateOldChatHistory,
-  generateConversationTitle,
-  type ConversationMetadata,
   type Conversation,
 } from "../../lib/conversationStore";
-import { migrateGlobalToWorkspace } from "../../lib/conversationMaintenance";
 import {
   addWorkspaceApprovalRule,
   type ApprovalRuleOption,
@@ -47,7 +34,7 @@ import {
   shouldApplyCheckpointRecovery,
 } from "./chat/checkpointRecovery";
 import { ConversationSidebar } from "../components/ConversationSidebar";
-import { getActiveManagedModel, isActiveModelLocal, resolveManagedModelSelection } from "../../lib/settingsStore";
+import { getActiveManagedModel, isActiveModelLocal } from "../../lib/settingsStore";
 import type { AppSettings } from "../../lib/settingsStore";
 import {
   cancelShellCommand,
@@ -121,19 +108,9 @@ import {
   deriveCarryForwardPlan,
   toConversationHistory,
 } from "./chat/helpers";
-import {
-  createBackgroundStreamState,
-  createClearedConversation,
-  createConversationViewState,
-  createEmptyChatViewState,
-  resetChatSessionState,
-  resolvePreferredConversationId,
-  type ChatViewState,
-} from "./chat/sessionState";
 import { type ConversationTopbarAction } from "./chat/ConversationTopbar";
 import { ChatThreadSection } from "./chat/ChatThreadSection";
 import {
-  buildDraftConversationBindingUpdate,
   resolveConversationAssistantDisplayName,
 } from "./chat/conversationAgentDisplay";
 import {
@@ -150,7 +127,6 @@ import {
 } from "./chat/conversationTopbarState";
 import {
   buildExecutionSettings,
-  createConversationAgentBinding,
   ensureConversationAgentBinding,
   collectBlockedActionFingerprints,
   markActionExecutionError,
@@ -174,7 +150,6 @@ import {
   type SkillEntry,
 } from "../../lib/skillStore";
 import type {
-  BackgroundStreamState,
   LiveToolCall,
   RunningShellJobMeta,
   ShellOutputBuffer,
@@ -202,11 +177,10 @@ import { useApprovalQueue } from "./chat/hooks/useApprovalQueue";
 import { useSkillDiscovery } from "./chat/hooks/useSkillDiscovery";
 import { useMentionSuggestions } from "./chat/hooks/useMentionSuggestions";
 import { useThreadAutoScroll } from "./chat/hooks/useThreadAutoScroll";
+import { useConversationLifecycle } from "./chat/hooks/useConversationLifecycle";
 import { useConversationDebugLog } from "./chat/hooks/useConversationDebugLog";
 import { ChatComposer } from "./chat/composer/ChatComposer";
-import {
-  resolveConversationDebugKey,
-} from "./chat/debugExport";
+import { type ConversationDebugEntry } from "./chat/debugExport";
 import {
   DEFAULT_BACKGROUND_READY_TIMEOUT_MS,
   DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES,
@@ -231,41 +205,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const wsPath = settings.workspacePath;
   const workspaceTeamTrustMode = loadWorkspaceTeamTrustMode(wsPath);
 
-  // Multi-conversation state
-  const [conversations, setConversations] = useState<ConversationMetadata[]>(
-    () => {
-      migrateGlobalToWorkspace(wsPath);
-      const list = loadConversationList(wsPath);
-      if (list.length === 0 && wsPath) {
-        createConversation(wsPath, []);
-        return loadConversationList(wsPath);
-      }
-      return list;
-    }
-  );
-  const [activeConversationId, setActiveConversationIdState] = useState<
-    string | null
-  >(() => getActiveConversationId(wsPath));
-  const [currentConversation, setCurrentConversation] =
-    useState<Conversation | null>(() => {
-      const activeId = getActiveConversationId(wsPath);
-      if (activeId) {
-        return loadConversation(wsPath, activeId);
-      }
-      // Migrate old chat history if exists
-      const oldHistory = loadChatHistory();
-      if (oldHistory.length > 0) {
-        migrateOldChatHistory(wsPath, oldHistory);
-        clearChatHistory();
-        const newList = loadConversationList(wsPath);
-        if (newList.length > 0) {
-          const firstConv = loadConversation(wsPath, newList[0].id);
-          return firstConv;
-        }
-      }
-      return null;
-    });
-
   const [prompt, setPrompt] = useState("");
   const [composerAttachments, setComposerAttachments] = useState<ChatContextAttachment[]>([]);
   const {
@@ -281,14 +220,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   } = useMentionSuggestions(wsPath);
   const availableSkills = useSkillDiscovery(wsPath, settings.skills);
   const [selectedSkills, setSelectedSkills] = useState<SkillEntry[]>([]);
-  const [messages, setMessages] = useState<ChatMessageRecord[]>(
-    currentConversation?.messages ?? []
-  );
   const [categorizedError, setCategorizedError] =
     useState<CategorizedError | null>(null);
-  const [sessionNote, setSessionNote] = useState<string>(
-    currentConversation?.messages.length ? "已恢复历史会话" : ""
-  );
   const {
     isStreaming,
     setIsStreaming,
@@ -301,9 +234,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const [_sidebarOpenLegacy] = useState<boolean>(false);
   const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
   const [subAgentStatus, setSubAgentStatus] = useState<SubAgentStatusItem[]>([]);
-  const [liveContextTokens, setLiveContextTokens] = useState<number | null>(
-    () => currentConversation?.lastTokenCount ?? null
-  );
   const [inputDialog, setInputDialog] = useState<{
     open: boolean;
     title: string;
@@ -322,9 +252,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const [restoredTeamTrustPromptKey, setRestoredTeamTrustPromptKey] = useState<
     string | null
   >(null);
-  const messagesRef = useRef<ChatMessageRecord[]>(
-    currentConversation?.messages ?? []
-  );
   const lastPromptRef = useRef<string>("");
   const lastContextAttachmentsRef = useRef<ChatContextAttachment[]>([]);
   const {
@@ -343,8 +270,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const [expandedPlanActionId, setExpandedPlanActionId] = useState<string | null>(null);
   const [expandedPlanRequestKey, setExpandedPlanRequestKey] = useState(0);
 
-  const activeConversationIdRef = useRef<string | null>(activeConversationId);
-  const skipNextTimestampRef = useRef(true);
   const runningShellJobsRef = useRef(new Map<string, RunningShellJobMeta>());
   const shellOutputBuffersRef = useRef(new Map<string, ShellOutputBuffer>());
   const workingMemoryBySessionRef = useRef(
@@ -474,6 +399,60 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     handleSuggestionClickThreadRef.current(text);
   }, []);
 
+  const clearMentionUi = useCallback((): void => {
+    setActiveMention(null);
+    setMentionSuggestions([]);
+    setMentionSelectionIndex(0);
+  }, [setActiveMention, setMentionSuggestions, setMentionSelectionIndex]);
+
+  const conversationDebugEntriesRef = useRef(
+    new Map<string, ConversationDebugEntry[]>(),
+  );
+
+  const {
+    conversations,
+    activeConversationId,
+    currentConversation,
+    messages,
+    liveContextTokens,
+    sessionNote,
+    messagesRef,
+    activeConversationIdRef,
+    skipNextTimestampRef,
+    setConversations,
+    setCurrentConversation,
+    setMessages,
+    setLiveContextTokens,
+    setSessionNote,
+    handleClearHistory,
+    handleNewConversation,
+    handleSelectConversation,
+    handleDeleteConversation,
+    handleRenameConversation,
+  } = useConversationLifecycle({
+    wsPath,
+    settings,
+    activeAgent,
+    session,
+    isStreaming,
+    executingActionId,
+    liveToolCalls,
+    categorizedError,
+    subAgentStatus,
+    abortControllerRef,
+    abortControllersRef,
+    backgroundStreamsRef,
+    conversationDebugEntriesRef,
+    setPrompt,
+    setComposerAttachments,
+    clearMentionUi,
+    requestThreadScrollToBottom,
+    setIsStreaming,
+    setLiveToolCalls,
+    setCategorizedError,
+    setSubAgentStatus,
+  });
+
   const appendAssistantStatusMessage = (content: string): void => {
     const normalized = content.trim();
     if (!normalized) {
@@ -505,10 +484,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     });
   };
 
-  useEffect(() => {
-    activeConversationIdRef.current = activeConversationId;
-  }, [activeConversationId]);
-
   const resolveScopedSessionId = useCallback(
     (
       conversation?: Conversation | null,
@@ -525,13 +500,13 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     failedLlmRequestLog,
     setFailedLlmRequestLog,
     isExportingDebugBundle,
-    conversationDebugEntriesRef,
     appendConversationDebugEntry,
     handleCopyFailedRequestLog,
     handleDownloadConversationDebugBundle,
   } = useConversationDebugLog({
     setSessionNote,
     activeConversationIdRef,
+    conversationDebugEntriesRef,
     getDownloadSnapshot: () => ({
       settings,
       currentConversation,
@@ -561,24 +536,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const syncAskUserRequestForSession = useCallback((sessionId: string): void => {
     setAskUserRequest(getPendingRequest(sessionId));
   }, []);
-
-  const applyChatViewState = (viewState: ChatViewState): void => {
-    requestThreadScrollToBottom();
-    setMessages(viewState.messages);
-    messagesRef.current = viewState.messages;
-    setLiveContextTokens(viewState.liveContextTokens);
-    setIsStreaming(viewState.isStreaming);
-    setSessionNote(viewState.sessionNote);
-    setLiveToolCalls(viewState.liveToolCalls);
-    setCategorizedError(viewState.categorizedError);
-    setSubAgentStatus(viewState.subAgentStatus);
-  };
-
-  const clearMentionUi = (): void => {
-    setActiveMention(null);
-    setMentionSuggestions([]);
-    setMentionSelectionIndex(0);
-  };
 
   const syncActiveMention = (nextText: string, caretIndex?: number): void => {
     const resolvedCaret =
@@ -633,210 +590,11 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     };
   };
 
-  const activateConversation = (
-    conversation: Conversation | null,
-    options: {
-      persistActiveId?: boolean;
-      backgroundStream?: BackgroundStreamState;
-      idleSessionNote?: string;
-    } = {},
-  ): void => {
-    activeConversationIdRef.current = conversation?.id ?? null;
-    setCurrentConversation(conversation);
-    setActiveConversationIdState(conversation?.id ?? null);
-    if (conversation && options.persistActiveId) {
-      setActiveConversationId(wsPath, conversation.id);
-    }
-    applyChatViewState(
-      conversation
-        ? createConversationViewState({
-          conversation,
-          backgroundStream: options.backgroundStream,
-          idleSessionNote: options.idleSessionNote,
-        })
-        : createEmptyChatViewState(options.idleSessionNote),
-    );
-  };
-
-  const takeBackgroundStream = (
-    conversationId: string,
-  ): BackgroundStreamState | undefined => {
-    const backgroundStream = backgroundStreamsRef.current.get(conversationId);
-    if (backgroundStream) {
-      backgroundStreamsRef.current.delete(conversationId);
-    }
-    return backgroundStream;
-  };
-
-  // Recover from invalid/missing active conversation on startup.
-  // Without this, the first submit may clear input but not send.
-  useEffect(() => {
-    if (currentConversation || conversations.length === 0) {
-      return;
-    }
-
-    const preferredId = resolvePreferredConversationId(
-      conversations,
-      activeConversationId,
-    );
-    if (!preferredId) {
-      return;
-    }
-    const recoveredConversation = loadConversation(wsPath, preferredId);
-    if (!recoveredConversation) {
-      return;
-    }
-
-    skipNextTimestampRef.current = true;
-    activateConversation(recoveredConversation, {
-      persistActiveId: true,
-      idleSessionNote: recoveredConversation.messages.length ? "已恢复历史会话" : "",
-    });
-  }, [wsPath, conversations, activeConversationId, currentConversation]);
-
   const handleCancel = (): void => {
     if (activeConversationId) {
       abortControllersRef.current.get(activeConversationId)?.abort();
     }
   };
-
-  // Save conversation when messages change
-  useEffect(() => {
-    messagesRef.current = messages;
-    if (currentConversation) {
-      const skipTimestamp = skipNextTimestampRef.current;
-      skipNextTimestampRef.current = false;
-
-      let title = currentConversation.title;
-      if (title === "新对话" && messages.length > 0) {
-        const generated = generateConversationTitle(messages);
-        if (generated !== "新对话") title = generated;
-      }
-
-      const updatedConversation: Conversation = {
-        ...currentConversation,
-        title,
-        messages,
-        lastTokenCount: liveContextTokens,
-        updatedAt: skipTimestamp
-          ? currentConversation.updatedAt
-          : new Date().toISOString(),
-      };
-      saveConversation(wsPath, updatedConversation);
-      setCurrentConversation(updatedConversation);
-      setConversations(loadConversationList(wsPath));
-    }
-  }, [messages, currentConversation?.id]);
-
-  // Sync agentBinding when the user switches the global model via TitleBar
-  useEffect(() => {
-    if (!currentConversation?.agentBinding) return;
-    const { vendorId, modelId } = currentConversation.agentBinding;
-    if (vendorId === settings.activeVendorId && modelId === settings.activeModelId) return;
-
-    const resolved = resolveManagedModelSelection(settings, {
-      vendorId: settings.activeVendorId,
-      modelId: settings.activeModelId,
-    });
-    if (!resolved) return;
-
-    const updatedBinding = {
-      ...currentConversation.agentBinding,
-      vendorId: resolved.vendor.id,
-      modelId: resolved.managedModel.id,
-      vendorNameSnapshot: resolved.vendor.name,
-      modelNameSnapshot: resolved.managedModel.name,
-    };
-    const updatedConversation: Conversation = {
-      ...currentConversation,
-      agentBinding: updatedBinding,
-    };
-    setCurrentConversation(updatedConversation);
-    saveConversation(wsPath, updatedConversation);
-  }, [settings.activeModelId, settings.activeVendorId]);
-
-  useEffect(() => {
-    const updatedConversation = buildDraftConversationBindingUpdate({
-      conversation: currentConversation,
-      messageCount: messages.length,
-      nextBinding: createConversationAgentBinding(settings, activeAgent),
-    });
-    if (!updatedConversation) {
-      return;
-    }
-    setCurrentConversation(updatedConversation);
-    saveConversation(wsPath, updatedConversation);
-    setConversations(loadConversationList(wsPath));
-  }, [activeAgent, currentConversation, messages.length, settings, wsPath]);
-
-  // React to workspace path changes: migrate, reload conversations
-  const prevWsPathRef = useRef(wsPath);
-  useEffect(() => {
-    const leavingWorkspacePath = prevWsPathRef.current;
-    if (leavingWorkspacePath === wsPath) return;
-    prevWsPathRef.current = wsPath;
-
-    // Capture before activateConversation() overwrites activeConversationIdRef (scoped HITL cleanup).
-    const leavingConversationId = activeConversationIdRef.current;
-    const leavingConv =
-      leavingWorkspacePath && leavingConversationId
-        ? loadConversation(leavingWorkspacePath, leavingConversationId)
-        : null;
-
-    // Abort all in-flight streams (foreground + background)
-    for (const ctrl of abortControllersRef.current.values()) {
-      ctrl.abort();
-    }
-    abortControllersRef.current.clear();
-    backgroundStreamsRef.current.clear();
-    abortControllerRef.current?.abort();
-
-    // Migrate global data if needed
-    migrateGlobalToWorkspace(wsPath);
-
-    // Load workspace-scoped conversations
-    const list = loadConversationList(wsPath);
-    setConversations(list);
-
-    skipNextTimestampRef.current = true;
-    const activeId = getActiveConversationId(wsPath);
-    const activeConversation = activeId ? loadConversation(wsPath, activeId) : null;
-
-    if (activeConversation) {
-      activateConversation(activeConversation, {
-        idleSessionNote: activeConversation.messages.length ? "已切换工作区" : "",
-      });
-    } else {
-      const firstConversation =
-        list.length > 0 ? loadConversation(wsPath, list[0].id) : null;
-
-      if (firstConversation) {
-        activateConversation(firstConversation, {
-          persistActiveId: true,
-          idleSessionNote: "已切换工作区",
-        });
-      } else if (wsPath) {
-        const newConversation = createConversation(wsPath, []);
-        setConversations(loadConversationList(wsPath));
-        activateConversation(newConversation);
-      } else {
-        activateConversation(null);
-      }
-    }
-
-    resetChatSessionState(
-      leavingConversationId && leavingConv
-        ? {
-            conversationId: leavingConversationId,
-            agentId: leavingConv.agentBinding?.agentId ?? undefined,
-          }
-        : undefined,
-    );
-    session.resetSession();
-    setPrompt("");
-    setComposerAttachments([]);
-    clearMentionUi();
-  }, [wsPath]);
 
   const visibleMessages = messages.filter((message) => message.role !== "tool");
   const lastVisibleMessage = visibleMessages[visibleMessages.length - 1];
@@ -2854,189 +2612,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
         }, 100);
       },
     });
-  };
-
-  const handleClearHistory = (): void => {
-    if (isStreaming || Boolean(executingActionId)) return;
-    if (!currentConversation) return;
-
-    resetChatSessionState({
-      conversationId: currentConversation.id,
-      agentId: currentConversation.agentBinding?.agentId ?? undefined,
-    });
-    session.resetSession();
-    conversationDebugEntriesRef.current.delete(
-      resolveConversationDebugKey(currentConversation.id),
-    );
-
-    const clearedConversation = createClearedConversation(currentConversation);
-    saveConversation(wsPath, clearedConversation);
-    setCurrentConversation(clearedConversation);
-    applyChatViewState(createEmptyChatViewState());
-    setConversations(loadConversationList(wsPath));
-    setComposerAttachments([]);
-    clearMentionUi();
-  };
-
-  const snapshotToBackground = () => {
-    if (!activeConversationId) {
-      return;
-    }
-
-    const backgroundStream = createBackgroundStreamState({
-      isStreaming,
-      messages: messagesRef.current,
-      liveContextTokens,
-      sessionNote,
-      liveToolCalls,
-      categorizedError,
-      subAgentStatus,
-    });
-    if (backgroundStream) {
-      backgroundStreamsRef.current.set(activeConversationId, backgroundStream);
-    }
-  };
-
-  // Conversation management handlers
-  const handleNewConversation = (): void => {
-    if (Boolean(executingActionId)) return;
-
-    snapshotToBackground();
-
-    const previousConversationId = activeConversationIdRef.current;
-    const previousConv =
-      previousConversationId && wsPath
-        ? loadConversation(wsPath, previousConversationId)
-        : null;
-
-    const newConv = createConversation(
-      wsPath,
-      [],
-      createConversationAgentBinding(settings, activeAgent),
-    );
-    skipNextTimestampRef.current = true;
-    activateConversation(newConv);
-    setConversations(loadConversationList(wsPath));
-    setPrompt("");
-    setComposerAttachments([]);
-    clearMentionUi();
-
-    resetChatSessionState(
-      previousConversationId && previousConv
-        ? {
-            conversationId: previousConversationId,
-            agentId: previousConv.agentBinding?.agentId ?? undefined,
-          }
-        : undefined,
-    );
-    session.resetSession();
-  };
-
-  const handleSelectConversation = (conversationId: string): void => {
-    if (Boolean(executingActionId)) return;
-    if (conversationId === activeConversationId) return;
-
-    snapshotToBackground();
-
-    const previousConversationId = activeConversationIdRef.current;
-    const previousConv =
-      previousConversationId && wsPath
-        ? loadConversation(wsPath, previousConversationId)
-        : null;
-
-    const conv = loadConversation(wsPath, conversationId);
-    if (!conv) return;
-
-    skipNextTimestampRef.current = true;
-    activateConversation(conv, {
-      persistActiveId: true,
-      backgroundStream: takeBackgroundStream(conv.id),
-      idleSessionNote: conv.messages.length ? "已切换对话" : "",
-    });
-    setPrompt("");
-    setComposerAttachments([]);
-    clearMentionUi();
-
-    resetChatSessionState(
-      previousConversationId && previousConv
-        ? {
-            conversationId: previousConversationId,
-            agentId: previousConv.agentBinding?.agentId ?? undefined,
-          }
-        : undefined,
-    );
-    session.resetSession();
-  };
-
-  const handleDeleteConversation = (conversationId: string): void => {
-    const isConvStreaming =
-      (conversationId === activeConversationId && isStreaming) ||
-      backgroundStreamsRef.current.get(conversationId)?.isStreaming;
-    if (isConvStreaming || Boolean(executingActionId)) return;
-
-    abortControllersRef.current.get(conversationId)?.abort();
-    abortControllersRef.current.delete(conversationId);
-    backgroundStreamsRef.current.delete(conversationId);
-    conversationDebugEntriesRef.current.delete(
-      resolveConversationDebugKey(conversationId),
-    );
-
-    const wasActiveConversation = conversationId === activeConversationId;
-
-    const deletedConvSnapshot =
-      wsPath && conversationId
-        ? loadConversation(wsPath, conversationId)
-        : null;
-
-    deleteConversation(wsPath, conversationId);
-    const updatedList = loadConversationList(wsPath);
-    setConversations(updatedList);
-
-    if (wasActiveConversation) {
-      if (updatedList.length > 0) {
-        const deletedConversationId = conversationId;
-        const deletedConv = deletedConvSnapshot;
-        const nextConversation = loadConversation(wsPath, updatedList[0].id);
-        if (nextConversation) {
-          activateConversation(nextConversation, {
-            persistActiveId: true,
-            backgroundStream: takeBackgroundStream(nextConversation.id),
-            idleSessionNote: nextConversation.messages.length ? "已切换对话" : "",
-          });
-          setPrompt("");
-          setComposerAttachments([]);
-          clearMentionUi();
-
-          resetChatSessionState(
-            deletedConv
-              ? {
-                  conversationId: deletedConversationId,
-                  agentId: deletedConv.agentBinding?.agentId ?? undefined,
-                }
-              : undefined,
-          );
-          session.resetSession();
-        }
-      } else {
-        handleNewConversation();
-      }
-    }
-  };
-
-  const handleRenameConversation = (
-    conversationId: string,
-    newTitle: string
-  ): void => {
-    updateConversationTitle(wsPath, conversationId, newTitle);
-    setConversations(loadConversationList(wsPath));
-
-    // Update current conversation if it's the one being renamed
-    if (conversationId === activeConversationId && currentConversation) {
-      setCurrentConversation({
-        ...currentConversation,
-        title: newTitle,
-      });
-    }
   };
 
   const handleSuggestionClick = (text: string) => {

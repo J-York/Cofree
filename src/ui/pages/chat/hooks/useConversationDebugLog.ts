@@ -1,4 +1,4 @@
-import { type MutableRefObject, useCallback, useRef, useState } from "react";
+import { type MutableRefObject, useCallback, useState } from "react";
 import type { ChatAgentDefinition } from "../../../../agents/types";
 import { copyTextToClipboard } from "../../../../lib/clipboard";
 import type { ChatMessageRecord } from "../../../../lib/chatHistoryStore";
@@ -42,6 +42,7 @@ export interface ConversationDebugDownloadSnapshot {
 interface UseConversationDebugLogOptions {
   setSessionNote: (note: string) => void;
   activeConversationIdRef: MutableRefObject<string | null>;
+  conversationDebugEntriesRef: MutableRefObject<Map<string, ConversationDebugEntry[]>>;
   getDownloadSnapshot: () => ConversationDebugDownloadSnapshot;
 }
 
@@ -54,15 +55,17 @@ interface UseConversationDebugLogOptions {
  * threading 14 individual params, the caller supplies a lazy getter.
  */
 export function useConversationDebugLog(options: UseConversationDebugLogOptions) {
-  const { setSessionNote, activeConversationIdRef, getDownloadSnapshot } = options;
+  const {
+    setSessionNote,
+    activeConversationIdRef,
+    conversationDebugEntriesRef,
+    getDownloadSnapshot,
+  } = options;
 
   const [failedLlmRequestLog, setFailedLlmRequestLog] = useState<string | null>(
     null,
   );
   const [isExportingDebugBundle, setIsExportingDebugBundle] = useState(false);
-  const conversationDebugEntriesRef = useRef(
-    new Map<string, ConversationDebugEntry[]>(),
-  );
 
   const appendConversationDebugEntry = useCallback(
     (
@@ -78,7 +81,7 @@ export function useConversationDebugLog(options: UseConversationDebugLogOptions)
         [...existing, entry].slice(-DEBUG_EXPORT_HISTORY_LIMIT),
       );
     },
-    [activeConversationIdRef],
+    [activeConversationIdRef, conversationDebugEntriesRef],
   );
 
   const handleCopyFailedRequestLog = useCallback(async (): Promise<void> => {
@@ -192,7 +195,6 @@ export function useConversationDebugLog(options: UseConversationDebugLogOptions)
     failedLlmRequestLog,
     setFailedLlmRequestLog,
     isExportingDebugBundle,
-    conversationDebugEntriesRef,
     appendConversationDebugEntry,
     handleCopyFailedRequestLog,
     handleDownloadConversationDebugBundle,
