@@ -188,7 +188,6 @@ import type {
   WorkspaceTeamTrustPromptState,
 } from "./chat/types";
 import {
-  CHAT_AUTO_SCROLL_THRESHOLD_PX,
   CHECKPOINT_RESTORE_SESSION_NOTE,
   DEBUG_EXPORT_HISTORY_LIMIT,
   TEAM_YOLO_APPROVAL_CONTEXT,
@@ -209,6 +208,7 @@ import { useChatStreaming } from "./chat/hooks/useChatStreaming";
 import { useApprovalQueue } from "./chat/hooks/useApprovalQueue";
 import { useSkillDiscovery } from "./chat/hooks/useSkillDiscovery";
 import { useMentionSuggestions } from "./chat/hooks/useMentionSuggestions";
+import { useThreadAutoScroll } from "./chat/hooks/useThreadAutoScroll";
 import { ChatComposer } from "./chat/composer/ChatComposer";
 import {
   buildConversationDebugExport,
@@ -338,10 +338,17 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   );
   const lastPromptRef = useRef<string>("");
   const lastContextAttachmentsRef = useRef<ChatContextAttachment[]>([]);
-  const threadRef = useRef<HTMLDivElement | null>(null);
-  const contextAnchorRef = useRef<HTMLDivElement | null>(null);
-  const shouldStickThreadToBottomRef = useRef(true);
-  const forceThreadScrollRef = useRef(true);
+  const {
+    threadRef,
+    contextAnchorRef,
+    shouldStickThreadToBottomRef,
+    forceThreadScrollRef,
+    isThreadNearBottom: _isThreadNearBottom,
+    syncThreadAutoScrollState: _syncThreadAutoScrollState,
+    scrollThreadToBottom,
+    requestThreadScrollToBottom,
+    handleThreadScroll,
+  } = useThreadAutoScroll();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [expandedPlanMessageId, setExpandedPlanMessageId] = useState<string | null>(null);
   const [expandedPlanActionId, setExpandedPlanActionId] = useState<string | null>(null);
@@ -405,39 +412,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     () => {},
   );
   const handleSuggestionClickThreadRef = useRef<(text: string) => void>(() => {});
-
-  const isThreadNearBottom = useCallback((thread: HTMLDivElement): boolean => {
-    const distanceFromBottom =
-      thread.scrollHeight - thread.scrollTop - thread.clientHeight;
-    return distanceFromBottom <= CHAT_AUTO_SCROLL_THRESHOLD_PX;
-  }, []);
-
-  const syncThreadAutoScrollState = useCallback((): void => {
-    const thread = threadRef.current;
-    if (!thread) {
-      return;
-    }
-    shouldStickThreadToBottomRef.current = isThreadNearBottom(thread);
-  }, [isThreadNearBottom]);
-
-  const scrollThreadToBottom = useCallback((): void => {
-    const thread = threadRef.current;
-    if (!thread) {
-      return;
-    }
-    thread.scrollTop = thread.scrollHeight;
-    shouldStickThreadToBottomRef.current = true;
-    forceThreadScrollRef.current = false;
-  }, []);
-
-  const requestThreadScrollToBottom = useCallback((): void => {
-    shouldStickThreadToBottomRef.current = true;
-    forceThreadScrollRef.current = true;
-  }, []);
-
-  const handleThreadScroll = useCallback((): void => {
-    syncThreadAutoScrollState();
-  }, [syncThreadAutoScrollState]);
 
   const activeManagedModel = getActiveManagedModel(settings);
   const activeModelLabel = activeManagedModel?.name || settings.model;
