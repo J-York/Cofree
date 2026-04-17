@@ -28,7 +28,6 @@ import {
   type Conversation,
 } from "../../lib/conversationStore";
 import { migrateGlobalToWorkspace } from "../../lib/conversationMaintenance";
-import { loadCofreeRc } from "../../lib/cofreerc";
 import {
   addWorkspaceApprovalRule,
   type ApprovalRuleOption,
@@ -56,9 +55,7 @@ import type { AppSettings } from "../../lib/settingsStore";
 import {
   cancelShellCommand,
   fetchUrl,
-  gitStatusWorkspace,
   globWorkspaceFiles,
-  listWorkspaceFiles,
   saveFileDialog,
   startShellCommand,
 } from "../../lib/tauriBridge";
@@ -177,10 +174,8 @@ import {
   applyMentionSuggestion,
   buildDefaultMentionSuggestions,
   buildFolderSuggestionsFromFiles,
-  buildGitModifiedSuggestions,
   buildMentionSearchPattern,
   buildRecentAttachmentSuggestions,
-  buildRootDirectorySuggestions,
   buildSkillMentionSuggestions,
   buildSubmittedPrompt,
   createAttachmentFromSuggestion,
@@ -191,14 +186,13 @@ import {
   type MentionSuggestion,
 } from "./chat/mentions";
 import {
-  discoverGlobalSkills,
-  discoverWorkspaceSkills,
-  mergeDiscoveredSkills,
   type SkillEntry,
 } from "../../lib/skillStore";
 import type { BackgroundStreamState, LiveToolCall, SubAgentStatusItem } from "./chat/types";
 import { useChatStreaming } from "./chat/hooks/useChatStreaming";
 import { useApprovalQueue } from "./chat/hooks/useApprovalQueue";
+import { useSkillDiscovery } from "./chat/hooks/useSkillDiscovery";
+import { useMentionSuggestions } from "./chat/hooks/useMentionSuggestions";
 import {
   buildConversationDebugExport,
   buildConversationDebugExportFileName,
@@ -779,13 +773,18 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
 
   const [prompt, setPrompt] = useState("");
   const [composerAttachments, setComposerAttachments] = useState<ChatContextAttachment[]>([]);
-  const [activeMention, setActiveMention] = useState<ActiveMention | null>(null);
-  const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
-  const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0);
-  const [mentionIgnorePatterns, setMentionIgnorePatterns] = useState<string[]>([]);
-  const [rootDirectorySuggestions, setRootDirectorySuggestions] = useState<MentionSuggestion[]>([]);
-  const [gitMentionSuggestions, setGitMentionSuggestions] = useState<MentionSuggestion[]>([]);
-  const [availableSkills, setAvailableSkills] = useState<SkillEntry[]>([]);
+  const {
+    activeMention,
+    setActiveMention,
+    mentionSuggestions,
+    setMentionSuggestions,
+    mentionSelectionIndex,
+    setMentionSelectionIndex,
+    mentionIgnorePatterns,
+    rootDirectorySuggestions,
+    gitMentionSuggestions,
+  } = useMentionSuggestions(wsPath);
+  const availableSkills = useSkillDiscovery(wsPath, settings.skills);
   const [selectedSkills, setSelectedSkills] = useState<SkillEntry[]>([]);
   const [messages, setMessages] = useState<ChatMessageRecord[]>(
     currentConversation?.messages ?? []
@@ -1451,80 +1450,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     setComposerAttachments([]);
     clearMentionUi();
   }, [wsPath]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    if (!wsPath) {
-      setMentionIgnorePatterns([]);
-      setRootDirectorySuggestions([]);
-      setGitMentionSuggestions([]);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    void loadCofreeRc(wsPath)
-      .then(async (config) => {
-        const ignorePatterns = config.ignorePatterns ?? [];
-        const [rootEntries, gitStatus] = await Promise.all([
-          listWorkspaceFiles({
-            workspacePath: wsPath,
-            relativePath: "",
-            ignorePatterns,
-          }).catch(() => []),
-          gitStatusWorkspace(wsPath).catch(() => ({
-            modified: [],
-            added: [],
-            deleted: [],
-            untracked: [],
-          })),
-        ]);
-        if (!cancelled) {
-          setMentionIgnorePatterns(ignorePatterns);
-          setRootDirectorySuggestions(buildRootDirectorySuggestions(rootEntries));
-          setGitMentionSuggestions(
-            buildGitModifiedSuggestions([
-              ...gitStatus.modified,
-              ...gitStatus.added,
-              ...gitStatus.untracked,
-            ]),
-          );
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setMentionIgnorePatterns([]);
-          setRootDirectorySuggestions([]);
-          setGitMentionSuggestions([]);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [wsPath]);
-
-  // Discover available skills for @-mention suggestions
-  useEffect(() => {
-    let cancelled = false;
-    const loadSkills = async () => {
-      try {
-        const [globalSkills, workspaceSkills] = await Promise.all([
-          discoverGlobalSkills(),
-          wsPath ? discoverWorkspaceSkills(wsPath) : Promise.resolve([]),
-        ]);
-        if (cancelled) return;
-        const allDiscovered = [...globalSkills, ...workspaceSkills];
-        const merged = mergeDiscoveredSkills(settings.skills ?? [], allDiscovered);
-        setAvailableSkills(merged.filter((s) => s.enabled));
-      } catch {
-        // Skill discovery failure is non-blocking
-      }
-    };
-    void loadSkills();
-    return () => { cancelled = true; };
-  }, [wsPath, settings.skills]);
 
   const visibleMessages = messages.filter((message) => message.role !== "tool");
   const lastVisibleMessage = visibleMessages[visibleMessages.length - 1];
