@@ -83,7 +83,7 @@ src/ui/pages/chat/
 7. 🟡 **B1.7** `ChatPage.tsx` 收尾 → 组装器形态（目标 ≤ 800 行，分 6 小步 B1.7.1-B1.7.6）
    - ✅ B1.7.1 顶部 helpers/types/constants 外移
    - ✅ B1.7.2 抽 `useThreadAutoScroll`
-   - ⏳ B1.7.3 抽 `useConversationDebugLog`
+   - ✅ B1.7.3 抽 `useConversationDebugLog`
    - ⏳ B1.7.4 抽 `useConversationLifecycle`
    - ⏳ B1.7.5 抽 `useShellJobs`
    - ⏳ B1.7.6 抽 `useApprovalActions` + `useChatExecution` + `useWorkspaceTeamTrust` + `useConversationTopbar`
@@ -114,3 +114,4 @@ src/ui/pages/chat/
 - 2026-04-17 [B1.6] `ChatComposerSection` → `ChatComposer`：抽成 `src/ui/pages/chat/composer/ChatComposer.tsx`（264 行），从 ChatPage 中删除 257 行内联定义并清理 5 个不再使用的 import。ChatPage.tsx 4171 → 3908 行；tsc clean，432/432 tests green
 - 2026-04-17 [B1.7.1] 抽出顶部纯函数、类型、常量：新建 `chat/constants.ts`、`chat/chatPageHelpers.ts`，并把 3 个 shell/team-trust 类型合入 `chat/types.ts`。ChatPage.tsx 3908 → 3675 行（-233）；tsc clean，432/432 tests green。B1.7 拆为 6 小步，目标放宽到 ≤ 800 行；本地计划文件：`~/.claude/plans/ancient-crunching-tulip.md`
 - 2026-04-17 [B1.7.2] 抽出 `useThreadAutoScroll`：4 个 scroll ref + 5 个 callback 搬进 hook。ChatPage.tsx 3675 → 3649 行（-26）；tsc clean，432/432 tests green
+- 2026-04-17 [B1.7.3] 抽出 `useConversationDebugLog`：2 state（`failedLlmRequestLog` / `isExportingDebugBundle`）+ `conversationDebugEntriesRef` + 3 handlers（`appendConversationDebugEntry` / `handleCopyFailedRequestLog` / `handleDownloadConversationDebugBundle`）搬进 hook。下载处理函数需 14 个字段的上下文，采用 `getDownloadSnapshot` 闭包懒求值模式。ChatPage.tsx 3649 → 3558 行（-91）；tsc clean，432/432 tests green

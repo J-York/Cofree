@@ -40,7 +40,6 @@ import {
   dedupeContextAttachments,
   type ChatContextAttachment,
 } from "../../lib/contextAttachments";
-import { copyTextToClipboard } from "../../lib/clipboard";
 import {
   buildCheckpointRestoreRecord,
   buildCheckpointRestoreScopeKey,
@@ -54,7 +53,6 @@ import {
   cancelShellCommand,
   fetchUrl,
   globWorkspaceFiles,
-  saveFileDialog,
   startShellCommand,
 } from "../../lib/tauriBridge";
 import type { ShellCommandEvent } from "../../lib/tauriTypes";
@@ -80,10 +78,6 @@ import {
   collectPendingOrchestrationActionIds,
   resolveWorkspaceTeamTrustMessageAction,
 } from "./chat/teamTrust";
-import {
-  readLLMAuditRecords,
-  readSensitiveActionAuditRecords,
-} from "../../lib/auditLog";
 import {
   approveAction,
   approveAllPendingActions,
@@ -189,7 +183,6 @@ import type {
 } from "./chat/types";
 import {
   CHECKPOINT_RESTORE_SESSION_NOTE,
-  DEBUG_EXPORT_HISTORY_LIMIT,
   TEAM_YOLO_APPROVAL_CONTEXT,
 } from "./chat/constants";
 import {
@@ -209,12 +202,10 @@ import { useApprovalQueue } from "./chat/hooks/useApprovalQueue";
 import { useSkillDiscovery } from "./chat/hooks/useSkillDiscovery";
 import { useMentionSuggestions } from "./chat/hooks/useMentionSuggestions";
 import { useThreadAutoScroll } from "./chat/hooks/useThreadAutoScroll";
+import { useConversationDebugLog } from "./chat/hooks/useConversationDebugLog";
 import { ChatComposer } from "./chat/composer/ChatComposer";
 import {
-  buildConversationDebugExport,
-  buildConversationDebugExportFileName,
   resolveConversationDebugKey,
-  type ConversationDebugEntry,
 } from "./chat/debugExport";
 import {
   DEFAULT_BACKGROUND_READY_TIMEOUT_MS,
@@ -295,8 +286,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   );
   const [categorizedError, setCategorizedError] =
     useState<CategorizedError | null>(null);
-  const [failedLlmRequestLog, setFailedLlmRequestLog] = useState<string | null>(null);
-  const [isExportingDebugBundle, setIsExportingDebugBundle] = useState(false);
   const [sessionNote, setSessionNote] = useState<string>(
     currentConversation?.messages.length ? "已恢复历史会话" : ""
   );
@@ -376,7 +365,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const startShellJobForActionRef = useRef<typeof startShellJobForAction>(null!);
   const completeBackgroundShellStartupRef = useRef<(jobId: string) => Promise<void>>(null!);
   const monitorBackgroundShellJobRef = useRef<(jobId: string) => Promise<void>>(null!);
-  const conversationDebugEntriesRef = useRef(new Map<string, ConversationDebugEntry[]>());
   const handleApproveActionThreadRef = useRef<
     (
       messageId: string,
@@ -486,115 +474,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     handleSuggestionClickThreadRef.current(text);
   }, []);
 
-  const handleCopyFailedRequestLog = async (): Promise<void> => {
-    if (!failedLlmRequestLog) {
-      return;
-    }
-    try {
-      await copyTextToClipboard(failedLlmRequestLog);
-      setSessionNote("已复制本次请求日志到剪贴板");
-    } catch (error) {
-      setSessionNote(
-        `复制日志失败：${error instanceof Error ? error.message : "未知错误"}`
-      );
-    }
-  };
-
-  const handleDownloadConversationDebugBundle = async (): Promise<void> => {
-    if (!settings.debugMode || isExportingDebugBundle) {
-      return;
-    }
-
-    const conversationId = currentConversation?.id ?? activeConversationId;
-    if (!conversationId && messagesRef.current.length === 0) {
-      setSessionNote("当前没有可导出的对话日志");
-      return;
-    }
-
-    setIsExportingDebugBundle(true);
-    setSessionNote("正在导出调试日志…");
-    const exportedAt = new Date().toISOString();
-    const chatSessionId = resolveScopedSessionId(currentConversation);
-    const conversationSnapshot = currentConversation
-      ? {
-        ...currentConversation,
-        messages: messagesRef.current,
-        updatedAt: exportedAt,
-        lastTokenCount: liveContextTokens ?? currentConversation.lastTokenCount ?? null,
-      }
-      : null;
-
-    let checkpointRecovery = null;
-    let checkpointError: string | null = null;
-    try {
-      checkpointRecovery = await loadLatestWorkflowCheckpoint(chatSessionId);
-    } catch (error) {
-      checkpointError = error instanceof Error ? error.message : "未知错误";
-    }
-
-    try {
-      const bundle = buildConversationDebugExport({
-        exportedAt,
-        chatSessionId,
-        activeConversationId,
-        conversation: conversationSnapshot,
-        messages: messagesRef.current,
-        activeAgent,
-        activeModelLabel,
-        settings,
-        sessionState,
-        categorizedError,
-        failedLlmRequestLog,
-        sessionNote,
-        isStreaming,
-        executingActionId,
-        liveContextTokens,
-        liveToolCalls,
-        subAgentStatus,
-        debugEntries:
-          conversationDebugEntriesRef.current.get(
-            resolveConversationDebugKey(conversationSnapshot?.id ?? activeConversationId),
-          ) ?? [],
-        llmAuditRecords: readLLMAuditRecords(),
-        actionAuditRecords: readSensitiveActionAuditRecords(),
-        checkpointRecovery,
-        checkpointError,
-      });
-      const path = await saveFileDialog(
-        buildConversationDebugExportFileName({
-          conversation: conversationSnapshot,
-          activeConversationId,
-          exportedAt,
-        }),
-        JSON.stringify(bundle, null, 2),
-      );
-      setSessionNote(`已导出调试日志：${path}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "未知错误";
-      if (message.includes("用户取消了保存")) {
-        setSessionNote("已取消导出调试日志");
-      } else {
-        setSessionNote(`导出调试日志失败：${message}`);
-      }
-    } finally {
-      setIsExportingDebugBundle(false);
-    }
-  };
-
-  const appendConversationDebugEntry = (
-    conversationId: string | null | undefined,
-    entry: ConversationDebugEntry,
-  ): void => {
-    const key = resolveConversationDebugKey(
-      conversationId ?? activeConversationIdRef.current,
-    );
-    const existing = conversationDebugEntriesRef.current.get(key) ?? [];
-    conversationDebugEntriesRef.current.set(
-      key,
-      [...existing, entry].slice(-DEBUG_EXPORT_HISTORY_LIMIT),
-    );
-  };
-
   const appendAssistantStatusMessage = (content: string): void => {
     const normalized = content.trim();
     if (!normalized) {
@@ -641,6 +520,36 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
       ),
     [activeAgent.id],
   );
+
+  const {
+    failedLlmRequestLog,
+    setFailedLlmRequestLog,
+    isExportingDebugBundle,
+    conversationDebugEntriesRef,
+    appendConversationDebugEntry,
+    handleCopyFailedRequestLog,
+    handleDownloadConversationDebugBundle,
+  } = useConversationDebugLog({
+    setSessionNote,
+    activeConversationIdRef,
+    getDownloadSnapshot: () => ({
+      settings,
+      currentConversation,
+      activeConversationId,
+      messages: messagesRef.current,
+      activeAgent,
+      activeModelLabel,
+      sessionState,
+      categorizedError,
+      sessionNote,
+      isStreaming,
+      executingActionId,
+      liveContextTokens,
+      liveToolCalls,
+      subAgentStatus,
+      chatSessionId: resolveScopedSessionId(currentConversation),
+    }),
+  });
   const checkpointRestoreScope = getCheckpointRestoreScope(
     currentConversation,
     activeAgent.id,
