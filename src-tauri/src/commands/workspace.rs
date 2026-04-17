@@ -1865,6 +1865,151 @@ pub fn get_home_dir() -> Result<String, AppError> {
         .ok_or_else(|| AppError::file("Cannot determine home directory"))
 }
 
+// ---------------------------------------------------------------------------
+// Skill management: install from zip, delete installed skill
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn install_skill_from_zip() -> Result<String, String> {
+    let zip_path = rfd::FileDialog::new()
+        .add_filter("Skill 安装包", &["zip"])
+        .set_title("选择 Skill 安装包")
+        .pick_file()
+        .ok_or_else(|| "用户取消了选择".to_string())?;
+
+    let raw_name = zip_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown-skill");
+
+    // Sanitize skill name
+    let skill_name: String = raw_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if skill_name.is_empty() {
+        return Err("无效的 Skill 名称".to_string());
+    }
+
+    let home_dir = dirs::home_dir().ok_or("无法获取用户主目录")?;
+    let skills_dir = home_dir.join(".cofree").join("skills");
+    let target_dir = skills_dir.join(&skill_name);
+
+    if target_dir.exists() {
+        return Err(format!(
+            "Skill \"{}\" 已存在（{}），请先删除旧版本",
+            skill_name,
+            target_dir.display()
+        ));
+    }
+
+    // Read and open zip
+    let zip_data = fs::read(&zip_path).map_err(|e| format!("读取 zip 文件失败: {}", e))?;
+    let reader = std::io::Cursor::new(zip_data);
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|e| format!("无效的 zip 文件: {}", e))?;
+
+    // Extract to temp directory first
+    let temp_dir = std::env::temp_dir().join(format!("cofree-skill-{}", skill_name));
+    if temp_dir.exists() {
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+    fs::create_dir_all(&temp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
+
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| format!("读取 zip 条目失败: {}", e))?;
+        let outpath = match file.enclosed_name() {
+            Some(path) => temp_dir.join(path),
+            None => continue,
+        };
+
+        if file.is_dir() {
+            fs::create_dir_all(&outpath).ok();
+        } else {
+            if let Some(parent) = outpath.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建目录失败: {}", e))?;
+            }
+            let mut outfile = fs::File::create(&outpath)
+                .map_err(|e| format!("创建文件失败: {}", e))?;
+            std::io::copy(&mut file, &mut outfile)
+                .map_err(|e| format!("写入文件失败: {}", e))?;
+        }
+    }
+
+    // If zip has a single top-level directory, use its contents
+    let entries: Vec<_> = fs::read_dir(&temp_dir)
+        .map_err(|e| format!("读取临时目录失败: {}", e))?
+        .filter_map(|e| e.ok())
+        .collect();
+    let source_dir = if entries.len() == 1 && entries[0].path().is_dir() {
+        entries[0].path()
+    } else {
+        temp_dir.clone()
+    };
+
+    // Verify SKILL.md exists
+    if !source_dir.join("SKILL.md").exists() {
+        let _ = fs::remove_dir_all(&temp_dir);
+        return Err(
+            "安装包中未找到 SKILL.md 文件。请确保 zip 包含 SKILL.md 或包含一个带有 SKILL.md 的文件夹。"
+                .to_string(),
+        );
+    }
+
+    // Move to final location
+    fs::create_dir_all(&skills_dir).ok();
+    fs::rename(&source_dir, &target_dir).map_err(|e| {
+        let _ = fs::remove_dir_all(&temp_dir);
+        format!("移动 Skill 到安装目录失败: {}", e)
+    })?;
+
+    // Cleanup temp dir
+    if source_dir != temp_dir {
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    Ok(skill_name)
+}
+
+#[tauri::command]
+pub fn delete_skill_directory(file_path: String) -> Result<(), String> {
+    let path = Path::new(&file_path);
+    if !path.is_absolute() {
+        return Err("路径必须为绝对路径".to_string());
+    }
+
+    // Resolve to skill directory (parent of SKILL.md)
+    let skill_dir = if path.is_file()
+        && path
+            .file_name()
+            .is_some_and(|n| n == "SKILL.md")
+    {
+        path.parent().unwrap_or(path).to_path_buf()
+    } else {
+        path.to_path_buf()
+    };
+
+    // Security: only allow deleting from ~/.cofree/skills/
+    if let Some(home) = dirs::home_dir() {
+        let canonical = skill_dir
+            .canonicalize()
+            .map_err(|e| format!("无法解析路径: {}", e))?;
+        let global_skills = home.join(".cofree").join("skills");
+        if let Ok(canonical_global) = global_skills.canonicalize() {
+            if canonical.starts_with(&canonical_global) && canonical != canonical_global {
+                fs::remove_dir_all(&canonical)
+                    .map_err(|e| format!("删除 Skill 目录失败: {}", e))?;
+                return Ok(());
+            }
+        }
+    }
+
+    Err("只能删除位于 ~/.cofree/skills/ 目录下的 Skill".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{build_workspace_edit_patch, trim_string_to_tail};

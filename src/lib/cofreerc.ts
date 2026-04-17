@@ -362,11 +362,7 @@ export function parseCofreeRc(raw: string): CofreeRcConfig {
       }
 
       if (typeof record.filePath === "string" && record.filePath.trim()) {
-        skill.filePath = record.filePath
-          .trim()
-          .replace(/\\/g, "/")
-          .replace(/^\/+/, "")
-          .slice(0, 300);
+        skill.filePath = normalizeSkillRelativePath(record.filePath);
       }
 
       if (typeof record.instructions === "string" && record.instructions.trim()) {
@@ -406,6 +402,47 @@ export function parseCofreeRc(raw: string): CofreeRcConfig {
   }
 
   return config;
+}
+
+function normalizeSkillRelativePath(value: string): string | undefined {
+  const normalized = value
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+/g, "/")
+    .slice(0, 300);
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  const segments = normalized.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    return undefined;
+  }
+
+  return normalized;
+}
+
+function resolveCofreeRcSkillFilePath(
+  workspacePath: string,
+  relativePath: string | undefined,
+): string | undefined {
+  if (!relativePath) {
+    return undefined;
+  }
+
+  const normalizedRelativePath = normalizeSkillRelativePath(relativePath);
+  if (!normalizedRelativePath) {
+    return undefined;
+  }
+
+  const normalizedWorkspace = workspacePath.trim().replace(/\/+$/, "");
+  if (!normalizedWorkspace) {
+    return undefined;
+  }
+
+  return `${normalizedWorkspace}/${normalizedRelativePath}`;
 }
 
 function normalizePath(value: string): string {
@@ -552,7 +589,6 @@ export function convertCofreeRcSkills(
     return [];
   }
 
-  const normalizedWorkspace = workspacePath.replace(/\/+$/, "");
   const toCofreeRcScopedId = (rawId: string): string => {
     const normalized = rawId.trim();
     if (!normalized) {
@@ -563,17 +599,34 @@ export function convertCofreeRcSkills(
       : `cofreerc:${normalized}`;
   };
 
-  return config.skills.map((skill, index) => ({
-    id: toCofreeRcScopedId(skill.id || `skill-${index + 1}`),
-    name: skill.name,
-    description: skill.description,
-    filePath: skill.filePath
-      ? `${normalizedWorkspace}/${skill.filePath}`
-      : undefined,
-    instructions: skill.instructions,
-    filePatterns: skill.filePatterns,
-    keywords: skill.keywords,
-  }));
+  const converted: Array<{
+    id: string;
+    name: string;
+    description: string;
+    filePath?: string;
+    instructions?: string;
+    filePatterns?: string[];
+    keywords?: string[];
+  }> = [];
+
+  for (const [index, skill] of config.skills.entries()) {
+    const resolvedFilePath = resolveCofreeRcSkillFilePath(workspacePath, skill.filePath);
+    if (!resolvedFilePath && !skill.instructions) {
+      continue;
+    }
+
+    converted.push({
+      id: toCofreeRcScopedId(skill.id || `skill-${index + 1}`),
+      name: skill.name,
+      description: skill.description,
+      filePath: resolvedFilePath,
+      instructions: skill.instructions,
+      filePatterns: skill.filePatterns,
+      keywords: skill.keywords,
+    });
+  }
+
+  return converted;
 }
 
 export function convertCofreeRcSkillEntries(

@@ -30,6 +30,7 @@ regex = "1"
 url = "2"
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
 ring = "0.17"
+zip = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-clipboard-manager = "2.1.0-beta.7"

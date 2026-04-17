@@ -118,4 +118,56 @@ describe("cofreerc", () => {
     });
   });
 
+  it("rejects traversal-like skill file paths during parse", () => {
+    const config = parseCofreeRc(JSON.stringify({
+      skills: [
+        {
+          id: "safe",
+          name: "safe",
+          description: "safe",
+          filePath: "skills/odps/SKILL.md",
+        },
+        {
+          id: "unsafe",
+          name: "unsafe",
+          description: "unsafe",
+          filePath: "../secrets/SKILL.md",
+        },
+      ],
+    }));
+
+    expect(config.skills).toHaveLength(1);
+    expect(config.skills?.[0]).toMatchObject({
+      id: "safe",
+      filePath: "skills/odps/SKILL.md",
+    });
+  });
+
+  it("drops converted cofreerc skills whose filePath escapes workspace", () => {
+    const converted = convertCofreeRcSkills({
+      skills: [
+        {
+          id: "unsafe-only",
+          name: "unsafe-only",
+          description: "unsafe",
+          filePath: "../../private/SKILL.md",
+        },
+        {
+          id: "inline-fallback",
+          name: "inline-fallback",
+          description: "inline",
+          filePath: "../private/SKILL.md",
+          instructions: "inline instructions",
+        },
+      ],
+    }, "/workspace/project");
+
+    expect(converted).toHaveLength(1);
+    expect(converted[0]).toMatchObject({
+      id: "cofreerc:inline-fallback",
+      filePath: undefined,
+      instructions: "inline instructions",
+    });
+  });
+
 });

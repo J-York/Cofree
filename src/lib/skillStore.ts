@@ -130,7 +130,7 @@ export async function discoverSkillsFromDirectory(
   try {
     const entries = await invoke<Array<{ name: string; is_dir: boolean }>>(
       "list_workspace_files",
-      { workspacePath: baseDir, relativePath: GLOBAL_SKILLS_DIR, maxEntries: 100 },
+      { workspacePath: baseDir, relativePath: GLOBAL_SKILLS_DIR },
     );
 
     for (const entry of entries) {
@@ -543,22 +543,75 @@ export function matchSkills(
     .map((entry) => entry.skill);
 }
 
-function fileMatchesPattern(filePath: string, pattern: string): boolean {
-  const normalizedPath = filePath.replace(/\\/g, "/").toLowerCase();
-  const normalizedPattern = pattern.trim().toLowerCase();
+function normalizePatternPath(value: string): string {
+  return value
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+/g, "/")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
 
-  if (!normalizedPattern) {
+function globPatternToRegExp(pattern: string): RegExp {
+  let regex = "^";
+
+  for (let index = 0; index < pattern.length; ) {
+    const char = pattern[index];
+    const next = pattern[index + 1];
+    const nextNext = pattern[index + 2];
+
+    if (char === "*" && next === "*" && nextNext === "/") {
+      regex += "(?:.*/)?";
+      index += 3;
+      continue;
+    }
+    if (char === "*" && next === "*") {
+      regex += ".*";
+      index += 2;
+      continue;
+    }
+    if (char === "*") {
+      regex += "[^/]*";
+      index += 1;
+      continue;
+    }
+    if (/[.+^${}()|[\]\\]/.test(char)) {
+      regex += `\\${char}`;
+    } else {
+      regex += char;
+    }
+    index += 1;
+  }
+
+  regex += "$";
+  return new RegExp(regex, "i");
+}
+
+function fileMatchesPattern(filePath: string, pattern: string): boolean {
+  const normalizedPath = normalizePatternPath(filePath);
+  const normalizedPattern = normalizePatternPath(pattern);
+
+  if (!normalizedPattern || !normalizedPath) {
     return false;
   }
 
-  // Simple extension matching: *.ext
-  if (normalizedPattern.startsWith("*.")) {
-    const extension = normalizedPattern.slice(1);
-    return normalizedPath.endsWith(extension);
+  const hasDirectoryScope = normalizedPattern.includes("/");
+  const targetPath = hasDirectoryScope
+    ? normalizedPath
+    : (normalizedPath.split("/").pop() ?? normalizedPath);
+
+  if (!normalizedPattern.includes("*")) {
+    if (!hasDirectoryScope) {
+      return targetPath === normalizedPattern;
+    }
+
+    return targetPath === normalizedPattern
+      || targetPath.startsWith(`${normalizedPattern}/`)
+      || normalizedPattern.startsWith(`${targetPath}/`);
   }
 
-  // Direct substring match
-  return normalizedPath.includes(normalizedPattern);
+  return globPatternToRegExp(normalizedPattern).test(targetPath);
 }
 
 // ---------------------------------------------------------------------------

@@ -16,8 +16,8 @@ pub use secure_store::{delete_secure_api_key, load_secure_api_key, save_secure_a
 pub use workspace::{
     apply_workspace_patch, build_workspace_edit_patch, cancel_shell_command, check_shell_job,
     check_workspace_patch,
-    create_workspace_snapshot, get_home_dir, git_diff_workspace, git_status_workspace,
-    glob_workspace_files, grep_workspace_files, list_workspace_files, read_absolute_file,
+    create_workspace_snapshot, delete_skill_directory, get_home_dir, git_diff_workspace, git_status_workspace,
+    glob_workspace_files, grep_workspace_files, install_skill_from_zip, list_workspace_files, read_absolute_file,
     read_workspace_file, restore_workspace_snapshot, run_shell_command, scan_workspace_structure,
     start_shell_command,
 };
