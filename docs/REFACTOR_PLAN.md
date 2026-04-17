@@ -85,7 +85,8 @@ src/ui/pages/chat/
    - ✅ B1.7.2 抽 `useThreadAutoScroll`
    - ✅ B1.7.3 抽 `useConversationDebugLog`
    - ✅ B1.7.4 抽 `useConversationLifecycle`
-   - ⏳ B1.7.5 抽 `useShellJobs`
+   - ✅ B1.7.5 抽 `useShellJobs`
+   - ⏳ B1.7.6 抽 `useApprovalActions` + `useChatExecution` + `useWorkspaceTeamTrust` + `useConversationTopbar`
    - ⏳ B1.7.5 抽 `useShellJobs`
    - ⏳ B1.7.6 抽 `useApprovalActions` + `useChatExecution` + `useWorkspaceTeamTrust` + `useConversationTopbar`
 
@@ -117,3 +118,4 @@ src/ui/pages/chat/
 - 2026-04-17 [B1.7.2] 抽出 `useThreadAutoScroll`：4 个 scroll ref + 5 个 callback 搬进 hook。ChatPage.tsx 3675 → 3649 行（-26）；tsc clean，432/432 tests green
 - 2026-04-17 [B1.7.3] 抽出 `useConversationDebugLog`：2 state（`failedLlmRequestLog` / `isExportingDebugBundle`）+ `conversationDebugEntriesRef` + 3 handlers（`appendConversationDebugEntry` / `handleCopyFailedRequestLog` / `handleDownloadConversationDebugBundle`）搬进 hook。下载处理函数需 14 个字段的上下文，采用 `getDownloadSnapshot` 闭包懒求值模式。ChatPage.tsx 3649 → 3558 行（-91）；tsc clean，432/432 tests green
 - 2026-04-18 [B1.7.4] 抽出 `useConversationLifecycle`：会话 CRUD（new/select/delete/rename/clear）+ `activateConversation` / `applyChatViewState` / `snapshotToBackground` + 5 个 useEffect（active-id 同步、恢复首选会话、save-on-messages、agentBinding 同步、草稿绑定、wsPath 切换）全部下沉到 hook。由于两个 hook 需要共享 `conversationDebugEntriesRef`，把它从 `useConversationDebugLog` 提到 ChatPage 再注入两处，避免 hook 间循环依赖。`liveContextTokens` / `sessionNote` 因初始化依赖 `currentConversation` 也并入 lifecycle hook。ChatPage.tsx 3558 → 3133 行（-425）；tsc clean，432/432 tests green
+- 2026-04-18 [B1.7.5] 抽出 `useShellJobs`：`runningShellJobsRef` + `shellOutputBuffersRef` + 4 个 shell 回调的 ref 同步对 + 5 个 handler（`markShellActionsFailed` / `startShellJobForAction` / `completeBackgroundShellStartup` / `monitorBackgroundShellJob` / `flushShellOutputBuffer`）+ 整个 `shell-command-event` 监听 useEffect（200+ 行）全部下沉到 hook。`handlePlanUpdate` / `continueAfterHitlIfNeeded` 仍留在 ChatPage（依赖会话闭包），通过 ref 注入以绕开 stale-closure。ChatPage.tsx 3133 → 2593 行（-540）；tsc clean，432/432 tests green
