@@ -80,7 +80,13 @@ src/ui/pages/chat/
 4. ✅ **B1.4** 抽 `useMentionSuggestions` + `useSkillDiscovery`
 5. 🟨 **B1.5** 抽 `useConversationLifecycle` + `useWorkspaceRefresh`（**部分完成**：`useWorkspaceRefresh` 已随 B1.4 并入 `useMentionSuggestions`；`useConversationLifecycle` 因深度闭包依赖延后到 B1.7 一并处理）
 6. ✅ **B1.6** `ChatComposer` 从 `ChatComposerSection` 独立成真正的子组件文件
-7. **B1.7** `ChatPage.tsx` 收尾 → 组装器形态，目标 < 600 行
+7. 🟡 **B1.7** `ChatPage.tsx` 收尾 → 组装器形态（目标 ≤ 800 行，分 6 小步 B1.7.1-B1.7.6）
+   - ✅ B1.7.1 顶部 helpers/types/constants 外移
+   - ⏳ B1.7.2 抽 `useThreadAutoScroll`
+   - ⏳ B1.7.3 抽 `useConversationDebugLog`
+   - ⏳ B1.7.4 抽 `useConversationLifecycle`
+   - ⏳ B1.7.5 抽 `useShellJobs`
+   - ⏳ B1.7.6 抽 `useApprovalActions` + `useChatExecution` + `useWorkspaceTeamTrust` + `useConversationTopbar`
 
 每一步都**单独提交**，每步跑 `pnpm test -- --run` 全绿再进入下一步。
 
@@ -106,3 +112,4 @@ src/ui/pages/chat/
 - 2026-04-17 [B1.4] 抽出 `useMentionSuggestions` + `useSkillDiscovery` hook：6 个 mention 状态 + 工作区加载 effect；skill discovery 独立成 hook。ChatPage.tsx 4246 → 4171 行；tsc clean，432/432 tests green
 - 2026-04-17 [B1.5] 务实评估：工作区刷新已在 B1.4 落地；会话生命周期抽取（conversations/activeConversationId/currentConversation/messages 6 源状态 + 2 个 ref 闭包）成本高、收益低，延后到 B1.7 ChatPage 收尾时一并处理。未写代码，仅记录决策。
 - 2026-04-17 [B1.6] `ChatComposerSection` → `ChatComposer`：抽成 `src/ui/pages/chat/composer/ChatComposer.tsx`（264 行），从 ChatPage 中删除 257 行内联定义并清理 5 个不再使用的 import。ChatPage.tsx 4171 → 3908 行；tsc clean，432/432 tests green
+- 2026-04-17 [B1.7.1] 抽出顶部纯函数、类型、常量：新建 `chat/constants.ts`、`chat/chatPageHelpers.ts`，并把 3 个 shell/team-trust 类型合入 `chat/types.ts`。ChatPage.tsx 3908 → 3675 行（-233）；tsc clean，432/432 tests green。B1.7 拆为 6 小步，目标放宽到 ≤ 800 行；本地计划文件：`~/.claude/plans/ancient-crunching-tulip.md`
