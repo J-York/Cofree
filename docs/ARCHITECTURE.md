@@ -1,4 +1,4 @@
-# Cofree 技术架构（v0.0.9）
+# Cofree 技术架构（v0.1.1）
 
 本文档只描述当前仓库已经落地的桌面端架构。
 
@@ -49,9 +49,14 @@
 - 管理工具调用循环、审批挂起、checkpoint、继续执行、自动诊断。
 
 ### 2.3 Agent 层
-- 顶层 ChatAgent 面向用户选择（含内置「专家组接待」`agent-concierge`，见 [EXPERT_PANEL.md](./EXPERT_PANEL.md)）。
+- 顶层 ChatAgent 面向用户选择（含内置「专家组接待」`agent-concierge`）。
 - `task` 工具可把子任务委派给 `planner`、`coder`、`tester` 等子角色，或按预置 Team ID 跑流水线；工具 schema 中的 `team` 枚举会按当前 Agent 的 `allowedSubAgents` 过滤。
 - 子 Agent 运行独立工具循环，但仍在同一工作区和同一 guardrails 体系内。
+
+### 2.4 LLM 网关（pi-ai）
+- 所有模型请求通过 `@mariozechner/pi-ai` 统一网关路由（OpenAI Chat Completions、OpenAI Responses、Anthropic Messages）。
+- `src/lib/piAiBridge.ts` 是适配层，负责 Cofree 内部格式与 pi-ai 格式的双向转换，并在 Tauri 环境下通过 Rust 后端代理 HTTP（支持代理配置）。
+- 支持 reasoning/thinking level、temperature、maxTokens 等高级参数透传。
 
 ### 2.4 持久化与状态
 - 设置、对话列表、审计日志主要保存在 `localStorage`。
