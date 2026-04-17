@@ -27,6 +27,7 @@ export interface RunChatCycleOptions {
   contextAttachments?: ChatContextAttachment[];
   phase?: PlanningSessionPhase;
   existingPlan?: OrchestrationPlan | null;
+  explicitSkillIds?: string[];
 }
 
 export function resolveConversationModelSelection(

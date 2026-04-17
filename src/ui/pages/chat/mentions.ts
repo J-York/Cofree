@@ -1,4 +1,5 @@
 import type { FileEntry, GlobEntry } from "../../../lib/tauriTypes";
+import type { SkillEntry } from "../../../lib/skillStore";
 import {
   createFileContextAttachment,
   createFolderContextAttachment,
@@ -13,12 +14,15 @@ export interface ActiveMention {
 }
 
 export interface MentionSuggestion {
-  kind: ChatContextAttachmentKind;
+  kind: ChatContextAttachmentKind | "skill";
   relativePath: string;
   displayName: string;
   modified: number;
   size: number;
-  source: "search" | "recent" | "git" | "root";
+  source: "search" | "recent" | "git" | "root" | "skill";
+  skillId?: string;
+  description?: string;
+  keywords?: string[];
 }
 
 export interface MentionRankingSignals {
@@ -70,8 +74,21 @@ function scoreMentionMatch(
   query: string,
   signals: MentionRankingSignals,
 ): number {
-  const normalizedPath = suggestion.relativePath.toLowerCase();
   const normalizedQuery = query.toLowerCase();
+
+  if (suggestion.kind === "skill") {
+    if (normalizedQuery.length === 0) return 200;
+    const name = suggestion.relativePath.toLowerCase();
+    const desc = (suggestion.description ?? "").toLowerCase();
+    const kwStr = (suggestion.keywords ?? []).join(" ").toLowerCase();
+    if (name === normalizedQuery) return 1100;
+    if (name.startsWith(normalizedQuery)) return 960;
+    if (name.includes(normalizedQuery)) return 800;
+    if (desc.includes(normalizedQuery) || kwStr.includes(normalizedQuery)) return 650;
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const normalizedPath = suggestion.relativePath.toLowerCase();
   const basename = basenameOf(normalizedPath);
   const recentSet = new Set((signals.recentPaths ?? []).map((path) => normalizePath(path).toLowerCase()));
   const relatedSet = new Set((signals.relatedPaths ?? []).map((path) => normalizePath(path).toLowerCase()));
@@ -261,6 +278,37 @@ export function buildRecentAttachmentSuggestions(
   }));
 }
 
+export function buildSkillMentionSuggestions(
+  skills: SkillEntry[],
+  query: string,
+): MentionSuggestion[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  return skills
+    .filter((skill) => skill.enabled)
+    .filter((skill) => {
+      if (normalizedQuery.length === 0) return true;
+      const name = skill.name.toLowerCase();
+      const desc = skill.description.toLowerCase();
+      const kws = (skill.keywords ?? []).join(" ").toLowerCase();
+      return (
+        name.includes(normalizedQuery) ||
+        desc.includes(normalizedQuery) ||
+        kws.includes(normalizedQuery)
+      );
+    })
+    .map((skill) => ({
+      kind: "skill" as const,
+      relativePath: skill.name,
+      displayName: skill.name,
+      modified: 0,
+      size: 0,
+      source: "skill" as const,
+      skillId: skill.id,
+      description: skill.description,
+      keywords: skill.keywords,
+    }));
+}
+
 export function rankMentionSuggestions(
   query: string,
   suggestions: MentionSuggestion[],
@@ -297,11 +345,13 @@ export function buildDefaultMentionSuggestions(params: {
   recentSuggestions: MentionSuggestion[];
   gitSuggestions: MentionSuggestion[];
   rootDirectorySuggestions: MentionSuggestion[];
+  skillSuggestions?: MentionSuggestion[];
   signals?: MentionRankingSignals;
 }): MentionSuggestion[] {
   return rankMentionSuggestions(
     "",
     [
+      ...(params.skillSuggestions ?? []),
       ...params.recentSuggestions,
       ...params.gitSuggestions,
       ...params.rootDirectorySuggestions,
@@ -325,6 +375,7 @@ export function applyMentionSuggestion(
 export function buildSubmittedPrompt(
   text: string,
   attachments: ChatContextAttachment[],
+  hasSkills?: boolean,
 ): string {
   const trimmed = text.trim();
   if (trimmed) {
@@ -332,6 +383,9 @@ export function buildSubmittedPrompt(
   }
   if (attachments.length > 0) {
     return "请基于我附加的上下文文件或目录协助我。";
+  }
+  if (hasSkills) {
+    return "请使用我选择的 Skills 协助我。";
   }
   return "";
 }

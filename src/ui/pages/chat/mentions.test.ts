@@ -3,11 +3,13 @@ import {
   createFileContextAttachment,
   createFolderContextAttachment,
 } from "../../../lib/contextAttachments";
+import type { SkillEntry } from "../../../lib/skillStore";
 import {
   buildMentionSearchPattern,
   buildDefaultMentionSuggestions,
   buildFolderSuggestionsFromFiles,
   buildRecentAttachmentSuggestions,
+  buildSkillMentionSuggestions,
   buildSubmittedPrompt,
   findActiveMention,
   rankMentionSuggestions,
@@ -128,5 +130,110 @@ describe("chat mention helpers", () => {
     ]);
 
     expect(prompt).toBe("请基于我附加的上下文文件或目录协助我。");
+  });
+
+  it("builds a fallback prompt when only skills are selected", () => {
+    const prompt = buildSubmittedPrompt("", [], true);
+
+    expect(prompt).toBe("请使用我选择的 Skills 协助我。");
+  });
+
+  it("builds skill suggestions from SkillEntry array", () => {
+    const skills: SkillEntry[] = [
+      {
+        id: "global:odps",
+        name: "ODPS",
+        description: "MaxCompute data query skill",
+        source: "global",
+        enabled: true,
+        createdAt: "",
+        keywords: ["sql", "odps", "maxcompute"],
+      },
+      {
+        id: "global:react",
+        name: "React Expert",
+        description: "React development patterns",
+        source: "global",
+        enabled: true,
+        createdAt: "",
+        keywords: ["react", "jsx"],
+      },
+      {
+        id: "global:disabled",
+        name: "Disabled Skill",
+        description: "Should not appear",
+        source: "global",
+        enabled: false,
+        createdAt: "",
+      },
+    ];
+
+    const allSuggestions = buildSkillMentionSuggestions(skills, "");
+    expect(allSuggestions).toHaveLength(2);
+    expect(allSuggestions[0]!.kind).toBe("skill");
+    expect(allSuggestions[0]!.skillId).toBe("global:odps");
+
+    const filtered = buildSkillMentionSuggestions(skills, "react");
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]!.skillId).toBe("global:react");
+  });
+
+  it("ranks skill suggestions higher than files for matching queries", () => {
+    const ranked = rankMentionSuggestions("sql", [
+      {
+        kind: "skill",
+        relativePath: "SQL Expert",
+        displayName: "SQL Expert",
+        modified: 0,
+        size: 0,
+        source: "skill",
+        skillId: "global:sql",
+        description: "SQL query helper",
+        keywords: ["sql"],
+      },
+      {
+        kind: "file",
+        relativePath: "src/sql/queries.ts",
+        displayName: "queries.ts",
+        modified: 10,
+        size: 1,
+        source: "search",
+      },
+    ]);
+
+    expect(ranked[0]!.kind).toBe("skill");
+  });
+
+  it("includes skill suggestions in default suggestions and ranks them high", () => {
+    const skillSuggestions = buildSkillMentionSuggestions([
+      {
+        id: "global:odps",
+        name: "ODPS",
+        description: "ODPS query skill",
+        source: "global",
+        enabled: true,
+        createdAt: "",
+      },
+    ], "");
+
+    const defaults = buildDefaultMentionSuggestions({
+      recentSuggestions: [],
+      gitSuggestions: [
+        {
+          kind: "file",
+          relativePath: "src/main.ts",
+          displayName: "main.ts",
+          size: 0,
+          modified: 0,
+          source: "git",
+        },
+      ],
+      rootDirectorySuggestions: [],
+      skillSuggestions,
+      signals: {},
+    });
+
+    expect(defaults[0]!.kind).toBe("skill");
+    expect(defaults[0]!.skillId).toBe("global:odps");
   });
 });

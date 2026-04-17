@@ -181,6 +181,7 @@ import {
   buildMentionSearchPattern,
   buildRecentAttachmentSuggestions,
   buildRootDirectorySuggestions,
+  buildSkillMentionSuggestions,
   buildSubmittedPrompt,
   createAttachmentFromSuggestion,
   findActiveMention,
@@ -189,6 +190,12 @@ import {
   type MentionRankingSignals,
   type MentionSuggestion,
 } from "./chat/mentions";
+import {
+  discoverGlobalSkills,
+  discoverWorkspaceSkills,
+  mergeDiscoveredSkills,
+  type SkillEntry,
+} from "../../lib/skillStore";
 import type { BackgroundStreamState, LiveToolCall, SubAgentStatusItem } from "./chat/types";
 import {
   buildConversationDebugExport,
@@ -380,6 +387,8 @@ interface ChatComposerSectionProps {
   chatBlocked: boolean;
   composerAttachments: ChatContextAttachment[];
   onRemoveComposerAttachment: (attachmentId: string) => void;
+  selectedSkills: SkillEntry[];
+  onRemoveSelectedSkill: (skillId: string) => void;
   activeMention: ActiveMention | null;
   mentionSuggestions: MentionSuggestion[];
   mentionSelectionIndex: number;
@@ -410,6 +419,8 @@ function ChatComposerSection({
   chatBlocked,
   composerAttachments,
   onRemoveComposerAttachment,
+  selectedSkills,
+  onRemoveSelectedSkill,
   activeMention,
   mentionSuggestions,
   mentionSelectionIndex,
@@ -456,11 +467,30 @@ function ChatComposerSection({
           attachments={composerAttachments}
           onRemove={onRemoveComposerAttachment}
         />
+        {selectedSkills.length > 0 && (
+          <div className="chat-context-pills">
+            {selectedSkills.map((skill) => (
+              <span key={skill.id} className="chat-skill-pill">
+                <span className="chat-skill-pill-prefix">✦</span>
+                <span className="chat-skill-pill-label" title={skill.description}>{skill.name}</span>
+                <button
+                  type="button"
+                  className="chat-context-pill-remove"
+                  onClick={() => onRemoveSelectedSkill(skill.id)}
+                  aria-label={`移除 ${skill.name}`}
+                  title={`移除 ${skill.name}`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         {activeMention && mentionSuggestions.length > 0 && (
-          <div className="chat-mention-menu" role="listbox" aria-label="@ 文件候选">
+          <div className="chat-mention-menu" role="listbox" aria-label="@ 候选">
             {mentionSuggestions.map((suggestion, index) => (
               <button
-                key={suggestion.relativePath}
+                key={`${suggestion.kind}:${suggestion.relativePath}`}
                 type="button"
                 className={`chat-mention-item${index === mentionSelectionIndex ? " active" : ""}`}
                 onMouseDown={(event) => {
@@ -469,12 +499,14 @@ function ChatComposerSection({
                 }}
               >
                 <span className="chat-mention-item-name">
-                  {suggestion.displayName}
+                  {suggestion.kind === "skill" ? "✦ " : ""}{suggestion.displayName}
                   {suggestion.kind === "folder" ? "/" : ""}
                 </span>
                 <span className="chat-mention-item-path">
-                  {suggestion.kind === "folder" ? "目录" : "文件"} · {suggestion.relativePath}
-                  {suggestion.kind === "folder" ? "/" : ""}
+                  {suggestion.kind === "skill"
+                    ? `Skill · ${suggestion.description ?? ""}`
+                    : `${suggestion.kind === "folder" ? "目录" : "文件"} · ${suggestion.relativePath}${suggestion.kind === "folder" ? "/" : ""}`
+                  }
                 </span>
               </button>
             ))}
@@ -592,7 +624,7 @@ function ChatComposerSection({
               disabled={
                 isStreaming ||
                 Boolean(executingActionId) ||
-                (!prompt.trim() && composerAttachments.length === 0) ||
+                (!prompt.trim() && composerAttachments.length === 0 && selectedSkills.length === 0) ||
                 chatBlocked
               }
               type="submit"
@@ -757,6 +789,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const [mentionIgnorePatterns, setMentionIgnorePatterns] = useState<string[]>([]);
   const [rootDirectorySuggestions, setRootDirectorySuggestions] = useState<MentionSuggestion[]>([]);
   const [gitMentionSuggestions, setGitMentionSuggestions] = useState<MentionSuggestion[]>([]);
+  const [availableSkills, setAvailableSkills] = useState<SkillEntry[]>([]);
+  const [selectedSkills, setSelectedSkills] = useState<SkillEntry[]>([]);
   const [messages, setMessages] = useState<ChatMessageRecord[]>(
     currentConversation?.messages ?? []
   );
@@ -1472,6 +1506,27 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     };
   }, [wsPath]);
 
+  // Discover available skills for @-mention suggestions
+  useEffect(() => {
+    let cancelled = false;
+    const loadSkills = async () => {
+      try {
+        const [globalSkills, workspaceSkills] = await Promise.all([
+          discoverGlobalSkills(),
+          wsPath ? discoverWorkspaceSkills(wsPath) : Promise.resolve([]),
+        ]);
+        if (cancelled) return;
+        const allDiscovered = [...globalSkills, ...workspaceSkills];
+        const merged = mergeDiscoveredSkills(settings.skills ?? [], allDiscovered);
+        setAvailableSkills(merged.filter((s) => s.enabled));
+      } catch {
+        // Skill discovery failure is non-blocking
+      }
+    };
+    void loadSkills();
+    return () => { cancelled = true; };
+  }, [wsPath, settings.skills]);
+
   useEffect(
     () => () => {
       for (const ctrl of abortControllersRef.current.values()) {
@@ -1583,13 +1638,16 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
       getRecentContextAttachments(),
     );
     if (mention.query.trim().length === 0) {
+      const skillSuggestions = buildSkillMentionSuggestions(availableSkills, "");
       const defaults = buildDefaultMentionSuggestions({
         recentSuggestions,
         gitSuggestions: gitMentionSuggestions,
         rootDirectorySuggestions,
+        skillSuggestions,
         signals: rankingSignals,
       }).filter(
         (entry) =>
+          !(entry.kind === "skill" && selectedSkills.some((s) => s.id === entry.skillId)) &&
           !composerAttachments.some(
             (attachment) =>
               attachment.relativePath === entry.relativePath &&
@@ -1623,9 +1681,11 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
             mention.query,
             entries,
           );
+          const skillSuggestions = buildSkillMentionSuggestions(availableSkills, mention.query);
           const suggestions = rankMentionSuggestions(
             mention.query,
             [
+              ...skillSuggestions,
               ...fileSuggestions,
               ...folderSuggestions,
               ...rootDirectorySuggestions,
@@ -1635,6 +1695,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
             rankingSignals,
           ).filter(
             (entry) =>
+              !(entry.kind === "skill" && selectedSkills.some((s) => s.id === entry.skillId)) &&
               !composerAttachments.some(
                 (attachment) =>
                   attachment.relativePath === entry.relativePath &&
@@ -1657,10 +1718,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     };
   }, [
     activeMention,
+    availableSkills,
     composerAttachments,
     gitMentionSuggestions,
     mentionIgnorePatterns,
     rootDirectorySuggestions,
+    selectedSkills,
     wsPath,
   ]);
 
@@ -2412,12 +2475,20 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
       return;
     }
 
-    const attachment = createAttachmentFromSuggestion(suggestion);
     const { nextText, nextCaret } = applyMentionSuggestion(prompt, activeMention);
 
-    setComposerAttachments((prev) =>
-      dedupeContextAttachments([...prev, attachment]),
-    );
+    if (suggestion.kind === "skill" && suggestion.skillId) {
+      const skill = availableSkills.find((s) => s.id === suggestion.skillId);
+      if (skill && !selectedSkills.some((s) => s.id === skill.id)) {
+        setSelectedSkills((prev) => [...prev, skill]);
+      }
+    } else {
+      const attachment = createAttachmentFromSuggestion(suggestion);
+      setComposerAttachments((prev) =>
+        dedupeContextAttachments([...prev, attachment]),
+      );
+    }
+
     setPrompt(nextText);
     clearMentionUi();
 
@@ -2435,24 +2506,36 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     textareaRef.current?.focus();
   };
 
+  const handleRemoveSelectedSkill = (skillId: string): void => {
+    setSelectedSkills((prev) => prev.filter((s) => s.id !== skillId));
+    textareaRef.current?.focus();
+  };
+
   const handleSubmit = async (): Promise<void> => {
     const attachments = dedupeContextAttachments(composerAttachments);
-    const text = buildSubmittedPrompt(prompt, attachments);
-    if ((!text && attachments.length === 0) || isStreaming) return;
+    const text = buildSubmittedPrompt(prompt, attachments, selectedSkills.length > 0);
+    if ((!text && attachments.length === 0 && selectedSkills.length === 0) || isStreaming) return;
 
     const previousPrompt = prompt;
     const previousAttachments = composerAttachments;
+    const previousSkills = selectedSkills;
+    const explicitSkillIds = selectedSkills.length > 0
+      ? selectedSkills.map((s) => s.id)
+      : undefined;
     setPrompt("");
     setComposerAttachments([]);
+    setSelectedSkills([]);
     clearMentionUi();
 
     try {
       await runChatCycle(text, {
         contextAttachments: attachments,
+        explicitSkillIds,
       });
     } catch (error) {
       setPrompt(previousPrompt);
       setComposerAttachments(previousAttachments);
+      setSelectedSkills(previousSkills);
       syncActiveMention(previousPrompt);
       setCategorizedError(classifyError(error));
     }
@@ -4106,6 +4189,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
               chatBlocked={chatBlocked}
               composerAttachments={composerAttachments}
               onRemoveComposerAttachment={handleRemoveComposerAttachment}
+              selectedSkills={selectedSkills}
+              onRemoveSelectedSkill={handleRemoveSelectedSkill}
               activeMention={activeMention}
               mentionSuggestions={mentionSuggestions}
               mentionSelectionIndex={mentionSelectionIndex}

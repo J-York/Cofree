@@ -73,6 +73,35 @@
   color: var(--text-1);
 }
 
+/* ── Skill Pills ─────────────────────────────────────── */
+.chat-skill-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 5px 10px;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+  background: color-mix(in srgb, var(--accent-solid) 12%, var(--surface-2));
+  color: var(--text-2);
+  box-shadow: none;
+}
+
+.chat-skill-pill-prefix {
+  color: var(--accent-solid);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.chat-skill-pill-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
 .chat-mention-menu {
   display: flex;
   flex-direction: column;

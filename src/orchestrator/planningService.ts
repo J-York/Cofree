@@ -1326,6 +1326,8 @@ export interface RunPlanningSessionInput {
   onAskUserRequest?: (request: AskUserRequest) => void;
   /** P3-2: Restored working memory snapshot from a previous checkpoint. */
   restoredWorkingMemory?: WorkingMemorySnapshot;
+  /** Explicitly selected skill IDs from @-mention. When provided, auto-matching is skipped. */
+  explicitSkillIds?: string[];
 }
 
 export interface PlanningSessionResult {
@@ -1719,6 +1721,7 @@ async function resolveMatchedSkills(
   projectConfig: CofreeRcConfig | undefined,
   userMessage: string,
   focusedPaths: string[],
+  explicitSkillIds?: string[],
 ): Promise<ResolvedSkill[]> {
   try {
     // 1. Collect all skill definitions from various sources
@@ -1739,7 +1742,19 @@ async function resolveMatchedSkills(
     // Merge with user-registered skills from settings (preserves enabled state)
     const mergedRegistry = mergeDiscoveredSkills(settings.skills, allSkillDefs);
 
-    // 2. Match skills against the user message and focused files
+    // 2. If explicit skill IDs provided, resolve them directly (skip keyword matching)
+    if (explicitSkillIds && explicitSkillIds.length > 0) {
+      const explicitSkills = explicitSkillIds
+        .map((id) => mergedRegistry.find((s) => s.id === id))
+        .filter((s): s is SkillEntry => s != null && s.enabled);
+      console.debug(
+        "[skills] Explicit skill selection",
+        explicitSkills.map((skill) => ({ id: skill.id, name: skill.name })),
+      );
+      return resolveSkills(explicitSkills);
+    }
+
+    // 3. Auto-match skills against the user message and focused files
     const matched = matchSkills(mergedRegistry, userMessage, focusedPaths);
     if (matched.length === 0) {
       console.debug("[skills] No matched skills", {
@@ -1783,6 +1798,7 @@ async function runNativeToolCallingLoop(
   sessionId?: string,
   onAskUserRequest?: (request: AskUserRequest) => void,
   restoredWorkingMemory?: WorkingMemorySnapshot,
+  explicitSkillIds?: string[],
 ): Promise<{
   assistantReply: string;
   requestRecords: RequestRecord[];
@@ -1810,6 +1826,7 @@ async function runNativeToolCallingLoop(
     projectConfig,
     prompt,
     focusedPaths,
+    explicitSkillIds,
   );
   const agentSystemPrompt = assembleSystemPrompt(runtime, resolvedSkills);
   const effectiveRuntimeContext = assembleRuntimeContext(runtime, settings.workspacePath, INTERNAL_TOOL_NAMES);
@@ -3410,6 +3427,8 @@ export async function runPlanningSession(
       input.onAskUserRequest,
       // P3-2: Pass restored working memory from checkpoint
       input.restoredWorkingMemory,
+      // Explicit skill IDs from @-mention selection
+      input.explicitSkillIds,
     );
 
     // Filter out internal tools from the final `assistantToolCalls` so that
