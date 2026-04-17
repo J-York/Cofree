@@ -78,8 +78,8 @@ src/ui/pages/chat/
 2. ✅ **B1.2** 抽 `useChatStreaming` — 流式回复 + abort 相关的 state/effect
 3. ✅ **B1.3** 抽 `useApprovalQueue` — 审批门相关的 state
 4. ✅ **B1.4** 抽 `useMentionSuggestions` + `useSkillDiscovery`
-5. **B1.5** 抽 `useConversationLifecycle` + `useWorkspaceRefresh`
-6. **B1.6** `ChatComposer` 从 `ChatComposerSection` 独立成真正的子组件文件
+5. 🟨 **B1.5** 抽 `useConversationLifecycle` + `useWorkspaceRefresh`（**部分完成**：`useWorkspaceRefresh` 已随 B1.4 并入 `useMentionSuggestions`；`useConversationLifecycle` 因深度闭包依赖延后到 B1.7 一并处理）
+6. ✅ **B1.6** `ChatComposer` 从 `ChatComposerSection` 独立成真正的子组件文件
 7. **B1.7** `ChatPage.tsx` 收尾 → 组装器形态，目标 < 600 行
 
 每一步都**单独提交**，每步跑 `pnpm test -- --run` 全绿再进入下一步。
@@ -104,3 +104,5 @@ src/ui/pages/chat/
 - 2026-04-17 [B1.2] 抽出 `useChatStreaming` hook：`isStreaming` + `abortControllerRef` + `abortControllersRef` + `backgroundStreamsRef` + unmount abort-all。ChatPage.tsx 4256 → 4251 行；tsc clean，432/432 tests green
 - 2026-04-17 [B1.3] 抽出 `useApprovalQueue` hook：`executingActionId` + `pendingShellQueuesRef` + `PendingShellQueue` 接口。`continueAfterHitlIfNeededRef` 因深度闭包依赖暂留 ChatPage。ChatPage.tsx 4251 → 4246 行；tsc clean，432/432 tests green
 - 2026-04-17 [B1.4] 抽出 `useMentionSuggestions` + `useSkillDiscovery` hook：6 个 mention 状态 + 工作区加载 effect；skill discovery 独立成 hook。ChatPage.tsx 4246 → 4171 行；tsc clean，432/432 tests green
+- 2026-04-17 [B1.5] 务实评估：工作区刷新已在 B1.4 落地；会话生命周期抽取（conversations/activeConversationId/currentConversation/messages 6 源状态 + 2 个 ref 闭包）成本高、收益低，延后到 B1.7 ChatPage 收尾时一并处理。未写代码，仅记录决策。
+- 2026-04-17 [B1.6] `ChatComposerSection` → `ChatComposer`：抽成 `src/ui/pages/chat/composer/ChatComposer.tsx`（264 行），从 ChatPage 中删除 257 行内联定义并清理 5 个不再使用的 import。ChatPage.tsx 4171 → 3908 行；tsc clean，432/432 tests green
