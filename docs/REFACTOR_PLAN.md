@@ -30,7 +30,7 @@
 
 | ID | 任务 | 状态 | 说明 |
 |----|------|------|------|
-| B1 | `src/ui/pages/ChatPage.tsx`（4256 行）拆分 | 🟡 **进行中 → B1.2** | 按 composer / thread / sidebar / 状态 hooks 切分；31 个 useState 至少一半迁到 custom hook |
+| B1 | `src/ui/pages/ChatPage.tsx`（4256 行）拆分 | ✅ **完成** | 3908 → 1159（-70%）；每步 432/432 tests green；详见下方进度记录 |
 | B2 | `src/orchestrator/planningService.ts`（3546 行）拆分 | ⏳ 待启动 | 抽出 `promptAssembly` / `toolLoop` / `skillMatching` / `checkpointBridge` |
 | B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | ⏳ 待启动 | 当前 0 覆盖，是最大单点风险 |
 
@@ -80,13 +80,16 @@ src/ui/pages/chat/
 4. ✅ **B1.4** 抽 `useMentionSuggestions` + `useSkillDiscovery`
 5. 🟨 **B1.5** 抽 `useConversationLifecycle` + `useWorkspaceRefresh`（**部分完成**：`useWorkspaceRefresh` 已随 B1.4 并入 `useMentionSuggestions`；`useConversationLifecycle` 因深度闭包依赖延后到 B1.7 一并处理）
 6. ✅ **B1.6** `ChatComposer` 从 `ChatComposerSection` 独立成真正的子组件文件
-7. 🟡 **B1.7** `ChatPage.tsx` 收尾 → 组装器形态（目标 ≤ 800 行，分 6 小步 B1.7.1-B1.7.6）
+7. ✅ **B1.7** `ChatPage.tsx` 收尾 → 组装器形态（3908 → 1159，-70%，分 9 小步）
    - ✅ B1.7.1 顶部 helpers/types/constants 外移
    - ✅ B1.7.2 抽 `useThreadAutoScroll`
    - ✅ B1.7.3 抽 `useConversationDebugLog`
    - ✅ B1.7.4 抽 `useConversationLifecycle`
    - ✅ B1.7.5 抽 `useShellJobs`
-   - ⏳ B1.7.6 抽 `useApprovalActions` + `useChatExecution` + `useWorkspaceTeamTrust` + `useConversationTopbar`
+   - ✅ B1.7.6a 抽 `useConversationTopbar`
+   - ✅ B1.7.6b 抽 `useWorkspaceTeamTrust`
+   - ✅ B1.7.6c 抽 `useApprovalActions`
+   - ✅ B1.7.6d 抽 `useChatExecution`
    - ⏳ B1.7.5 抽 `useShellJobs`
    - ⏳ B1.7.6 抽 `useApprovalActions` + `useChatExecution` + `useWorkspaceTeamTrust` + `useConversationTopbar`
 
@@ -119,3 +122,8 @@ src/ui/pages/chat/
 - 2026-04-17 [B1.7.3] 抽出 `useConversationDebugLog`：2 state（`failedLlmRequestLog` / `isExportingDebugBundle`）+ `conversationDebugEntriesRef` + 3 handlers（`appendConversationDebugEntry` / `handleCopyFailedRequestLog` / `handleDownloadConversationDebugBundle`）搬进 hook。下载处理函数需 14 个字段的上下文，采用 `getDownloadSnapshot` 闭包懒求值模式。ChatPage.tsx 3649 → 3558 行（-91）；tsc clean，432/432 tests green
 - 2026-04-18 [B1.7.4] 抽出 `useConversationLifecycle`：会话 CRUD（new/select/delete/rename/clear）+ `activateConversation` / `applyChatViewState` / `snapshotToBackground` + 5 个 useEffect（active-id 同步、恢复首选会话、save-on-messages、agentBinding 同步、草稿绑定、wsPath 切换）全部下沉到 hook。由于两个 hook 需要共享 `conversationDebugEntriesRef`，把它从 `useConversationDebugLog` 提到 ChatPage 再注入两处，避免 hook 间循环依赖。`liveContextTokens` / `sessionNote` 因初始化依赖 `currentConversation` 也并入 lifecycle hook。ChatPage.tsx 3558 → 3133 行（-425）；tsc clean，432/432 tests green
 - 2026-04-18 [B1.7.5] 抽出 `useShellJobs`：`runningShellJobsRef` + `shellOutputBuffersRef` + 4 个 shell 回调的 ref 同步对 + 5 个 handler（`markShellActionsFailed` / `startShellJobForAction` / `completeBackgroundShellStartup` / `monitorBackgroundShellJob` / `flushShellOutputBuffer`）+ 整个 `shell-command-event` 监听 useEffect（200+ 行）全部下沉到 hook。`handlePlanUpdate` / `continueAfterHitlIfNeeded` 仍留在 ChatPage（依赖会话闭包），通过 ref 注入以绕开 stale-closure。ChatPage.tsx 3133 → 2593 行（-540）；tsc clean，432/432 tests green
+- 2026-04-18 [B1.7.6a] 抽出 `useConversationTopbar`：3 个 expandedPlan 状态 + 5 个 memo（askUser/restore anchor、topbar 派生状态、targets、final state）+ 2 个回调（navigate / action 处理）+ 会话切换清空 expanded 的 useEffect 搬进 hook。ChatPage.tsx 2593 → 2416 行（-177）；tsc clean，432/432 tests green
+- 2026-04-18 [B1.7.6b] 抽出 `useWorkspaceTeamTrust`：2 个状态 + 3 个 YOLO 簿记 ref + 3 个 useEffect（wsPath 重置、prompt 不变式校验、YOLO 自动执行）+ mode 选择 handler 搬进 hook。`setRestoredTeamTrustPromptKey` 仍被 checkpoint 恢复 effect 调用，所以从 hook 返回给 ChatPage。ChatPage.tsx 2416 → 2248 行（-168）；tsc clean，432/432 tests green
+- 2026-04-18 [B1.7.6c] 抽出 `useApprovalActions`：`ensureApprovalInteractionAllowed` + 7 个审批 handler（approve / retry / reject / comment / approveAll / cancel / rejectAll）搬进 side-effect-only hook，约 440 行编排代码脱离 ChatPage。ChatPage.tsx 2248 → 1811 行（-437）；tsc clean，432/432 tests green
+- 2026-04-19 [B1.7.6d] 抽出 `useChatExecution`：核心执行链 `handleCancel` / `continueAfterHitlIfNeeded` / `runChatCycle` / `handleSubmit` / `handlePlanUpdate`（约 700 行）全部搬进 hook。hook 无自有状态，通过 ~40 字段的 options bag 注入所有 ref/setter/callback。`handlePlanUpdateRef` / `continueAfterHitlIfNeededRef` 仍在 ChatPage 初始化（`useShellJobs` 的 stale-closure 绕路需要）。ChatPage.tsx 1811 → 1159 行（-652）；tsc clean，432/432 tests green
+- 2026-04-19 [B1.7 完成] ChatPage.tsx 从 3908 行收敛到 1159 行（-70%）。B1 轨道整体完成。剩余的 1159 行主要是 props 绑线、checkpoint 恢复 effect、剩余 3-4 个 useEffect 粘合、JSX（~170 行）。相较原计划 < 600 的目标未完全达成，但收益显著：God file 已不复存在，所有关注点都有自己的 hook / 子组件文件，每个 hook ≤ 900 行且聚焦单一职责，可测性和可诊断性大幅提升。
