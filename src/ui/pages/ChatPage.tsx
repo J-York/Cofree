@@ -2,7 +2,6 @@ import {
   type ReactElement,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -100,23 +99,10 @@ import {
   deriveCarryForwardPlan,
   toConversationHistory,
 } from "./chat/helpers";
-import { type ConversationTopbarAction } from "./chat/ConversationTopbar";
 import { ChatThreadSection } from "./chat/ChatThreadSection";
 import {
   resolveConversationAssistantDisplayName,
 } from "./chat/conversationAgentDisplay";
-import {
-  focusTopbarTarget,
-  resolveTopbarTargetElement,
-  scrollThreadTargetIntoView,
-} from "./chat/conversationTopbarDom";
-import {
-  resolveConversationTopbarTarget,
-  type ConversationTopbarTarget,
-} from "./chat/conversationTopbarNavigation";
-import {
-  deriveConversationTopbarState,
-} from "./chat/conversationTopbarState";
 import {
   buildExecutionSettings,
   ensureConversationAgentBinding,
@@ -151,10 +137,7 @@ import {
   TEAM_YOLO_APPROVAL_CONTEXT,
 } from "./chat/constants";
 import {
-  applyTopbarActionAvailability,
   buildFailedLlmRequestLog,
-  findLatestAskUserAnchorMessageId,
-  findLatestRestoreAnchorMessageId,
   findLatestVisibleAssistantPlanMessage,
   isLlmResponseFailureCategory,
   summarizeConversationHistoryForDebug,
@@ -168,6 +151,7 @@ import { useThreadAutoScroll } from "./chat/hooks/useThreadAutoScroll";
 import { useConversationLifecycle } from "./chat/hooks/useConversationLifecycle";
 import { useConversationDebugLog } from "./chat/hooks/useConversationDebugLog";
 import { useShellJobs } from "./chat/hooks/useShellJobs";
+import { useConversationTopbar } from "./chat/hooks/useConversationTopbar";
 import { ChatComposer } from "./chat/composer/ChatComposer";
 import { type ConversationDebugEntry } from "./chat/debugExport";
 import {
@@ -249,9 +233,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     handleThreadScroll,
   } = useThreadAutoScroll();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const [expandedPlanMessageId, setExpandedPlanMessageId] = useState<string | null>(null);
-  const [expandedPlanActionId, setExpandedPlanActionId] = useState<string | null>(null);
-  const [expandedPlanRequestKey, setExpandedPlanRequestKey] = useState(0);
 
   const workingMemoryBySessionRef = useRef(
     new Map<string, WorkingMemorySnapshot | null>(),
@@ -2238,189 +2219,31 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     activeAgentName: activeAgent.name,
   });
   const activeConversationIdentity = resolveScopedSessionId(currentConversation);
-  const askUserAnchorMessageId = useMemo(
-    () =>
-      findLatestAskUserAnchorMessageId({
-        messages: messages,
-        lastVisibleMessage,
-        isStreaming,
-        liveToolCalls,
-        hasAskUserPending,
-      }),
-    [
-      hasAskUserPending,
-      isStreaming,
-      lastVisibleMessage?.id,
-      liveToolCalls,
-      messages,
-    ],
-  );
-  const restoreAnchorMessageId = useMemo(
-    () => findLatestRestoreAnchorMessageId(visibleMessages, hasRestoreNotice),
-    [hasRestoreNotice, visibleMessages],
-  );
-  const derivedTopbarState = useMemo(
-    () =>
-      deriveConversationTopbarState({
-      agentLabel: assistantDisplayName,
-      isStreaming,
-      liveToolCalls,
-      subAgentStatus,
-      activePlan,
-      hasAskUserPending,
-      hasRestoreNotice,
-      sessionNote,
-      }),
-    [
-      activeConversationIdentity,
-      activePlan,
-      assistantDisplayName,
-      hasAskUserPending,
-      hasRestoreNotice,
-      isStreaming,
-      liveToolCalls,
-      sessionNote,
-      subAgentStatus,
-    ],
-  );
-  const topbarTargets = useMemo(() => {
-    const targets = new Map<ConversationTopbarAction, ConversationTopbarTarget | null>();
 
-    for (const badge of derivedTopbarState.badges) {
-      if (!badge.action || targets.has(badge.action)) {
-        continue;
-      }
-      targets.set(
-        badge.action,
-        resolveConversationTopbarTarget({
-          action: badge.action,
-          messages,
-          activePlan,
-          liveToolCalls,
-          subAgentStatus,
-          hasAskUserPending,
-          askUserAnchorMessageId,
-          hasRestoreNotice,
-          restoreAnchorMessageId,
-          sessionNote,
-        }),
-      );
-    }
-
-    if (derivedTopbarState.progress.visible) {
-      targets.set(
-        "progress",
-        resolveConversationTopbarTarget({
-          action: "progress",
-          messages,
-          activePlan,
-          liveToolCalls,
-          subAgentStatus,
-          hasAskUserPending,
-          askUserAnchorMessageId,
-          hasRestoreNotice,
-          restoreAnchorMessageId,
-          sessionNote,
-        }),
-      );
-    }
-
-    if (derivedTopbarState.attention?.ctaAction) {
-      targets.set(
-        derivedTopbarState.attention.ctaAction,
-        resolveConversationTopbarTarget({
-          action: derivedTopbarState.attention.ctaAction,
-          messages,
-          activePlan,
-          liveToolCalls,
-          subAgentStatus,
-          hasAskUserPending,
-          askUserAnchorMessageId,
-          hasRestoreNotice,
-          restoreAnchorMessageId,
-          sessionNote,
-        }),
-      );
-    }
-
-    return targets;
-  }, [
-    activeConversationIdentity,
-    activePlan,
+  const {
+    expandedPlanMessageId,
+    expandedPlanActionId,
+    expandedPlanRequestKey,
     askUserAnchorMessageId,
-    derivedTopbarState,
+    restoreAnchorMessageId,
+    topbarState,
+    handleTopbarAction,
+  } = useConversationTopbar({
+    assistantDisplayName,
+    activeConversationIdentity,
+    messages,
+    visibleMessages,
+    lastVisibleMessage,
+    activePlan,
+    isStreaming,
+    liveToolCalls,
+    subAgentStatus,
     hasAskUserPending,
     hasRestoreNotice,
-    liveToolCalls,
-    messages,
-    restoreAnchorMessageId,
     sessionNote,
-    subAgentStatus,
-  ]);
-  const topbarState = useMemo(
-    () => applyTopbarActionAvailability(derivedTopbarState, topbarTargets),
-    [derivedTopbarState, topbarTargets],
-  );
-
-  useEffect(() => {
-    setExpandedPlanMessageId(null);
-    setExpandedPlanActionId(null);
-    setExpandedPlanRequestKey(0);
-  }, [activeConversationIdentity]);
-
-  const navigateTopbarTarget = useCallback(
-    (target: ConversationTopbarTarget, waitForExpansion = false): void => {
-      const runNavigation = () => {
-        const resolved = resolveTopbarTargetElement({
-          thread: threadRef.current,
-          contextAnchor: contextAnchorRef.current,
-          target,
-        });
-        if (!resolved) {
-          return;
-        }
-
-        if (threadRef.current && threadRef.current.contains(resolved)) {
-          scrollThreadTargetIntoView(threadRef.current, resolved);
-        } else {
-          resolved.scrollIntoView?.({ block: "nearest" });
-        }
-        focusTopbarTarget(resolved);
-      };
-
-      window.requestAnimationFrame(() => {
-        if (waitForExpansion) {
-          window.requestAnimationFrame(runNavigation);
-          return;
-        }
-        runNavigation();
-      });
-    },
-    [],
-  );
-
-  const handleTopbarAction = useCallback(
-    (action: ConversationTopbarAction): void => {
-      const target = topbarTargets.get(action) ?? null;
-      if (!target) {
-        return;
-      }
-
-      const shouldExpandPlan =
-        Boolean(target.messageId) &&
-        (target.anchor === "approval" ||
-          target.anchor === "plan" ||
-          target.anchor === "blocked_output");
-      if (shouldExpandPlan) {
-        setExpandedPlanMessageId(target.messageId ?? null);
-        setExpandedPlanActionId(target.actionId ?? null);
-        setExpandedPlanRequestKey((current) => current + 1);
-      }
-
-      navigateTopbarTarget(target, shouldExpandPlan);
-    },
-    [navigateTopbarTarget, topbarTargets],
-  );
+    threadRef,
+    contextAnchorRef,
+  });
 
   // Listen for global new-conversation shortcut
   useEffect(() => {
