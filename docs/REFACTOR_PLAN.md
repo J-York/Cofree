@@ -78,7 +78,7 @@ src/ui/pages/chat/
 2. ✅ **B1.2** 抽 `useChatStreaming` — 流式回复 + abort 相关的 state/effect
 3. ✅ **B1.3** 抽 `useApprovalQueue` — 审批门相关的 state
 4. ✅ **B1.4** 抽 `useMentionSuggestions` + `useSkillDiscovery`
-5. 🟨 **B1.5** 抽 `useConversationLifecycle` + `useWorkspaceRefresh`（**部分完成**：`useWorkspaceRefresh` 已随 B1.4 并入 `useMentionSuggestions`；`useConversationLifecycle` 因深度闭包依赖延后到 B1.7 一并处理）
+5. ✅ **B1.5** 抽 `useConversationLifecycle` + `useWorkspaceRefresh`（`useWorkspaceRefresh` 随 B1.4 并入 `useMentionSuggestions`；`useConversationLifecycle` 延后到 B1.7.4 完成）
 6. ✅ **B1.6** `ChatComposer` 从 `ChatComposerSection` 独立成真正的子组件文件
 7. ✅ **B1.7** `ChatPage.tsx` 收尾 → 组装器形态（3908 → 1159，-70%，分 9 小步）
    - ✅ B1.7.1 顶部 helpers/types/constants 外移
@@ -90,8 +90,6 @@ src/ui/pages/chat/
    - ✅ B1.7.6b 抽 `useWorkspaceTeamTrust`
    - ✅ B1.7.6c 抽 `useApprovalActions`
    - ✅ B1.7.6d 抽 `useChatExecution`
-   - ⏳ B1.7.5 抽 `useShellJobs`
-   - ⏳ B1.7.6 抽 `useApprovalActions` + `useChatExecution` + `useWorkspaceTeamTrust` + `useConversationTopbar`
 
 每一步都**单独提交**，每步跑 `pnpm test -- --run` 全绿再进入下一步。
 
@@ -127,3 +125,4 @@ src/ui/pages/chat/
 - 2026-04-18 [B1.7.6c] 抽出 `useApprovalActions`：`ensureApprovalInteractionAllowed` + 7 个审批 handler（approve / retry / reject / comment / approveAll / cancel / rejectAll）搬进 side-effect-only hook，约 440 行编排代码脱离 ChatPage。ChatPage.tsx 2248 → 1811 行（-437）；tsc clean，432/432 tests green
 - 2026-04-19 [B1.7.6d] 抽出 `useChatExecution`：核心执行链 `handleCancel` / `continueAfterHitlIfNeeded` / `runChatCycle` / `handleSubmit` / `handlePlanUpdate`（约 700 行）全部搬进 hook。hook 无自有状态，通过 ~40 字段的 options bag 注入所有 ref/setter/callback。`handlePlanUpdateRef` / `continueAfterHitlIfNeededRef` 仍在 ChatPage 初始化（`useShellJobs` 的 stale-closure 绕路需要）。ChatPage.tsx 1811 → 1159 行（-652）；tsc clean，432/432 tests green
 - 2026-04-19 [B1.7 完成] ChatPage.tsx 从 3908 行收敛到 1159 行（-70%）。B1 轨道整体完成。剩余的 1159 行主要是 props 绑线、checkpoint 恢复 effect、剩余 3-4 个 useEffect 粘合、JSX（~170 行）。相较原计划 < 600 的目标未完全达成，但收益显著：God file 已不复存在，所有关注点都有自己的 hook / 子组件文件，每个 hook ≤ 900 行且聚焦单一职责，可测性和可诊断性大幅提升。
+- 2026-04-19 [B1.5 补登] B1.5 扶正为 ✅：`useWorkspaceRefresh` 在 B1.4 已并入 `useMentionSuggestions`，`useConversationLifecycle` 在 B1.7.4 完成。同步清理 B1.7 子任务列表里残留的两行 ⏳ 占位（与上面 B1.7.5 / B1.7.6a-d 重复）。
