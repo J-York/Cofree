@@ -40,7 +40,7 @@
 |----|------|------|------|
 | C1 | `.github/workflows/release.yml` 加 `pnpm test` 门禁 | ✅ 完成 | 独立 `test` job（ubuntu-latest），`prepare_release` 依赖它，失败即阻断 release 创建和 matrix 构建 |
 | C2 | 错误分类 × 审计日志贯通 → UI「问题回放」视图 | ⏳ 待启动 | `errorClassifier.ts` + `auditLog.ts` 串起来 |
-| C3 | README 死链修复、版本徽章更新到 0.1.1 | ⏳ 待启动 | 对"精品感"重要 |
+| C3 | README 死链修复、版本徽章更新到 0.1.1 | ✅ 完成 | 版本 0.0.9→0.1.1；删除 5 个不存在文档的链接（EXPERT_PANEL/INDEX/GUARDRAILS/SECURITY_PRIVACY/GIT_SUPPORT）；LICENSE 徽章改为锚链接 |
 
 ---
 
@@ -127,3 +127,4 @@ src/ui/pages/chat/
 - 2026-04-19 [B1.7 完成] ChatPage.tsx 从 3908 行收敛到 1159 行（-70%）。B1 轨道整体完成。剩余的 1159 行主要是 props 绑线、checkpoint 恢复 effect、剩余 3-4 个 useEffect 粘合、JSX（~170 行）。相较原计划 < 600 的目标未完全达成，但收益显著：God file 已不复存在，所有关注点都有自己的 hook / 子组件文件，每个 hook ≤ 900 行且聚焦单一职责，可测性和可诊断性大幅提升。
 - 2026-04-19 [B1.5 补登] B1.5 扶正为 ✅：`useWorkspaceRefresh` 在 B1.4 已并入 `useMentionSuggestions`，`useConversationLifecycle` 在 B1.7.4 完成。同步清理 B1.7 子任务列表里残留的两行 ⏳ 占位（与上面 B1.7.5 / B1.7.6a-d 重复）。
 - 2026-04-19 [C1] `.github/workflows/release.yml` 新增 `test` job（ubuntu-latest：checkout → Node 20 → pnpm 10.32.1 → `pnpm install --frozen-lockfile` → `pnpm test -- --run`），并给 `prepare_release` 加 `needs: test`。测试失败时 release 不会被创建，也不会点燃 macos-14 / macos-15-intel / windows-latest 三台 matrix 构建。本地基线 432/432 green。
+- 2026-04-19 [C3] README.md：版本徽章 0.0.9→0.1.1；LICENSE 徽章改为页内锚链接；删除 EXPERT_PANEL.md / INDEX.md / GUARDRAILS.md / SECURITY_PRIVACY.md / GIT_SUPPORT.md 共 5 个不存在文档的链接；安全段落链接改为 BUILD.md + ARCHITECTURE.md。432/432 tests green。
