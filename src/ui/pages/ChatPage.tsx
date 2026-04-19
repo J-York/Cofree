@@ -1,5 +1,6 @@
 import {
   type ReactElement,
+  type SetStateAction,
   useCallback,
   useEffect,
   useRef,
@@ -25,6 +26,7 @@ import type { AppSettings } from "../../lib/settingsStore";
 import { globWorkspaceFiles } from "../../lib/tauriBridge";
 import type { ChatAgentDefinition } from "../../agents/types";
 import { type CategorizedError } from "../../lib/errorClassifier";
+import { recordErrorAudit } from "../../lib/auditLog";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { InputDialog } from "../components/InputDialog";
 import { AskUserDialog } from "../components/AskUserDialog";
@@ -129,6 +131,24 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const [selectedSkills, setSelectedSkills] = useState<SkillEntry[]>([]);
   const [categorizedError, setCategorizedError] =
     useState<CategorizedError | null>(null);
+  const setAndAuditError = useCallback(
+    (value: SetStateAction<CategorizedError | null>) => {
+      const error = typeof value === "function" ? value(categorizedError) : value;
+      setCategorizedError(error);
+      if (error) {
+        recordErrorAudit({
+          category: error.category,
+          title: error.title,
+          message: error.message,
+          retriable: error.retriable,
+          guidance: error.guidance,
+          rawError: error.rawError,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    },
+    [categorizedError],
+  );
   const {
     isStreaming,
     setIsStreaming,
@@ -333,7 +353,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     requestThreadScrollToBottom,
     setIsStreaming,
     setLiveToolCalls,
-    setCategorizedError,
+    setCategorizedError: setAndAuditError,
     setSubAgentStatus,
   });
 
@@ -421,7 +441,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     handlePlanUpdateRef,
     continueAfterHitlIfNeededRef,
     setSessionNote,
-    setCategorizedError,
+    setCategorizedError: setAndAuditError,
   });
   const checkpointRestoreScope = getCheckpointRestoreScope(
     currentConversation,
@@ -520,7 +540,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     setConversations,
     setIsStreaming,
     setSessionNote,
-    setCategorizedError,
+    setCategorizedError: setAndAuditError,
     setLiveContextTokens,
     setLiveToolCalls,
     setSubAgentStatus,
@@ -905,7 +925,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     pendingShellQueuesRef,
     setExecutingActionId,
     setSessionNote,
-    setCategorizedError,
+    setCategorizedError: setAndAuditError,
     setInputDialog,
     resolveScopedSessionId,
     syncAskUserRequestForSession,
@@ -940,7 +960,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     ensureApprovalInteractionAllowed,
     handleApproveAllActionsThreadRef,
     setSessionNote,
-    setCategorizedError,
+    setCategorizedError: setAndAuditError,
   });
 
   const handlePromptChange = (nextText: string, caretIndex?: number): void => {
@@ -1059,7 +1079,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
                 onRetry={
                   categorizedError.retriable
                     ? () => {
-                      setCategorizedError(null);
+                      setAndAuditError(null);
                       setFailedLlmRequestLog(null);
                       if (lastPromptRef.current) {
                         void runChatCycle(lastPromptRef.current, {
@@ -1080,7 +1100,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
                 }
                 copyDebugLogLabel="复制本次请求日志"
                 onDismiss={() => {
-                  setCategorizedError(null);
+                  setAndAuditError(null);
                   setFailedLlmRequestLog(null);
                 }}
               />

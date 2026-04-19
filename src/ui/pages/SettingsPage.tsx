@@ -63,6 +63,7 @@ import {
 } from "./settingsTypes";
 import { useTheme, getThemeLabel, type ThemeMode } from "../../hooks/useTheme";
 import { SkillTab } from "./SkillTab";
+import { AuditTab } from "./AuditTab";
 
 const SettingsModelTab = lazy(() =>
   import("./ModelTab").then((module) => ({ default: module.ModelTab }))
@@ -880,6 +881,8 @@ export function SettingsPage({
               setSaveMessage={setSaveMessage}
             />
           )}
+
+          {activeTab === "audit" && <AuditTab />}
         </div>
 
         <SettingsPageFooter saveMessage={saveMessage} onSave={handleSave} />

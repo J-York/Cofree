@@ -13,6 +13,7 @@ import { redactSensitiveText, sanitizeForPersistence } from "./redaction";
 
 const AUDIT_LOG_STORAGE_KEY = "cofree.audit.llm.v1";
 const ACTION_AUDIT_LOG_STORAGE_KEY = "cofree.audit.actions.v1";
+const ERROR_AUDIT_LOG_STORAGE_KEY = "cofree.audit.errors.v1";
 const MAX_AUDIT_RECORDS = 200;
 
 export interface LLMAuditRecord {
@@ -25,8 +26,23 @@ export interface LLMAuditRecord {
   outputLength: number;
 }
 
+export interface ErrorAuditRecord {
+  category: string;
+  title: string;
+  message: string;
+  retriable: boolean;
+  guidance: string;
+  rawError?: string;
+  timestamp: string;
+  conversationId?: string;
+}
+
 interface StoredAuditPayload {
   records: LLMAuditRecord[];
+}
+
+interface StoredErrorAuditPayload {
+  records: ErrorAuditRecord[];
 }
 
 export interface SensitiveActionAuditRecord {
@@ -130,6 +146,63 @@ export function readSensitiveActionAuditRecords(): SensitiveActionAuditRecord[] 
   return parseStoredActionRecords(window.localStorage.getItem(ACTION_AUDIT_LOG_STORAGE_KEY));
 }
 
+function parseStoredErrorRecords(raw: string | null): ErrorAuditRecord[] {
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredErrorAuditPayload>;
+    if (!Array.isArray(parsed.records)) {
+      return [];
+    }
+
+    return parsed.records.filter(
+      (record): record is ErrorAuditRecord =>
+        typeof record.category === "string" &&
+        typeof record.title === "string" &&
+        typeof record.message === "string" &&
+        typeof record.retriable === "boolean" &&
+        typeof record.guidance === "string" &&
+        typeof record.timestamp === "string"
+    );
+  } catch (_error) {
+    return [];
+  }
+}
+
+export function readErrorAuditRecords(): ErrorAuditRecord[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  return parseStoredErrorRecords(window.localStorage.getItem(ERROR_AUDIT_LOG_STORAGE_KEY));
+}
+
+export function recordErrorAudit(record: ErrorAuditRecord): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const safeRecord: ErrorAuditRecord = {
+    ...record,
+    title: redactSensitiveText(record.title, 120),
+    message: redactSensitiveText(record.message, 400),
+    rawError: record.rawError ? redactSensitiveText(record.rawError, 800) : undefined,
+  };
+
+  const next = [safeRecord, ...readErrorAuditRecords()].slice(0, MAX_AUDIT_RECORDS);
+  window.localStorage.setItem(ERROR_AUDIT_LOG_STORAGE_KEY, JSON.stringify({ records: next }));
+}
+
+export function clearErrorAuditRecords(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(ERROR_AUDIT_LOG_STORAGE_KEY);
+}
+
 export function recordSensitiveActionAudit(record: SensitiveActionAuditRecord): void {
   if (typeof window === "undefined") {
     return;
@@ -153,12 +226,14 @@ export function recordSensitiveActionAudit(record: SensitiveActionAuditRecord): 
 export function exportAuditToJSON(): string {
   const llm = readLLMAuditRecords();
   const actions = readSensitiveActionAuditRecords();
-  return JSON.stringify({ llm, actions, exportedAt: new Date().toISOString() }, null, 2);
+  const errors = readErrorAuditRecords();
+  return JSON.stringify({ llm, actions, errors, exportedAt: new Date().toISOString() }, null, 2);
 }
 
 export function exportAuditToCSV(): string {
   const llm = readLLMAuditRecords();
   const actions = readSensitiveActionAuditRecords();
+  const errors = readErrorAuditRecords();
 
   const llmHeader = "type,requestId,provider,model,timestamp,inputLength,outputLength";
   const llmRows = llm.map(
@@ -172,5 +247,11 @@ export function exportAuditToCSV(): string {
       `action,"${r.actionId}","${r.actionType}","${r.status}","${r.startedAt}","${r.finishedAt}","${r.executor}","${r.reason.replace(/"/g, '""')}","${r.workspacePath}"`
   );
 
-  return [llmHeader, ...llmRows, "", actionHeader, ...actionRows].join("\n");
+  const errorHeader = "type,category,title,message,retriable,guidance,timestamp,conversationId";
+  const errorRows = errors.map(
+    (r) =>
+      `error,"${r.category}","${r.title}","${r.message.replace(/"/g, '""')}",${r.retriable},"${r.guidance.replace(/"/g, '""')}","${r.timestamp}","${r.conversationId ?? ""}"`
+  );
+
+  return [llmHeader, ...llmRows, "", actionHeader, ...actionRows, "", errorHeader, ...errorRows].join("\n");
 }

@@ -39,7 +39,7 @@
 | ID | 任务 | 状态 | 说明 |
 |----|------|------|------|
 | C1 | `.github/workflows/release.yml` 加 `pnpm test` 门禁 | ✅ 完成 | 独立 `test` job（ubuntu-latest），`prepare_release` 依赖它，失败即阻断 release 创建和 matrix 构建 |
-| C2 | 错误分类 × 审计日志贯通 → UI「问题回放」视图 | ⏳ 待启动 | `errorClassifier.ts` + `auditLog.ts` 串起来 |
+| C2 | 错误分类 × 审计日志贯通 → UI「问题回放」视图 | ✅ 完成 | `ErrorAuditRecord` 持久化 + Settings「审计日志」Tab（错误/LLM/操作三栏 + 筛选 + 导出 JSON/CSV） |
 | C3 | README 死链修复、版本徽章更新到 0.1.1 | ✅ 完成 | 版本 0.0.9→0.1.1；删除 5 个不存在文档的链接（EXPERT_PANEL/INDEX/GUARDRAILS/SECURITY_PRIVACY/GIT_SUPPORT）；LICENSE 徽章改为锚链接 |
 
 ---
@@ -128,3 +128,4 @@ src/ui/pages/chat/
 - 2026-04-19 [B1.5 补登] B1.5 扶正为 ✅：`useWorkspaceRefresh` 在 B1.4 已并入 `useMentionSuggestions`，`useConversationLifecycle` 在 B1.7.4 完成。同步清理 B1.7 子任务列表里残留的两行 ⏳ 占位（与上面 B1.7.5 / B1.7.6a-d 重复）。
 - 2026-04-19 [C1] `.github/workflows/release.yml` 新增 `test` job（ubuntu-latest：checkout → Node 20 → pnpm 10.32.1 → `pnpm install --frozen-lockfile` → `pnpm test -- --run`），并给 `prepare_release` 加 `needs: test`。测试失败时 release 不会被创建，也不会点燃 macos-14 / macos-15-intel / windows-latest 三台 matrix 构建。本地基线 432/432 green。
 - 2026-04-19 [C3] README.md：版本徽章 0.0.9→0.1.1；LICENSE 徽章改为页内锚链接；删除 EXPERT_PANEL.md / INDEX.md / GUARDRAILS.md / SECURITY_PRIVACY.md / GIT_SUPPORT.md 共 5 个不存在文档的链接；安全段落链接改为 BUILD.md + ARCHITECTURE.md。432/432 tests green。
+- 2026-04-19 [C2] 错误分类 × 审计日志贯通 → UI 问题回放视图。`auditLog.ts` 新增 `ErrorAuditRecord`（category/title/message/retriable/guidance/rawError/timestamp/conversationId）+ `recordErrorAudit()` / `readErrorAuditRecords()` / `clearErrorAuditRecords()`，`exportAuditToJSON/CSV` 已包含 errors。`ChatPage.tsx` 包装 `setAndAuditError`（支持 SetStateAction 形式），在每次设置非 null CategorizedError 时同时调用 `recordErrorAudit()`。新建 `AuditTab.tsx`：错误日志（分类筛选 + 展开详情 + 清空）、LLM 请求审计简表（最近 50 条）、操作审计简表（最近 50 条）、JSON/CSV 导出。`settingsTypes.ts` 加 `"audit"` tab、`SettingsPage.tsx` 加渲染分支。CSS 新增 `.audit-list/.audit-row/.audit-category-badge` 等样式。tsc clean，432/432 tests green。

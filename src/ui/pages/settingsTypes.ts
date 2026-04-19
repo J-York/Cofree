@@ -22,7 +22,7 @@ export interface SettingsPageProps {
   onClose?: () => void;
 }
 
-export type SettingsTab = "agents" | "skills" | "model" | "tools" | "advanced";
+export type SettingsTab = "agents" | "skills" | "model" | "tools" | "advanced" | "audit";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "agents", label: "Agent 管理" },
@@ -30,6 +30,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "model", label: "模型配置" },
   { id: "tools", label: "工具权限" },
   { id: "advanced", label: "高级" },
+  { id: "audit", label: "审计日志" },
 ];
 
 export interface ToolPermissionRowProps {
