@@ -2883,6 +2883,10 @@ function shouldUseTodoPlanning(
   return normalized.length >= 50;
 }
 
+function normalizeFingerprintForComparison(fingerprint: string): string {
+  return fingerprint.trim().replace(/:+$/, "");
+}
+
 function buildProposedActions(
   fromTools: ActionProposal[],
   blockedFingerprints: Iterable<string> = []
@@ -2890,7 +2894,9 @@ function buildProposedActions(
   const uniqueActions: ActionProposal[] = [];
   const seen = new Set<string>();
   const blocked = new Set(
-    Array.from(blockedFingerprints, (value) => value.trim()).filter(Boolean)
+    Array.from(blockedFingerprints, (value) =>
+      normalizeFingerprintForComparison(value)
+    ).filter(Boolean)
   );
 
   for (const action of fromTools) {
@@ -2902,23 +2908,27 @@ function buildProposedActions(
       continue;
     }
 
-    const fingerprint = actionFingerprint(action);
+    const fingerprint =
+      action.fingerprint ?? actionFingerprint(action);
+    const normalizedFingerprint = normalizeFingerprintForComparison(
+      fingerprint
+    );
 
-    if (blocked.has(fingerprint)) {
+    if (blocked.has(normalizedFingerprint)) {
       console.warn(
         `[Planning][ProposedActions] Dropping blocked proposed action | type=${action.type} | action=${action.id} | fingerprint=${fingerprint}`
       );
       continue;
     }
 
-    if (seen.has(fingerprint)) {
+    if (seen.has(normalizedFingerprint)) {
       console.warn(
         `[Planning][ProposedActions] Dropping duplicate proposed action | type=${action.type} | action=${action.id} | fingerprint=${fingerprint}`
       );
       continue;
     }
 
-    seen.add(fingerprint);
+    seen.add(normalizedFingerprint);
     if (!action.fingerprint) {
       action.fingerprint = fingerprint;
     }
