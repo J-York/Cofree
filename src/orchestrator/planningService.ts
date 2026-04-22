@@ -54,7 +54,7 @@ import {
   buildCofreeRcPromptFragment,
   type CofreeRcConfig,
 } from "../lib/cofreerc";
-import { generateRepoMap, clearRepoMapCaches } from "./repoMapService";
+import { generateRepoMap } from "./repoMapService";
 import { buildExplicitContextNote } from "./explicitContextService";
 import { SummaryCache } from "../lib/summaryCache";
 import {
@@ -120,7 +120,6 @@ import type {
 } from "./toolTraceTypes";
 import {
   extractFileKnowledge,
-  serializeWorkingMemory,
   snapshotWorkingMemory,
   type WorkingMemory,
   type WorkingMemorySnapshot,
@@ -129,6 +128,12 @@ import {
   initWorkingMemoryForLoop,
   maybeEmitIncrementalCheckpoint,
 } from "./checkpointBridge";
+import {
+  pruneStaleSystemMessages,
+  refreshWorkspaceContext,
+  upsertTodoPlanContextMessage,
+  upsertWorkingMemoryContextMessage,
+} from "./loopPromptScaffolding";
 import type { AskUserRequest } from "./askUserService";
 
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
@@ -292,8 +297,6 @@ const LLM_RETRY_MAX_DELAY_MS = 15000;
 
 const MAX_ABSOLUTE_TURNS = 150;
 
-const WORKING_MEMORY_NOTE_PREFIX = "[工作记忆刷新]";
-const TODO_PLAN_NOTE_PREFIX = "[Todo Plan]";
 const WORKING_MEMORY_REFRESH_INTERVAL = 6;
 
 // --- Tool-calling reinforcement interval ---
@@ -304,40 +307,6 @@ function computeWorkingMemoryFingerprint(wm: WorkingMemory): string {
   return `${wm.fileKnowledge.size}`;
 }
 
-
-/**
- * Remove stale interstitial system messages that accumulate between tool
- * turns.  Keeps only the most recent N system messages outside of the
- * pinned prefix and the final block.
- */
-function pruneStaleSystemMessages(
-  messages: LiteLLMMessage[],
-  pinnedPrefixLen: number,
-  maxInterstitialSystemMsgs: number,
-): LiteLLMMessage[] {
-  const interstitialIndices: number[] = [];
-
-  for (let i = pinnedPrefixLen; i < messages.length; i++) {
-    const msg = messages[i];
-    if (
-      msg.role === "system" &&
-      !msg.content.startsWith(WORKING_MEMORY_NOTE_PREFIX) &&
-      !msg.content.startsWith(TODO_PLAN_NOTE_PREFIX)
-    ) {
-      interstitialIndices.push(i);
-    }
-  }
-
-  if (interstitialIndices.length <= maxInterstitialSystemMsgs) {
-    return messages;
-  }
-
-  const toRemove = new Set(
-    interstitialIndices.slice(0, interstitialIndices.length - maxInterstitialSystemMsgs),
-  );
-
-  return messages.filter((_, idx) => !toRemove.has(idx));
-}
 
 /**
  * Find the nearest line boundary before or at the given index.
@@ -389,157 +358,6 @@ function smartTruncate(
   return content.slice(0, headEnd) + ellipsis + content.slice(tailStart);
 }
 
-function upsertPinnedSystemMessage(params: {
-  messages: LiteLLMMessage[];
-  prefix: string;
-  content: string;
-  insertionIndex?: number;
-}): void {
-  for (let index = params.messages.length - 1; index >= 0; index -= 1) {
-    const message = params.messages[index];
-    if (
-      message.role === "system"
-      && typeof message.content === "string"
-      && message.content.startsWith(params.prefix)
-    ) {
-      params.messages.splice(index, 1);
-    }
-  }
-
-  const normalizedContent = params.content.trim();
-  if (!normalizedContent) {
-    return;
-  }
-
-  const currentPrefixLen = initialSystemPrefixLength(params.messages);
-  const requestedIndex =
-    typeof params.insertionIndex === "number" && Number.isFinite(params.insertionIndex)
-      ? Math.floor(params.insertionIndex)
-      : currentPrefixLen;
-  const insertAt = Math.max(0, Math.min(currentPrefixLen, requestedIndex));
-
-  params.messages.splice(insertAt, 0, {
-    role: "system",
-    content: normalizedContent,
-  });
-}
-
-function upsertWorkingMemoryContextMessage(params: {
-  messages: LiteLLMMessage[];
-  workingMemory: WorkingMemory;
-  tokenBudget: number;
-  query: string;
-  focusedPaths?: string[];
-}): void {
-  const memoryContext = serializeWorkingMemory(
-    params.workingMemory,
-    params.tokenBudget,
-    {
-      query: params.query,
-      focusedPaths: params.focusedPaths,
-    },
-  );
-
-  if (!memoryContext.trim()) {
-    return;
-  }
-
-  upsertPinnedSystemMessage({
-    messages: params.messages,
-    prefix: WORKING_MEMORY_NOTE_PREFIX,
-    content: `${WORKING_MEMORY_NOTE_PREFIX}\n${memoryContext}`,
-  });
-}
-
-const WORKSPACE_REFRESH_NOTE_PREFIX = "[工作区上下文更新]";
-
-/**
- * Refresh workspace context (overview + repo-map) and inject as a system message.
- * This allows the LLM to see updated workspace state after file modifications.
- */
-async function refreshWorkspaceContext(params: {
-  messages: LiteLLMMessage[];
-  workspacePath: string;
-  projectConfig: CofreeRcConfig;
-  normalizedPrompt: string;
-  sessionFocusedPaths: string[];
-  turnNumber: number;
-}): Promise<void> {
-  const { messages, workspacePath, projectConfig, normalizedPrompt, sessionFocusedPaths, turnNumber } = params;
-
-  let refreshNote = "";
-
-  // Refresh workspace overview
-  try {
-    const overviewBudget: WorkspaceOverviewBudget | undefined = projectConfig.overviewBudget;
-    const overview = await summarizeWorkspaceFiles(
-      workspacePath,
-      projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
-        ? projectConfig.ignorePatterns
-        : null,
-      overviewBudget
-    );
-    const overviewPrompt = `项目概览（已更新）：\n${overview}`;
-    refreshNote = overviewPrompt;
-  } catch (e) {
-    console.warn("[Workspace Refresh] Failed to regenerate workspace overview", e);
-  }
-
-  // Clear repo-map cache and regenerate
-  if (projectConfig.repoMap?.enabled !== false) {
-    try {
-      // Force cache invalidation to get fresh data
-      clearRepoMapCaches();
-
-      const contextLimit = 128000; // Use default context limit
-      const repoMapBudget = Math.min(
-        4000,
-        Math.max(500, Math.floor(contextLimit * 0.03)),
-      );
-      const repoMap = await generateRepoMap(
-        workspacePath,
-        projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
-          ? projectConfig.ignorePatterns
-          : null,
-        projectConfig.repoMap?.tokenBudget ?? repoMapBudget,
-        {
-          taskDescription: normalizedPrompt,
-          prioritizedPaths: sessionFocusedPaths,
-          maxFiles: projectConfig.repoMap?.maxFiles,
-        },
-      );
-      if (repoMap) {
-        refreshNote = refreshNote ? `${refreshNote}\n\n${repoMap}` : repoMap;
-        console.log(
-          `[Workspace Refresh] Repo-map regenerated at turn ${turnNumber} (~${repoMap.length} chars)`,
-        );
-      }
-    } catch (e) {
-      console.warn("[Workspace Refresh] Failed to regenerate repo-map", e);
-    }
-  }
-
-  if (refreshNote) {
-    // Inject the refreshed context as a system message
-    upsertPinnedSystemMessage({
-      messages,
-      prefix: WORKSPACE_REFRESH_NOTE_PREFIX,
-      content: `${WORKSPACE_REFRESH_NOTE_PREFIX}\n${refreshNote}`,
-    });
-    console.log(`[Workspace Refresh] Context refreshed at turn ${turnNumber}`);
-  }
-}
-
-function upsertTodoPlanContextMessage(messages: LiteLLMMessage[], planState: TodoPlanState): string {
-  const todoPrompt = buildTodoSystemPrompt(planState);
-  upsertPinnedSystemMessage({
-    messages,
-    prefix: TODO_PLAN_NOTE_PREFIX,
-    content: todoPrompt,
-    insertionIndex: 2,
-  });
-  return todoPrompt;
-}
 
 function normalizeFocusedPathList(paths: string[] | undefined): string[] {
   return [...new Set(
