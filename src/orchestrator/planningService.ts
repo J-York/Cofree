@@ -12,7 +12,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { recordLLMAudit } from "../lib/auditLog";
 import {
-  gatewaySummarize,
   type LiteLLMMessage,
   type LiteLLMToolDefinition,
 } from "../lib/piAiBridge";
@@ -56,7 +55,6 @@ import {
 } from "../lib/cofreerc";
 import { generateRepoMap } from "./repoMapService";
 import { buildExplicitContextNote } from "./explicitContextService";
-import { SummaryCache } from "../lib/summaryCache";
 import {
   clearOldToolUses,
   compressMessagesToFitBudget,
@@ -139,6 +137,7 @@ import {
   evaluateCompressionSafeZone,
   markSummarizedNow,
 } from "./compressionScheduler";
+import { hashText, requestSummary } from "./summarization";
 import type { AskUserRequest } from "./askUserService";
 
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
@@ -146,9 +145,6 @@ const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
 
 
 // --- Phase 4: Context management budgets ---
-const SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000;
-const SUMMARY_CACHE_MAX_ENTRIES = 100;
-
 const MIN_MESSAGES_TO_SUMMARIZE = 4;
 
 // --- Context Editing: proactive tool-use eviction (defaults for small windows) ---
@@ -211,9 +207,6 @@ function computeAdaptiveCompressionParams(limitTokens: number): AdaptiveCompress
     compressionSafeZoneRatio: 0.62,
   };
 }
-
-// P1-2: Max chars per chunk for map-reduce summarization
-const SUMMARY_CHUNK_MAX_CHARS = 8000;
 
 const MAX_MULTI_ARTIFACT_REMINDER_ROUNDS = 2;
 const MAX_PROPOSED_ACTIONS_PER_BATCH = 5;
@@ -945,40 +938,6 @@ function detectPatchOperationKinds(patch: string): string[] {
   return Array.from(kinds).sort();
 }
 
-function hashText(value: string): string {
-  let hash = 5381;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = ((hash << 5) + hash + value.charCodeAt(index)) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
-}
-
-
-function stableMessageHashKey(
-  messages: LiteLLMMessage[],
-  workspacePath?: string
-): string {
-  const normalized = messages
-    .map((m) => {
-      const toolCalls = m.tool_calls ? JSON.stringify(m.tool_calls) : "";
-      const toolCallId = (m as any).tool_call_id
-        ? String((m as any).tool_call_id)
-        : "";
-      const name = (m as any).name ? String((m as any).name) : "";
-      return [m.role, m.content ?? "", toolCalls, toolCallId, name].join(
-        "\u001f"
-      );
-    })
-    .join("\u001e");
-  const scope = workspacePath?.trim() ? `ws:${workspacePath.trim()}` : "ws:";
-  return `${scope}:${hashText(normalized)}`;
-}
-
-const summaryCache = new SummaryCache({
-  ttlMs: SUMMARY_CACHE_TTL_MS,
-  maxEntries: SUMMARY_CACHE_MAX_ENTRIES,
-});
-
 function buildAgentToolDefs(runtime: ResolvedAgentRuntime): LiteLLMToolDefinition[] {
   const enabled = new Set<string>([...runtime.enabledTools, ...INTERNAL_TOOL_NAMES]);
   return TOOL_DEFINITIONS.filter((td) => enabled.has(td.function.name));
@@ -1060,41 +1019,6 @@ export interface PlanningSessionResult {
   };
 }
 
-
-
-
-function normalizeMessageContent(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (Array.isArray(content)) {
-    return content
-      .map((item) => {
-        if (typeof item === "string") {
-          return item;
-        }
-        if (
-          item &&
-          typeof item === "object" &&
-          "type" in item &&
-          (item as Record<string, unknown>).type === "text" &&
-          "text" in item &&
-          typeof (item as Record<string, unknown>).text === "string"
-        ) {
-          return (item as Record<string, string>).text;
-        }
-        return "";
-      })
-      .join("");
-  }
-
-  return "";
-}
-
-
-
-
 function formatVendorProtocolLabel(protocol: string): string {
   switch (protocol) {
     case "openai-responses":
@@ -1105,123 +1029,6 @@ function formatVendorProtocolLabel(protocol: string): string {
     default:
       return "OpenAI Chat Completions";
   }
-}
-
-
-// ---------------------------------------------------------------------------
-// P1-2: Map-reduce summarization
-// ---------------------------------------------------------------------------
-// Instead of truncating combined content to 12000 chars, we split messages
-// into chunks that each fit within SUMMARY_CHUNK_MAX_CHARS, summarize each
-// chunk independently (Map), then combine the chunk summaries and produce
-// a final reduced summary (Reduce).
-//
-// Reference: LangChain MapReduceChain pattern.
-// ---------------------------------------------------------------------------
-
-const SUMMARY_SYSTEM_PROMPT = [
-  "你是一个代码助手内置的上下文压缩引擎。你的任务是将冗长的对话历史压缩为高密度的摘要，保留对后续工作至关重要的事实与技术上下文。",
-  "请使用高度结构化、简明扼要的语言（中文）输出，严格控制在 800 字以内，并包含以下部分：",
-  "【核心目标】用户最初的需求是什么？",
-  "【已完成变更】涉及哪些文件的修改？具体做了什么（给出关键函数或组件名）？",
-  "【收集到的事实】发现的重要错误信息、项目的架构约束、特殊的配置结构等。",
-  "【当前进展与下一步】任务停在哪里？接下来立即需要解决的是什么？",
-].join("\n");
-
-
-function formatMessagesForSummary(msgs: LiteLLMMessage[]): string {
-  return msgs
-    .map((msg) => {
-      const roleLabel =
-        msg.role === "user"
-          ? "用户"
-          : msg.role === "assistant"
-            ? "助手"
-            : msg.role;
-      // Safely extract text from multimodal content (content may be an array
-      // of {type:"text", text:"..."} objects in some providers).
-      const text = normalizeMessageContent(msg.content);
-      return `[${roleLabel}] ${text}`;
-    })
-    .join("\n---\n");
-}
-
-
-async function summarizeSingleChunk(
-  content: string,
-  settings: AppSettings,
-  systemPrompt: string,
-): Promise<string | null> {
-  const messages: LiteLLMMessage[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content },
-  ];
-
-  try {
-    const response = await gatewaySummarize(messages, settings);
-    const payload = JSON.parse(response.body) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    return payload.choices?.[0]?.message?.content?.trim() ?? null;
-  } catch (error) {
-    console.warn(
-      `[Context] summarizeSingleChunk 失败 | content.length=${content.length}`,
-      error,
-    );
-    return null;
-  }
-}
-
-async function requestSummary(
-  messagesToSummarize: LiteLLMMessage[],
-  settings: AppSettings,
-  options?: {
-    workspacePath?: string;
-  }
-): Promise<string> {
-  const cacheKey = stableMessageHashKey(
-    messagesToSummarize,
-    options?.workspacePath
-  );
-  const cached = summaryCache.get(cacheKey);
-  if (cached) {
-    console.log(`[Context] 摘要命中缓存 (${messagesToSummarize.length} messages)`);
-    return cached;
-  }
-
-  console.log(`[Context] 开始上下文摘要压缩 | ${messagesToSummarize.length} messages`);
-  const sumT0 = performance.now();
-
-  const combinedContent = formatMessagesForSummary(messagesToSummarize);
-
-  // Single-pass summarization: truncate to fit budget, then one LLM call.
-  // For long content, keep the tail (most recent context is most relevant).
-  const contentForSummary =
-    combinedContent.length <= SUMMARY_CHUNK_MAX_CHARS
-      ? combinedContent
-      : "(早期对话已省略)...\n" + combinedContent.slice(-SUMMARY_CHUNK_MAX_CHARS);
-
-  const result = await summarizeSingleChunk(
-    contentForSummary,
-    settings,
-    SUMMARY_SYSTEM_PROMPT,
-  );
-  if (result) {
-    const elapsed = ((performance.now() - sumT0) / 1000).toFixed(2);
-    console.log(`[Context] 摘要完成 | ${elapsed}s | ${result.length} chars`);
-    summaryCache.set(cacheKey, result);
-    return result;
-  }
-
-  // Fallback when summarization fails
-  const userMessages = messagesToSummarize.filter((m) => m.role === "user");
-  const fallbackLines = userMessages
-    .map((m) => m.content.slice(0, 100))
-    .slice(0, 5);
-  const fallback = `[自动摘要] 之前的对话包含 ${messagesToSummarize.length
-    } 条消息。用户主要请求：${fallbackLines.join("；")}`;
-  summaryCache.set(cacheKey, fallback);
-  return fallback;
 }
 
 function normalizeConversationHistory(
