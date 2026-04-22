@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Conversation } from "../../../lib/conversationStore";
-import type { BackgroundStreamState, SubAgentStatusItem } from "./types";
+import type { BackgroundStreamState } from "./types";
 import {
   createBackgroundStreamState,
   createClearedConversation,
@@ -26,19 +26,6 @@ const BASE_CONVERSATION: Conversation = {
   lastTokenCount: 42,
 };
 
-const BASE_SUB_AGENT_STATUS: SubAgentStatusItem[] = [
-  {
-    id: "reviewer",
-    label: "reviewer",
-    role: "reviewer",
-    lastEvent: {
-      kind: "summary",
-      message: "checking",
-    },
-    updatedAt: 123,
-  },
-];
-
 describe("chat sessionState helpers", () => {
   it("creates an empty chat view state", () => {
     expect(createEmptyChatViewState("ready")).toEqual({
@@ -48,7 +35,6 @@ describe("chat sessionState helpers", () => {
       sessionNote: "ready",
       liveToolCalls: [],
       categorizedError: null,
-      subAgentStatus: [],
     });
   });
 
@@ -65,7 +51,6 @@ describe("chat sessionState helpers", () => {
       sessionNote: "已切换对话",
       liveToolCalls: [],
       categorizedError: null,
-      subAgentStatus: [],
     });
     expect(viewState.messages).not.toBe(BASE_CONVERSATION.messages);
   });
@@ -92,7 +77,6 @@ describe("chat sessionState helpers", () => {
         },
       ],
       error: null,
-      subAgentStatus: BASE_SUB_AGENT_STATUS,
     };
 
     const viewState = createConversationViewState({
@@ -108,11 +92,9 @@ describe("chat sessionState helpers", () => {
       sessionNote: "正在回复…",
       liveToolCalls: backgroundStream.liveToolCalls,
       categorizedError: null,
-      subAgentStatus: BASE_SUB_AGENT_STATUS,
     });
     expect(viewState.messages).not.toBe(backgroundStream.messages);
     expect(viewState.liveToolCalls).not.toBe(backgroundStream.liveToolCalls);
-    expect(viewState.subAgentStatus).not.toBe(backgroundStream.subAgentStatus);
   });
 
   it("creates background stream state only for active streams", () => {
@@ -124,7 +106,6 @@ describe("chat sessionState helpers", () => {
         sessionNote: "idle",
         liveToolCalls: [],
         categorizedError: null,
-        subAgentStatus: [],
       }),
     ).toBeNull();
 
@@ -142,7 +123,6 @@ describe("chat sessionState helpers", () => {
         },
       ],
       categorizedError: null,
-      subAgentStatus: BASE_SUB_AGENT_STATUS,
     });
 
     expect(backgroundStream).toEqual({
@@ -159,7 +139,6 @@ describe("chat sessionState helpers", () => {
         },
       ],
       error: null,
-      subAgentStatus: BASE_SUB_AGENT_STATUS,
     });
   });
 

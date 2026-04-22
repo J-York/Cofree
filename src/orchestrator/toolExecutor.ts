@@ -1068,9 +1068,7 @@ export async function executeToolCall(
           const added = deps.addPlanStep(planState, {
             title,
             summary: asString(args.summary).trim(),
-            owner: (["planner", "coder", "tester", "debugger", "reviewer"].includes(asString(args.owner).trim())
-              ? (asString(args.owner).trim() as PlanStep["owner"])
-              : undefined),
+            owner: undefined,
             afterStepId: asString(args.after_step_id).trim() || undefined,
             note,
           });

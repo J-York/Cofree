@@ -802,7 +802,7 @@ describe("planningService approval-flow repair", () => {
                     id: "step-implement",
                     title: "执行实现",
                     summary: "执行代码改动",
-                    owner: "coder",
+                    owner: "planner",
                     status: "pending" as const,
                     dependsOn: ["step-plan"],
                 },
@@ -915,7 +915,7 @@ describe("planningService approval-flow repair", () => {
                         id: "step-implement",
                         title: "执行实现",
                         summary: "执行代码改动",
-                        owner: "coder",
+                        owner: "planner",
                         status: "pending",
                         dependsOn: ["step-plan"],
                     },
@@ -933,7 +933,7 @@ describe("planningService approval-flow repair", () => {
 
         expect(todoMessages).toHaveLength(1);
         expect(todoMessages[0]?.content).toContain("(planner/completed) 分析需求");
-        expect(todoMessages[0]?.content).toContain("(coder/in_progress) 执行实现 [当前]");
+        expect(todoMessages[0]?.content).toContain("(planner/in_progress) 执行实现 [当前]");
     });
 
     it("returns explicit pending-approval semantics for gated shell proposals", async () => {
@@ -2364,8 +2364,6 @@ describe("P3-2: restoredWorkingMemory in runPlanningSession", () => {
                 ],
             ],
             discoveredFacts: [],
-            subAgentHistory: [],
-            taskProgress: [],
             projectContext: "restored-project-context",
             maxTokenBudget: 4000,
         };

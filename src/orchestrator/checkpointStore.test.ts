@@ -54,8 +54,7 @@ describe("checkpointStore", () => {
                 gateRequired: true,
                 status: "pending",
                 executed: false,
-                origin: "team_stage",
-                originDetail: "team-full-cycle / 测试验证",
+                origin: "main_agent",
                 payload: {
                   shell: "pnpm test",
                   timeoutMs: 120000,
@@ -66,8 +65,6 @@ describe("checkpointStore", () => {
           workingMemory: {
             fileKnowledge: [["src/main.ts", { summary: "入口文件", confidence: "high" }]],
             discoveredFacts: [],
-            subAgentHistory: [],
-            taskProgress: [],
             projectContext: "project context",
             maxTokenBudget: 2048,
           },
@@ -81,8 +78,7 @@ describe("checkpointStore", () => {
 
     expect(restored).not.toBeNull();
     expect(restored?.payload.plan.proposedActions[0]).toMatchObject({
-      origin: "team_stage",
-      originDetail: "team-full-cycle / 测试验证",
+      origin: "main_agent",
     });
     expect(restored?.payload.workingMemory).toMatchObject({
       projectContext: "project context",
@@ -114,8 +110,6 @@ describe("checkpointStore", () => {
         ],
       ],
       discoveredFacts: [],
-      subAgentHistory: [],
-      taskProgress: [],
       projectContext: "",
       maxTokenBudget: 4000,
     };

@@ -1,3 +1,11 @@
+- 2026-04-22 [A1] 删除多 Agent 编排层完成。净减约 1.5K LoC，删除 9 个文件（expertStageMessages.ts/.test.ts, teamTrust.ts/.test.ts, WorkspaceTeamTrustDialog.tsx/.test.tsx, useWorkspaceTeamTrust.ts, workspaceTeamTrustStore.ts/.test.ts），手术式清理 30+ 文件：
+  - ① 删 SubAgentStatusPanel/SubAgentStatusItem + subAgentStatus 状态传播
+  - ② 删 teamTrust 模块 + WorkspaceTeamTrustDialog + workspaceTeamTrustStore + SettingsPage 团队信任 UI
+  - ③ 缩窄 ActionOrigin → 'main_agent' only, 删 STEP_OWNERS, 删 SubAgentProgressKind/Event/Meta
+  - ④ 从 workingMemory 删除 SubAgentExecRecord/recordSubAgent/mergeForkedMemories/forkWorkingMemory/forRole
+  - ⑤ 简化 ConversationTopbarMode → 'idle' | 'single_agent', 删 'orchestrating' 和 'team' 模式
+  - ⑥ planningService 删 task 工具检测、planner/coder/tester 步骤 owner 枚举
+  tsc clean, 373/373 tests green
 # Cofree 重构与减负计划（2026-04 起）
 
 > 方向确认：**个人/小团队自用的精品工具**；核心场景「读代码 · 问问题 · 理解仓库」＋「跑命令 · 自动化任务」；未来 3 个月主要投入于**架构重构与减负**和**稳定性与可观察性**。
@@ -22,7 +30,7 @@
 
 | ID | 任务 | 状态 | 说明 |
 |----|------|------|------|
-| A1 | 删除多 Agent 编排层（专家组/concierge/task 委派/子 Agent） | ⏳ 待启动 | 评估 → 分批删除；要触及 `builtinChatAgents.ts` / `resolveAgentRuntime.ts` / `explicitContextService.ts` / `hitlContinuationMachine.ts` / `planningService` 中相关分支 |
+| A1 | 删除多 Agent 编排层（专家组/concierge/task 委派/子 Agent） | ✅ **完成** | 373/373 tests green, tsc clean。净减约 1.5K LoC，删除 9 个文件，手术式清理 30+ 文件 |
 | A2 | `src-tauri/src/commands/workspace.rs`（2051 行）按关注点拆分 | ⏳ 待启动 | 拆为 `commands/{fs,git,grep,patch,shell,snapshot}.rs`；业务逻辑下沉到 `application/` |
 | A3 | `src/lib/settingsStore.ts`（1631 行）按域拆 | ⏳ 待启动 | general / models / agents / skills / audit |
 

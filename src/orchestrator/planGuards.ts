@@ -33,11 +33,8 @@ const ACTION_STATUSES = new Set<ActionProposal["status"]>([
 ]);
 const ACTION_ORIGINS = new Set<ActionOrigin>([
   "main_agent",
-  "sub_agent",
-  "team_stage",
 ]);
 
-const STEP_OWNERS = new Set(["planner", "coder", "tester", "debugger", "reviewer"]);
 const STEP_STATUSES = new Set<PlanStepStatus>([
   "pending",
   "in_progress",
@@ -261,8 +258,7 @@ export function normalizeOrchestrationPlan(value: unknown): OrchestrationPlan | 
       if (!stepRecord) {
         return [];
       }
-      const ownerCandidate = asString(stepRecord.owner, "planner");
-      const owner = STEP_OWNERS.has(ownerCandidate) ? ownerCandidate : "planner";
+      const owner = "planner";
       const summary = asString(stepRecord.summary, "").trim();
       if (!summary) {
         return [];

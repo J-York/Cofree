@@ -9,7 +9,6 @@ import {
 import { type ChatMessageRecord } from "../../lib/chatHistoryStore";
 import { type Conversation } from "../../lib/conversationStore";
 import { type ApprovalRuleOption } from "../../lib/approvalRuleStore";
-import { loadWorkspaceTeamTrustMode } from "../../lib/workspaceTeamTrustStore";
 import {
   dedupeContextAttachments,
   type ChatContextAttachment,
@@ -36,11 +35,6 @@ import {
   getPendingRequest,
   submitUserResponse,
 } from "../../orchestrator/askUserService";
-import { WorkspaceTeamTrustDialog } from "./chat/WorkspaceTeamTrustDialog";
-import {
-  buildWorkspaceTeamTrustPromptKey,
-  collectPendingOrchestrationActionIds,
-} from "./chat/teamTrust";
 import { type ManualApprovalContext } from "../../orchestrator/hitlService";
 import {
   buildScopedSessionKey,
@@ -78,7 +72,6 @@ import {
 import { type SkillEntry } from "../../lib/skillStore";
 import type {
   LiveToolCall,
-  SubAgentStatusItem,
 } from "./chat/types";
 import { CHECKPOINT_RESTORE_SESSION_NOTE } from "./chat/constants";
 import {
@@ -94,7 +87,6 @@ import { useConversationLifecycle } from "./chat/hooks/useConversationLifecycle"
 import { useConversationDebugLog } from "./chat/hooks/useConversationDebugLog";
 import { useShellJobs } from "./chat/hooks/useShellJobs";
 import { useConversationTopbar } from "./chat/hooks/useConversationTopbar";
-import { useWorkspaceTeamTrust } from "./chat/hooks/useWorkspaceTeamTrust";
 import { useApprovalActions } from "./chat/hooks/useApprovalActions";
 import { useChatExecution } from "./chat/hooks/useChatExecution";
 import { ChatComposer } from "./chat/composer/ChatComposer";
@@ -112,8 +104,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const { actions: session, state: sessionState } = useSession();
 
   const wsPath = settings.workspacePath;
-  const workspaceTeamTrustMode = loadWorkspaceTeamTrustMode(wsPath);
-
   const [prompt, setPrompt] = useState("");
   const [composerAttachments, setComposerAttachments] = useState<ChatContextAttachment[]>([]);
   const {
@@ -160,7 +150,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     useApprovalQueue();
   const [_sidebarOpenLegacy] = useState<boolean>(false);
   const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
-  const [subAgentStatus, setSubAgentStatus] = useState<SubAgentStatusItem[]>([]);
   const [inputDialog, setInputDialog] = useState<{
     open: boolean;
     title: string;
@@ -342,7 +331,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     executingActionId,
     liveToolCalls,
     categorizedError,
-    subAgentStatus,
     abortControllerRef,
     abortControllersRef,
     backgroundStreamsRef,
@@ -354,7 +342,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     setIsStreaming,
     setLiveToolCalls,
     setCategorizedError: setAndAuditError,
-    setSubAgentStatus,
   });
 
   const appendAssistantStatusMessage = (content: string): void => {
@@ -425,7 +412,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
       executingActionId,
       liveContextTokens,
       liveToolCalls,
-      subAgentStatus,
       chatSessionId: resolveScopedSessionId(currentConversation),
     }),
   });
@@ -543,7 +529,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     setCategorizedError: setAndAuditError,
     setLiveContextTokens,
     setLiveToolCalls,
-    setSubAgentStatus,
     setPrompt,
     setComposerAttachments,
     setSelectedSkills,
@@ -568,26 +553,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const activePlan = activePlanMessage?.plan ?? null;
   const hasAskUserPending = askUserRequest !== null;
   const hasRestoreNotice = sessionNote === CHECKPOINT_RESTORE_SESSION_NOTE;
-  const latestPendingPlanMessage =
-    [...visibleMessages]
-      .reverse()
-      .find(
-        (message) =>
-          message.role === "assistant" &&
-          message.plan?.state === "human_review" &&
-          message.plan.proposedActions.some((action) => action.status === "pending"),
-      ) ?? null;
-  const latestPendingTeamActionIds = latestPendingPlanMessage?.plan
-    ? collectPendingOrchestrationActionIds(latestPendingPlanMessage.plan)
-    : [];
-  const latestPendingTeamTargetKey =
-    latestPendingPlanMessage && latestPendingTeamActionIds.length > 0
-      ? `${latestPendingPlanMessage.id}:${latestPendingTeamActionIds.join(",")}`
-      : "";
-  const latestPendingPlanMessageActionStatuses =
-    latestPendingPlanMessage?.plan?.proposedActions
-      ?.map((action) => `${action.id}:${action.status}:${action.executed ? "1" : "0"}`)
-      .join("|") ?? "";
   const lastVisiblePlanState = lastVisibleMessage?.plan?.state ?? "";
   const lastVisibleActionStatuses =
     lastVisibleMessage?.plan?.proposedActions
@@ -607,13 +572,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
         `${call.callId}:${call.status}:${call.argsPreview?.length ?? 0}:${call.resultPreview?.length ?? 0}`,
     )
     .join("|");
-  const subAgentStatusKey = subAgentStatus
-    .map(
-      (item) =>
-        `${item.id}:${item.updatedAt}:${item.lastEvent.kind}:${item.label}:${item.role}`,
-    )
-    .join("|");
-
   useEffect(() => {
     if (isVisible === false) {
       return;
@@ -645,7 +603,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     lastVisibleToolTraceStatuses,
     liveToolStatusKey,
     scrollThreadToBottom,
-    subAgentStatusKey,
     visibleMessages.length,
   ]);
 
@@ -758,7 +715,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     let cancelled = false;
     if (!checkpointRestoreScope.conversationId) {
       lastRestoredCheckpointRecordRef.current = null;
-      setRestoredTeamTrustPromptKey(null);
       return () => {
         cancelled = true;
       };
@@ -773,7 +729,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
         if (cancelled) return;
         if (!latest) {
           lastRestoredCheckpointRecordRef.current = null;
-          setRestoredTeamTrustPromptKey(null);
           workingMemoryBySessionRef.current.delete(sessionId);
           resetHitlContinuationMemory(sessionId);
           return;
@@ -826,7 +781,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
           return next;
         });
         hydrateHitlContinuationMemory(sessionId, latest.payload.continuationMemory);
-        setRestoredTeamTrustPromptKey(buildWorkspaceTeamTrustPromptKey(wsPath));
         setSessionNote("已从 checkpoint 恢复审批状态");
       } catch {
         /* non-fatal */
@@ -907,7 +861,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   };
 
   const {
-    ensureApprovalInteractionAllowed,
     handleApproveAction,
     handleRetryAction,
     handleRejectAction,
@@ -943,25 +896,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   handleApproveAllActionsThreadRef.current = handleApproveAllActions;
   handleRejectAllActionsThreadRef.current = handleRejectAllActions;
   handleSuggestionClickThreadRef.current = handleSuggestionClick;
-
-  const {
-    workspaceTeamTrustPrompt,
-    setRestoredTeamTrustPromptKey,
-    handleChooseWorkspaceTeamTrustMode,
-  } = useWorkspaceTeamTrust({
-    wsPath,
-    workspaceTeamTrustMode,
-    askUserRequest,
-    latestPendingPlanMessage,
-    latestPendingTeamTargetKey,
-    latestPendingPlanMessageActionStatuses,
-    currentConversation,
-    messagesRef,
-    ensureApprovalInteractionAllowed,
-    handleApproveAllActionsThreadRef,
-    setSessionNote,
-    setCategorizedError: setAndAuditError,
-  });
 
   const handlePromptChange = (nextText: string, caretIndex?: number): void => {
     setPrompt(nextText);
@@ -1000,7 +934,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     activePlan,
     isStreaming,
     liveToolCalls,
-    subAgentStatus,
     hasAskUserPending,
     hasRestoreNotice,
     sessionNote,
@@ -1050,7 +983,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
             debugMode={settings.debugMode}
             isStreaming={isStreaming}
             liveToolCalls={liveToolCalls}
-            subAgentStatus={subAgentStatus}
             executingActionId={executingActionId}
             getActiveShellActionIds={getActiveShellActionIdsForThread}
             onPlanUpdate={handlePlanUpdateForThread}
@@ -1151,10 +1083,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
         defaultValue={inputDialog.defaultValue}
         onConfirm={inputDialog.onConfirm}
         onCancel={() => setInputDialog((prev) => ({ ...prev, open: false }))}
-      />
-      <WorkspaceTeamTrustDialog
-        open={workspaceTeamTrustPrompt !== null}
-        onChooseMode={handleChooseWorkspaceTeamTrustMode}
       />
       <AskUserDialog
         open={askUserRequest !== null}

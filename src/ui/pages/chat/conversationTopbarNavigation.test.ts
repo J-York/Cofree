@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import type { OrchestrationPlan } from "../../../orchestrator/types";
 import type { ChatMessageRecord } from "../../../lib/chatHistoryStore";
-import type { OrchestrationPlan, SubAgentProgressEvent } from "../../../orchestrator/types";
 import type { ConversationTopbarAction } from "./ConversationTopbar";
 import { resolveConversationTopbarTarget } from "./conversationTopbarNavigation";
-import type { LiveToolCall, SubAgentStatusItem } from "./types";
+import type { LiveToolCall } from "./types";
 
 function baseInput(
   overrides: Partial<Parameters<typeof resolveConversationTopbarTarget>[0]> = {},
@@ -14,7 +14,6 @@ function baseInput(
     messages: [],
     activePlan: null,
     liveToolCalls: [],
-    subAgentStatus: [],
     hasAskUserPending: false,
     askUserAnchorMessageId: null,
     hasRestoreNotice: false,
@@ -80,42 +79,6 @@ describe("resolveConversationTopbarTarget", () => {
     expect(r).toEqual({ anchor: "tools", messageId: "m2" });
   });
 
-  it("parallel resolves to latest sub-agent activity anchor", () => {
-    const event: SubAgentProgressEvent = {
-      kind: "stage_complete",
-      stageLabel: "Review",
-      agentRole: "reviewer",
-      summary: "done",
-      stageStatus: "completed",
-      teamId: "team-a",
-    };
-    const expert = assistantMsg("expert-1", {
-      assistantSpeaker: {
-        id: "team-a:Review:reviewer",
-        label: "[team-a] Review · reviewer",
-      },
-    });
-    const items: SubAgentStatusItem[] = [
-      {
-        id: "team-a:Review",
-        label: "r",
-        role: "reviewer",
-        lastEvent: { kind: "thinking", partialContent: "…" },
-        updatedAt: 1,
-      },
-      {
-        id: "team-a:Review",
-        label: "r",
-        role: "reviewer",
-        lastEvent: event,
-        updatedAt: 100,
-      },
-    ];
-    const r = resolveConversationTopbarTarget(
-      baseInput({ action: "parallel", messages: [expert], subAgentStatus: items }),
-    );
-    expect(r).toEqual({ anchor: "parallel", messageId: "expert-1" });
-  });
 
   it("approval CTA resolves to first pending action in active plan", () => {
     const plan: OrchestrationPlan = {
@@ -154,7 +117,7 @@ describe("resolveConversationTopbarTarget", () => {
     });
   });
 
-  it("progress resolves to active plan target first, else stage_summary", () => {
+  it("progress resolves to active plan target when present, else null", () => {
     const plan: OrchestrationPlan = {
       state: "executing",
       prompt: "p",
@@ -162,80 +125,21 @@ describe("resolveConversationTopbarTarget", () => {
       proposedActions: [],
     };
     const withPlan = assistantMsg("with-plan", { plan });
-    const stageOnly = assistantMsg("stage-only", {
-      assistantSpeaker: { id: "task:Build:coder", label: "Build · coder" },
-    });
     const r1 = resolveConversationTopbarTarget(
-      baseInput({ action: "progress", messages: [stageOnly, withPlan], activePlan: plan }),
+      baseInput({ action: "progress", messages: [withPlan], activePlan: plan }),
     );
     expect(r1).toEqual({ anchor: "plan", messageId: "with-plan" });
 
     const r2 = resolveConversationTopbarTarget(
       baseInput({
         action: "progress",
-        messages: [stageOnly],
+        messages: [],
         activePlan: null,
       }),
     );
-    expect(r2).toEqual({ anchor: "stage_summary", messageId: "stage-only" });
+    expect(r2).toBeNull();
   });
 
-  it("progress falls back to the current stage-summary label before unrelated later summaries", () => {
-    const messages: ChatMessageRecord[] = [
-      assistantMsg("build-summary", {
-        assistantSpeaker: {
-          id: "team-a:Build:coder",
-          label: "[team-a] Build · coder",
-        },
-      }),
-      assistantMsg("review-summary", {
-        assistantSpeaker: {
-          id: "team-a:Review:reviewer",
-          label: "[team-a] Review · reviewer",
-        },
-      }),
-    ];
-    const subAgentStatus: SubAgentStatusItem[] = [
-      {
-        id: "team-a:Build",
-        label: "Build",
-        role: "coder",
-        updatedAt: 20,
-        lastEvent: {
-          kind: "thinking",
-          partialContent: "working",
-          teamId: "team-a",
-          stageLabel: "Build",
-          currentStageIndex: 1,
-          totalStages: 2,
-        },
-      },
-      {
-        id: "team-a:Review",
-        label: "Review",
-        role: "reviewer",
-        updatedAt: 10,
-        lastEvent: {
-          kind: "stage_complete",
-          stageLabel: "Review",
-          agentRole: "reviewer",
-          summary: "done",
-          stageStatus: "completed",
-          teamId: "team-a",
-        },
-      },
-    ];
-
-    const result = resolveConversationTopbarTarget(
-      baseInput({
-        action: "progress",
-        messages,
-        subAgentStatus,
-      }),
-    );
-
-    expect(result).toEqual({ anchor: "stage_summary", messageId: "build-summary" });
-  });
 
   it("context resolves to composer/token target", () => {
     const r = resolveConversationTopbarTarget(baseInput({ action: "context" }));
@@ -292,50 +196,28 @@ describe("resolveConversationTopbarTarget", () => {
   });
 
   it("blocked CTA resolves to failed step / output target when present", () => {
-    const event: SubAgentProgressEvent = {
-      kind: "stage_complete",
-      stageLabel: "Test",
-      agentRole: "coder",
-      summary: "failed",
-      stageStatus: "failed",
-      teamId: "t1",
+    const plan: OrchestrationPlan = {
+      state: "executing",
+      prompt: "p",
+      steps: [{ id: "s1", title: "Test", summary: "", owner: "coder", status: "failed" }],
+      proposedActions: [],
     };
-    const expert = assistantMsg("ex-fail", {
-      assistantSpeaker: {
-        id: "t1:Test:coder",
-        label: "x",
-      },
-    });
+    const planMsg = assistantMsg("plan-msg", { plan });
     const r = resolveConversationTopbarTarget(
       baseInput({
         action: "blocked_output",
-        messages: [expert],
-        subAgentStatus: [
-          {
-            id: "t1:Test",
-            label: "l",
-            role: "coder",
-            lastEvent: event,
-            updatedAt: 1,
-          },
-        ],
-        activePlan: null,
+        messages: [planMsg],
+        activePlan: plan,
       }),
     );
     expect(r).toEqual({
       anchor: "blocked_output",
-      messageId: "ex-fail",
-      stageLabel: "Test",
+      messageId: "plan-msg",
     });
   });
 
   it("missing targets return null", () => {
     expect(resolveConversationTopbarTarget(baseInput({ action: "tools" }))).toBeNull();
-    expect(
-      resolveConversationTopbarTarget(
-        baseInput({ action: "parallel", subAgentStatus: [] }),
-      ),
-    ).toBeNull();
     expect(
       resolveConversationTopbarTarget(
         baseInput({
@@ -367,7 +249,6 @@ describe("resolveConversationTopbarTarget", () => {
   it("exercises ConversationTopbarAction union for type coverage", () => {
     const actions: ConversationTopbarAction[] = [
       "tools",
-      "parallel",
       "ask_user",
       "context",
       "progress",
@@ -378,6 +259,6 @@ describe("resolveConversationTopbarTarget", () => {
     for (const action of actions) {
       resolveConversationTopbarTarget(baseInput({ action }));
     }
-    expect(actions).toHaveLength(8);
+    expect(actions).toHaveLength(7);
   });
 });

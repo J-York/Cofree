@@ -61,7 +61,7 @@ describe("normalizeOrchestrationPlan", () => {
     });
   });
 
-  it("preserves action origin fields for restored approval context", () => {
+  it("normalizes unknown action origins to undefined", () => {
     const plan = normalizeOrchestrationPlan({
       state: "human_review",
       prompt: "恢复审批",
@@ -74,8 +74,7 @@ describe("normalizeOrchestrationPlan", () => {
           gateRequired: true,
           status: "pending",
           executed: false,
-          origin: "team_stage",
-          originDetail: "team-full-cycle / 代码实现",
+          origin: "main_agent",
           payload: {
             patch: "*** Begin Patch\n*** End Patch\n",
           },
@@ -84,8 +83,26 @@ describe("normalizeOrchestrationPlan", () => {
     });
 
     expect(plan?.proposedActions[0]).toMatchObject({
-      origin: "team_stage",
-      originDetail: "team-full-cycle / 代码实现",
+      origin: "main_agent",
     });
+  });
+
+  it("normalizes step owners to planner in single-agent mode", () => {
+    const plan = normalizeOrchestrationPlan({
+      state: "planning",
+      prompt: "test",
+      steps: [
+        {
+          id: "step-1",
+          title: "分析",
+          summary: "分析",
+          owner: "coder",
+          status: "pending",
+        },
+      ],
+      proposedActions: [],
+    });
+
+    expect(plan?.steps[0]?.owner).toBe("planner");
   });
 });

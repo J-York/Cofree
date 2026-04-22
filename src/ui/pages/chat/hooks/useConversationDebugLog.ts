@@ -19,7 +19,7 @@ import {
   resolveConversationDebugKey,
   type ConversationDebugEntry,
 } from "../debugExport";
-import type { LiveToolCall, SubAgentStatusItem } from "../types";
+import type { LiveToolCall } from "../types";
 
 export interface ConversationDebugDownloadSnapshot {
   settings: AppSettings;
@@ -35,7 +35,6 @@ export interface ConversationDebugDownloadSnapshot {
   executingActionId: string;
   liveContextTokens: number | null;
   liveToolCalls: LiveToolCall[];
-  subAgentStatus: SubAgentStatusItem[];
   chatSessionId: string;
 }
 
@@ -153,7 +152,6 @@ export function useConversationDebugLog(options: UseConversationDebugLogOptions)
         executingActionId: snapshot.executingActionId,
         liveContextTokens: snapshot.liveContextTokens,
         liveToolCalls: snapshot.liveToolCalls,
-        subAgentStatus: snapshot.subAgentStatus,
         debugEntries:
           conversationDebugEntriesRef.current.get(
             resolveConversationDebugKey(

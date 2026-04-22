@@ -61,7 +61,7 @@ export interface ShellPayload {
   retryAttempt?: number;
 }
 
-export type ActionOrigin = "main_agent" | "sub_agent" | "team_stage";
+export type ActionOrigin = "main_agent";
 
 interface ActionProposalBase {
   id: string;
@@ -112,47 +112,4 @@ export interface OrchestrationPlan {
   activeStepId?: string;
   proposedActions: ActionProposal[];
   workspacePath?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Sub-agent progress types (retained for UI backward compatibility;
-// no longer emitted by the orchestrator)
-// ---------------------------------------------------------------------------
-
-export type SubAgentProgressKind =
-  | "summary"
-  | "tool_start"
-  | "tool_complete"
-  | "action_proposed"
-  | "stage_complete"
-  | "team_checkpoint"
-  | "thinking";
-
-export interface SubAgentProgressEvent {
-  kind: SubAgentProgressKind;
-  message?: string;
-  toolName?: string;
-  turn?: number;
-  maxTurns?: number;
-  success?: boolean;
-  durationMs?: number;
-  actionType?: string;
-  description?: string;
-  stageLabel?: string;
-  stageIndex?: number;
-  currentStageIndex?: number;
-  totalStages?: number;
-  teamId?: string;
-  agentRole?: string;
-  sourceLabel?: string;
-  stageStatus?: "running" | "completed" | "failed" | "skipped" | "blocked";
-  completedStageCount?: number;
-  activeParallelCount?: number;
-  summary?: string;
-  partialContent?: string;
-}
-
-export interface SubAgentProgressMeta {
-  role: string;
-  events: SubAgentProgressEvent[];
 }

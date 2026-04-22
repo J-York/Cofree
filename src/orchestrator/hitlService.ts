@@ -49,7 +49,7 @@ interface SnapshotResult {
 }
 
 export interface ManualApprovalContext {
-  approvalMode?: "manual" | "remember_workspace_rule" | "workspace_team_yolo";
+  approvalMode?: "manual" | "remember_workspace_rule";
   approvalRuleLabel?: string;
   approvalRuleKind?: string;
 }

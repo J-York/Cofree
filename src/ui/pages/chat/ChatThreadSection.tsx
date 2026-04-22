@@ -12,13 +12,11 @@ import {
   InlinePlan,
   LiveToolStatus,
   MessageContent,
-  SubAgentStatusPanel,
   ToolTracePanel,
 } from "./ChatPresentational";
-import type { LiveToolCall, SubAgentStatusItem } from "./types";
+import type { LiveToolCall } from "./types";
 
 const EMPTY_LIVE_TOOL_CALLS: LiveToolCall[] = [];
-const EMPTY_SUB_AGENT_STATUS: SubAgentStatusItem[] = [];
 const EMPTY_SHELL_ACTION_IDS: string[] = [];
 
 const DEFAULT_CHAT_SUGGESTIONS = [
@@ -28,15 +26,6 @@ const DEFAULT_CHAT_SUGGESTIONS = [
   { prompt: "帮我优化这个项目的性能", label: "性能优化" },
 ];
 
-/** Strip leading `[team-id]` prefix for one-line expert-stage summaries. */
-function compactExpertPanelLabel(fullLabel: string): string {
-  const trimmed = fullLabel.trim();
-  const idx = trimmed.indexOf("] ");
-  if (idx >= 0 && trimmed.startsWith("[")) {
-    return trimmed.slice(idx + 2).trim();
-  }
-  return trimmed;
-}
 
 function hasVisiblePlan(message: ChatMessageRecord): message is ChatMessageRecord & {
   plan: OrchestrationPlan;
@@ -62,7 +51,6 @@ interface ChatMessageRowProps {
   debugMode: boolean;
   showStreamingStatus: boolean;
   liveToolCalls: LiveToolCall[];
-  subAgentStatus: SubAgentStatusItem[];
   executingActionId: string;
   getActiveShellActionIds: (messageId: string) => string[];
   onPlanUpdate: (
@@ -98,7 +86,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
   debugMode,
   showStreamingStatus,
   liveToolCalls,
-  subAgentStatus,
   executingActionId,
   getActiveShellActionIds,
   onPlanUpdate,
@@ -168,7 +155,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
           >
             <summary className="chat-expert-stage-summary">
               <span className="chat-expert-stage-summary-main">
-                {compactExpertPanelLabel(message.assistantSpeaker.label)}
+                {message.assistantSpeaker.label}
                 {timeSuffix}
               </span>
               <span className="chat-expert-stage-summary-action" aria-hidden>
@@ -200,11 +187,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
                   calls={liveToolCalls}
                   showAskUserAnchor={showAskUserAnchor}
                 />
-              )}
-            {message.role === "assistant" &&
-              showStreamingStatus &&
-              subAgentStatus.length > 0 && (
-                <SubAgentStatusPanel items={subAgentStatus} />
               )}
             {message.role === "assistant" && (message.toolTrace?.length ?? 0) > 0 && (
               <ToolTracePanel
@@ -272,7 +254,6 @@ export interface ChatThreadSectionProps {
   debugMode: boolean;
   isStreaming: boolean;
   liveToolCalls: LiveToolCall[];
-  subAgentStatus: SubAgentStatusItem[];
   executingActionId: string;
   getActiveShellActionIds: (messageId: string) => string[];
   onPlanUpdate: (
@@ -314,7 +295,6 @@ export const ChatThreadSection = memo(function ChatThreadSection({
   debugMode,
   isStreaming,
   liveToolCalls,
-  subAgentStatus,
   executingActionId,
   getActiveShellActionIds,
   onPlanUpdate,
@@ -372,7 +352,6 @@ export const ChatThreadSection = memo(function ChatThreadSection({
               debugMode={debugMode}
               showStreamingStatus={showStreamingStatus}
               liveToolCalls={showStreamingStatus ? liveToolCalls : EMPTY_LIVE_TOOL_CALLS}
-              subAgentStatus={showStreamingStatus ? subAgentStatus : EMPTY_SUB_AGENT_STATUS}
               executingActionId={message.plan ? executingActionId : ""}
               getActiveShellActionIds={getActiveShellActionIds}
               onPlanUpdate={onPlanUpdate}

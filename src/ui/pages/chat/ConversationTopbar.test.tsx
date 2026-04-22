@@ -153,13 +153,12 @@ describe("ConversationTopbar", () => {
     expect(onAction).toHaveBeenCalledWith("approval");
   });
 
-  it("invokes onAction for badge actions tools, parallel, context, and ask_user", () => {
+  it("invokes onAction for badge actions tools, context, and ask_user", () => {
     const onAction = vi.fn();
     const tree = ConversationTopbar({
       state: baseState({
         badges: [
           { key: "tools", label: "工具 2", action: "tools" },
-          { key: "parallel", label: "并行 3", action: "parallel" },
           { key: "ctx", label: "上下文 62%", action: "context" },
           { key: "ask", label: "等待输入", action: "ask_user" },
         ],
@@ -172,13 +171,11 @@ describe("ConversationTopbar", () => {
     const byLabel = (label: string) =>
       buttons.find((b) => collectText(b.props.children).includes(label));
     byLabel("工具 2")?.props.onClick?.();
-    byLabel("并行 3")?.props.onClick?.();
     byLabel("上下文 62%")?.props.onClick?.();
     byLabel("等待输入")?.props.onClick?.();
     expect(onAction).toHaveBeenNthCalledWith(1, "tools");
-    expect(onAction).toHaveBeenNthCalledWith(2, "parallel");
-    expect(onAction).toHaveBeenNthCalledWith(3, "context");
-    expect(onAction).toHaveBeenNthCalledWith(4, "ask_user");
+    expect(onAction).toHaveBeenNthCalledWith(2, "context");
+    expect(onAction).toHaveBeenNthCalledWith(3, "ask_user");
   });
 
   it("invokes onAction for attention CTA restore and blocked_output", () => {
@@ -265,8 +262,8 @@ describe("ConversationTopbar", () => {
   it("renders progress segments in order including blocked", () => {
     const tree = ConversationTopbar({
       state: baseState({
-        mode: "orchestrating",
-        source: "team",
+        mode: "single_agent",
+        source: "tools",
         primaryLabel: "当前：测试",
         progress: {
           visible: true,
@@ -332,8 +329,8 @@ describe("ConversationTopbar", () => {
   it("completion-style state shows completion affordances without running-style badges", () => {
     const tree = ConversationTopbar({
       state: baseState({
-        mode: "orchestrating",
-        source: "team",
+        mode: "single_agent",
+        source: "assistant",
         primaryLabel: "本轮编排已完成",
         badges: [{ key: "completion", label: "6/6", tone: "success" }],
         progress: {

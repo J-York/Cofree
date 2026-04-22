@@ -1,10 +1,10 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/orchestrator/workingMemory.ts
- * Description: Shared Working Memory for multi-agent collaboration.
+ * Description: Shared Working Memory for session context persistence.
  *
- * Maintains file knowledge, discovered facts, and sub-agent execution history
- * across the main loop and all sub-agents within a single session.
+ * Maintains file knowledge and discovered facts across the main loop
+ * within a single session.
  */
 
 import { estimateTokensFromText } from "./contextBudget";
@@ -55,8 +55,6 @@ export interface TaskProgressEntry {
 export interface WorkingMemory {
   fileKnowledge: Map<string, FileKnowledge>;
   discoveredFacts: DiscoveredFact[];
-  subAgentHistory: SubAgentExecRecord[];
-  taskProgress: TaskProgressEntry[];
   projectContext: string;
   maxTokenBudget: number;
 }
@@ -68,8 +66,8 @@ export interface WorkingMemory {
 export interface WorkingMemorySnapshot {
   fileKnowledge: Array<[string, FileKnowledge]>;
   discoveredFacts: DiscoveredFact[];
-  subAgentHistory: SubAgentExecRecord[];
-  taskProgress: TaskProgressEntry[];
+  subAgentHistory?: SubAgentExecRecord[];
+  taskProgress?: TaskProgressEntry[];
   projectContext: string;
   maxTokenBudget: number;
 }
@@ -85,12 +83,8 @@ export interface WorkingMemoryQueryOptions {
 
 const MAX_DISCOVERED_FACTS = 50;
 const MAX_FILE_SUMMARY_CHARS = 200;
-const MAX_SUBAGENT_HISTORY = 20;
-const MAX_TASK_PROGRESS_ENTRIES = 40;
 const MAX_RETRIEVED_FILES = 12;
 const MAX_RETRIEVED_FACTS = 10;
-const MAX_RETRIEVED_HISTORY = 8;
-const MAX_RETRIEVED_FAILURES = 5;
 const QUERY_TERM_LIMIT = 10;
 const QUERY_STOPWORDS = new Set([
   "add", "and", "bug", "build", "change", "code", "create", "current",
@@ -112,8 +106,6 @@ export function createWorkingMemory(opts: {
   return {
     fileKnowledge: new Map(),
     discoveredFacts: [],
-    subAgentHistory: [],
-    taskProgress: [],
     projectContext: opts.projectContext ?? "",
     maxTokenBudget: opts.maxTokenBudget,
   };
@@ -166,32 +158,6 @@ export function addDiscoveredFact(
   evictDiscoveredFactsToCap(memory);
 }
 
-export function recordSubAgentExecution(
-  memory: WorkingMemory,
-  record: Omit<SubAgentExecRecord, "completedAt">,
-): void {
-  memory.subAgentHistory.push(
-    cloneSubAgentExecRecord({
-      ...record,
-      completedAt: new Date().toISOString(),
-    }),
-  );
-  if (memory.subAgentHistory.length > MAX_SUBAGENT_HISTORY) {
-    memory.subAgentHistory.shift();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Task progress tracking
-// ---------------------------------------------------------------------------
-
-let progressIdCounter = 0;
-
-function generateProgressId(): string {
-  progressIdCounter += 1;
-  return `prog-${Date.now()}-${progressIdCounter}`;
-}
-
 function cloneFileKnowledge(value: FileKnowledge): FileKnowledge {
   return { ...value };
 }
@@ -199,76 +165,6 @@ function cloneFileKnowledge(value: FileKnowledge): FileKnowledge {
 function cloneDiscoveredFact(value: DiscoveredFact): DiscoveredFact {
   return { ...value };
 }
-
-function cloneSubAgentExecRecord(value: SubAgentExecRecord): SubAgentExecRecord {
-  return {
-    ...value,
-    keyFindings: [...value.keyFindings],
-  };
-}
-
-function cloneTaskProgressEntry(value: TaskProgressEntry): TaskProgressEntry {
-  return { ...value };
-}
-
-function evictTaskProgressToCap(entries: TaskProgressEntry[]): void {
-  while (entries.length > MAX_TASK_PROGRESS_ENTRIES) {
-    const completedIdx = entries.findIndex((entry) => entry.status === "completed");
-    if (completedIdx >= 0) {
-      entries.splice(completedIdx, 1);
-      continue;
-    }
-    entries.shift();
-  }
-}
-
-export function recordTaskProgress(
-  memory: WorkingMemory,
-  entry: Omit<TaskProgressEntry, "id" | "timestamp">,
-): void {
-  memory.taskProgress.push({
-    ...entry,
-    id: generateProgressId(),
-    timestamp: new Date().toISOString(),
-  });
-
-  // Evict oldest completed entries when over limit
-  evictTaskProgressToCap(memory.taskProgress);
-}
-
-export function formatTaskProgressBlock(memory: WorkingMemory): string {
-  if (memory.taskProgress.length === 0) return "";
-
-  const completed = memory.taskProgress.filter((e) => e.status === "completed");
-  const failed = memory.taskProgress.filter((e) => e.status === "failed");
-  const pending = memory.taskProgress.filter((e) => e.status === "pending");
-
-  const lines: string[] = ["[Task Progress]"];
-
-  if (completed.length > 0) {
-    lines.push(`\nCompleted (${completed.length}):`);
-    for (const e of completed.slice(-10)) {
-      lines.push(`  ✓ [turn ${e.turnNumber}] ${e.toolName}: ${e.description}${e.targetFile ? ` → ${e.targetFile}` : ""}`);
-    }
-  }
-
-  if (failed.length > 0) {
-    lines.push(`\nFailed (${failed.length}):`);
-    for (const e of failed.slice(-5)) {
-      lines.push(`  ✗ [turn ${e.turnNumber}] ${e.toolName}: ${e.description}${e.errorHint ? ` — ${e.errorHint}` : ""}`);
-    }
-  }
-
-  if (pending.length > 0) {
-    lines.push(`\nPending (${pending.length}):`);
-    for (const e of pending.slice(-5)) {
-      lines.push(`  ○ ${e.description}`);
-    }
-  }
-
-  return lines.join("\n");
-}
-
 // ---------------------------------------------------------------------------
 // File knowledge extraction from tool results
 // ---------------------------------------------------------------------------
@@ -416,7 +312,6 @@ export function extractFileKnowledge(
 export function serializeWorkingMemory(
   memory: WorkingMemory,
   tokenBudget: number,
-  forRole?: string,
   queryOptions?: WorkingMemoryQueryOptions,
 ): string {
   if (tokenBudget <= 0) return "";
@@ -455,7 +350,7 @@ export function serializeWorkingMemory(
     });
   }
 
-  // 3. File knowledge (sorted by recency, with role-based bonus)
+  // 3. File knowledge (sorted by recency)
   const fileEntries = [...memory.fileKnowledge.values()];
   if (fileEntries.length > 0) {
     const sorted = rankByRelevance({
@@ -465,9 +360,6 @@ export function serializeWorkingMemory(
       getSearchCorpus: (f) => `${f.relativePath} ${f.summary} ${f.language ?? ""}`,
       getBonusScore: (f) => {
         let bonus = Math.min(f.lastReadTurn ?? 0, 10);
-        if (forRole === "coder" && (f.readByAgent === "main" || f.readByAgent === "planner")) bonus += 20;
-        if (forRole === "coder" && f.readByAgent === "coder") bonus -= 4;
-        if (forRole === "tester" && f.readByAgent !== "tester") bonus += 2;
         return bonus;
       },
       queryTerms,
@@ -485,50 +377,8 @@ export function serializeWorkingMemory(
     });
   }
 
-  // 3.5. Failed operations context (helps LLM avoid repeating mistakes)
-  const recentFailures = memory.taskProgress.filter((e) => e.status === "failed");
-  if (recentFailures.length > 0) {
-    const ranked = rankByRelevance({
-      items: recentFailures,
-      getTimestamp: (e) => e.timestamp,
-      getFocusPath: (e) => e.targetFile,
-      getBonusScore: (e) => e.status === "failed" ? 4 : 0,
-      queryTerms,
-      focusedPaths,
-    });
-    const failureLines = ranked.slice(0, MAX_RETRIEVED_FAILURES).map((e) => {
-      const target = e.targetFile ? ` on ${e.targetFile}` : "";
-      const hint = e.errorHint ? ` — ${e.errorHint}` : "";
-      return `- ${e.toolName}${target}: ${e.description}${hint}`;
-    });
-    sections.push({
-      priority: 3,
-      label: "最近失败操作（避免重复）",
-      content: failureLines.join("\n"),
-    });
-  }
 
-  // 4. Sub-agent execution history
-  if (memory.subAgentHistory.length > 0) {
-    const ranked = rankByRelevance({
-      items: memory.subAgentHistory,
-      getTimestamp: (h) => h.completedAt,
-      getSearchCorpus: (h) => `${h.role} ${h.taskDescription} ${h.keyFindings.join(" ")}`,
-      queryTerms,
-      focusedPaths,
-    });
-    const historyLines = ranked.slice(0, MAX_RETRIEVED_HISTORY).map((h) => {
-      const findings = h.keyFindings.length > 0 ? ` | findings: ${h.keyFindings.join(", ")}` : "";
-      return `- [${h.role}] ${h.taskDescription.slice(0, 80)}${findings} → ${h.proposedActionCount} actions`;
-    });
-    sections.push({
-      priority: 4,
-      label: "Sub-Agent 执行历史",
-      content: historyLines.join("\n"),
-    });
-  }
-
-  // 5. Medium/low confidence facts (lowest priority)
+  // 4. Medium/low confidence facts (lowest priority)
   const otherFacts = memory.discoveredFacts.filter((f) => f.confidence !== "high");
   if (otherFacts.length > 0) {
     const ranked = rankByRelevance({
@@ -540,7 +390,7 @@ export function serializeWorkingMemory(
       focusedPaths,
     });
     sections.push({
-      priority: 5,
+      priority: 4,
       label: "其他发现",
       content: ranked
         .slice(0, MAX_RETRIEVED_FACTS)
@@ -582,7 +432,6 @@ export function collectRelevantFilePaths(
   memory: WorkingMemory,
   query: string,
   limit = 8,
-  forRole?: string,
 ): string[] {
   if (limit <= 0 || memory.fileKnowledge.size === 0) {
     return [];
@@ -596,7 +445,6 @@ export function collectRelevantFilePaths(
     getSearchCorpus: (f) => `${f.relativePath} ${f.summary}`,
     getBonusScore: (f) => {
       let bonus = Math.min(f.lastReadTurn ?? 0, 10);
-      if (forRole === "coder" && (f.readByAgent === "main" || f.readByAgent === "planner")) bonus += 20;
       return bonus;
     },
     queryTerms,
@@ -743,8 +591,6 @@ export function snapshotWorkingMemory(memory: WorkingMemory): WorkingMemorySnaps
       cloneFileKnowledge(knowledge),
     ]),
     discoveredFacts: memory.discoveredFacts.map(cloneDiscoveredFact),
-    subAgentHistory: memory.subAgentHistory.map(cloneSubAgentExecRecord),
-    taskProgress: memory.taskProgress.map(cloneTaskProgressEntry),
     projectContext: memory.projectContext,
     maxTokenBudget: memory.maxTokenBudget,
   };
@@ -756,98 +602,11 @@ export function restoreWorkingMemory(snapshot: WorkingMemorySnapshot): WorkingMe
       snapshot.fileKnowledge.map(([path, knowledge]) => [path, cloneFileKnowledge(knowledge)]),
     ),
     discoveredFacts: (snapshot.discoveredFacts ?? []).map(cloneDiscoveredFact),
-    subAgentHistory: (snapshot.subAgentHistory ?? []).map(cloneSubAgentExecRecord),
-    taskProgress: (snapshot.taskProgress ?? []).map(cloneTaskProgressEntry),
     projectContext: snapshot.projectContext ?? "",
     maxTokenBudget: snapshot.maxTokenBudget ?? 4000,
   };
 }
 
-/**
- * Fork a working memory into an independent copy.
- * Mutations on the fork will not affect the original.
- */
-export function forkWorkingMemory(source: WorkingMemory): WorkingMemory {
-  return restoreWorkingMemory(snapshotWorkingMemory(source));
-}
-
-/**
- * Merge multiple forked working memories back into a target.
- * Used after parallel stages to consolidate concurrent writes safely.
- *
- * Strategy:
- *  - fileKnowledge: latest-timestamp wins for conflicting paths
- *  - discoveredFacts: dedupe by (content, category), respect MAX cap
- *  - subAgentHistory: concatenate all new entries, sort by completedAt
- *  - taskProgress: concatenate all new entries, sort by timestamp
- */
-export function mergeForkedMemories(
-  target: WorkingMemory,
-  forks: WorkingMemory[],
-): void {
-  // fileKnowledge — last-modified wins
-  for (const fork of forks) {
-    for (const [path, knowledge] of fork.fileKnowledge) {
-      const existing = target.fileKnowledge.get(path);
-      if (!existing || knowledge.lastReadAt > existing.lastReadAt) {
-        target.fileKnowledge.set(path, cloneFileKnowledge(knowledge));
-      }
-    }
-  }
-
-  // discoveredFacts — dedupe by content+category
-  const existingFactKeys = new Set(
-    target.discoveredFacts.map((f) => `${f.category}::${f.content}`),
-  );
-  const newFacts: DiscoveredFact[] = [];
-  for (const fork of forks) {
-    for (const fact of fork.discoveredFacts) {
-      const key = `${fact.category}::${fact.content}`;
-      if (!existingFactKeys.has(key)) {
-        existingFactKeys.add(key);
-        newFacts.push(cloneDiscoveredFact(fact));
-      }
-    }
-  }
-  newFacts.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  target.discoveredFacts.push(...newFacts);
-  evictDiscoveredFactsToCap(target);
-
-  // subAgentHistory — concat new entries from forks
-  const existingHistoryTimestamps = new Set(
-    target.subAgentHistory.map((h) => `${h.role}::${h.completedAt}`),
-  );
-  const newHistory: SubAgentExecRecord[] = [];
-  for (const fork of forks) {
-    for (const record of fork.subAgentHistory) {
-      const key = `${record.role}::${record.completedAt}`;
-      if (!existingHistoryTimestamps.has(key)) {
-        existingHistoryTimestamps.add(key);
-        newHistory.push(cloneSubAgentExecRecord(record));
-      }
-    }
-  }
-  newHistory.sort((a, b) => a.completedAt.localeCompare(b.completedAt));
-  target.subAgentHistory.push(...newHistory);
-  while (target.subAgentHistory.length > MAX_SUBAGENT_HISTORY) {
-    target.subAgentHistory.shift();
-  }
-
-  // taskProgress — concat new entries from forks
-  const existingProgressIds = new Set(target.taskProgress.map((p) => p.id));
-  const newProgress: TaskProgressEntry[] = [];
-  for (const fork of forks) {
-    for (const entry of fork.taskProgress) {
-      if (!existingProgressIds.has(entry.id)) {
-        existingProgressIds.add(entry.id);
-        newProgress.push(cloneTaskProgressEntry(entry));
-      }
-    }
-  }
-  newProgress.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-  target.taskProgress.push(...newProgress);
-  evictTaskProgressToCap(target.taskProgress);
-}
 
 /**
  * Validate and normalize a snapshot loaded from persistence.
@@ -861,12 +620,11 @@ export function normalizeWorkingMemorySnapshot(
 
   if (!Array.isArray(obj.fileKnowledge)) return null;
   if (!Array.isArray(obj.discoveredFacts)) return null;
-  if (!Array.isArray(obj.subAgentHistory)) return null;
 
   return {
     fileKnowledge: obj.fileKnowledge as Array<[string, FileKnowledge]>,
     discoveredFacts: obj.discoveredFacts as DiscoveredFact[],
-    subAgentHistory: obj.subAgentHistory as SubAgentExecRecord[],
+    subAgentHistory: Array.isArray(obj.subAgentHistory) ? (obj.subAgentHistory as SubAgentExecRecord[]) : [],
     taskProgress: Array.isArray(obj.taskProgress) ? (obj.taskProgress as TaskProgressEntry[]) : [],
     projectContext: typeof obj.projectContext === "string" ? obj.projectContext : "",
     maxTokenBudget: typeof obj.maxTokenBudget === "number" ? obj.maxTokenBudget : 4000,
@@ -878,10 +636,7 @@ export function normalizeWorkingMemorySnapshot(
 const CHECKPOINT_WM_MAX_FILE_SUMMARY_CHARS = 2000;
 const CHECKPOINT_WM_MAX_FACT_CONTENT_CHARS = 2000;
 const CHECKPOINT_WM_MAX_FACT_SOURCE_CHARS = 2000;
-const CHECKPOINT_WM_MAX_SUBAGENT_TEXT_CHARS = 4000;
-const CHECKPOINT_WM_MAX_KEY_FINDING_CHARS = 512;
 const CHECKPOINT_WM_MAX_PROJECT_CONTEXT_CHARS = 8000;
-const CHECKPOINT_WM_MAX_TASK_TEXT_CHARS = 2000;
 /** Target max JSON size for persisted working memory (soft cap; evict entries if exceeded). */
 export const CHECKPOINT_WORKING_MEMORY_MAX_JSON_BYTES = 512 * 1024;
 
@@ -916,37 +671,9 @@ export function sanitizeWorkingMemoryForCheckpoint(
     source: truncateCheckpointText(f.source, CHECKPOINT_WM_MAX_FACT_SOURCE_CHARS),
   }));
 
-  const subAgentHistory = snapshot.subAgentHistory.map((h) => ({
-    ...h,
-    taskDescription: truncateCheckpointText(
-      h.taskDescription,
-      CHECKPOINT_WM_MAX_SUBAGENT_TEXT_CHARS,
-    ),
-    replySummary: truncateCheckpointText(
-      h.replySummary,
-      CHECKPOINT_WM_MAX_SUBAGENT_TEXT_CHARS,
-    ),
-    keyFindings: h.keyFindings
-      .map((k) => truncateCheckpointText(k, CHECKPOINT_WM_MAX_KEY_FINDING_CHARS))
-      .slice(0, 50),
-  }));
-
-  const taskProgress = snapshot.taskProgress.map((p) => ({
-    ...p,
-    description: truncateCheckpointText(p.description, CHECKPOINT_WM_MAX_TASK_TEXT_CHARS),
-    targetFile: p.targetFile
-      ? truncateCheckpointText(p.targetFile, 1024)
-      : undefined,
-    errorHint: p.errorHint
-      ? truncateCheckpointText(p.errorHint, CHECKPOINT_WM_MAX_TASK_TEXT_CHARS)
-      : undefined,
-  }));
-
   let out: WorkingMemorySnapshot = {
     fileKnowledge,
     discoveredFacts,
-    subAgentHistory,
-    taskProgress,
     projectContext: truncateCheckpointText(
       snapshot.projectContext,
       CHECKPOINT_WM_MAX_PROJECT_CONTEXT_CHARS,
@@ -968,8 +695,6 @@ export function capWorkingMemorySnapshotJsonSize(
   let s: WorkingMemorySnapshot = {
     fileKnowledge: [...snapshot.fileKnowledge],
     discoveredFacts: [...snapshot.discoveredFacts],
-    subAgentHistory: [...snapshot.subAgentHistory],
-    taskProgress: [...snapshot.taskProgress],
     projectContext: snapshot.projectContext,
     maxTokenBudget: snapshot.maxTokenBudget,
   };
@@ -983,14 +708,6 @@ export function capWorkingMemorySnapshotJsonSize(
     }
     if (s.discoveredFacts.length > 0) {
       s = { ...s, discoveredFacts: s.discoveredFacts.slice(1) };
-      continue;
-    }
-    if (s.subAgentHistory.length > 0) {
-      s = { ...s, subAgentHistory: s.subAgentHistory.slice(1) };
-      continue;
-    }
-    if (s.taskProgress.length > 0) {
-      s = { ...s, taskProgress: s.taskProgress.slice(1) };
       continue;
     }
     const half = Math.max(0, Math.floor(s.projectContext.length / 2));

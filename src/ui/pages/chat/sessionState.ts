@@ -7,7 +7,7 @@ import {
   resetChatSessionId,
 } from "../../../orchestrator/checkpointStore";
 import { resetHitlContinuationMemory } from "../../../orchestrator/hitlContinuationController";
-import type { BackgroundStreamState, LiveToolCall, SubAgentStatusItem } from "./types";
+import type { BackgroundStreamState, LiveToolCall } from "./types";
 
 export interface ChatViewState {
   messages: ChatMessageRecord[];
@@ -16,7 +16,6 @@ export interface ChatViewState {
   sessionNote: string;
   liveToolCalls: LiveToolCall[];
   categorizedError: CategorizedError | null;
-  subAgentStatus: SubAgentStatusItem[];
 }
 
 export function createEmptyChatViewState(sessionNote = ""): ChatViewState {
@@ -27,7 +26,6 @@ export function createEmptyChatViewState(sessionNote = ""): ChatViewState {
     sessionNote,
     liveToolCalls: [],
     categorizedError: null,
-    subAgentStatus: [],
   };
 }
 
@@ -45,7 +43,6 @@ export function createConversationViewState(params: {
       sessionNote: backgroundStream.sessionNote,
       liveToolCalls: [...backgroundStream.liveToolCalls],
       categorizedError: backgroundStream.error,
-      subAgentStatus: [...backgroundStream.subAgentStatus],
     };
   }
 
@@ -56,7 +53,6 @@ export function createConversationViewState(params: {
     sessionNote: idleSessionNote,
     liveToolCalls: [],
     categorizedError: null,
-    subAgentStatus: [],
   };
 }
 
@@ -67,7 +63,6 @@ export function createBackgroundStreamState(params: {
   sessionNote: string;
   liveToolCalls: LiveToolCall[];
   categorizedError: CategorizedError | null;
-  subAgentStatus: SubAgentStatusItem[];
 }): BackgroundStreamState | null {
   const {
     isStreaming,
@@ -76,7 +71,6 @@ export function createBackgroundStreamState(params: {
     sessionNote,
     liveToolCalls,
     categorizedError,
-    subAgentStatus,
   } = params;
   if (!isStreaming) {
     return null;
@@ -89,7 +83,6 @@ export function createBackgroundStreamState(params: {
     sessionNote,
     liveToolCalls: [...liveToolCalls],
     error: categorizedError,
-    subAgentStatus: [...subAgentStatus],
   };
 }
 

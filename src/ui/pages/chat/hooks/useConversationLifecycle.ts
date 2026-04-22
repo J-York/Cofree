@@ -48,7 +48,6 @@ import {
 import type {
   BackgroundStreamState,
   LiveToolCall,
-  SubAgentStatusItem,
 } from "../types";
 
 interface UseConversationLifecycleOptions {
@@ -61,7 +60,6 @@ interface UseConversationLifecycleOptions {
   executingActionId: string;
   liveToolCalls: LiveToolCall[];
   categorizedError: CategorizedError | null;
-  subAgentStatus: SubAgentStatusItem[];
   /** Streaming bookkeeping — abort on wsPath switch, delete on conversation delete. */
   abortControllerRef: MutableRefObject<AbortController | null>;
   abortControllersRef: MutableRefObject<Map<string, AbortController>>;
@@ -77,7 +75,6 @@ interface UseConversationLifecycleOptions {
   setIsStreaming: Dispatch<SetStateAction<boolean>>;
   setLiveToolCalls: Dispatch<SetStateAction<LiveToolCall[]>>;
   setCategorizedError: Dispatch<SetStateAction<CategorizedError | null>>;
-  setSubAgentStatus: Dispatch<SetStateAction<SubAgentStatusItem[]>>;
 }
 
 /**
@@ -101,7 +98,6 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
     executingActionId,
     liveToolCalls,
     categorizedError,
-    subAgentStatus,
     abortControllerRef,
     abortControllersRef,
     backgroundStreamsRef,
@@ -113,7 +109,6 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
     setIsStreaming,
     setLiveToolCalls,
     setCategorizedError,
-    setSubAgentStatus,
   } = options;
 
   const [conversations, setConversations] = useState<ConversationMetadata[]>(
@@ -176,7 +171,6 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
     setSessionNote(viewState.sessionNote);
     setLiveToolCalls(viewState.liveToolCalls);
     setCategorizedError(viewState.categorizedError);
-    setSubAgentStatus(viewState.subAgentStatus);
   };
 
   const activateConversation = (
@@ -225,7 +219,6 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
       sessionNote,
       liveToolCalls,
       categorizedError,
-      subAgentStatus,
     });
     if (backgroundStream) {
       backgroundStreamsRef.current.set(activeConversationId, backgroundStream);

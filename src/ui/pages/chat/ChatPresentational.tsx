@@ -24,7 +24,7 @@ import type {
   ApplyPatchActionProposal,
   OrchestrationPlan,
 } from "../../../orchestrator/types";
-import type { LiveToolCall, SubAgentStatusItem } from "./types";
+import type { LiveToolCall } from "./types";
 import type { ChatMessageRecord } from "../../../lib/chatHistoryStore";
 import { copyTextToClipboard } from "../../../lib/clipboard";
 import { formatToolName } from "./helpers";
@@ -348,61 +348,6 @@ export function AssistantToolCalls({
   );
 }
 
-export function SubAgentStatusPanel({
-  items,
-}: {
-  items: SubAgentStatusItem[];
-}) {
-  if (items.length === 0) return null;
-
-  return (
-    <div
-      className="live-tool-status expert-panel-activity"
-      style={{ marginBottom: 6 }}
-      data-topbar-anchor="parallel"
-      tabIndex={-1}
-    >
-      <p
-        className="tool-trace-label"
-        style={{ margin: "0 0 6px 0", fontSize: 11, opacity: 0.88 }}
-      >
-        专家组活动
-      </p>
-      {items.map((item) => {
-        const event = item.lastEvent;
-        let label = "";
-        let icon = "◐";
-        if (event.kind === "tool_start") {
-          label = `${item.label}: ${event.toolName} · ${event.turn}/${event.maxTurns}`;
-        } else if (event.kind === "tool_complete") {
-          label = `${item.label}: ${event.toolName} ${event.success ? "✓" : "✕"} (${event.durationMs}ms)`;
-          icon = event.success ? "✓" : "✕";
-        } else if (event.kind === "summary") {
-          label = `${item.label}: ${event.message}`;
-          icon = "ℹ";
-        } else if (event.kind === "action_proposed") {
-          label = `${item.label}: 提出 ${event.actionType}`;
-          icon = "⚑";
-        } else if (event.kind === "thinking") {
-          label = `${item.label}: 正在思考…`;
-          icon = "…";
-        } else if (event.kind === "stage_complete") {
-          label = `${item.label}: 阶段完成 (${event.stageStatus})`;
-          icon = "✓";
-        } else if (event.kind === "team_checkpoint") {
-          label = `${item.label}: ${event.message}`;
-          icon = "◇";
-        }
-        return (
-          <div key={item.id} className="live-tool-item running">
-            <span className="live-tool-icon">{icon}</span>
-            <span className="live-tool-name">{label}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 export function ToolTracePanel({
   traces,
@@ -654,16 +599,6 @@ function ActionBatchMeta({ action }: { action: ActionProposal }) {
 }
 
 function formatActionOrigin(action: ActionProposal): string | null {
-  if (action.origin === "team_stage") {
-    return action.originDetail
-      ? `Team Stage · ${action.originDetail}`
-      : "Team Stage";
-  }
-  if (action.origin === "sub_agent") {
-    return action.originDetail
-      ? `子 Agent · ${action.originDetail}`
-      : "子 Agent";
-  }
   if (action.origin === "main_agent") {
     return "主 Agent";
   }

@@ -442,7 +442,6 @@ function upsertWorkingMemoryContextMessage(params: {
   const memoryContext = serializeWorkingMemory(
     params.workingMemory,
     params.tokenBudget,
-    undefined,
     {
       query: params.query,
       focusedPaths: params.focusedPaths,
@@ -563,7 +562,7 @@ function normalizeFocusedPathList(paths: string[] | undefined): string[] {
 const INTERNAL_TOOL_NAMES = ["update_plan"] as const;
 
 interface InitialPlanSeed extends TodoPlanState {
-  source: "fallback" | "planner" | "existing";
+  source: "fallback" | "existing";
 }
 
 
@@ -929,7 +928,7 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           },
           owner: {
             type: "string",
-            enum: ["planner", "coder", "tester", "debugger", "reviewer"],
+            enum: ["planner"],
             description: "Optional owner for 'add'.",
           },
           note: {
@@ -2636,9 +2635,8 @@ async function runNativeToolCallingLoop(
 
     // --- 连续纯读取检测 ---
     const turnHasPropose = completion.toolCalls.some(tc => tc.function.name.startsWith("propose_"));
-    const turnHasTaskDelegation = completion.toolCalls.some(tc => tc.function.name === "task");
 
-    if (!turnHasPropose && !turnHasTaskDelegation && turnSuccessCount > 0) {
+    if (!turnHasPropose && turnSuccessCount > 0) {
       consecutiveReadOnlyTurns += 1;
     } else {
       consecutiveReadOnlyTurns = 0;
@@ -2848,7 +2846,7 @@ function sanitizeStepsFromPrompt(prompt: string): PlanStep[] {
       {
         id: "step-implement",
         title: "执行实现",
-        owner: "coder",
+        owner: "planner",
         status: "pending",
         summary: "基于任务生成实现或回答",
         dependsOn: ["step-plan"],
@@ -2856,7 +2854,7 @@ function sanitizeStepsFromPrompt(prompt: string): PlanStep[] {
       {
         id: "step-verify",
         title: "补充验证",
-        owner: "tester",
+        owner: "planner",
         status: "pending",
         summary: "补充验证建议并总结风险",
         dependsOn: ["step-implement"],

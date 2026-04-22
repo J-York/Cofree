@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   createWorkingMemory,
   addDiscoveredFact,
-  recordSubAgentExecution,
-  recordTaskProgress,
   extractFileKnowledge,
   serializeWorkingMemory,
   snapshotWorkingMemory,
@@ -12,8 +10,6 @@ import {
   sanitizeWorkingMemoryForCheckpoint,
   capWorkingMemorySnapshotJsonSize,
   CHECKPOINT_WORKING_MEMORY_MAX_JSON_BYTES,
-  forkWorkingMemory,
-  mergeForkedMemories,
   type WorkingMemory,
   type FileKnowledge,
   type WorkingMemorySnapshot,
@@ -32,7 +28,6 @@ describe("createWorkingMemory", () => {
     const mem = makeMemory();
     expect(mem.fileKnowledge.size).toBe(0);
     expect(mem.discoveredFacts.length).toBe(0);
-    expect(mem.subAgentHistory.length).toBe(0);
     expect(mem.projectContext).toBe("Test project using TypeScript + React");
     expect(mem.maxTokenBudget).toBe(4000);
   });
@@ -99,37 +94,6 @@ describe("addDiscoveredFact", () => {
   });
 });
 
-describe("recordSubAgentExecution", () => {
-  it("records execution with auto-generated timestamp", () => {
-    const mem = makeMemory();
-    recordSubAgentExecution(mem, {
-      role: "planner",
-      taskDescription: "Analyze the project structure",
-      replySummary: "The project uses a modular architecture...",
-      proposedActionCount: 0,
-      keyFindings: ["modular architecture", "TypeScript"],
-    });
-    expect(mem.subAgentHistory.length).toBe(1);
-    expect(mem.subAgentHistory[0].role).toBe("planner");
-    expect(mem.subAgentHistory[0].completedAt).toBeTruthy();
-  });
-
-  it("limits history to 20 entries", () => {
-    const mem = makeMemory();
-    for (let i = 0; i < 25; i++) {
-      recordSubAgentExecution(mem, {
-        role: "coder",
-        taskDescription: `Task ${i}`,
-        replySummary: `Done ${i}`,
-        proposedActionCount: i,
-        keyFindings: [],
-      });
-    }
-    expect(mem.subAgentHistory.length).toBe(20);
-    // Oldest entries should be evicted
-    expect(mem.subAgentHistory[0].taskDescription).toBe("Task 5");
-  });
-});
 
 describe("extractFileKnowledge", () => {
   it("extracts from read_file results", () => {
@@ -228,19 +192,6 @@ describe("serializeWorkingMemory", () => {
     expect(output).toContain("已确认事实");
   });
 
-  it("includes sub-agent history", () => {
-    const mem = makeMemory();
-    recordSubAgentExecution(mem, {
-      role: "planner",
-      taskDescription: "Analyze project",
-      replySummary: "Done",
-      proposedActionCount: 3,
-      keyFindings: ["finding1"],
-    });
-    const output = serializeWorkingMemory(mem, 2000);
-    expect(output).toContain("Sub-Agent 执行历史");
-    expect(output).toContain("planner");
-  });
 
   it("truncates when budget is small", () => {
     const mem = makeMemory({ projectContext: "A".repeat(500) });
@@ -257,31 +208,6 @@ describe("serializeWorkingMemory", () => {
     const smallOutput = serializeWorkingMemory(mem, 200);
     expect(smallOutput.length).toBeGreaterThan(0);
     expect(smallOutput.length).toBeLessThan(fullOutput.length);
-  });
-
-  it("respects role-based sorting for coder", () => {
-    const mem = makeMemory();
-    mem.fileKnowledge.set("src/a.ts", {
-      relativePath: "src/a.ts",
-      summary: "File A",
-      totalLines: 10,
-      language: "typescript",
-      lastReadAt: new Date().toISOString(),
-      readByAgent: "coder",
-    });
-    mem.fileKnowledge.set("src/b.ts", {
-      relativePath: "src/b.ts",
-      summary: "File B",
-      totalLines: 20,
-      language: "typescript",
-      lastReadAt: new Date().toISOString(),
-      readByAgent: "main",
-    });
-    const output = serializeWorkingMemory(mem, 2000, "coder");
-    // Files read by "main" should appear before files read by "coder"
-    const indexA = output.indexOf("src/a.ts");
-    const indexB = output.indexOf("src/b.ts");
-    expect(indexB).toBeLessThan(indexA);
   });
 
   it("prioritizes query-matching and focused files in retrieved memory context", () => {
@@ -305,7 +231,7 @@ describe("serializeWorkingMemory", () => {
       readByAgent: "planner",
     });
 
-    const output = serializeWorkingMemory(mem, 2000, undefined, {
+    const output = serializeWorkingMemory(mem, 2000, {
       query: "fix login token bug",
       focusedPaths: ["src/auth/login.ts"],
     });
@@ -335,13 +261,6 @@ describe("snapshot and restore", () => {
       source: "test",
       confidence: "high",
     });
-    recordSubAgentExecution(mem, {
-      role: "planner",
-      taskDescription: "Analyze",
-      replySummary: "Done",
-      proposedActionCount: 1,
-      keyFindings: ["f1"],
-    });
 
     const snapshot = snapshotWorkingMemory(mem);
     const restored = restoreWorkingMemory(snapshot);
@@ -350,7 +269,6 @@ describe("snapshot and restore", () => {
     expect(restored.fileKnowledge.get("src/app.ts")?.summary).toBe("App component");
     expect(restored.discoveredFacts.length).toBe(1);
     expect(restored.discoveredFacts[0].content).toBe("Modular design");
-    expect(restored.subAgentHistory.length).toBe(1);
     expect(restored.projectContext).toBe("Test project using TypeScript + React");
     expect(restored.maxTokenBudget).toBe(4000);
   });
@@ -393,7 +311,6 @@ describe("normalizeWorkingMemorySnapshot", () => {
     const result = normalizeWorkingMemorySnapshot({
       fileKnowledge: [],
       discoveredFacts: [],
-      subAgentHistory: [],
       projectContext: "test",
       maxTokenBudget: 2000,
     });
@@ -405,7 +322,6 @@ describe("normalizeWorkingMemorySnapshot", () => {
     const result = normalizeWorkingMemorySnapshot({
       fileKnowledge: [],
       discoveredFacts: [],
-      subAgentHistory: [],
     });
     expect(result).not.toBeNull();
     expect(result!.projectContext).toBe("");
@@ -433,13 +349,6 @@ describe("P3-1/P3-2: WorkingMemory checkpoint round-trip", () => {
       source: "index.ts",
       confidence: "high",
     });
-    recordSubAgentExecution(mem, {
-      role: "planner",
-      taskDescription: "Analyze requirements",
-      replySummary: "Identified 3 tasks",
-      proposedActionCount: 0,
-      keyFindings: ["Found 3 tasks"],
-    });
 
     const snapshot = snapshotWorkingMemory(mem);
     const restored = restoreWorkingMemory(snapshot);
@@ -448,31 +357,8 @@ describe("P3-1/P3-2: WorkingMemory checkpoint round-trip", () => {
     expect(restored.fileKnowledge.get("src/index.ts")?.relativePath).toBe("src/index.ts");
     expect(restored.discoveredFacts).toHaveLength(1);
     expect(restored.discoveredFacts[0].content).toBe("Uses React + TypeScript");
-    expect(restored.subAgentHistory).toHaveLength(1);
-    expect(restored.subAgentHistory[0].role).toBe("planner");
     expect(restored.projectContext).toBe(mem.projectContext);
     expect(restored.maxTokenBudget).toBe(mem.maxTokenBudget);
-  });
-
-  it("normalizeWorkingMemorySnapshot validates and restores taskProgress", () => {
-    const snapshot = normalizeWorkingMemorySnapshot({
-      fileKnowledge: [],
-      discoveredFacts: [],
-      subAgentHistory: [],
-      taskProgress: [
-        { id: "p1", description: "edit file", toolName: "propose_file_edit", status: "completed", turnNumber: 1, timestamp: "2026-01-01" },
-      ],
-      projectContext: "test",
-      maxTokenBudget: 3000,
-    });
-
-    expect(snapshot).not.toBeNull();
-    expect(snapshot!.taskProgress).toHaveLength(1);
-    expect(snapshot!.taskProgress[0].id).toBe("p1");
-
-    const restored = restoreWorkingMemory(snapshot!);
-    expect(restored.taskProgress).toHaveLength(1);
-    expect(restored.taskProgress[0].status).toBe("completed");
   });
 });
 
@@ -515,8 +401,6 @@ describe("sanitizeWorkingMemoryForCheckpoint / capWorkingMemorySnapshotJsonSize"
     const snap: WorkingMemorySnapshot = {
       fileKnowledge: entries,
       discoveredFacts: [],
-      subAgentHistory: [],
-      taskProgress: [],
       projectContext: "",
       maxTokenBudget: 4000,
     };
@@ -543,8 +427,6 @@ describe("sanitizeWorkingMemoryForCheckpoint / capWorkingMemorySnapshotJsonSize"
     const snap: WorkingMemorySnapshot = {
       fileKnowledge: entries,
       discoveredFacts: [],
-      subAgentHistory: [],
-      taskProgress: [],
       projectContext: "p".repeat(100_000),
       maxTokenBudget: 4000,
     };
@@ -552,242 +434,5 @@ describe("sanitizeWorkingMemoryForCheckpoint / capWorkingMemorySnapshotJsonSize"
     expect(JSON.stringify(sanitized).length).toBeLessThanOrEqual(
       CHECKPOINT_WORKING_MEMORY_MAX_JSON_BYTES,
     );
-  });
-});
-
-// --- Fork-join for concurrent parallel stage safety ---
-describe("forkWorkingMemory / mergeForkedMemories", () => {
-  it("fork creates an independent copy — mutations do not affect original", () => {
-    const original = makeMemory();
-    addDiscoveredFact(original, {
-      category: "architecture",
-      content: "Original fact",
-      source: "index.ts",
-      confidence: "high",
-    });
-    original.fileKnowledge.set("src/a.ts", {
-      relativePath: "src/a.ts",
-      summary: "module A",
-      totalLines: 50,
-      lastReadAt: "2026-01-01T00:00:00Z",
-      lastReadTurn: 1,
-      readByAgent: "main",
-    });
-
-    const fork = forkWorkingMemory(original);
-
-    // Mutate fork
-    addDiscoveredFact(fork, {
-      category: "dependency",
-      content: "Fork-only fact",
-      source: "pkg.json",
-      confidence: "medium",
-    });
-    fork.fileKnowledge.set("src/b.ts", {
-      relativePath: "src/b.ts",
-      summary: "module B",
-      totalLines: 30,
-      lastReadAt: "2026-01-02T00:00:00Z",
-      lastReadTurn: 2,
-      readByAgent: "coder",
-    });
-
-    // Original must be unchanged
-    expect(original.discoveredFacts).toHaveLength(1);
-    expect(original.fileKnowledge.size).toBe(1);
-    // Fork has both
-    expect(fork.discoveredFacts).toHaveLength(2);
-    expect(fork.fileKnowledge.size).toBe(2);
-  });
-
-  it("merge consolidates forks into target without duplicates", () => {
-    const parent = makeMemory();
-    addDiscoveredFact(parent, {
-      category: "architecture",
-      content: "Shared fact",
-      source: "root.ts",
-      confidence: "high",
-    });
-
-    const forkA = forkWorkingMemory(parent);
-    const forkB = forkWorkingMemory(parent);
-
-    // Both forks add different facts
-    addDiscoveredFact(forkA, {
-      category: "api",
-      content: "Fact from stage A",
-      source: "a.ts",
-      confidence: "high",
-    });
-    addDiscoveredFact(forkB, {
-      category: "config",
-      content: "Fact from stage B",
-      source: "b.ts",
-      confidence: "medium",
-    });
-
-    // Both forks add the SAME fact (should be deduped)
-    addDiscoveredFact(forkA, {
-      category: "issue",
-      content: "Common issue found",
-      source: "shared.ts",
-      confidence: "high",
-    });
-    addDiscoveredFact(forkB, {
-      category: "issue",
-      content: "Common issue found",
-      source: "shared.ts",
-      confidence: "high",
-    });
-
-    // Forks add different file knowledge
-    forkA.fileKnowledge.set("src/x.ts", {
-      relativePath: "src/x.ts",
-      summary: "X",
-      totalLines: 10,
-      lastReadAt: "2026-01-01T00:00:01Z",
-      lastReadTurn: 1,
-      readByAgent: "reviewer",
-    });
-    forkB.fileKnowledge.set("src/y.ts", {
-      relativePath: "src/y.ts",
-      summary: "Y",
-      totalLines: 20,
-      lastReadAt: "2026-01-01T00:00:02Z",
-      lastReadTurn: 2,
-      readByAgent: "tester",
-    });
-
-    // Forks add sub-agent history
-    recordSubAgentExecution(forkA, {
-      role: "reviewer",
-      taskDescription: "Review code",
-      replySummary: "Looks good",
-      proposedActionCount: 0,
-      keyFindings: ["No issues"],
-    });
-    recordSubAgentExecution(forkB, {
-      role: "tester",
-      taskDescription: "Run tests",
-      replySummary: "All pass",
-      proposedActionCount: 0,
-      keyFindings: ["100% pass"],
-    });
-
-    mergeForkedMemories(parent, [forkA, forkB]);
-
-    // Original "Shared fact" + "Fact from A" + "Fact from B" + 1x "Common issue" (deduped)
-    expect(parent.discoveredFacts).toHaveLength(4);
-    const factContents = parent.discoveredFacts.map((f) => f.content);
-    expect(factContents).toContain("Shared fact");
-    expect(factContents).toContain("Fact from stage A");
-    expect(factContents).toContain("Fact from stage B");
-    expect(factContents).toContain("Common issue found");
-    expect(factContents.filter((c) => c === "Common issue found")).toHaveLength(1);
-
-    // File knowledge: original had none, now has both
-    expect(parent.fileKnowledge.size).toBe(2);
-    expect(parent.fileKnowledge.has("src/x.ts")).toBe(true);
-    expect(parent.fileKnowledge.has("src/y.ts")).toBe(true);
-
-    // Sub-agent history: merged from both forks
-    expect(parent.subAgentHistory).toHaveLength(2);
-    const roles = parent.subAgentHistory.map((h) => h.role);
-    expect(roles).toContain("reviewer");
-    expect(roles).toContain("tester");
-  });
-
-  it("merge picks latest-timestamp file knowledge for conflicts", () => {
-    const parent = makeMemory();
-
-    const forkA = forkWorkingMemory(parent);
-    const forkB = forkWorkingMemory(parent);
-
-    forkA.fileKnowledge.set("src/shared.ts", {
-      relativePath: "src/shared.ts",
-      summary: "Old read by A",
-      totalLines: 100,
-      lastReadAt: "2026-01-01T00:00:01Z",
-      lastReadTurn: 1,
-      readByAgent: "reviewer",
-    });
-    forkB.fileKnowledge.set("src/shared.ts", {
-      relativePath: "src/shared.ts",
-      summary: "Newer read by B",
-      totalLines: 105,
-      lastReadAt: "2026-01-01T00:00:05Z",
-      lastReadTurn: 3,
-      readByAgent: "tester",
-    });
-
-    mergeForkedMemories(parent, [forkA, forkB]);
-
-    expect(parent.fileKnowledge.size).toBe(1);
-    const entry = parent.fileKnowledge.get("src/shared.ts")!;
-    expect(entry.summary).toBe("Newer read by B");
-    expect(entry.totalLines).toBe(105);
-  });
-
-  it("merge respects capacity limits during consolidation", () => {
-    const parent = makeMemory();
-
-    const forkA = forkWorkingMemory(parent);
-    const forkB = forkWorkingMemory(parent);
-
-    // Each fork adds many facts to push toward the limit
-    for (let i = 0; i < 30; i++) {
-      addDiscoveredFact(forkA, {
-        category: "convention",
-        content: `Fork A fact ${i}`,
-        source: "a.ts",
-        confidence: "low",
-      });
-      addDiscoveredFact(forkB, {
-        category: "convention",
-        content: `Fork B fact ${i}`,
-        source: "b.ts",
-        confidence: "low",
-      });
-    }
-
-    mergeForkedMemories(parent, [forkA, forkB]);
-
-    // Should not exceed MAX_DISCOVERED_FACTS (50)
-    expect(parent.discoveredFacts.length).toBeLessThanOrEqual(50);
-  });
-
-  it("merge evicts medium-confidence facts before oldest high-confidence facts", () => {
-    const parent = makeMemory();
-
-    for (let i = 0; i < 49; i++) {
-      addDiscoveredFact(parent, {
-        category: "api",
-        content: `High fact ${i}`,
-        source: "parent.ts",
-        confidence: "high",
-      });
-    }
-    addDiscoveredFact(parent, {
-      category: "config",
-      content: "Medium fact",
-      source: "parent.ts",
-      confidence: "medium",
-    });
-
-    const fork = forkWorkingMemory(parent);
-    addDiscoveredFact(fork, {
-      category: "issue",
-      content: "New high fact",
-      source: "fork.ts",
-      confidence: "high",
-    });
-
-    mergeForkedMemories(parent, [fork]);
-
-    expect(parent.discoveredFacts).toHaveLength(50);
-    const contents = parent.discoveredFacts.map((f) => f.content);
-    expect(contents).toContain("New high fact");
-    expect(contents).toContain("High fact 0");
-    expect(contents).not.toContain("Medium fact");
   });
 });

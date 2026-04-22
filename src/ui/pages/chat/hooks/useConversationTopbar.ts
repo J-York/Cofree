@@ -25,7 +25,7 @@ import {
   type ConversationTopbarTarget,
 } from "../conversationTopbarNavigation";
 import { deriveConversationTopbarState } from "../conversationTopbarState";
-import type { LiveToolCall, SubAgentStatusItem } from "../types";
+import type { LiveToolCall } from "../types";
 
 interface UseConversationTopbarOptions {
   assistantDisplayName: string;
@@ -36,7 +36,6 @@ interface UseConversationTopbarOptions {
   activePlan: OrchestrationPlan | null;
   isStreaming: boolean;
   liveToolCalls: LiveToolCall[];
-  subAgentStatus: SubAgentStatusItem[];
   hasAskUserPending: boolean;
   hasRestoreNotice: boolean;
   sessionNote: string;
@@ -74,7 +73,6 @@ export function useConversationTopbar(options: UseConversationTopbarOptions): {
     activePlan,
     isStreaming,
     liveToolCalls,
-    subAgentStatus,
     hasAskUserPending,
     hasRestoreNotice,
     sessionNote,
@@ -119,7 +117,6 @@ export function useConversationTopbar(options: UseConversationTopbarOptions): {
         agentLabel: assistantDisplayName,
         isStreaming,
         liveToolCalls,
-        subAgentStatus,
         activePlan,
         hasAskUserPending,
         hasRestoreNotice,
@@ -134,7 +131,6 @@ export function useConversationTopbar(options: UseConversationTopbarOptions): {
       isStreaming,
       liveToolCalls,
       sessionNote,
-      subAgentStatus,
     ],
   );
 
@@ -155,7 +151,6 @@ export function useConversationTopbar(options: UseConversationTopbarOptions): {
           messages,
           activePlan,
           liveToolCalls,
-          subAgentStatus,
           hasAskUserPending,
           askUserAnchorMessageId,
           hasRestoreNotice,
@@ -173,7 +168,6 @@ export function useConversationTopbar(options: UseConversationTopbarOptions): {
           messages,
           activePlan,
           liveToolCalls,
-          subAgentStatus,
           hasAskUserPending,
           askUserAnchorMessageId,
           hasRestoreNotice,
@@ -191,7 +185,6 @@ export function useConversationTopbar(options: UseConversationTopbarOptions): {
           messages,
           activePlan,
           liveToolCalls,
-          subAgentStatus,
           hasAskUserPending,
           askUserAnchorMessageId,
           hasRestoreNotice,
@@ -213,7 +206,6 @@ export function useConversationTopbar(options: UseConversationTopbarOptions): {
     messages,
     restoreAnchorMessageId,
     sessionNote,
-    subAgentStatus,
   ]);
 
   const topbarState = useMemo(

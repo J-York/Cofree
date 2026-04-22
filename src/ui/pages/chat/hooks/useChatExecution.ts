@@ -54,7 +54,7 @@ import {
   deriveCarryForwardPlan,
   toConversationHistory,
 } from "../helpers";
-import type { BackgroundStreamState, LiveToolCall, SubAgentStatusItem } from "../types";
+import type { BackgroundStreamState, LiveToolCall } from "../types";
 
 interface UseChatExecutionOptions {
   wsPath: string;
@@ -87,7 +87,6 @@ interface UseChatExecutionOptions {
   setCategorizedError: Dispatch<SetStateAction<CategorizedError | null>>;
   setLiveContextTokens: Dispatch<SetStateAction<number | null>>;
   setLiveToolCalls: Dispatch<SetStateAction<LiveToolCall[]>>;
-  setSubAgentStatus: Dispatch<SetStateAction<SubAgentStatusItem[]>>;
   setPrompt: Dispatch<SetStateAction<string>>;
   setComposerAttachments: Dispatch<SetStateAction<ChatContextAttachment[]>>;
   setSelectedSkills: Dispatch<SetStateAction<SkillEntry[]>>;
@@ -151,7 +150,6 @@ export function useChatExecution(options: UseChatExecutionOptions) {
     setCategorizedError,
     setLiveContextTokens,
     setLiveToolCalls,
-    setSubAgentStatus,
     setPrompt,
     setComposerAttachments,
     setSelectedSkills,
@@ -403,7 +401,6 @@ export function useChatExecution(options: UseChatExecutionOptions) {
     setSessionNote("正在回复…");
     setLiveToolCalls([]);
     setLiveContextTokens(null);
-    setSubAgentStatus([]);
 
     session.setWorkflowPhase("planning");
     if (settings.debugMode) {

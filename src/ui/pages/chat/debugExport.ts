@@ -10,7 +10,7 @@ import type {
 import type { AppSettings } from "../../../lib/settingsStore";
 import type { WorkflowCheckpointPayload } from "../../../orchestrator/checkpointStore";
 import type { ToolExecutionTrace } from "../../../orchestrator/toolTraceTypes";
-import type { LiveToolCall, SubAgentStatusItem } from "./types";
+import type { LiveToolCall } from "./types";
 
 const FALLBACK_DEBUG_EXPORT_KEY = "__no_conversation__";
 
@@ -209,7 +209,6 @@ export function buildConversationDebugExport(params: {
   executingActionId: string;
   liveContextTokens: number | null;
   liveToolCalls: LiveToolCall[];
-  subAgentStatus: SubAgentStatusItem[];
   debugEntries: ConversationDebugEntry[];
   llmAuditRecords: LLMAuditRecord[];
   actionAuditRecords: SensitiveActionAuditRecord[];
@@ -266,9 +265,6 @@ export function buildConversationDebugExport(params: {
         expertSpeakerMessageCount: params.messages.filter(
           (message) => Boolean(message.assistantSpeaker),
         ).length,
-        teamCheckpointStatusCount: params.subAgentStatus.filter(
-          (item) => item.lastEvent?.kind === "team_checkpoint",
-        ).length,
       },
       messages: params.messages,
     },
@@ -298,7 +294,6 @@ export function buildConversationDebugExport(params: {
       executingActionId: params.executingActionId,
       liveContextTokens: params.liveContextTokens,
       liveToolCalls: params.liveToolCalls,
-      subAgentStatus: params.subAgentStatus,
     },
     audit: {
       totalCounts: {

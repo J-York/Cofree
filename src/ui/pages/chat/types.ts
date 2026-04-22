@@ -3,8 +3,6 @@ import type { CategorizedError } from "../../../lib/errorClassifier";
 import type { ShellExecutionMode } from "../../../lib/shellCommand";
 import type { ManualApprovalContext } from "../../../orchestrator/hitlService";
 import type { ToolExecutionStatus } from "../../../orchestrator/toolTraceTypes";
-import type { SubAgentProgressEvent } from "../../../orchestrator/types";
-
 export interface LiveToolCall {
   callId: string;
   toolName: string;
@@ -13,13 +11,6 @@ export interface LiveToolCall {
   resultPreview?: string;
 }
 
-export interface SubAgentStatusItem {
-  id: string;
-  label: string;
-  role: string;
-  lastEvent: SubAgentProgressEvent;
-  updatedAt: number;
-}
 
 export interface BackgroundStreamState {
   messages: ChatMessageRecord[];
@@ -28,7 +19,6 @@ export interface BackgroundStreamState {
   sessionNote: string;
   liveToolCalls: LiveToolCall[];
   error: CategorizedError | null;
-  subAgentStatus: SubAgentStatusItem[];
 }
 
 export interface RunningShellJobMeta {
@@ -49,10 +39,4 @@ export interface ShellOutputBuffer {
   stdoutBytes: number;
   stderrBytes: number;
   timerId: ReturnType<typeof setTimeout> | null;
-}
-
-export interface WorkspaceTeamTrustPromptState {
-  key: string;
-  messageId: string;
-  teamActionIds: string[];
 }

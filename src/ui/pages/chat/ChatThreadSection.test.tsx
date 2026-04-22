@@ -3,11 +3,9 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ChatMessageRecord } from "../../../lib/chatHistoryStore";
-import type { OrchestrationPlan, SubAgentProgressEvent } from "../../../orchestrator/types";
+import type { OrchestrationPlan } from "../../../orchestrator/types";
 import type { ConversationTopbarState } from "./conversationTopbarState";
 import { ChatThreadSection } from "./ChatThreadSection";
-
-type StageCompleteEvent = Omit<SubAgentProgressEvent, "kind"> & { kind: "stage_complete" };
 
 function assistantMessage(
   id: string,
@@ -76,20 +74,6 @@ function pendingPlan(overrides: Partial<OrchestrationPlan> = {}): OrchestrationP
   };
 }
 
-function stageCompleteEvent(
-  overrides: Partial<StageCompleteEvent> = {},
-): StageCompleteEvent {
-  return {
-    kind: "stage_complete",
-    stageLabel: "Review",
-    agentRole: "reviewer",
-    summary: "done",
-    stageStatus: "completed",
-    teamId: "team-a",
-    ...overrides,
-  };
-}
-
 function renderThread(
   overrides: Partial<ComponentProps<typeof ChatThreadSection>> = {},
 ) {
@@ -104,7 +88,6 @@ function renderThread(
     debugMode: false,
     isStreaming: false,
     liveToolCalls: [],
-    subAgentStatus: [],
     executingActionId: "",
     getActiveShellActionIds: () => [],
     onPlanUpdate: vi.fn(),
@@ -154,18 +137,9 @@ describe("ChatThreadSection", () => {
           status: "waiting_for_user",
         },
       ],
-      subAgentStatus: [
-        {
-          id: "stage-1",
-          label: "Review",
-          role: "reviewer",
-          lastEvent: stageCompleteEvent(),
-          updatedAt: 10,
-        },
-      ],
       topbarState: topbarState({
-        mode: "orchestrating",
-        source: "team",
+        mode: "single_agent",
+        source: "tools",
         primaryLabel: "当前：Review",
       }),
       askUserAnchorMessageId: "plan-msg",
@@ -174,11 +148,9 @@ describe("ChatThreadSection", () => {
 
     expect(screen.getByText("专家总结")).not.toBeNull();
     expect(container.querySelector('[data-topbar-anchor="tools"]')).not.toBeNull();
-    expect(container.querySelector('[data-topbar-anchor="parallel"]')).not.toBeNull();
     expect(container.querySelector('[data-topbar-anchor="plan"]')).not.toBeNull();
     expect(container.querySelector('[data-topbar-anchor="ask_user"]')).not.toBeNull();
     expect(container.querySelector('[data-topbar-anchor="restore"]')).not.toBeNull();
-    expect(container.querySelector('[data-topbar-anchor="stage_summary"]')).not.toBeNull();
     expect(container.querySelector('[data-topbar-action-id="action-1"]')).not.toBeNull();
   });
 
@@ -191,8 +163,8 @@ describe("ChatThreadSection", () => {
     const view = renderThread({
       messages: [message],
       topbarState: topbarState({
-        mode: "orchestrating",
-        source: "team",
+        mode: "single_agent",
+        source: "tools",
         primaryLabel: "当前：实现",
         attention: {
           visible: true,
@@ -259,8 +231,8 @@ describe("ChatThreadSection", () => {
     const { rerender } = renderThread({
       messages: [assistantMessage("plan-msg", { plan: pendingPlan() })],
       topbarState: topbarState({
-        mode: "orchestrating",
-        source: "team",
+        mode: "single_agent",
+        source: "tools",
         primaryLabel: "当前：实现",
         progress: {
           visible: true,
@@ -283,7 +255,6 @@ describe("ChatThreadSection", () => {
         debugMode={false}
         isStreaming={false}
         liveToolCalls={[]}
-        subAgentStatus={[]}
         executingActionId=""
         getActiveShellActionIds={() => []}
         onPlanUpdate={vi.fn()}

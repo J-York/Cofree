@@ -185,42 +185,6 @@ describe("HITL shell retry flow", () => {
             approvalRuleKind: "shell_command_prefix",
         });
     });
-
-    it("records workspace team yolo approvals in execution metadata", async () => {
-        vi.mocked(awaitShellCommandWithDeadline).mockResolvedValue({
-            moved_to_background: false,
-            result: {
-                success: true,
-                command: "npm test",
-                timed_out: false,
-                status: 0,
-                stdout: "passed",
-                stderr: "",
-                cancelled: false,
-                stdout_truncated: false,
-                stderr_truncated: false,
-                stdout_total_bytes: 6,
-                stderr_total_bytes: 0,
-                output_limit_bytes: 16384,
-            },
-        });
-
-        const nextPlan = await approveAction(
-            createShellPlan(),
-            "shell-1",
-            "workspace",
-            {
-                approvalMode: "workspace_team_yolo",
-            },
-        );
-
-        expect(nextPlan.proposedActions[0]?.executionResult?.metadata).toMatchObject({
-            approvalMode: "workspace_team_yolo",
-            approvalRuleLabel: null,
-            approvalRuleKind: null,
-        });
-    });
-
     it("approves only the requested action ids in batch mode", async () => {
         vi.mocked(awaitShellCommandWithDeadline)
             .mockResolvedValueOnce({
@@ -247,7 +211,9 @@ describe("HITL shell retry flow", () => {
             {
                 actionIds: ["shell-team"],
                 approvalContext: {
-                    approvalMode: "workspace_team_yolo",
+                    approvalMode: "remember_workspace_rule",
+                    approvalRuleLabel: "pnpm test",
+                    approvalRuleKind: "shell_command_prefix",
                 },
             },
         );
@@ -257,7 +223,9 @@ describe("HITL shell retry flow", () => {
             executed: true,
             executionResult: {
                 metadata: {
-                    approvalMode: "workspace_team_yolo",
+                    approvalMode: "remember_workspace_rule",
+                    approvalRuleLabel: "pnpm test",
+                    approvalRuleKind: "shell_command_prefix",
                 },
             },
         });
