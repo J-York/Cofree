@@ -12,7 +12,7 @@ mod domain;
 mod infrastructure;
 mod secure_store;
 
-use crate::commands::workspace::ShellJobStore;
+use crate::commands::ShellJobStore;
 use crate::commands::{
     apply_workspace_patch, build_workspace_edit_patch, cancel_http_request, cancel_shell_command,
     check_shell_job, check_workspace_patch,
