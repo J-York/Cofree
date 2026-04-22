@@ -40,7 +40,7 @@
 |----|------|------|------|
 | B1 | `src/ui/pages/ChatPage.tsx`（4256 行）拆分 | ✅ **完成** | 3908 → 1159（-70%）；每步 432/432 tests green；详见下方进度记录 |
 | B2 | `src/orchestrator/planningService.ts`（3546 行）拆分 | 🟡 **进行中** | B2.1 `skillMatching` · B2.2 `checkpointBridge` · B2.3 `loopPromptScaffolding` · B2.4 `compressionScheduler` · B2.5 `summarization`；3546 → 2989 行（-15.7%）；后续继续拆 `toolLoop` 主体 |
-| B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | 🟡 **进行中** | B3.1 `toolArgParsing` · B3.2 `patchBuilders` · B3.3 `toolErrorClassification` · B3.4 `toolApprovalResolver` · B3.5 `toolAutoExecution`；2089 → 1550 行（-25.8%）；+104 新单元测试 |
+| B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | ✅ **完成** | B3.1 `toolArgParsing` · B3.2 `patchBuilders` · B3.3 `toolErrorClassification` · B3.4 `toolApprovalResolver` · B3.5 `toolAutoExecution` · B3.6 `toolHandlers` dispatch split；toolExecutor 2089 → 338 行（-83.8%）；+104 新单元测试 |
 
 ### 轨道 C — 稳定性地基
 
@@ -115,6 +115,8 @@ src/ui/pages/chat/
 ## 进度记录
 
 <!-- 按时间倒序追加，格式：`YYYY-MM-DD [Xn] <一句话> (commit)` -->
+
+- 2026-04-22 [B3.6] `toolExecutor.ts` 收尾：per-tool handler dispatch 落地。新建 `src/orchestrator/toolHandlers.ts` 承载 14 个独立 handler 函数（`handleListFiles` / `handleReadFile` / `handleGitStatus` / `handleGitDiff` / `handleGrep` / `handleGlob` / `handleUpdatePlan` / `handleProposeApplyPatch` / `handleProposeFileEdit` / `handleProposeShell` / `handleCheckShellJob` / `handleDiagnostics` / `handleFetch` / `handleAskUser`）及 `TOOL_HANDLERS` 调度映射、`ToolHandlerContext` / `ToolHandler` 类型。`executeToolCall` 从 ~1220 行的巨型 switch 瘦身为 workspace 校验 + args JSON.parse + `TOOL_HANDLERS[name]` 查表 + 统一 try/catch 错误分类。B3 轨道整体完成：toolExecutor 2089 → 338 行（-83.8%）、god-function 已消散、每个 handler ≤200 行自成单元。`pnpm tsc --noEmit` clean，全量 477/477 tests green。
 
 - 2026-04-22 [B3.5] `toolExecutor.ts` 第五刀落在 `toolAutoExecution`：新建 `src/orchestrator/toolAutoExecution.ts` 承载 `fetchPostPatchDiagnostics()` / `autoExecutePatchProposal()` / `autoExecuteShellProposal()` 三个 Tauri invoke 密集的 auto-exec 函数，及私有 `PatchApplyResult` / `DiagnosticEntry` / `DiagnosticsResult` 类型（原来 toolExecutor 里的冗余副本）。toolExecutor 从 `tauriBridge` 下线 `awaitShellCommandWithDeadline`，从 `shellCommand` 下线 `DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES` / `INSTALL_BUILD_BLOCK_UNTIL_MS` / `INSTALL_BUILD_TIMEOUT_MS`。未新增测试（这些函数需要 Tauri invoke mock，走上层集成路径覆盖），为后续 B3.6 拆分 per-tool handlers 腾出空间。`pnpm tsc --noEmit` clean，全量 477/477 tests green。toolExecutor.ts 1724 → 1550 行（-174）
 
