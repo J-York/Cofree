@@ -32,7 +32,7 @@
 |----|------|------|------|
 | A1 | 删除多 Agent 编排层（专家组/concierge/task 委派/子 Agent） | ✅ **完成** | 373/373 tests green, tsc clean。净减约 1.5K LoC，删除 9 个文件，手术式清理 30+ 文件 |
 | A2 | `src-tauri/src/commands/workspace.rs`（2051 行）按关注点拆分 | ✅ **完成** | `workspace.rs` 已按关注点拆分为 `commands/{fs,git,grep,patch,shell,snapshot}.rs`；业务逻辑整体下沉到 `application/workspace.rs`，命令层降为轻量导出层 |
-| A3 | `src/lib/settingsStore.ts`（1631 行）按域拆 | ⏳ 待启动 | general / models / agents / skills / audit |
+| A3 | `src/lib/settingsStore.ts`（1631 行）按域拆 | ✅ **完成** | 已拆为 `settingsStore/{general,models,agents,skills,audit}.ts` 五模块；`settingsStore.ts` 收敛为门面导出层，现有调用保持不变 |
 
 ### 轨道 B — 拆 god files
 
@@ -115,6 +115,8 @@ src/ui/pages/chat/
 ## 进度记录
 
 <!-- 按时间倒序追加，格式：`YYYY-MM-DD [Xn] <一句话> (commit)` -->
+
+- 2026-04-22 [A3] `src/lib/settingsStore.ts` 按域拆分完成：新增 `settingsStore/{general,models,agents,skills,audit}.ts` 五模块，原 `settingsStore.ts` 改为 facade re-export；保留既有 API 与调用方不变。`pnpm tsc --noEmit` clean，`pnpm test -- --run src/lib/settingsStore.test.ts src/ui/pages/SettingsPage.test.ts src/agents/resolveAgentRuntime.test.ts src/orchestrator/planningService.test.ts` 以及全量 373/373 tests green
 
 - 2026-04-22 [A2] `src-tauri/src/commands/workspace.rs` 按关注点拆分完成：新增 `commands/{fs,git,grep,patch,shell,snapshot}.rs` 六模块，原 `workspace.rs` 迁移到 `application/workspace.rs`，`commands/mod.rs`/`main.rs` 完成导出与注入切换；`cargo check` clean，`cargo test` 3/3 green（894a83d）
 
