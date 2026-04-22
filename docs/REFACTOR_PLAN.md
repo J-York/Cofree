@@ -39,7 +39,7 @@
 | ID | 任务 | 状态 | 说明 |
 |----|------|------|------|
 | B1 | `src/ui/pages/ChatPage.tsx`（4256 行）拆分 | ✅ **完成** | 3908 → 1159（-70%）；每步 432/432 tests green；详见下方进度记录 |
-| B2 | `src/orchestrator/planningService.ts`（3546 行）拆分 | 🟡 **进行中** | B2.1 `skillMatching` · B2.2 `checkpointBridge` · B2.3 `loopPromptScaffolding` · B2.4 `compressionScheduler` · B2.5 `summarization`；3546 → 2989 行（-15.7%）；后续继续拆 `toolLoop` 主体 |
+| B2 | `src/orchestrator/planningService.ts`（3546 行）拆分 | ✅ **完成** | B2.1 `skillMatching` · B2.2 `checkpointBridge` · B2.3 `loopPromptScaffolding` · B2.4 `compressionScheduler` · B2.5 `summarization` · B2.6 `toolRegistry` · B2.7 `planningLoop/planningCore/planningSessionTypes`；3546 → 726 行（-79.5%）；`planningService.ts` 收敛为 facade + reconciliation，tool loop 主体已迁出 |
 | B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | ✅ **完成** | B3.1 `toolArgParsing` · B3.2 `patchBuilders` · B3.3 `toolErrorClassification` · B3.4 `toolApprovalResolver` · B3.5 `toolAutoExecution` · B3.6 `toolHandlers` dispatch split；toolExecutor 2089 → 338 行（-83.8%）；+104 新单元测试 |
 
 ### 轨道 C — 稳定性地基
@@ -115,6 +115,8 @@ src/ui/pages/chat/
 ## 进度记录
 
 <!-- 按时间倒序追加，格式：`YYYY-MM-DD [Xn] <一句话> (commit)` -->
+
+- 2026-04-22 [B2 完成] `planningService.ts` 收尾：新建 `src/orchestrator/toolRegistry.ts` 承载 `INTERNAL_TOOL_NAMES` + 全量 `TOOL_DEFINITIONS` + `buildAgentToolDefs()`，新建 `src/orchestrator/planningLoop.ts` 承载 `runNativeToolCallingLoop()`、tool execution wrappers、context/compression/retry/repair/circuit-breaker 主循环，新建 `src/orchestrator/planningCore.ts` 承载 `estimateRequestedArtifactCount()` / `collectPatchedFiles()` / `countPlannedArtifacts()` / `initializePlan()` / `actionFingerprint()`，新建 `src/orchestrator/planningSessionTypes.ts` 承载 `PlanningSessionPhase` / `RunPlanningSessionInput` / `PlanningSessionResult` / `ToolCallEvent`。`planningService.ts` 3546 → 726 行（-79.5%），收敛为会话启动、上下文注入、结果对账与对外导出门面。`pnpm tsc --noEmit` clean，`pnpm test -- --run src/orchestrator/planningService.test.ts --reporter=dot` 全量 477/477 tests green。
 
 - 2026-04-22 [B3.6] `toolExecutor.ts` 收尾：per-tool handler dispatch 落地。新建 `src/orchestrator/toolHandlers.ts` 承载 14 个独立 handler 函数（`handleListFiles` / `handleReadFile` / `handleGitStatus` / `handleGitDiff` / `handleGrep` / `handleGlob` / `handleUpdatePlan` / `handleProposeApplyPatch` / `handleProposeFileEdit` / `handleProposeShell` / `handleCheckShellJob` / `handleDiagnostics` / `handleFetch` / `handleAskUser`）及 `TOOL_HANDLERS` 调度映射、`ToolHandlerContext` / `ToolHandler` 类型。`executeToolCall` 从 ~1220 行的巨型 switch 瘦身为 workspace 校验 + args JSON.parse + `TOOL_HANDLERS[name]` 查表 + 统一 try/catch 错误分类。B3 轨道整体完成：toolExecutor 2089 → 338 行（-83.8%）、god-function 已消散、每个 handler ≤200 行自成单元。`pnpm tsc --noEmit` clean，全量 477/477 tests green。
 
