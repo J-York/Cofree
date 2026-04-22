@@ -28,7 +28,7 @@ Tauri Desktop App
 │   ├── src/App.tsx          — Root: settings, session context, layout, shortcuts
 │   ├── src/ui/pages/        — Page components (ChatPage, SettingsPage, etc.)
 │   ├── src/orchestrator/    — Tool loop, HITL gating, planning, checkpoint recovery
-│   ├── src/agents/          — ChatAgent roles, prompt assembly, tool policy
+│   ├── src/agents/          — Agent role definition, prompt assembly, tool policy
 │   ├── src/lib/             — Settings store, concurrency, audit log, etc.
 │   └── src/hooks/           — Theme, updater error handling
 │
@@ -49,8 +49,8 @@ Tauri Desktop App
 | `src/orchestrator/planningService.ts` | Core orchestration — assembles prompts, manages tool call loop, HITL gating, checkpoint recovery |
 | `src/orchestrator/hitlService.ts` | Human-in-the-loop approval flow for patches and shell commands |
 | `src/orchestrator/toolExecutor.ts` | Tool execution engine |
-| `src/agents/builtinChatAgents.ts` | Built-in agent roles (engineer, reviewer, architect, QA, expert concierge) |
-| `src/agents/resolveAgentRuntime.ts` | Runtime agent resolution and task delegation |
+| `src/agents/builtinChatAgents.ts` | Built-in agent role (general-purpose); user-defined agents can be added via settings |
+| `src/agents/resolveAgentRuntime.ts` | Runtime agent resolution (system prompt, tool policy, model binding) |
 | `src/lib/piAiBridge.ts` | LLM gateway adapter — routes OpenAI/Anthropic requests through `@mariozechner/pi-ai`, proxied via Rust in Tauri |
 | `src/lib/skillStore.ts` | Skill discovery/registry (global + workspace); skills are context-aware capability extensions selectable via `@`-mention |
 | `src/lib/settingsStore.ts` | Settings persistence (localStorage + secure key storage via Rust) |
@@ -60,9 +60,9 @@ Tauri Desktop App
 
 | Tool | Default | Purpose |
 |------|---------|---------|
-| `list_files`, `read_file`, `grep`, `glob`, `git_status`, `git_diff`, `diagnostics` | `auto` | Read-only workspace ops |
+| `list_files`, `read_file`, `grep`, `glob`, `git_status`, `git_diff`, `diagnostics`, `check_shell_job` | `auto` | Read-only / polling workspace ops |
 | `propose_file_edit`, `propose_apply_patch`, `propose_shell`, `fetch` | `ask` | Write/external ops requiring approval |
-| `task` | delegate | Sub-agent delegation (planner, coder, tester) |
+| `update_plan`, `ask_user` | internal | Always-available internal tools (TODO plan maintenance, pause-and-ask) |
 
 ## Data Storage
 

@@ -59,7 +59,7 @@ jobs:
               '',
               '### 本版说明',
               '',
-              '- **对话与编排**：流式回复、多角色 Agent（全栈 / 代码审查 / 架构 / QA）、子任务委派与长对话压缩。',
+              '- **对话与编排**：流式回复、通用 Agent（用户可自定义 system prompt / 工具权限 / 模型绑定派生更多 Agent）、工具调用状态展示与长对话压缩。',
               '- **代码理解**：工作区文件读取、grep/glob、Git 状态与 diff、动态工作区刷新，支持 `.cofreerc` 配置。',
               '- **审批驱动**：代码修改（`propose_file_edit` / `propose_apply_patch`）与命令执行（`propose_shell`）均需用户确认，Rust 端拦截危险命令。',
               '- **可观察与恢复**：本地审计日志、SQLite checkpoint、patch 失败自动回滚至 `~/.cofree/snapshots/`。',
