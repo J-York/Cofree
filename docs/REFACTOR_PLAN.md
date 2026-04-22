@@ -39,7 +39,7 @@
 | ID | 任务 | 状态 | 说明 |
 |----|------|------|------|
 | B1 | `src/ui/pages/ChatPage.tsx`（4256 行）拆分 | ✅ **完成** | 3908 → 1159（-70%）；每步 432/432 tests green；详见下方进度记录 |
-| B2 | `src/orchestrator/planningService.ts`（3546 行）拆分 | 🟡 **进行中** | B2.1 `skillMatching` · B2.2 `checkpointBridge` · B2.3 `loopPromptScaffolding`；后续继续拆 `toolLoop` 主体 |
+| B2 | `src/orchestrator/planningService.ts`（3546 行）拆分 | 🟡 **进行中** | B2.1 `skillMatching` · B2.2 `checkpointBridge` · B2.3 `loopPromptScaffolding` · B2.4 `compressionScheduler`；后续继续拆 `toolLoop` 主体 |
 | B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | ⏳ 待启动 | 当前 0 覆盖，是最大单点风险 |
 
 ### 轨道 C — 稳定性地基
@@ -115,6 +115,8 @@ src/ui/pages/chat/
 ## 进度记录
 
 <!-- 按时间倒序追加，格式：`YYYY-MM-DD [Xn] <一句话> (commit)` -->
+
+- 2026-04-22 [B2.4] `planningService.ts` 第四刀落在 `compressionScheduler`：新建 `src/orchestrator/compressionScheduler.ts`，承载压缩/摘要调度的 3 个常量（`BASE_SUMMARY_COOLDOWN_MS` / `MAX_TRACKED_WORKSPACES` / `TRACKER_STALE_MS`）、2 个私有状态 Map（`tokenGrowthTracker` / `lastSummaryAtMsByWorkspace`）、5 个函数（私有：`evictStaleTrackers` / `computeDynamicCooldownMs`；公共：`canSummarizeNow` / `markSummarizedNow` / `evaluateCompressionSafeZone`）。planningService 改为从新模块导入，`planningServiceTestUtils.evaluateCompressionSafeZone` re-export 对既有测试保持透明。`pnpm tsc --noEmit` clean，全量 373/373 tests green。planningService.ts 3273 → 3182 行（-91）
 
 - 2026-04-22 [B2.3] `planningService.ts` 第三刀落在 `loopPromptScaffolding`：新建 `src/orchestrator/loopPromptScaffolding.ts`，承载三个 note-prefix 常量（`WORKING_MEMORY_NOTE_PREFIX` / `TODO_PLAN_NOTE_PREFIX` / `WORKSPACE_REFRESH_NOTE_PREFIX`）、`pruneStaleSystemMessages()`、`upsertPinnedSystemMessage()`、`upsertWorkingMemoryContextMessage()`、`upsertTodoPlanContextMessage()`、`refreshWorkspaceContext()` 全套"让消息数组在 loop 中保持整洁"的 scaffolding 工具。planningService 从三处调用站点改为导入，并下线 `serializeWorkingMemory` / `clearRepoMapCaches` 冗余 import。与 `src/agents/promptAssembly.ts` 保持职责分离：后者构造静态初始 prompt，前者在 loop 运行过程中 mutate `messages` 数组。`pnpm tsc --noEmit` clean，全量 373/373 tests green。planningService.ts 3455 → 3273 行（-182）
 

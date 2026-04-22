@@ -134,6 +134,11 @@ import {
   upsertTodoPlanContextMessage,
   upsertWorkingMemoryContextMessage,
 } from "./loopPromptScaffolding";
+import {
+  canSummarizeNow,
+  evaluateCompressionSafeZone,
+  markSummarizedNow,
+} from "./compressionScheduler";
 import type { AskUserRequest } from "./askUserService";
 
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
@@ -143,7 +148,6 @@ const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
 // --- Phase 4: Context management budgets ---
 const SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000;
 const SUMMARY_CACHE_MAX_ENTRIES = 100;
-const BASE_SUMMARY_COOLDOWN_MS = 120 * 1000;
 
 const MIN_MESSAGES_TO_SUMMARIZE = 4;
 
@@ -206,82 +210,6 @@ function computeAdaptiveCompressionParams(limitTokens: number): AdaptiveCompress
     softBudgetRatio: 0.9,
     compressionSafeZoneRatio: 0.62,
   };
-}
-
-function evaluateCompressionSafeZone(params: {
-  tokenTracker: MessageTokenTracker;
-  messages: LiteLLMMessage[];
-  promptBudgetTarget: number;
-  safeZoneRatio: number;
-}): { currentTokens: number; compressionSafeZone: number; skipCompression: boolean } {
-  const currentTokens = params.tokenTracker.update(params.messages);
-  const compressionSafeZone = params.promptBudgetTarget * params.safeZoneRatio;
-  return {
-    currentTokens,
-    compressionSafeZone,
-    skipCompression: currentTokens <= compressionSafeZone,
-  };
-}
-
-// P2-2: Dynamic cooldown state — tracks token growth to adjust cooldown.
-// Capped at MAX_TRACKED_WORKSPACES to prevent unbounded memory growth.
-const MAX_TRACKED_WORKSPACES = 20;
-const TRACKER_STALE_MS = 30 * 60 * 1000; // evict entries idle for >30 min
-
-const tokenGrowthTracker = new Map<string, { timestamps: number[]; tokenCounts: number[] }>();
-
-function evictStaleTrackers(now: number): void {
-  if (tokenGrowthTracker.size <= MAX_TRACKED_WORKSPACES) return;
-
-  for (const [key, tracker] of tokenGrowthTracker) {
-    const lastTs = tracker.timestamps[tracker.timestamps.length - 1] ?? 0;
-    if (now - lastTs > TRACKER_STALE_MS) {
-      tokenGrowthTracker.delete(key);
-    }
-  }
-
-  // Hard cap: if still over limit, remove oldest entries.
-  while (tokenGrowthTracker.size > MAX_TRACKED_WORKSPACES) {
-    const oldestKey = tokenGrowthTracker.keys().next().value as string | undefined;
-    if (!oldestKey) break;
-    tokenGrowthTracker.delete(oldestKey);
-  }
-}
-
-function computeDynamicCooldownMs(workspacePath: string | undefined, currentTokens: number): number {
-  const ws = workspacePath?.trim() || "";
-  if (!ws) return BASE_SUMMARY_COOLDOWN_MS;
-
-  const now = Date.now();
-  evictStaleTrackers(now);
-
-  let tracker = tokenGrowthTracker.get(ws);
-  if (!tracker) {
-    tracker = { timestamps: [], tokenCounts: [] };
-    tokenGrowthTracker.set(ws, tracker);
-  }
-
-  tracker.timestamps.push(now);
-  tracker.tokenCounts.push(currentTokens);
-
-  // Keep only the last 10 samples
-  while (tracker.timestamps.length > 10) {
-    tracker.timestamps.shift();
-    tracker.tokenCounts.shift();
-  }
-
-  if (tracker.timestamps.length < 2) return BASE_SUMMARY_COOLDOWN_MS;
-
-  const timeDelta = tracker.timestamps[tracker.timestamps.length - 1] - tracker.timestamps[0];
-  const tokenDelta = tracker.tokenCounts[tracker.tokenCounts.length - 1] - tracker.tokenCounts[0];
-
-  if (timeDelta <= 0) return BASE_SUMMARY_COOLDOWN_MS;
-
-  const growthRate = tokenDelta / (timeDelta / 1000);
-
-  if (growthRate > 500) return 45_000;
-  if (growthRate > 200) return 60_000;
-  return BASE_SUMMARY_COOLDOWN_MS;
 }
 
 // P1-2: Max chars per chunk for map-reduce summarization
@@ -1050,25 +978,6 @@ const summaryCache = new SummaryCache({
   ttlMs: SUMMARY_CACHE_TTL_MS,
   maxEntries: SUMMARY_CACHE_MAX_ENTRIES,
 });
-
-// Cooldown is per workspace to reduce oscillation on retries.
-const lastSummaryAtMsByWorkspace = new Map<string, number>();
-
-function canSummarizeNow(workspacePath: string | undefined, currentTokens?: number): boolean {
-  const ws = workspacePath?.trim() || "";
-  if (!ws) return true;
-  const last = lastSummaryAtMsByWorkspace.get(ws) ?? 0;
-  // P2-2: Use dynamic cooldown based on token growth rate.
-  const cooldown = computeDynamicCooldownMs(workspacePath, currentTokens ?? 0);
-  return Date.now() - last >= cooldown;
-}
-
-function markSummarizedNow(workspacePath: string | undefined): void {
-  const ws = workspacePath?.trim() || "";
-  if (!ws) return;
-  lastSummaryAtMsByWorkspace.set(ws, Date.now());
-}
-
 
 function buildAgentToolDefs(runtime: ResolvedAgentRuntime): LiteLLMToolDefinition[] {
   const enabled = new Set<string>([...runtime.enabledTools, ...INTERNAL_TOOL_NAMES]);
