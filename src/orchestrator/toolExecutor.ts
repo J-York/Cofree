@@ -5,11 +5,7 @@ import {
   type AppSettings,
   type ToolPermissions,
 } from "../lib/settingsStore";
-import {
-  describeApprovalRule,
-  findMatchingApprovalRule,
-  type ApprovalRule,
-} from "../lib/approvalRuleStore";
+import { findMatchingApprovalRule } from "../lib/approvalRuleStore";
 import {
   createAskUserRequest,
   waitForUserResponse,
@@ -54,6 +50,11 @@ import {
   computeToolRetryDelay,
   shouldRetryToolCall,
 } from "./toolErrorClassification";
+import {
+  buildAutoApprovalMeta,
+  resolveSensitiveActionAutoApprovalSource,
+  type SensitiveWriteAutoExecutionPolicy,
+} from "./toolApprovalResolver";
 
 const MAX_LIST_ENTRIES = 120;
 const MAX_FILE_PREVIEW_CHARS = 15000;
@@ -93,7 +94,7 @@ export interface ToolExecutionResult {
   fromCache?: boolean;
 }
 
-export type SensitiveWriteAutoExecutionPolicy = "allow" | "disabled";
+export type { SensitiveWriteAutoExecutionPolicy } from "./toolApprovalResolver";
 
 export interface TodoPlanStateLike {
   steps: PlanStep[];
@@ -168,40 +169,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 function resultPreview(content: string): string {
   return content.slice(0, MAX_TOOL_RESULT_PREVIEW);
-}
-
-function buildAutoApprovalMeta(
-  source: "tool_permission" | "workspace_rule" | null,
-  matchedRule?: ApprovalRule | null,
-): Record<string, unknown> {
-  if (!source) {
-    return {};
-  }
-
-  return {
-    approval_source: source,
-    approval_rule_matched: source === "workspace_rule",
-    approval_rule_kind:
-      source === "workspace_rule" ? matchedRule?.kind ?? null : null,
-    approval_rule_label:
-      source === "workspace_rule" && matchedRule
-        ? describeApprovalRule(matchedRule)
-        : null,
-  };
-}
-
-function resolveSensitiveActionAutoApprovalSource(params: {
-  permissionLevel: "auto" | "ask";
-  matchedRule?: ApprovalRule | null;
-  autoExecutionPolicy: SensitiveWriteAutoExecutionPolicy;
-}): "tool_permission" | "workspace_rule" | null {
-  if (params.autoExecutionPolicy === "disabled") {
-    return null;
-  }
-  if (params.permissionLevel === "auto") {
-    return "tool_permission";
-  }
-  return params.matchedRule ? "workspace_rule" : null;
 }
 
 async function fetchPostPatchDiagnostics(

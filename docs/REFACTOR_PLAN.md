@@ -40,7 +40,7 @@
 |----|------|------|------|
 | B1 | `src/ui/pages/ChatPage.tsx`（4256 行）拆分 | ✅ **完成** | 3908 → 1159（-70%）；每步 432/432 tests green；详见下方进度记录 |
 | B2 | `src/orchestrator/planningService.ts`（3546 行）拆分 | 🟡 **进行中** | B2.1 `skillMatching` · B2.2 `checkpointBridge` · B2.3 `loopPromptScaffolding` · B2.4 `compressionScheduler` · B2.5 `summarization`；3546 → 2989 行（-15.7%）；后续继续拆 `toolLoop` 主体 |
-| B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | 🟡 **进行中** | B3.1 `toolArgParsing` · B3.2 `patchBuilders` · B3.3 `toolErrorClassification`；2089 → 1757 行（-15.9%）；+92 新单元测试 |
+| B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | 🟡 **进行中** | B3.1 `toolArgParsing` · B3.2 `patchBuilders` · B3.3 `toolErrorClassification` · B3.4 `toolApprovalResolver`；2089 → 1724 行（-17.5%）；+104 新单元测试 |
 
 ### 轨道 C — 稳定性地基
 
@@ -115,6 +115,8 @@ src/ui/pages/chat/
 ## 进度记录
 
 <!-- 按时间倒序追加，格式：`YYYY-MM-DD [Xn] <一句话> (commit)` -->
+
+- 2026-04-22 [B3.4] `toolExecutor.ts` 第四刀落在 `toolApprovalResolver`：新建 `src/orchestrator/toolApprovalResolver.ts` 承载 `SensitiveWriteAutoExecutionPolicy` 类型别名、`buildAutoApprovalMeta()`、`resolveSensitiveActionAutoApprovalSource()`。类型从 toolExecutor 通过 `export type { ... }` 转发以保持既有 import 兼容。配套 `toolApprovalResolver.test.ts` 新增 12 个单元测试覆盖 (permissionLevel × matchedRule × autoExecutionPolicy) 三维矩阵，以及 kill-switch 下 `tool_permission` 被压制、`workspace_rule` 分支下 rule label 生成正确性（fingerprint / shell_command_prefix）。`pnpm tsc --noEmit` clean，全量 477/477 tests green（+12）。toolExecutor.ts 1757 → 1724 行（-33）
 
 - 2026-04-22 [B3.3] `toolExecutor.ts` 第三刀落在 `toolErrorClassification`：新建 `src/orchestrator/toolErrorClassification.ts` 承载 `classifyToolError` / `shouldRetryToolCall` / `computeToolRetryDelay` / `buildToolErrorRecoveryHint`。配套 `toolErrorClassification.test.ts` 新增 47 个单元测试 —— 27 条 table-driven classify 用例覆盖 validation / workspace / guardrail / timeout / permission / tool_not_found / transport / unknown 全矩阵，外加大小写不敏感、优先级顺序验证、retry 决策矩阵、退避延迟上界、每个 category 的 recovery hint 内容断言。`pnpm tsc --noEmit` clean，全量 465/465 tests green（+47）。toolExecutor.ts 1919 → 1757 行（-162）
 
