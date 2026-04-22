@@ -39,7 +39,7 @@
 | ID | 任务 | 状态 | 说明 |
 |----|------|------|------|
 | B1 | `src/ui/pages/ChatPage.tsx`（4256 行）拆分 | ✅ **完成** | 3908 → 1159（-70%）；每步 432/432 tests green；详见下方进度记录 |
-| B2 | `src/orchestrator/planningService.ts`（3546 行）拆分 | ⏳ 待启动 | 抽出 `promptAssembly` / `toolLoop` / `skillMatching` / `checkpointBridge` |
+| B2 | `src/orchestrator/planningService.ts`（3546 行）拆分 | 🟡 **进行中** | B2.1 抽出 `skillMatching`；B2.2 抽出 `checkpointBridge`；后续继续拆 `promptAssembly` / `toolLoop` |
 | B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | ⏳ 待启动 | 当前 0 覆盖，是最大单点风险 |
 
 ### 轨道 C — 稳定性地基
@@ -115,6 +115,10 @@ src/ui/pages/chat/
 ## 进度记录
 
 <!-- 按时间倒序追加，格式：`YYYY-MM-DD [Xn] <一句话> (commit)` -->
+
+- 2026-04-22 [B2.2] `planningService.ts` 第二刀落在 `checkpointBridge`：新建 `src/orchestrator/checkpointBridge.ts`，承载 `INCREMENTAL_CHECKPOINT_INTERVAL` 常量、`initWorkingMemoryForLoop()`（restore-or-create 分支）与 `maybeEmitIncrementalCheckpoint()`（周期性增量检查点发射）。`planningService.ts` 中的 restore/create 分支与增量 checkpoint 块改为调用新模块，`restoreWorkingMemory` / `createWorkingMemory` 从 planningService 的 import 里下线。`pnpm tsc --noEmit` clean，`pnpm test -- --run` 全量 373/373 tests green。planningService.ts 3469 → 3455 行（-14）
+
+- 2026-04-22 [B2.1] `planningService.ts` 首刀落在 `skillMatching`：新建 `src/orchestrator/skillMatching.ts` 承载 `resolveMatchedSkills()`，从主文件删除对应发现/匹配/解析逻辑并改为导入调用。`pnpm tsc --noEmit` clean，`pnpm test -- --run src/orchestrator/planningService.test.ts` 以及全量 373/373 tests green
 
 - 2026-04-22 [A3] `src/lib/settingsStore.ts` 按域拆分完成：新增 `settingsStore/{general,models,agents,skills,audit}.ts` 五模块，原 `settingsStore.ts` 改为 facade re-export；保留既有 API 与调用方不变。`pnpm tsc --noEmit` clean，`pnpm test -- --run src/lib/settingsStore.test.ts src/ui/pages/SettingsPage.test.ts src/agents/resolveAgentRuntime.test.ts src/orchestrator/planningService.test.ts` 以及全量 373/373 tests green
 

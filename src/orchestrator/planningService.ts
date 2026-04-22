@@ -71,16 +71,7 @@ import type {
 } from "../agents/types";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
 import { assembleSystemPrompt, assembleRuntimeContext } from "../agents/promptAssembly";
-import {
-  matchSkills,
-  resolveSkills,
-  discoverGlobalSkills,
-  discoverWorkspaceSkills,
-  mergeDiscoveredSkills,
-  type SkillEntry,
-  type ResolvedSkill,
-} from "../lib/skillStore";
-import { convertCofreeRcSkillEntries } from "../lib/cofreerc";
+import { resolveMatchedSkills } from "./skillMatching";
 import type { ChatContextAttachment } from "../lib/contextAttachments";
 import { runWithConcurrencyLimit } from "../lib/concurrency";
 import {
@@ -128,14 +119,16 @@ import type {
   ToolExecutionTrace,
 } from "./toolTraceTypes";
 import {
-  createWorkingMemory,
-  restoreWorkingMemory,
   extractFileKnowledge,
   serializeWorkingMemory,
   snapshotWorkingMemory,
   type WorkingMemory,
   type WorkingMemorySnapshot,
 } from "./workingMemory";
+import {
+  initWorkingMemoryForLoop,
+  maybeEmitIncrementalCheckpoint,
+} from "./checkpointBridge";
 import type { AskUserRequest } from "./askUserService";
 
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
@@ -297,7 +290,6 @@ const MAX_LLM_REQUEST_RETRIES = 3;
 const LLM_RETRY_BASE_DELAY_MS = 1000;
 const LLM_RETRY_MAX_DELAY_MS = 15000;
 
-const INCREMENTAL_CHECKPOINT_INTERVAL = 10;
 const MAX_ABSOLUTE_TURNS = 150;
 
 const WORKING_MEMORY_NOTE_PREFIX = "[工作记忆刷新]";
@@ -1710,72 +1702,6 @@ async function executeToolCallWithRetry(
 }
 
 
-/**
- * Discover, match, and resolve skills for the current request.
- * Merges skills from three sources: global (~/.cofree/skills/), workspace
- * (.cofree/skills/), .cofreerc, and user-registered custom skills in settings.
- */
-async function resolveMatchedSkills(
-  settings: AppSettings,
-  projectConfig: CofreeRcConfig | undefined,
-  userMessage: string,
-  focusedPaths: string[],
-  explicitSkillIds?: string[],
-): Promise<ResolvedSkill[]> {
-  try {
-    // 1. Collect all skill definitions from various sources
-    const allSkillDefs: SkillEntry[] = [];
-    const workspacePath = settings.workspacePath.trim();
-
-    const [globalSkills, workspaceSkills] = await Promise.all([
-      discoverGlobalSkills(),
-      workspacePath ? discoverWorkspaceSkills(workspacePath) : Promise.resolve([]),
-    ]);
-    allSkillDefs.push(...globalSkills, ...workspaceSkills);
-
-    // .cofreerc skills
-    if (projectConfig?.skills?.length && workspacePath) {
-      allSkillDefs.push(...convertCofreeRcSkillEntries(projectConfig, workspacePath));
-    }
-
-    // Merge with user-registered skills from settings (preserves enabled state)
-    const mergedRegistry = mergeDiscoveredSkills(settings.skills, allSkillDefs);
-
-    // 2. If explicit skill IDs provided, resolve them directly (skip keyword matching)
-    if (explicitSkillIds && explicitSkillIds.length > 0) {
-      const explicitSkills = explicitSkillIds
-        .map((id) => mergedRegistry.find((s) => s.id === id))
-        .filter((s): s is SkillEntry => s != null && s.enabled);
-      console.debug(
-        "[skills] Explicit skill selection",
-        explicitSkills.map((skill) => ({ id: skill.id, name: skill.name })),
-      );
-      return resolveSkills(explicitSkills);
-    }
-
-    // 3. Auto-match skills against the user message and focused files
-    const matched = matchSkills(mergedRegistry, userMessage, focusedPaths);
-    if (matched.length === 0) {
-      console.debug("[skills] No matched skills", {
-        registrySize: mergedRegistry.length,
-        focusedPathCount: focusedPaths.length,
-      });
-      return [];
-    }
-    console.debug(
-      "[skills] Matched skills",
-      matched.map((skill) => ({ id: skill.id, name: skill.name, source: skill.source })),
-    );
-
-    // 3. Resolve matched skills (load their instructions)
-    return resolveSkills(matched);
-  } catch (error) {
-    // Skill resolution should never block the main loop
-    console.warn("[skills] Failed to resolve matched skills", error);
-    return [];
-  }
-}
-
 async function runNativeToolCallingLoop(
   prompt: string,
   settings: AppSettings,
@@ -1899,20 +1825,14 @@ async function runNativeToolCallingLoop(
   const adaptiveParams = computeAdaptiveCompressionParams(limitTokens);
 
   // --- Shared Working Memory for multi-agent collaboration ---
-  // P3-2: Restore from checkpoint snapshot if available, otherwise create fresh
-  const workingMemory = restoredWorkingMemory
-    ? restoreWorkingMemory(restoredWorkingMemory)
-    : createWorkingMemory({
-        maxTokenBudget: Math.floor(
-          Math.max(0, limitTokens - Math.min(8000, Math.max(512, Math.floor(limitTokens * adaptiveParams.outputReserveRatio)))) * adaptiveParams.softBudgetRatio * 0.2
-        ),
-        projectContext: internalSystemNote?.slice(0, 500) ?? "",
-      });
-  if (restoredWorkingMemory) {
-    console.log(
-      `[Loop] Working memory restored from checkpoint | files=${workingMemory.fileKnowledge.size}`
-    );
-  }
+  // P3-2: Restore from checkpoint snapshot if available, otherwise create fresh.
+  const workingMemory = initWorkingMemoryForLoop({
+    restoredSnapshot: restoredWorkingMemory,
+    limitTokens,
+    outputReserveRatio: adaptiveParams.outputReserveRatio,
+    softBudgetRatio: adaptiveParams.softBudgetRatio,
+    internalSystemNote,
+  });
   const currentWorkingMemorySnapshot = (): WorkingMemorySnapshot | undefined =>
     snapshotWorkingMemory(workingMemory);
   const outputBufferTokens = Math.min(
@@ -1992,25 +1912,16 @@ async function runNativeToolCallingLoop(
       };
     }
 
-    // Incremental checkpoint: persist partial progress every N turns
-    if (turn > 0 && turn % INCREMENTAL_CHECKPOINT_INTERVAL === 0 && onLoopCheckpoint) {
-      try {
-        const assistantMsgs = messages.filter((m) => m.role === "assistant");
-        const lastReply = assistantMsgs.length > 0 ? assistantMsgs[assistantMsgs.length - 1].content : "";
-        onLoopCheckpoint({
-          turn,
-          proposedActions: [...proposedActions],
-          planState: clonePlanState(planState),
-          toolTrace: [...toolTrace],
-          assistantReply: lastReply,
-          // P3-1: Include working memory snapshot for checkpoint persistence
-          workingMemorySnapshot: currentWorkingMemorySnapshot(),
-        });
-        console.log(`[Loop] 增量检查点已保存 | turn=${turn} | actions=${proposedActions.length} | traces=${toolTrace.length}`);
-      } catch (checkpointError) {
-        console.warn(`[Loop] 增量检查点保存失败:`, checkpointError);
-      }
-    }
+    // Incremental checkpoint: persist partial progress every N turns.
+    maybeEmitIncrementalCheckpoint({
+      turn,
+      messages,
+      proposedActions,
+      planState,
+      toolTrace,
+      snapshot: currentWorkingMemorySnapshot,
+      onLoopCheckpoint,
+    });
 
     const currentTodoPlanPrompt = buildTodoSystemPrompt(planState);
     if (currentTodoPlanPrompt !== lastTodoPlanPrompt) {
