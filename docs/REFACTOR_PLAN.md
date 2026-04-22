@@ -40,7 +40,7 @@
 |----|------|------|------|
 | B1 | `src/ui/pages/ChatPage.tsx`（4256 行）拆分 | ✅ **完成** | 3908 → 1159（-70%）；每步 432/432 tests green；详见下方进度记录 |
 | B2 | `src/orchestrator/planningService.ts`（3546 行）拆分 | 🟡 **进行中** | B2.1 `skillMatching` · B2.2 `checkpointBridge` · B2.3 `loopPromptScaffolding` · B2.4 `compressionScheduler` · B2.5 `summarization`；3546 → 2989 行（-15.7%）；后续继续拆 `toolLoop` 主体 |
-| B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | 🟡 **进行中** | B3.1 `toolArgParsing` · B3.2 `patchBuilders` · B3.3 `toolErrorClassification` · B3.4 `toolApprovalResolver`；2089 → 1724 行（-17.5%）；+104 新单元测试 |
+| B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | 🟡 **进行中** | B3.1 `toolArgParsing` · B3.2 `patchBuilders` · B3.3 `toolErrorClassification` · B3.4 `toolApprovalResolver` · B3.5 `toolAutoExecution`；2089 → 1550 行（-25.8%）；+104 新单元测试 |
 
 ### 轨道 C — 稳定性地基
 
@@ -115,6 +115,8 @@ src/ui/pages/chat/
 ## 进度记录
 
 <!-- 按时间倒序追加，格式：`YYYY-MM-DD [Xn] <一句话> (commit)` -->
+
+- 2026-04-22 [B3.5] `toolExecutor.ts` 第五刀落在 `toolAutoExecution`：新建 `src/orchestrator/toolAutoExecution.ts` 承载 `fetchPostPatchDiagnostics()` / `autoExecutePatchProposal()` / `autoExecuteShellProposal()` 三个 Tauri invoke 密集的 auto-exec 函数，及私有 `PatchApplyResult` / `DiagnosticEntry` / `DiagnosticsResult` 类型（原来 toolExecutor 里的冗余副本）。toolExecutor 从 `tauriBridge` 下线 `awaitShellCommandWithDeadline`，从 `shellCommand` 下线 `DEFAULT_SHELL_OUTPUT_CAPTURE_MAX_BYTES` / `INSTALL_BUILD_BLOCK_UNTIL_MS` / `INSTALL_BUILD_TIMEOUT_MS`。未新增测试（这些函数需要 Tauri invoke mock，走上层集成路径覆盖），为后续 B3.6 拆分 per-tool handlers 腾出空间。`pnpm tsc --noEmit` clean，全量 477/477 tests green。toolExecutor.ts 1724 → 1550 行（-174）
 
 - 2026-04-22 [B3.4] `toolExecutor.ts` 第四刀落在 `toolApprovalResolver`：新建 `src/orchestrator/toolApprovalResolver.ts` 承载 `SensitiveWriteAutoExecutionPolicy` 类型别名、`buildAutoApprovalMeta()`、`resolveSensitiveActionAutoApprovalSource()`。类型从 toolExecutor 通过 `export type { ... }` 转发以保持既有 import 兼容。配套 `toolApprovalResolver.test.ts` 新增 12 个单元测试覆盖 (permissionLevel × matchedRule × autoExecutionPolicy) 三维矩阵，以及 kill-switch 下 `tool_permission` 被压制、`workspace_rule` 分支下 rule label 生成正确性（fingerprint / shell_command_prefix）。`pnpm tsc --noEmit` clean，全量 477/477 tests green（+12）。toolExecutor.ts 1757 → 1724 行（-33）
 
