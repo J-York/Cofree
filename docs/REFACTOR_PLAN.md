@@ -40,7 +40,7 @@
 |----|------|------|------|
 | B1 | `src/ui/pages/ChatPage.tsx`（4256 行）拆分 | ✅ **完成** | 3908 → 1159（-70%）；每步 432/432 tests green；详见下方进度记录 |
 | B2 | `src/orchestrator/planningService.ts`（3546 行）拆分 | 🟡 **进行中** | B2.1 `skillMatching` · B2.2 `checkpointBridge` · B2.3 `loopPromptScaffolding` · B2.4 `compressionScheduler` · B2.5 `summarization`；3546 → 2989 行（-15.7%）；后续继续拆 `toolLoop` 主体 |
-| B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | 🟡 **进行中** | B3.1 `toolArgParsing`；2089 → 2043 行（-46）；+22 新单元测试 |
+| B3 | `src/orchestrator/toolExecutor.ts`（2091 行）拆分 + **补测试** | 🟡 **进行中** | B3.1 `toolArgParsing` · B3.2 `patchBuilders`；2089 → 1919 行（-8.1%）；+45 新单元测试 |
 
 ### 轨道 C — 稳定性地基
 
@@ -115,6 +115,8 @@ src/ui/pages/chat/
 ## 进度记录
 
 <!-- 按时间倒序追加，格式：`YYYY-MM-DD [Xn] <一句话> (commit)` -->
+
+- 2026-04-22 [B3.2] `toolExecutor.ts` 第二刀落在 `patchBuilders`：新建 `src/orchestrator/patchBuilders.ts` 承载 `splitPatchLines` / `splitContentSegments` / `replaceByLineRange` / `insertByLine` / `formatUnifiedRange` / `buildCreateFilePatch` / `buildReplacementPatch`（后者仍走 Tauri `build_workspace_edit_patch`）。配套 `patchBuilders.test.ts` 新增 23 个单元测试覆盖空文件 / CRLF / 超界 / 单行范围 / 末尾 no-newline-at-EOF 等场景，首次为 unified-diff 构造路径上锁。`pnpm tsc --noEmit` clean，全量 418/418 tests green（+23）。toolExecutor.ts 2043 → 1919 行（-124）
 
 - 2026-04-22 [B3.1] `toolExecutor.ts` 首刀落在 `toolArgParsing`：新建 `src/orchestrator/toolArgParsing.ts` 承载 7 个纯参数归一化工具（`normalizeRelativePath` / `asString` / `stripLineNumberPrefixes` / `asNumber` / `asBoolean` / `normalizeOptionalPositiveInt` / `countOccurrences`）；配套 `toolArgParsing.test.ts` 新增 22 个单元测试覆盖 fallback / 非法输入 / 边界值。toolExecutor 改为导入，不再本地定义。`pnpm tsc --noEmit` clean，全量 395/395 tests green（+22）。toolExecutor.ts 2089 → 2043 行（-46）
 
