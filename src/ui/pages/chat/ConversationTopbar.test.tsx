@@ -262,7 +262,7 @@ describe("ConversationTopbar", () => {
   it("renders progress segments in order including blocked", () => {
     const tree = ConversationTopbar({
       state: baseState({
-        mode: "single_agent",
+        mode: "active",
         source: "tools",
         primaryLabel: "当前：测试",
         progress: {
@@ -329,7 +329,7 @@ describe("ConversationTopbar", () => {
   it("completion-style state shows completion affordances without running-style badges", () => {
     const tree = ConversationTopbar({
       state: baseState({
-        mode: "single_agent",
+        mode: "active",
         source: "assistant",
         primaryLabel: "本轮编排已完成",
         badges: [{ key: "completion", label: "6/6", tone: "success" }],

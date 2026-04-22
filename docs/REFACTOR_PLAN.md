@@ -18,9 +18,9 @@
 
 | ID | 任务 | 状态 | 说明 |
 |----|------|------|------|
-| D1 | 删除 `ActionOrigin` 单值 union + 关联 UI | ⏳ | `src/orchestrator/types.ts` 的 `ActionOrigin = "main_agent"` 单值类型、`planGuards.ts` 的 origin 校验、`ChatPresentational.tsx` 的 `formatActionOrigin()` / `ActionOriginMeta` 组件。UI 影响：每条 action 卡片上那个"main_agent"meta 标签消失。预计 -40 行 |
-| D2 | 删除 plan step 的 `owner` 字段 | ⏳ | `todoPlanState.ts` 默认值 `"planner"`、`toolRegistry.ts` owner enum `["planner"]`、`planGuards.ts` 的 owner 校验、`ChatPresentational.tsx:1018` 的 `<span>{step.owner}</span>` 渲染。UI 影响：plan 面板每个步骤不再显示"planner"字样。预计 -30 行 |
-| D3 | 重命名 `ConversationTopbarMode` | ⏳ | `conversationTopbarState.ts` 的 `"idle" \| "single_agent"` 中的 `"single_agent"` 暗示存在其它模式，是纯语义遗迹。重命名为 `"active"` 或直接收敛为布尔 `isIdle`。用户不可见，内部类型清洁 |
+| D1 | 删除 `ActionOrigin` 单值 union + 关联 UI | ✅ | `src/orchestrator/types.ts` 的 `ActionOrigin = "main_agent"` 单值类型、`planGuards.ts` 的 origin 校验、`ChatPresentational.tsx` 的 `formatActionOrigin()` / `ActionOriginMeta` 组件。UI 影响：每条 action 卡片上那个"main_agent"meta 标签消失。预计 -40 行 |
+| D2 | 删除 plan step 的 `owner` 字段 | ✅ | `todoPlanState.ts` 默认值 `"planner"`、`toolRegistry.ts` owner enum `["planner"]`、`planGuards.ts` 的 owner 校验、`ChatPresentational.tsx:1018` 的 `<span>{step.owner}</span>` 渲染。UI 影响：plan 面板每个步骤不再显示"planner"字样。预计 -30 行 |
+| D3 | 重命名 `ConversationTopbarMode` | ✅ | `conversationTopbarState.ts` 的 `"idle" \| "single_agent"` 中的 `"single_agent"` 暗示存在其它模式，是纯语义遗迹。重命名为 `"active"` 或直接收敛为布尔 `isIdle`。用户不可见，内部类型清洁 |
 
 **小计**：预计 ~1.5 小时，-70 ~ -100 行。
 
@@ -56,4 +56,7 @@
 
 <!-- 按时间倒序追加，格式：`YYYY-MM-DD [Dn] <一句话> (commit)` -->
 
+- 2026-04-22 [D3] `ConversationTopbarMode` 从 `single_agent` 重命名为 `active`，并同步相关测试与文案 (uncommitted)
+- 2026-04-22 [D2] 删除 plan step 的 `owner` 字段（类型、归一化、schema、UI 与测试）(uncommitted)
+- 2026-04-22 [D1] 删除 `ActionOrigin` 单值类型与 action 卡片来源 meta 渲染，清理关联逻辑与测试 (uncommitted)
 - 2026-04-22 [plan] 本文件创建，承接 A1-C3 完成后的 UI 精简计划

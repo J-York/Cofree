@@ -55,7 +55,6 @@ function pendingPlan(overrides: Partial<OrchestrationPlan> = {}): OrchestrationP
         id: "step-1",
         title: "运行测试",
         summary: "执行回归测试",
-        owner: "coder",
         status: "in_progress",
       },
     ],
@@ -138,7 +137,7 @@ describe("ChatThreadSection", () => {
         },
       ],
       topbarState: topbarState({
-        mode: "single_agent",
+        mode: "active",
         source: "tools",
         primaryLabel: "当前：Review",
       }),
@@ -163,7 +162,7 @@ describe("ChatThreadSection", () => {
     const view = renderThread({
       messages: [message],
       topbarState: topbarState({
-        mode: "single_agent",
+        mode: "active",
         source: "tools",
         primaryLabel: "当前：实现",
         attention: {
@@ -231,7 +230,7 @@ describe("ChatThreadSection", () => {
     const { rerender } = renderThread({
       messages: [assistantMessage("plan-msg", { plan: pendingPlan() })],
       topbarState: topbarState({
-        mode: "single_agent",
+        mode: "active",
         source: "tools",
         primaryLabel: "当前：实现",
         progress: {
@@ -325,7 +324,7 @@ describe("ChatThreadSection", () => {
       messages: [message],
       askUserAnchorMessageId: "ask-msg",
       topbarState: topbarState({
-        mode: "single_agent",
+        mode: "active",
         source: "tools",
         primaryLabel: "等待你的输入以继续回复",
         attention: {

@@ -20,7 +20,6 @@ function createCompletedShellPlan(): OrchestrationPlan {
         id: "step-scaffold",
         title: "Scaffold project",
         summary: "Initialize the frontend project",
-        owner: "coder",
         status: "completed",
       },
     ],

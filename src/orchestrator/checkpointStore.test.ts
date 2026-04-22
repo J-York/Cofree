@@ -42,7 +42,6 @@ describe("checkpointStore", () => {
                 id: "step-1",
                 title: "代码实现",
                 summary: "完成主实现",
-                owner: "coder",
                 status: "in_progress",
               },
             ],
@@ -54,7 +53,6 @@ describe("checkpointStore", () => {
                 gateRequired: true,
                 status: "pending",
                 executed: false,
-                origin: "main_agent",
                 payload: {
                   shell: "pnpm test",
                   timeoutMs: 120000,
@@ -78,7 +76,7 @@ describe("checkpointStore", () => {
 
     expect(restored).not.toBeNull();
     expect(restored?.payload.plan.proposedActions[0]).toMatchObject({
-      origin: "main_agent",
+      type: "shell",
     });
     expect(restored?.payload.workingMemory).toMatchObject({
       projectContext: "project context",

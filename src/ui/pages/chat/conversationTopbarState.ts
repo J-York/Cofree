@@ -1,7 +1,7 @@
 import type { OrchestrationPlan } from "../../../orchestrator/types";
 import type { LiveToolCall } from "./types";
 
-export type ConversationTopbarMode = "idle" | "single_agent";
+export type ConversationTopbarMode = "idle" | "active";
 
 export type ConversationTopbarAttentionLevel = "info" | "warning" | "blocked";
 
@@ -98,7 +98,7 @@ function deriveMode(input: DeriveInput, attentionKinds: AttentionKind[]): Conver
     input.hasAskUserPending ||
     attentionKinds.length > 0
   ) {
-    return "single_agent";
+    return "active";
   }
   return "idle";
 }
@@ -233,7 +233,7 @@ function derivePrimaryLabel(params: {
     return "已就绪";
   }
 
-  // single_agent mode
+  // active mode
   if (liveToolCalls.length > 0) {
     const name = liveToolCalls[0]!.toolName;
     return `正在使用 ${name}`;

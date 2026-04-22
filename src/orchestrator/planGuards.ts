@@ -11,7 +11,6 @@
 
 import type {
   ActionProposal,
-  ActionOrigin,
   OrchestrationPlan,
   PlanStepStatus,
 } from "./types";
@@ -30,9 +29,6 @@ const ACTION_STATUSES = new Set<ActionProposal["status"]>([
   "completed",
   "failed",
   "rejected"
-]);
-const ACTION_ORIGINS = new Set<ActionOrigin>([
-  "main_agent",
 ]);
 
 const STEP_STATUSES = new Set<PlanStepStatus>([
@@ -106,11 +102,6 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
   const toolName = typeof record.toolName === "string" ? record.toolName : undefined;
   const fingerprint = typeof record.fingerprint === "string" ? record.fingerprint : undefined;
   const planStepId = typeof record.planStepId === "string" ? record.planStepId : undefined;
-  const origin =
-    typeof record.origin === "string" && ACTION_ORIGINS.has(record.origin as ActionOrigin)
-      ? (record.origin as ActionOrigin)
-      : undefined;
-  const originDetail = typeof record.originDetail === "string" ? record.originDetail : undefined;
 
   if (record.type === "apply_patch") {
     return {
@@ -125,8 +116,6 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       toolName,
       fingerprint,
       planStepId,
-      origin,
-      originDetail,
       payload: {
         patch: asString(payload.patch, "")
       }
@@ -152,8 +141,6 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       toolName,
       fingerprint,
       planStepId,
-      origin,
-      originDetail,
       payload: {
         shell: shellCommand,
         timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000)),
@@ -196,8 +183,6 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       toolName,
       fingerprint,
       planStepId,
-      origin,
-      originDetail,
       payload: {
         shell: shellCommand,
         timeoutMs: 120000,
@@ -219,8 +204,6 @@ function normalizeAction(value: unknown, index: number): ActionProposal | null {
       toolName,
       fingerprint,
       planStepId,
-      origin,
-      originDetail,
       payload: {
         shell: asString(payload.shell, "pnpm build"),
         timeoutMs: Math.max(1000, asNumber(payload.timeoutMs, 120000)),
@@ -258,7 +241,6 @@ export function normalizeOrchestrationPlan(value: unknown): OrchestrationPlan | 
       if (!stepRecord) {
         return [];
       }
-      const owner = "planner";
       const summary = asString(stepRecord.summary, "").trim();
       if (!summary) {
         return [];
@@ -280,7 +262,6 @@ export function normalizeOrchestrationPlan(value: unknown): OrchestrationPlan | 
         id: asString(stepRecord.id, `step-${index + 1}`),
         title,
         summary,
-        owner: owner as OrchestrationPlan["steps"][number]["owner"],
         status,
         dependsOn,
         linkedActionIds,

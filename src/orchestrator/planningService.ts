@@ -136,14 +136,12 @@ function sanitizeStepsFromPrompt(prompt: string): PlanStep[] {
       {
         id: "step-plan",
         title: "分析需求",
-        owner: "planner",
         status: "in_progress",
         summary: `分析需求并拆解执行步骤: ${normalized}`,
       },
       {
         id: "step-implement",
         title: "执行实现",
-        owner: "planner",
         status: "pending",
         summary: "基于任务生成实现或回答",
         dependsOn: ["step-plan"],
@@ -151,7 +149,6 @@ function sanitizeStepsFromPrompt(prompt: string): PlanStep[] {
       {
         id: "step-verify",
         title: "补充验证",
-        owner: "planner",
         status: "pending",
         summary: "补充验证建议并总结风险",
         dependsOn: ["step-implement"],

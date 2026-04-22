@@ -75,7 +75,6 @@ function normalizeTodoPlanStateInternal(
       title: sanitizeStepTitle(step.title ?? "", fallbackTitle),
       summary: step.summary?.trim() || fallbackTitle,
       status: step.status ?? "pending",
-      owner: step.owner ?? "planner",
       dependsOn: step.dependsOn?.filter(Boolean),
       linkedActionIds: step.linkedActionIds?.filter(Boolean),
     };
@@ -183,7 +182,6 @@ export function setPlanStepStatus(
 export function addPlanStep(state: TodoPlanState, params: {
   title: string;
   summary?: string;
-  owner?: PlanStep["owner"];
   afterStepId?: string;
   note?: string;
 }): PlanStep {
@@ -191,7 +189,6 @@ export function addPlanStep(state: TodoPlanState, params: {
     id: createPlanStepId(),
     title: sanitizeStepTitle(params.title, params.summary ?? params.title),
     summary: params.summary?.trim() || params.title.trim(),
-    owner: params.owner ?? "planner",
     status: "pending",
     note: params.note?.trim() || undefined,
   };
@@ -273,7 +270,7 @@ export function formatTodoPlanBlock(state: TodoPlanState): string {
                 ? "↷"
                 : "○";
       const suffix = step.id === state.activeStepId ? " [当前]" : "";
-      return `${icon} [${step.id}] (${step.owner}/${step.status}) ${step.title}${suffix}`;
+      return `${icon} [${step.id}] (${step.status}) ${step.title}${suffix}`;
     })
     .join("\n");
 }

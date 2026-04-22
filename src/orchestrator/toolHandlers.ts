@@ -408,7 +408,6 @@ const handleUpdatePlan: ToolHandler = async ({ args, planState, deps }) => {
       const added = deps.addPlanStep(planState, {
         title,
         summary: asString(args.summary).trim(),
-        owner: undefined,
         afterStepId: asString(args.after_step_id).trim() || undefined,
         note,
       });
@@ -435,7 +434,6 @@ const handleUpdatePlan: ToolHandler = async ({ args, planState, deps }) => {
       steps: planState.steps.map((step) => ({
         id: step.id,
         title: step.title,
-        owner: step.owner,
         status: step.status,
         linkedActionIds: step.linkedActionIds ?? [],
       })),

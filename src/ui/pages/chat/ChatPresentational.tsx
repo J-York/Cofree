@@ -598,25 +598,6 @@ function ActionBatchMeta({ action }: { action: ActionProposal }) {
   );
 }
 
-function formatActionOrigin(action: ActionProposal): string | null {
-  if (action.origin === "main_agent") {
-    return "主 Agent";
-  }
-  return null;
-}
-
-function ActionOriginMeta({ action }: { action: ActionProposal }) {
-  const originLabel = formatActionOrigin(action);
-  if (!originLabel && !action.toolName) {
-    return null;
-  }
-  return (
-    <div className="plan-action-meta">
-      {originLabel ? <span>审批来源：{originLabel}</span> : null}
-      {action.toolName ? <span>触发工具：{formatToolName(action.toolName)}</span> : null}
-    </div>
-  );
-}
 
 function PlanActionCard({
   action,
@@ -681,7 +662,6 @@ function PlanActionCard({
       <p className="status-note" style={{ marginTop: 8, marginBottom: 0 }}>
         {action.description}
       </p>
-      <ActionOriginMeta action={action} />
       <ActionBatchMeta action={action} />
 
       <ActionPayloadFields
@@ -1015,7 +995,6 @@ export function InlinePlan({
                 </div>
                 <div className="plan-step-summary">{step.summary}</div>
                 <div className="plan-step-meta">
-                  <span>{step.owner}</span>
                   {actionCountByStepId.get(step.id) ? (
                     <span>{actionCountByStepId.get(step.id)} 个关联动作</span>
                   ) : null}

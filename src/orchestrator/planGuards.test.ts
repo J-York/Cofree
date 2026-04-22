@@ -12,7 +12,6 @@ describe("normalizeOrchestrationPlan", () => {
           id: "step-1",
           title: "分析需求",
           summary: "梳理范围",
-          owner: "planner",
           status: "completed",
           linkedActionIds: ["action-1"],
           completedAt: "2026-03-09T00:00:00.000Z",
@@ -20,7 +19,6 @@ describe("normalizeOrchestrationPlan", () => {
         {
           id: "step-2",
           summary: "执行实现",
-          owner: "coder",
           status: "in_progress",
           dependsOn: ["step-1"],
           note: "处理中",
@@ -61,48 +59,5 @@ describe("normalizeOrchestrationPlan", () => {
     });
   });
 
-  it("normalizes unknown action origins to undefined", () => {
-    const plan = normalizeOrchestrationPlan({
-      state: "human_review",
-      prompt: "恢复审批",
-      steps: [],
-      proposedActions: [
-        {
-          id: "action-1",
-          type: "apply_patch",
-          description: "修改 src/app.ts",
-          gateRequired: true,
-          status: "pending",
-          executed: false,
-          origin: "main_agent",
-          payload: {
-            patch: "*** Begin Patch\n*** End Patch\n",
-          },
-        },
-      ],
-    });
 
-    expect(plan?.proposedActions[0]).toMatchObject({
-      origin: "main_agent",
-    });
-  });
-
-  it("normalizes step owners to planner in single-agent mode", () => {
-    const plan = normalizeOrchestrationPlan({
-      state: "planning",
-      prompt: "test",
-      steps: [
-        {
-          id: "step-1",
-          title: "分析",
-          summary: "分析",
-          owner: "coder",
-          status: "pending",
-        },
-      ],
-      proposedActions: [],
-    });
-
-    expect(plan?.steps[0]?.owner).toBe("planner");
-  });
 });

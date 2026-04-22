@@ -23,7 +23,6 @@ function planStep(overrides: Partial<PlanStep> = {}): PlanStep {
     id: "s1",
     title: "Step",
     summary: "",
-    owner: "coder",
     status: "pending",
     ...overrides,
   };
@@ -64,9 +63,9 @@ describe("deriveConversationTopbarState", () => {
     expect(s.badges).toEqual([]);
   });
 
-  it("single-agent streaming without tools is compact row-1-only", () => {
+  it("active mode streaming without tools is compact row-1-only", () => {
     const s = derive({ isStreaming: true });
-    expect(s.mode).toBe("single_agent");
+    expect(s.mode).toBe("active");
     expect(s.source).toBe("assistant");
     expect(s.progress.visible).toBe(false);
     expect(s.attention).toBeNull();
@@ -75,19 +74,19 @@ describe("deriveConversationTopbarState", () => {
     expect(s.agentLabel).toBe(baseAgent);
   });
 
-  it("single-agent with live tools uses source tools", () => {
+  it("active mode with live tools uses source tools", () => {
     const s = derive({
       isStreaming: true,
       liveToolCalls: [liveTool(), liveTool({ callId: "t2", toolName: "grep" })],
     });
-    expect(s.mode).toBe("single_agent");
+    expect(s.mode).toBe("active");
     expect(s.source).toBe("tools");
     expect(s.badges.some((b) => b.key === "tools" || b.action === "tools")).toBe(true);
   });
 
-  it("single-agent waiting for ask-user keeps single_agent and surfaces ask-user attention on row 3", () => {
+  it("waiting for ask-user keeps active mode and surfaces ask-user attention on row 3", () => {
     const s = derive({ isStreaming: true, hasAskUserPending: true });
-    expect(s.mode).toBe("single_agent");
+    expect(s.mode).toBe("active");
     expect(s.attention).not.toBeNull();
     expect(s.attention?.level).toBe("warning");
     expect(s.attention?.ctaAction).toBe("ask_user");
@@ -115,7 +114,7 @@ describe("deriveConversationTopbarState", () => {
     expect(s.badges.some((b) => b.key === "approval" || b.label.includes("审批"))).toBe(false);
   });
 
-  it("single-agent approval-only activePlan stays single_agent", () => {
+  it("approval-only activePlan stays in active mode", () => {
     const s = derive({
       activePlan: orchestrationPlan({
         state: "human_review",
@@ -127,30 +126,29 @@ describe("deriveConversationTopbarState", () => {
             gateRequired: true,
             status: "pending",
             executed: false,
-            origin: "main_agent",
             payload: { shell: "pnpm test", timeoutMs: 1 },
           },
         ],
       }),
     });
-    expect(s.mode).toBe("single_agent");
+    expect(s.mode).toBe("active");
     expect(s.source).toBe("assistant");
     expect(s.attention?.ctaAction).toBe("approval");
   });
 
-  it("unresolved executing plan stays single_agent instead of idle", () => {
+  it("unresolved executing plan stays active instead of idle", () => {
     const s = derive({
       activePlan: orchestrationPlan({
         state: "executing",
       }),
     });
-    expect(s.mode).toBe("single_agent");
+    expect(s.mode).toBe("active");
     expect(s.source).toBe("assistant");
     expect(s.attention).toBeNull();
     expect(s.primaryLabel).toBe("正在处理");
   });
 
-  it("executing plan with main-agent actions is single_agent", () => {
+  it("executing plan with running actions stays active", () => {
     const s = derive({
       activePlan: orchestrationPlan({
         state: "executing",
@@ -162,13 +160,12 @@ describe("deriveConversationTopbarState", () => {
             gateRequired: true,
             status: "running",
             executed: true,
-            origin: "main_agent",
             payload: { shell: "pnpm test", timeoutMs: 1 },
           },
         ],
       }),
     });
-    expect(s.mode).toBe("single_agent");
+    expect(s.mode).toBe("active");
   });
 
   it("collapses multiple attention candidates with priority and extraCount", () => {
@@ -257,9 +254,9 @@ describe("deriveConversationTopbarState", () => {
     expect(s.mode).not.toBe("idle");
   });
 
-  it("trimmed sessionNote alone uses single_agent so informational attention shows on row 3", () => {
+  it("trimmed sessionNote alone uses active mode so informational attention shows on row 3", () => {
     const s = derive({ sessionNote: "  会话提示  " });
-    expect(s.mode).toBe("single_agent");
+    expect(s.mode).toBe("active");
     expect(s.source).toBe("assistant");
     expect(s.primaryLabel).toBe("已就绪");
     expect(s.attention?.level).toBe("info");

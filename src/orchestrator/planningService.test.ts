@@ -795,14 +795,12 @@ describe("planningService approval-flow repair", () => {
                     id: "step-plan",
                     title: "分析需求",
                     summary: "分析需求并拆解",
-                    owner: "planner",
                     status: "in_progress" as const,
                 },
                 {
                     id: "step-implement",
                     title: "执行实现",
                     summary: "执行代码改动",
-                    owner: "planner",
                     status: "pending" as const,
                     dependsOn: ["step-plan"],
                 },
@@ -908,14 +906,12 @@ describe("planningService approval-flow repair", () => {
                         id: "step-plan",
                         title: "分析需求",
                         summary: "分析需求并拆解",
-                        owner: "planner",
                         status: "in_progress",
                     },
                     {
                         id: "step-implement",
                         title: "执行实现",
                         summary: "执行代码改动",
-                        owner: "planner",
                         status: "pending",
                         dependsOn: ["step-plan"],
                     },
@@ -932,8 +928,8 @@ describe("planningService approval-flow repair", () => {
         );
 
         expect(todoMessages).toHaveLength(1);
-        expect(todoMessages[0]?.content).toContain("(planner/completed) 分析需求");
-        expect(todoMessages[0]?.content).toContain("(planner/in_progress) 执行实现 [当前]");
+        expect(todoMessages[0]?.content).toContain("(completed) 分析需求");
+        expect(todoMessages[0]?.content).toContain("(in_progress) 执行实现 [当前]");
     });
 
     it("returns explicit pending-approval semantics for gated shell proposals", async () => {

@@ -92,7 +92,6 @@ export interface ToolExecutorDeps {
   addPlanStep: (state: TodoPlanStateLike, params: {
     title: string;
     summary?: string;
-    owner?: PlanStep["owner"];
     afterStepId?: string;
     note?: string;
   }) => PlanStep;

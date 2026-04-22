@@ -13,7 +13,6 @@ describe("markActionExecutionError", () => {
           id: "step-1",
           title: "执行审批动作",
           summary: "执行审批动作",
-          owner: "coder",
           status: "in_progress",
         },
       ],

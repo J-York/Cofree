@@ -1038,9 +1038,6 @@ export async function runNativeToolCallingLoop(
           );
           continue;
         }
-        if (!action.origin) {
-          action.origin = "main_agent";
-        }
         const linkedAction = attachActionToPlanStep(planState, action);
         proposedActions.push(linkedAction);
       }

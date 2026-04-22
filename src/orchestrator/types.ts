@@ -61,7 +61,6 @@ export interface ShellPayload {
   retryAttempt?: number;
 }
 
-export type ActionOrigin = "main_agent";
 
 interface ActionProposalBase {
   id: string;
@@ -74,8 +73,6 @@ interface ActionProposalBase {
   toolName?: string;
   fingerprint?: string;
   planStepId?: string;
-  origin?: ActionOrigin;
-  originDetail?: string;
 }
 
 export interface ApplyPatchActionProposal extends ActionProposalBase {
@@ -96,7 +93,6 @@ export interface PlanStep {
   id: string;
   title: string;
   summary: string;
-  owner: string;
   status: PlanStepStatus;
   dependsOn?: string[];
   linkedActionIds?: string[];

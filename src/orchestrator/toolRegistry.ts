@@ -362,11 +362,6 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
             type: "string",
             description: "Optional step summary for 'add'.",
           },
-          owner: {
-            type: "string",
-            enum: ["planner"],
-            description: "Optional owner for 'add'.",
-          },
           note: {
             type: "string",
             description: "Optional note.",

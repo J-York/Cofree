@@ -121,7 +121,7 @@ describe("resolveConversationTopbarTarget", () => {
     const plan: OrchestrationPlan = {
       state: "executing",
       prompt: "p",
-      steps: [{ id: "s1", title: "t", summary: "", owner: "coder", status: "in_progress" }],
+      steps: [{ id: "s1", title: "t", summary: "", status: "in_progress" }],
       proposedActions: [],
     };
     const withPlan = assistantMsg("with-plan", { plan });
@@ -199,7 +199,7 @@ describe("resolveConversationTopbarTarget", () => {
     const plan: OrchestrationPlan = {
       state: "executing",
       prompt: "p",
-      steps: [{ id: "s1", title: "Test", summary: "", owner: "coder", status: "failed" }],
+      steps: [{ id: "s1", title: "Test", summary: "", status: "failed" }],
       proposedActions: [],
     };
     const planMsg = assistantMsg("plan-msg", { plan });
