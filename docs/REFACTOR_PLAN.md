@@ -31,7 +31,7 @@
 | ID | 任务 | 状态 | 说明 |
 |----|------|------|------|
 | A1 | 删除多 Agent 编排层（专家组/concierge/task 委派/子 Agent） | ✅ **完成** | 373/373 tests green, tsc clean。净减约 1.5K LoC，删除 9 个文件，手术式清理 30+ 文件 |
-| A2 | `src-tauri/src/commands/workspace.rs`（2051 行）按关注点拆分 | ⏳ 待启动 | 拆为 `commands/{fs,git,grep,patch,shell,snapshot}.rs`；业务逻辑下沉到 `application/` |
+| A2 | `src-tauri/src/commands/workspace.rs`（2051 行）按关注点拆分 | ✅ **完成** | `workspace.rs` 已按关注点拆分为 `commands/{fs,git,grep,patch,shell,snapshot}.rs`；业务逻辑整体下沉到 `application/workspace.rs`，命令层降为轻量导出层 |
 | A3 | `src/lib/settingsStore.ts`（1631 行）按域拆 | ⏳ 待启动 | general / models / agents / skills / audit |
 
 ### 轨道 B — 拆 god files
@@ -115,6 +115,8 @@ src/ui/pages/chat/
 ## 进度记录
 
 <!-- 按时间倒序追加，格式：`YYYY-MM-DD [Xn] <一句话> (commit)` -->
+
+- 2026-04-22 [A2] `src-tauri/src/commands/workspace.rs` 按关注点拆分完成：新增 `commands/{fs,git,grep,patch,shell,snapshot}.rs` 六模块，原 `workspace.rs` 迁移到 `application/workspace.rs`，`commands/mod.rs`/`main.rs` 完成导出与注入切换；`cargo check` clean，`cargo test` 3/3 green（894a83d）
 
 - 2026-04-17 [plan] 确认方向、裁剪决策、三条轨道、B1 细化方案（本文件创建）
 - 2026-04-17 [B1.1] 建立 `src/ui/pages/chat/{composer,thread,sidebar,hooks}/` 骨架（各一个 `index.ts` 占位）；432/432 tests green
