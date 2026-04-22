@@ -33,6 +33,15 @@ import type {
   ToolExecutionStatus,
   ToolExecutionTrace,
 } from "./toolTraceTypes";
+import {
+  asBoolean,
+  asNumber,
+  asString,
+  countOccurrences,
+  normalizeOptionalPositiveInt,
+  normalizeRelativePath,
+  stripLineNumberPrefixes,
+} from "./toolArgParsing";
 
 const MAX_LIST_ENTRIES = 120;
 const MAX_FILE_PREVIEW_CHARS = 15000;
@@ -128,61 +137,6 @@ interface DiagnosticsResult {
   diagnostics: DiagnosticEntry[];
   tool_used: string;
   raw_output: string;
-}
-
-function normalizeRelativePath(value: unknown): string {
-  if (typeof value !== "string") {
-    return "";
-  }
-  return value.trim();
-}
-
-function asString(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-/**
- * Strip line-number prefixes that read_file adds (e.g. "487│  code" → "  code").
- * Models may accidentally copy these into search/anchor fields.
- */
-function stripLineNumberPrefixes(text: string): string {
-  // \s* handles optional leading spaces that some models copy from the display format (e.g. "  10│")
-  return text.replace(/^\s*[0-9]+│/gm, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-}
-
-function asNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function asBoolean(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function normalizeOptionalPositiveInt(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return null;
-  }
-
-  const normalized = Math.floor(value);
-  return normalized > 0 ? normalized : null;
-}
-
-function countOccurrences(content: string, snippet: string): number {
-  if (!snippet) {
-    return 0;
-  }
-
-  let total = 0;
-  let offset = 0;
-  while (offset <= content.length) {
-    const index = content.indexOf(snippet, offset);
-    if (index < 0) {
-      break;
-    }
-    total += 1;
-    offset = index + Math.max(1, snippet.length);
-  }
-  return total;
 }
 
 function splitPatchLines(content: string): {
