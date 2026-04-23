@@ -1,11 +1,11 @@
-/* ── Conversation topbar — glass status bar ───────────── */
+/* ── Conversation topbar — flat status bar ─────────────── */
 .conversation-topbar {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 6px 0 8px;
   margin-bottom: 4px;
-  border-bottom: var(--glass-border);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .conversation-topbar:empty,
@@ -50,7 +50,7 @@
   font-size: 11px;
   line-height: 1.45;
   padding: 2px 8px;
-  border-radius: var(--r-full);
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--text-2);
   font-weight: 500;
@@ -65,39 +65,29 @@ button.conversation-topbar-badge {
 
 button.conversation-topbar-badge:hover {
   color: var(--text-1);
-  background: var(--surface-1);
+  background: var(--bg-surface);
 }
 
-.conversation-topbar-badge--info {
-  color: var(--accent-solid);
-}
-
-.conversation-topbar-badge--warning {
-  color: var(--color-warning);
-}
-
-.conversation-topbar-badge--blocked {
-  color: var(--color-error);
-}
-
-.conversation-topbar-badge--success {
-  color: var(--color-success);
-}
+.conversation-topbar-badge--info { color: var(--text-1); }
+.conversation-topbar-badge--warning { color: var(--color-warning); }
+.conversation-topbar-badge--blocked { color: var(--color-error); }
+.conversation-topbar-badge--success { color: var(--color-success); }
 
 .conversation-topbar-progress {
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-3);
+  color: var(--text-4);
   font-weight: 500;
   cursor: pointer;
   padding: 4px 2px 2px;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-xs);
   outline: none;
   transition: background var(--t-fast);
 }
 
 .conversation-topbar-progress:hover,
 .conversation-topbar-progress:focus-visible {
-  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  background: var(--bg-surface);
 }
 
 .conversation-topbar-progress-label {
@@ -134,22 +124,22 @@ button.conversation-topbar-badge:hover {
 }
 
 .conversation-topbar-segment--completed {
-  background: color-mix(in srgb, var(--color-success) 45%, var(--surface-3));
+  background: color-mix(in srgb, var(--color-success) 45%, var(--bg-surface-hover));
 }
 
 .conversation-topbar-segment--active {
-  background: color-mix(in srgb, var(--accent-solid) 40%, var(--surface-3));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-solid) 35%, transparent);
+  background: var(--bg-surface-active);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 .conversation-topbar-segment--pending {
-  background: var(--surface-2);
-  border: 1px solid var(--border-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
 }
 
 .conversation-topbar-segment--blocked {
   background: var(--color-error-bg);
-  border: 1px solid color-mix(in srgb, var(--color-error) 45%, var(--border-1));
+  border: 1px solid color-mix(in srgb, var(--color-error) 45%, var(--border-subtle));
 }
 
 .conversation-topbar-segment--blocked .conversation-topbar-segment-label {
@@ -178,12 +168,10 @@ button.conversation-topbar-badge:hover {
   color: var(--text-2);
   padding: 8px 12px;
   border-radius: var(--r-md);
-  background: var(--surface-2);
-  backdrop-filter: var(--glass-blur-md);
-  -webkit-backdrop-filter: var(--glass-blur-md);
-  border: var(--glass-border-highlight);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-default);
   box-shadow: var(--shadow-md);
-  animation: attention-toast-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: attention-toast-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes attention-toast-in {
@@ -192,17 +180,17 @@ button.conversation-topbar-badge:hover {
 }
 
 .conversation-topbar-attention-toast[data-attention-level="info"] {
-  border-color: color-mix(in srgb, var(--accent-solid) 30%, var(--border-2));
+  border-color: var(--border-default);
 }
 
 .conversation-topbar-attention-toast[data-attention-level="warning"] {
-  border-color: color-mix(in srgb, var(--color-warning) 30%, var(--border-2));
-  background: color-mix(in srgb, var(--color-warning-bg) 40%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--color-warning) 30%, var(--border-default));
+  background: color-mix(in srgb, var(--color-warning-bg) 40%, var(--bg-panel));
 }
 
 .conversation-topbar-attention-toast[data-attention-level="blocked"] {
-  border-color: color-mix(in srgb, var(--color-error) 30%, var(--border-2));
-  background: color-mix(in srgb, var(--color-error-bg) 40%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--color-error) 30%, var(--border-default));
+  background: color-mix(in srgb, var(--color-error-bg) 40%, var(--bg-panel));
 }
 
 .conversation-topbar-attention-live {
@@ -234,14 +222,14 @@ button.conversation-topbar-badge:hover {
   font-weight: 600;
   padding: 4px 10px;
   border-radius: var(--r-sm);
-  border: 1px solid var(--border-2);
-  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
   color: var(--text-1);
   cursor: pointer;
   transition: background var(--t-fast), border-color var(--t-fast);
 }
 
 .conversation-topbar-cta:hover {
-  background: var(--surface-3);
-  border-color: var(--border-1);
+  background: var(--bg-surface-hover);
+  border-color: var(--border-strong);
 }

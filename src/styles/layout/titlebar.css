@@ -1,4 +1,4 @@
-/* ── Custom Titlebar — frosted glass bar ────────────────── */
+/* ── Custom Titlebar — flat bar ─────────────────────────── */
 .titlebar {
   height: 42px;
   display: flex;
@@ -6,11 +6,8 @@
   justify-content: space-between;
   padding: 0 16px;
   padding-left: 78px;
-  background: var(--surface-1);
-  backdrop-filter: var(--glass-blur-lg);
-  -webkit-backdrop-filter: var(--glass-blur-lg);
-  border-bottom: var(--glass-border);
-  box-shadow: var(--glass-inner-glow), 0 1px 0 rgba(0,0,0,0.15);
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-default);
   flex-shrink: 0;
   user-select: none;
   -webkit-app-region: drag;
@@ -21,7 +18,7 @@
 .titlebar-left {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   -webkit-app-region: drag;
   flex: 1;
   min-width: 0;
@@ -36,32 +33,28 @@
 .titlebar-workspace {
   display: flex;
   align-items: center;
-  height: 28px;
+  height: 26px;
   box-sizing: border-box;
   gap: 8px;
-  font-size: 13px;
-  color: var(--text-3);
+  font-size: 12px;
+  color: var(--text-2);
   -webkit-app-region: no-drag;
-  background: var(--surface-2);
-  backdrop-filter: var(--glass-blur-sm);
-  -webkit-backdrop-filter: var(--glass-blur-sm);
-  border: var(--glass-border);
-  padding: 0 12px;
-  border-radius: var(--r-full);
-  transition: all var(--t-med);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  transition: background var(--t-fast), border-color var(--t-fast);
   cursor: pointer;
 }
 
 .titlebar-workspace:hover {
-  background: var(--surface-3);
-  border-color: rgba(255,255,255,0.14);
-  box-shadow: var(--accent-glow-sm);
+  background: var(--bg-surface-hover);
+  border-color: var(--border-default);
 }
 
 .titlebar-workspace.active {
-  background: var(--surface-3);
-  border-color: rgba(255,255,255,0.14);
-  box-shadow: var(--shadow-sm);
+  background: var(--bg-surface-active);
+  border-color: var(--border-default);
 }
 
 .titlebar-workspace-name {
@@ -73,10 +66,11 @@
 }
 
 .titlebar-sep {
-  opacity: 0.3;
+  color: var(--text-4);
 }
 
 .titlebar-branch {
+  font-family: var(--font-mono);
   color: var(--text-3);
 }
 
@@ -111,37 +105,33 @@
 .titlebar-model-badge {
   display: flex;
   align-items: center;
-  height: 30px;
+  height: 26px;
   box-sizing: border-box;
   gap: 6px;
-  padding: 0 14px;
+  padding: 0 10px;
   max-width: 100%;
   min-width: 0;
-  background: var(--surface-2);
-  backdrop-filter: var(--glass-blur-sm);
-  -webkit-backdrop-filter: var(--glass-blur-sm);
-  border: var(--glass-border);
-  border-radius: var(--r-full);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
   pointer-events: auto;
   cursor: pointer;
-  transition: all var(--t-med);
+  transition: background var(--t-fast), border-color var(--t-fast);
 }
 
 .titlebar-model-badge:hover {
-  background: var(--surface-3);
-  border-color: rgba(255,255,255,0.14);
-  box-shadow: var(--accent-glow-sm);
+  background: var(--bg-surface-hover);
+  border-color: var(--border-default);
 }
 
 .titlebar-model-badge.active {
-  background: var(--surface-3);
-  border-color: rgba(255,255,255,0.14);
-  box-shadow: var(--shadow-sm);
+  background: var(--bg-surface-active);
+  border-color: var(--border-default);
 }
 
 .titlebar-agent-name {
-  font-family: var(--font-sans, sans-serif);
-  font-size: 13px;
+  font-family: var(--font-sans);
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-1);
   overflow: hidden;
@@ -150,14 +140,13 @@
 }
 
 .titlebar-model-divider {
-  color: var(--text-3);
-  opacity: 0.5;
+  color: var(--text-4);
   font-size: 12px;
 }
 
 .titlebar-model-name {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -175,55 +164,54 @@
   justify-content: flex-end;
 }
 
+.titlebar-actions-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border-default);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
 .titlebar-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   border: 1px solid transparent;
-  border-radius: var(--r-full);
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--text-3);
   cursor: pointer;
-  transition: all var(--t-fast);
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
 }
 
 .titlebar-btn:hover {
-  background: var(--surface-2);
-  backdrop-filter: var(--glass-blur-sm);
-  -webkit-backdrop-filter: var(--glass-blur-sm);
+  background: var(--bg-surface-hover);
   color: var(--text-1);
-  border-color: rgba(255,255,255,0.10);
-  box-shadow: var(--accent-glow-sm);
+  border-color: var(--border-subtle);
 }
 
 .titlebar-btn.active {
-  color: var(--accent-bright);
-  background: var(--accent-muted);
-  border-color: rgba(139,142,232,0.20);
-  box-shadow: var(--accent-glow-sm);
+  background: var(--bg-surface-active);
+  color: var(--text-1);
+  border-color: var(--border-default);
+  box-shadow: none;
 }
 
-/* ── Titlebar Popovers — glass dropdown ─────────────────── */
+/* ── Titlebar Popovers — flat dropdown ──────────────────── */
 .titlebar-popover {
   position: absolute;
-  top: calc(100% + 8px);
-  background: rgba(16, 18, 36, 0.92);
-  backdrop-filter: var(--glass-blur-lg);
-  -webkit-backdrop-filter: var(--glass-blur-lg);
-  border: var(--glass-border-highlight);
+  top: calc(100% + 6px);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-default);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow-float);
+  box-shadow: var(--shadow-lg);
   z-index: 1000;
   min-width: 240px;
   max-width: 340px;
   padding: 6px;
-  animation: titlebar-popover-in 150ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-[data-theme="light"] .titlebar-popover {
-  background: rgba(236, 239, 248, 0.94);
+  animation: titlebar-popover-in 120ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .titlebar-popover-ws { left: 0; }
@@ -245,16 +233,17 @@
 
 .titlebar-popover-header {
   padding: 6px 10px 4px;
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   font-weight: 600;
-  color: var(--text-3);
+  color: var(--text-4);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
 }
 
 .titlebar-popover-divider {
   height: 1px;
-  background: var(--border-1);
+  background: var(--border-subtle);
   margin: 4px 0;
 }
 
@@ -269,12 +258,12 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border-radius: var(--r-sm);
 }
 
 .titlebar-popover-item.current {
-  background: var(--accent-muted);
+  background: var(--accent-subtle);
 }
 
 .titlebar-popover-item-info {
@@ -291,6 +280,7 @@
 }
 
 .titlebar-popover-item-detail {
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-3);
   overflow: hidden;
@@ -303,20 +293,20 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border: none;
   border-radius: var(--r-sm);
   background: none;
   color: var(--text-2);
   font-size: 13px;
   cursor: pointer;
-  transition: all var(--t-fast);
+  transition: background var(--t-fast), color var(--t-fast);
   text-align: left;
   font-family: var(--font-sans);
 }
 
 .titlebar-popover-action:hover {
-  background: var(--surface-3);
+  background: var(--bg-surface-hover);
   color: var(--text-1);
 }
 
@@ -324,7 +314,7 @@
 .titlebar-popover-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   max-height: 240px;
   overflow-y: auto;
 }
@@ -334,36 +324,35 @@
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border: none;
   border-radius: var(--r-sm);
   background: none;
   cursor: pointer;
-  transition: all var(--t-fast);
+  transition: background var(--t-fast);
   text-align: left;
   font-family: var(--font-sans);
 }
 
 .titlebar-popover-option:hover {
-  background: var(--surface-3);
+  background: var(--bg-surface-hover);
 }
 
 .titlebar-popover-option.active {
-  background: var(--accent-muted);
+  background: var(--accent-subtle);
 }
 
 .titlebar-popover-option-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: var(--r-full);
-  background: var(--surface-4);
+  background: var(--border-strong);
   flex-shrink: 0;
-  transition: all var(--t-fast);
+  transition: background var(--t-fast);
 }
 
 .titlebar-popover-option-dot.active {
   background: var(--color-success);
-  box-shadow: 0 0 6px rgba(74, 222, 128, 0.4);
 }
 
 .titlebar-popover-option-info {
@@ -412,13 +401,11 @@
   background: transparent;
   color: var(--text-3);
   cursor: pointer;
-  transition: all var(--t-fast);
+  transition: background var(--t-fast), color var(--t-fast);
 }
 
 .window-control-btn:hover {
-  background: var(--surface-3);
-  backdrop-filter: var(--glass-blur-sm);
-  -webkit-backdrop-filter: var(--glass-blur-sm);
+  background: var(--bg-surface-hover);
   color: var(--text-1);
 }
 

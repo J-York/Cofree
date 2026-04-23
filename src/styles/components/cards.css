@@ -1,47 +1,41 @@
-/* ── Cards — frosted glass panels ───────────────────────── */
+/* ── Cards ──────────────────────────────────────────────── */
 .card {
-  background: var(--surface-1);
-  backdrop-filter: var(--glass-blur-md);
-  -webkit-backdrop-filter: var(--glass-blur-md);
-  border: var(--glass-border);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
-  padding: 24px;
-  box-shadow: var(--shadow-sm);
-  transition: all var(--t-med);
-  position: relative;
+  padding: 20px;
+  transition: background var(--t-fast), border-color var(--t-fast);
 }
 
 .card:hover {
-  box-shadow: var(--shadow-md);
-  border-color: rgba(255,255,255,0.14);
-  background: var(--surface-2);
+  border-color: var(--border-default);
+  background: var(--bg-surface);
 }
 
 .card-title {
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
   font-weight: 600;
-  color: var(--text-3);
+  color: var(--text-4);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  margin: 0 0 16px;
+  margin: 0 0 14px;
 }
 
-/* ── Badge — glass pill ────────────────────────────────── */
+/* ── Badge ──────────────────────────────────────────────── */
 .badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 10px;
-  border-radius: var(--r-full);
-  font-size: 11px;
-  font-weight: 500;
-  font-family: var(--font-sans);
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
   letter-spacing: 0.02em;
-  backdrop-filter: var(--glass-blur-sm);
-  -webkit-backdrop-filter: var(--glass-blur-sm);
 }
-.badge-default { background: var(--surface-2); color: var(--text-2); border: var(--glass-border); }
-.badge-success { background: rgba(74,222,128,0.12); color: var(--color-success); border: 1px solid rgba(74,222,128,0.18); }
-.badge-error { background: rgba(248,113,113,0.12); color: var(--color-error); border: 1px solid rgba(248,113,113,0.18); }
-.badge-warning { background: rgba(250,204,21,0.12); color: var(--color-warning); border: 1px solid rgba(250,204,21,0.18); }
-.badge-accent { background: var(--accent-muted); color: var(--accent-solid); border: 1px solid rgba(139,142,232,0.18); }
+.badge-default { background: var(--bg-surface); color: var(--text-3); border: 1px solid var(--border-subtle); }
+.badge-success { background: var(--color-success-bg); color: var(--color-success); border: 1px solid var(--border-subtle); }
+.badge-error   { background: var(--color-error-bg);   color: var(--color-error);   border: 1px solid var(--border-subtle); }
+.badge-warning { background: var(--color-warning-bg); color: var(--color-warning); border: 1px solid var(--border-subtle); }
+.badge-accent  { background: var(--accent-subtle);    color: var(--text-1);        border: 1px solid var(--border-subtle); }

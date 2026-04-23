@@ -1,14 +1,12 @@
-/* ── Live Tool Status — glass status panel ──────────────── */
+/* ── Live Tool Status ───────────────────────────────────── */
 .live-tool-status {
   display: flex;
   flex-direction: column;
   gap: 3px;
   margin-top: 8px;
   padding: 8px 10px;
-  background: var(--surface-1);
-  backdrop-filter: var(--glass-blur-sm);
-  -webkit-backdrop-filter: var(--glass-blur-sm);
-  border: var(--glass-border);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
 }
 
@@ -32,23 +30,16 @@
 }
 
 .live-tool-item.running .live-tool-icon {
-  color: var(--accent-solid);
+  color: var(--text-2);
   animation: tool-spin 1s linear infinite;
 }
 
-.live-tool-item.success .live-tool-icon {
-  color: var(--color-success);
-}
-
-.live-tool-item.pending_approval .live-tool-icon {
-  color: var(--color-warning);
-}
-
-.live-tool-item.failed .live-tool-icon {
-  color: var(--color-error);
-}
+.live-tool-item.success .live-tool-icon { color: var(--color-success); }
+.live-tool-item.pending_approval .live-tool-icon { color: var(--color-warning); }
+.live-tool-item.failed .live-tool-icon { color: var(--color-error); }
 
 .live-tool-name {
+  font-family: var(--font-mono);
   font-weight: 500;
   color: var(--text-1);
   font-size: 11px;
@@ -58,7 +49,7 @@
 .live-tool-args {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--text-3);
+  color: var(--text-4);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -66,21 +57,15 @@
 }
 
 @keyframes tool-spin {
-  0% {
-    transform: rotate(0deg);
-  }
-
-  100% {
-    transform: rotate(360deg);
-  }
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 
-/* Inline live tool strip: secondary when conversation topbar mirrors tool state */
 .chat-layout:has(.conversation-topbar) .live-tool-status {
   margin-top: 6px;
   padding: 6px 8px;
-  border-color: color-mix(in srgb, var(--border-1) 82%, transparent);
-  background: color-mix(in srgb, var(--surface-0) 94%, var(--surface-1));
+  border-color: var(--border-subtle);
+  background: var(--bg-panel);
 }
 
 /* ── Tool Trace ─────────────────────────────────────────── */
@@ -92,9 +77,10 @@
 }
 
 .tool-trace-label {
+  font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 600;
-  color: var(--text-3);
+  color: var(--text-4);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -109,28 +95,18 @@
 }
 
 .tool-trace-item {
-  border: var(--glass-border);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
-  background: var(--surface-1);
-  backdrop-filter: var(--glass-blur-sm);
-  -webkit-backdrop-filter: var(--glass-blur-sm);
+  background: var(--bg-panel);
   padding: 6px 10px;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.tool-trace-item.failed {
-  border-left: 2px solid var(--color-error);
-}
-
-.tool-trace-item.success {
-  border-left: 2px solid var(--color-success);
-}
-
-.tool-trace-item.pending {
-  border-left: 2px solid var(--color-warning);
-}
+.tool-trace-item.failed  { border-left: 2px solid var(--color-error); }
+.tool-trace-item.success { border-left: 2px solid var(--color-success); }
+.tool-trace-item.pending { border-left: 2px solid var(--color-warning); }
 
 .tool-trace-head {
   display: flex;
@@ -155,20 +131,17 @@
   font-size: 10px;
   color: var(--text-2);
   padding: 8px 10px;
-  background: var(--surface-0);
+  background: var(--bg-surface);
   border-radius: var(--r-xs);
-  border: 1px solid var(--border-1);
+  border: 1px solid var(--border-subtle);
 }
 
-/* ── Shell Result — glass terminal card ─────────────────── */
+/* ── Shell Result ───────────────────────────────────────── */
 .shell-result {
-  border: var(--glass-border);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
-  background: var(--surface-1);
-  backdrop-filter: var(--glass-blur-md);
-  -webkit-backdrop-filter: var(--glass-blur-md);
+  background: var(--bg-panel);
   overflow: hidden;
-  box-shadow: var(--glass-inner-glow);
 }
 
 .shell-result-header {
@@ -176,22 +149,23 @@
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  background: var(--surface-2);
-  border-bottom: var(--glass-border);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .shell-result-label {
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   font-weight: 600;
-  color: var(--text-3);
+  color: var(--text-4);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
 }
 
 .shell-result-command {
   padding: 8px 12px;
-  border-bottom: 1px solid var(--border-1);
-  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
 }
 
 .shell-result-command code {
@@ -203,20 +177,19 @@
 
 .shell-result-section {
   padding: 8px 12px;
-  border-bottom: 1px solid var(--border-1);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.shell-result-section:last-child {
-  border-bottom: none;
-}
+.shell-result-section:last-child { border-bottom: none; }
 
 .shell-result-section-label {
   display: block;
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   font-weight: 600;
-  color: var(--text-3);
+  color: var(--text-4);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   margin-bottom: 4px;
 }
 
@@ -231,10 +204,5 @@
   overflow: auto;
 }
 
-.shell-result-stdout {
-  color: var(--text-1);
-}
-
-.shell-result-stderr {
-  color: var(--color-error);
-}
+.shell-result-stdout { color: var(--text-1); }
+.shell-result-stderr { color: var(--color-error); }

@@ -1,40 +1,142 @@
-/* ── Input Dialog — glass modal ─────────────────────────── */
-.input-dialog-backdrop { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.45); backdrop-filter: var(--glass-blur-md); -webkit-backdrop-filter: var(--glass-blur-md); }
-.input-dialog { width: 90%; max-width: 400px; background: var(--surface-2); backdrop-filter: var(--glass-blur-lg); -webkit-backdrop-filter: var(--glass-blur-lg); border: var(--glass-border-highlight); border-radius: var(--r-lg); padding: 22px; box-shadow: var(--shadow-float); }
-.input-dialog-title { margin: 0 0 14px; font-size: 16px; font-weight: 600; color: var(--text-1); }
-.input-dialog-textarea { width: 100%; padding: 10px 14px; font-family: var(--font-sans); font-size: 14px; line-height: 1.45; color: var(--text-1); background: var(--surface-1); backdrop-filter: var(--glass-blur-sm); -webkit-backdrop-filter: var(--glass-blur-sm); border: var(--glass-border); border-radius: var(--r-sm); resize: vertical; min-height: 76px; outline: none; }
-.input-dialog-textarea:focus { border-color: var(--border-focus); box-shadow: var(--accent-glow-sm); }
-.input-dialog-textarea::placeholder { color: var(--text-3); }
-.input-dialog-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px; }
+/* ── Input Dialog — flat modal ──────────────────────────── */
+.input-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.55);
+}
+
+.input-dialog {
+  width: 90%;
+  max-width: 400px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xl);
+  padding: 20px;
+  box-shadow: var(--shadow-float);
+}
+
+.input-dialog-title {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.input-dialog-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  resize: vertical;
+  min-height: 76px;
+  outline: none;
+  transition: border-color var(--t-fast);
+}
+
+.input-dialog-textarea:focus {
+  border-color: var(--border-focus);
+}
+
+.input-dialog-textarea::placeholder { color: var(--text-4); }
+
+.input-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 14px;
+}
 
 /* ── Ask User Dialog ────────────────────────────────────── */
 .ask-user-dialog { max-width: 520px; }
 .ask-user-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .ask-user-meta { display: flex; align-items: center; gap: 8px; }
-.ask-user-timestamp { font-size: 11px; color: var(--text-3); }
+.ask-user-timestamp { font-family: var(--font-mono); font-size: 11px; color: var(--text-4); }
 .ask-user-content { display: flex; flex-direction: column; gap: 12px; }
-.ask-user-context { background: var(--surface-2); backdrop-filter: var(--glass-blur-sm); -webkit-backdrop-filter: var(--glass-blur-sm); border-left: 3px solid var(--accent-solid); border-radius: 0 var(--r-sm) var(--r-sm) 0; padding: 10px 12px; }
-.ask-user-context-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-3); margin-bottom: 4px; }
+
+.ask-user-context {
+  background: var(--bg-surface);
+  border-left: 2px solid var(--border-strong);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  padding: 10px 12px;
+}
+
+.ask-user-context-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-4);
+  margin-bottom: 4px;
+}
+
 .ask-user-context-text { font-size: 13px; color: var(--text-2); line-height: 1.5; white-space: pre-wrap; }
 .ask-user-question { padding: 4px 0; }
 .ask-user-question-text { font-size: 15px; font-weight: 500; color: var(--text-1); line-height: 1.5; }
 .ask-user-options { display: flex; flex-direction: column; gap: 6px; }
 .ask-user-options-label { font-size: 12px; font-weight: 600; color: var(--text-3); margin-bottom: 2px; }
 .ask-user-options-grid { display: flex; flex-direction: column; gap: 6px; }
-.ask-user-option-label { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--surface-1); backdrop-filter: var(--glass-blur-sm); -webkit-backdrop-filter: var(--glass-blur-sm); border: var(--glass-border); border-radius: var(--r-sm); cursor: pointer; transition: border-color 0.15s, background 0.15s, box-shadow 0.15s; }
-.ask-user-option-label:hover { border-color: var(--border-focus); background: var(--surface-3); box-shadow: var(--accent-glow-sm); }
+
+.ask-user-option-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+
+.ask-user-option-label:hover {
+  border-color: var(--border-default);
+  background: var(--bg-surface-hover);
+}
+
 .ask-user-option-label input[type="radio"],
-.ask-user-option-label input[type="checkbox"] { accent-color: var(--color-accent, #6366f1); flex-shrink: 0; }
+.ask-user-option-label input[type="checkbox"] {
+  accent-color: var(--text-1);
+  flex-shrink: 0;
+}
+
 .ask-user-option-label input[type="radio"]:checked + .ask-user-option-text,
-.ask-user-option-label input[type="checkbox"]:checked + .ask-user-option-text { color: var(--text-1); font-weight: 500; }
+.ask-user-option-label input[type="checkbox"]:checked + .ask-user-option-text {
+  color: var(--text-1);
+  font-weight: 500;
+}
+
 .ask-user-option-text { font-size: 14px; color: var(--text-2); }
 .ask-user-option-other .ask-user-option-text { font-style: italic; }
 .ask-user-other-input { margin-top: 6px; padding-left: 2px; }
-.ask-user-other-textfield { width: 100%; padding: 8px 12px; font-family: var(--font-sans); font-size: 14px; line-height: 1.45; color: var(--text-1); background: var(--surface-3); border: 1px solid var(--border-1); border-radius: var(--r-sm); outline: none; transition: border-color 0.15s; }
+
+.ask-user-other-textfield {
+  width: 100%;
+  padding: 8px 12px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  outline: none;
+  transition: border-color var(--t-fast);
+}
+
 .ask-user-other-textfield:focus { border-color: var(--border-focus); }
-.ask-user-other-textfield::placeholder { color: var(--text-3); }
+.ask-user-other-textfield::placeholder { color: var(--text-4); }
+
 .ask-user-input { display: flex; flex-direction: column; gap: 6px; }
 .ask-user-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 16px; }
 .ask-user-actions-left { display: flex; gap: 6px; }
 .ask-user-actions-right { display: flex; gap: 6px; }
-

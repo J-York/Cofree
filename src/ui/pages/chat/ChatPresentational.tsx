@@ -86,7 +86,7 @@ function CodeBlockWithCopy({
         customStyle={{
           margin: 0,
           padding: "12px 14px",
-          background: "var(--surface-0)",
+          background: "var(--bg-panel)",
           borderRadius: "0 0 var(--r-sm) var(--r-sm)",
           fontSize: "13px",
         }}
@@ -1048,7 +1048,7 @@ export function InlinePlan({
                         color: "var(--text-3)",
                         marginBottom: "6px",
                         padding: "6px 10px",
-                        background: "var(--surface-2)",
+                        background: "var(--bg-surface)",
                         borderRadius: "6px",
                         lineHeight: "1.6",
                       }}
@@ -1150,9 +1150,9 @@ export function TokenUsageRing({
   const strokeDashoffset = circumference * (1 - percentage / 100);
 
   const getColor = () => {
-    if (percentage >= 90) return "var(--color-error)";
-    if (percentage >= 70) return "var(--color-warning)";
-    return "var(--color-success, #10b981)";
+    if (percentage >= 95) return "var(--color-error)";
+    if (percentage >= 85) return "var(--color-warning)";
+    return "var(--text-3)";
   };
 
   const formatTokens = (tokens: number) => {
@@ -1175,7 +1175,7 @@ export function TokenUsageRing({
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke="var(--border-2, #333)"
+          stroke="var(--border-subtle)"
           strokeWidth={strokeWidth}
         />
         <circle

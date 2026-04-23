@@ -5,44 +5,29 @@ body {
   margin: 0;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg-gradient);
-  position: relative;
-}
-
-/* Ambient gradient overlay that shines through all glass layers */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  background: var(--bg-gradient-accent);
-  pointer-events: none;
-  z-index: 0;
+  background: var(--bg-app);
+  color: var(--text-1);
+  font-weight: 500;
+  letter-spacing: -0.005em;
 }
 
 #root {
   height: 100%;
   display: flex;
   flex-direction: column;
-  position: relative;
-  z-index: 1;
 }
 
-/* ── Scrollbar — frosted glass style ────────────────────── */
-::-webkit-scrollbar { width: 5px; height: 5px; }
+/* ── Scrollbar — neutral thin ────────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.08);
+  background: var(--border-default);
   border-radius: var(--r-full);
-  border: 1px solid rgba(255,255,255,0.04);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255,255,255,0.14);
+  background: var(--border-strong);
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }
-
-/* ── Scrollbar Light Mode ──────────────────────────────────── */
-[data-theme="light"] ::-webkit-scrollbar-thumb {
-  background: rgba(0,0,0,0.08);
-  border-color: rgba(0,0,0,0.03);
-}
-[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.14); }
-

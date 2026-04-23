@@ -1,10 +1,10 @@
-/* ── Chat Layout — glass canvas ─────────────────────────── */
+/* ── Chat Layout ───────────────────────────────────────── */
 .chat-layout-with-sidebar {
   display: flex;
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background: transparent;
+  background: var(--bg-app);
 }
 
 .chat-main-area {
@@ -38,8 +38,6 @@
   gap: 0;
 }
 
-/* Sidebar toggle is now in the TitleBar — no floating FAB needed. */
-
 /* ── Chat Thread ────────────────────────────────────────── */
 .chat-thread {
   flex: 1;
@@ -50,12 +48,7 @@
   gap: 24px;
 }
 
-.chat-thread::-webkit-scrollbar { width: 6px; }
-.chat-thread::-webkit-scrollbar-track { background: transparent; }
-.chat-thread::-webkit-scrollbar-thumb { background: transparent; border-radius: var(--r-full); }
-.chat-thread:hover::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); }
-
-/* ── Chat Empty State — floating glass welcome ─────────── */
+/* ── Chat Empty State ───────────────────────────────────── */
 .chat-empty {
   display: flex;
   flex: 1;
@@ -65,26 +58,26 @@
   gap: 16px;
   color: var(--text-3);
   padding: 40px 0;
-  animation: fade-in-up 600ms var(--t-spring) both;
+  animation: fade-in-up 400ms var(--t-spring) both;
 }
 
 @keyframes fade-in-up {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .chat-empty-text {
   font-size: 22px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-1);
   letter-spacing: -0.02em;
   margin: 0;
-  text-shadow: 0 0 40px rgba(139,142,232,0.15);
+  text-shadow: none;
 }
 
 .chat-empty-subtext {
-  font-size: 14px;
-  color: var(--text-2);
+  font-size: 13px;
+  color: var(--text-3);
   margin: 0;
   max-width: 320px;
   text-align: center;
@@ -93,7 +86,7 @@
 
 .chat-suggestions {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: center;
   margin-top: 24px;
@@ -103,23 +96,19 @@
 .chat-suggestion-chip {
   display: inline-flex;
   align-items: center;
-  padding: 10px 20px;
-  background: var(--surface-1);
-  backdrop-filter: var(--glass-blur-md);
-  -webkit-backdrop-filter: var(--glass-blur-md);
-  border: var(--glass-border);
-  border-radius: var(--r-full);
-  font-size: 14px;
+  padding: 8px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  font-size: 13px;
   font-weight: 500;
   color: var(--text-2);
   cursor: pointer;
-  transition: all var(--t-med);
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
 }
 
 .chat-suggestion-chip:hover {
-  background: var(--surface-3);
-  border-color: rgba(255,255,255,0.16);
+  background: var(--bg-surface-hover);
+  border-color: var(--border-default);
   color: var(--text-1);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md), var(--accent-glow-sm);
 }

@@ -1,46 +1,45 @@
-/* ── Form Elements — glass inputs ───────────────────────── */
+/* ── Form Elements ──────────────────────────────────────── */
 .field { display: flex; flex-direction: column; gap: 6px; }
-.field-label { font-size: 13px; font-weight: 500; color: var(--text-2); letter-spacing: 0.01em; }
+.field-label { font-size: 12px; font-weight: 500; color: var(--text-2); letter-spacing: 0.01em; }
 
 .input, .select, .textarea {
   width: 100%;
-  background: var(--surface-1);
-  backdrop-filter: var(--glass-blur-sm);
-  -webkit-backdrop-filter: var(--glass-blur-sm);
-  border: var(--glass-border);
-  border-radius: var(--r-md);
-  padding: 8px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
   font-size: 13px;
   font-family: var(--font-sans);
   color: var(--text-1);
-  transition: all var(--t-fast);
+  transition: border-color var(--t-fast), background var(--t-fast);
   outline: none;
-  box-shadow: var(--glass-inner-glow);
 }
 
-.input::placeholder, .textarea::placeholder { color: var(--text-3); font-weight: 400; }
+.input::placeholder, .textarea::placeholder {
+  color: var(--text-4);
+  font-weight: 400;
+}
 
-.input:focus, .select:focus, .textarea:focus { 
-  border-color: var(--border-focus); 
-  box-shadow: var(--glass-inner-glow), 0 0 0 3px var(--accent-muted), var(--accent-glow-sm);
-  background: var(--surface-2);
+.input:focus, .select:focus, .textarea:focus {
+  border-color: var(--border-focus);
+  background: var(--bg-surface-hover);
 }
 
 .select {
   appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%2371717A' d='M5 7L1 3h8z'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%236B6B75' d='M5 7L1 3h8z'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 14px center;
-  padding-right: 36px;
+  background-position: right 12px center;
+  padding-right: 30px;
 }
 
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
 .checkbox-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.checkbox-row input[type="checkbox"] { 
-  width: 16px; 
-  height: 16px; 
-  accent-color: var(--accent-solid); 
-  cursor: pointer; 
+.checkbox-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--text-1);
+  cursor: pointer;
 }
 .checkbox-label { font-size: 13px; color: var(--text-2); }

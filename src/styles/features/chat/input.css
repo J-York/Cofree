@@ -8,22 +8,24 @@
 }
 
 .chat-input-box {
-  background: var(--surface-1);
-  backdrop-filter: var(--glass-blur-lg);
-  -webkit-backdrop-filter: var(--glass-blur-lg);
-  border: var(--glass-border-highlight);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-default);
   border-radius: var(--r-xl);
-  transition: all var(--t-med);
+  transition: border-color var(--t-med);
   overflow: hidden;
-  box-shadow: var(--shadow-md), var(--glass-inner-glow-strong);
   position: relative;
+}
+
+.chat-input-box:focus-within {
+  border-color: var(--border-focus);
+  background: var(--bg-panel);
 }
 
 .chat-context-pills {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 12px 14px 0;
+  gap: 6px;
+  padding: 10px 12px 0;
 }
 
 .chat-context-pills.compact {
@@ -36,17 +38,18 @@
   gap: 6px;
   min-width: 0;
   max-width: 100%;
-  padding: 5px 10px;
+  padding: 4px 10px;
   border-radius: var(--r-full);
-  border: 1px solid transparent;
-  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
   color: var(--text-2);
   box-shadow: none;
 }
 
 .chat-context-pill-prefix {
-  color: var(--accent-solid);
-  font-weight: 700;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-weight: 500;
   flex-shrink: 0;
 }
 
@@ -61,7 +64,7 @@
 .chat-context-pill-remove {
   border: none;
   background: transparent;
-  color: var(--text-3);
+  color: var(--text-4);
   cursor: pointer;
   padding: 0;
   line-height: 1;
@@ -80,17 +83,18 @@
   gap: 6px;
   min-width: 0;
   max-width: 100%;
-  padding: 5px 10px;
+  padding: 4px 10px;
   border-radius: var(--r-full);
-  border: 1px solid transparent;
-  background: color-mix(in srgb, var(--accent-solid) 12%, var(--surface-2));
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
   color: var(--text-2);
   box-shadow: none;
 }
 
 .chat-skill-pill-prefix {
-  color: var(--accent-solid);
-  font-weight: 700;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-weight: 500;
   flex-shrink: 0;
 }
 
@@ -105,37 +109,33 @@
 .chat-mention-menu {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 10px 6px;
-  border-bottom: var(--glass-border);
-  background: var(--surface-1);
-  backdrop-filter: var(--glass-blur-md);
-  -webkit-backdrop-filter: var(--glass-blur-md);
+  gap: 2px;
+  padding: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
   max-height: 220px;
   overflow-y: auto;
 }
 
 .chat-mention-item {
   width: 100%;
-  border: 1px solid transparent;
-  border-radius: var(--r-lg);
+  border: none;
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--text-2);
   text-align: left;
-  padding: 10px 12px;
+  padding: 8px 10px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  transition: all var(--t-fast);
+  transition: background var(--t-fast), color var(--t-fast);
 }
 
 .chat-mention-item:hover,
 .chat-mention-item.active {
-  background: var(--surface-2);
-  border-color: var(--border-focus);
+  background: var(--bg-surface-hover);
   color: var(--text-1);
-  box-shadow: var(--accent-glow-sm);
 }
 
 .chat-mention-item-name {
@@ -144,14 +144,9 @@
 }
 
 .chat-mention-item-path {
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
   color: var(--text-3);
-}
-
-.chat-input-box:focus-within {
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px var(--accent-muted), var(--accent-glow);
-  background: var(--surface-2);
 }
 
 .chat-textarea {
@@ -169,13 +164,16 @@
   line-height: 1.6;
 }
 
-.chat-textarea::placeholder { color: var(--text-3); font-weight: 400; }
+.chat-textarea::placeholder {
+  color: var(--text-4);
+  font-weight: 400;
+}
 
 .chat-input-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 16px 12px;
+  padding: 6px 14px 10px;
 }
 
 .chat-input-meta {
@@ -195,8 +193,13 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
-  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-4);
+}
+
+.token-usage-ring span {
+  font-family: var(--font-mono);
 }
 
 .token-usage-ring-svg {
@@ -205,4 +208,11 @@
 
 .token-usage-ring-animated {
   transition: stroke-dashoffset 0.3s ease;
+}
+
+/* Shortcut hint at bottom-right of the composer. */
+.chat-shortcut-hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-4);
 }

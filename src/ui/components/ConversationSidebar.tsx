@@ -132,7 +132,7 @@ export function ConversationSidebar({
                       <div className="conv-panel-item-preview">{conv.lastMessagePreview}</div>
                     )}
                     <div className="conv-panel-item-meta">
-                      {formatDate(conv.updatedAt)}
+                      <span className="conv-panel-item-time">{formatDate(conv.updatedAt)}</span>
                       {conv.messageCount > 0 && (
                         <span className="conv-panel-item-count">{conv.messageCount}</span>
                       )}

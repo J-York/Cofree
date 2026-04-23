@@ -36,6 +36,15 @@ function getWorkspaceLabel(workspacePath: string): string {
   return parts[parts.length - 1] || workspacePath;
 }
 
+function shortenModelName(model: string): string {
+  let id = model.includes(":") ? (model.split(":").pop() ?? model) : model;
+  id = id.replace(/-\d{8}$/, "");
+  id = id.replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  id = id.replace(/^claude-/, "");
+  id = id.replace(/(\d)-(\d)(?!\d)/g, "$1.$2");
+  return id;
+}
+
 function ThemeIcon({ theme }: { theme: ThemeMode }): ReactElement {
   switch (theme) {
     case "dark":
@@ -107,7 +116,8 @@ export function TitleBar({
   }, []);
 
   const activeAgent = agents.find((agent) => agent.id === activeAgentId) ?? agents[0];
-  const displayModel = currentModel ? currentModel.split(/[:/]/).pop() : "未配置模型";
+  const displayModel = currentModel ? shortenModelName(currentModel) : "未配置模型";
+  const modelTooltip = currentModel ?? undefined;
   const recentWorkspaceOptions = recentWorkspaces.filter((path) => path !== workspacePath);
   const workspaceActionLabel = workspacePath ? "更换工作区…" : "选择工作区…";
 
@@ -213,7 +223,7 @@ export function TitleBar({
           >
             <span className="titlebar-agent-name">{activeAgent?.name ?? "Agent"}</span>
             <span className="titlebar-model-divider">·</span>
-            <span className="titlebar-model-name">{displayModel}</span>
+            <span className="titlebar-model-name" title={modelTooltip}>{displayModel}</span>
             <svg className="titlebar-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none">
               <path d="M2.5 3.75L5 6.25L7.5 3.75" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
@@ -307,6 +317,7 @@ export function TitleBar({
           <IconTerminal size={14} />
         </button>
         <ThemeToggleButton />
+        <div className="titlebar-actions-sep" aria-hidden />
         <button
           className="titlebar-btn"
           onClick={onToggleSettings}

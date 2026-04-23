@@ -1,20 +1,19 @@
-/* ── Buttons — glass style ──────────────────────────────── */
+/* ── Buttons — flat developer-tool style ────────────────── */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border: none;
-  border-radius: var(--r-md);
-  padding: 8px 16px;
-  font-size: 13px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  padding: 6px 12px;
+  font-size: 12px;
   font-weight: 500;
   font-family: var(--font-sans);
   cursor: pointer;
-  transition: all var(--t-med);
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
   white-space: nowrap;
   outline: none;
-  box-shadow: var(--shadow-sm);
   position: relative;
 }
 
@@ -22,53 +21,70 @@
   transform: scale(0.98);
 }
 
-.btn:focus-visible { box-shadow: 0 0 0 3px rgba(139,142,232,0.30); }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; box-shadow: none; }
+.btn:focus-visible {
+  border-color: var(--border-focus);
+}
 
+.btn:disabled {
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+/* Primary: near-white on dark, black on light. */
 .btn-primary {
-  background: var(--accent-solid);
-  color: var(--accent-text);
-  border: 1px solid rgba(255,255,255,0.15);
+  background: #E8E8EC;
+  color: #18181B;
+  border: none;
   font-weight: 600;
-  box-shadow: var(--shadow-sm), var(--accent-glow-sm);
 }
 .btn-primary:hover:not(:disabled) {
-  filter: brightness(1.15);
-  box-shadow: var(--shadow-md), var(--accent-glow);
+  background: #FFFFFF;
+}
+.btn-primary:disabled {
+  background: var(--bg-surface-active);
+  color: var(--text-3);
+}
+
+[data-theme="light"] .btn-primary {
+  background: #18181B;
+  color: #FAFAFB;
+}
+[data-theme="light"] .btn-primary:hover:not(:disabled) {
+  background: #000000;
+}
+[data-theme="light"] .btn-primary:disabled {
+  background: var(--bg-surface-active);
+  color: var(--text-3);
 }
 
 .btn-ghost {
-  background: var(--surface-1);
-  backdrop-filter: var(--glass-blur-sm);
-  -webkit-backdrop-filter: var(--glass-blur-sm);
+  background: transparent;
   color: var(--text-2);
-  border: var(--glass-border);
-  box-shadow: none;
+  border: 1px solid var(--border-subtle);
 }
 .btn-ghost:hover:not(:disabled) {
-  background: var(--surface-3);
+  background: var(--bg-surface-hover);
   color: var(--text-1);
-  border-color: rgba(255,255,255,0.14);
-  box-shadow: var(--shadow-sm);
+  border-color: var(--border-default);
+}
+.btn-ghost:disabled {
+  color: var(--text-4);
+  border-color: var(--border-subtle);
 }
 
 .btn-danger {
-  background: var(--color-error-bg);
-  backdrop-filter: var(--glass-blur-sm);
-  -webkit-backdrop-filter: var(--glass-blur-sm);
+  background: transparent;
   color: var(--color-error);
-  border: 1px solid rgba(248,113,113,0.18);
-  box-shadow: none;
+  border: 1px solid var(--border-subtle);
 }
 .btn-danger:hover:not(:disabled) {
-  background: rgba(248,113,113,0.18);
-  border-color: rgba(248,113,113,0.30);
-  box-shadow: 0 0 16px rgba(248,113,113,0.15);
+  background: var(--color-error-bg);
+  border-color: var(--color-error);
 }
 
-.btn-sm { padding: 5px 12px; font-size: 12px; border-radius: var(--r-sm); }
-.btn-xs { padding: 3px 8px; font-size: 11px; border-radius: var(--r-xs); }
-.btn-icon { padding: 6px; border-radius: var(--r-md); }
+.btn-sm  { padding: 4px 10px; font-size: 11px; border-radius: var(--r-xs); }
+.btn-xs  { padding: 3px 8px;  font-size: 11px; border-radius: var(--r-xs); }
+.btn-icon { padding: 6px; border-radius: var(--r-sm); }
 .btn-row { display: flex; gap: 8px; align-items: center; }
 
 /* ── Icon spin animation ────────────────────────────────── */

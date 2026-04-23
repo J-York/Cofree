@@ -190,11 +190,7 @@ export function ChatComposer({
               event.currentTarget.selectionStart ?? event.currentTarget.value.length,
             )
           }
-          placeholder={
-            chatBlocked
-              ? "请先完成设置…"
-              : "描述你的编码任务…  输入 @ 搜索文件或目录，Enter 发送，Shift+Enter 换行"
-          }
+          placeholder={chatBlocked ? "请先完成设置…" : "描述你的编码任务…"}
           rows={1}
         />
         <div className="chat-input-footer">
@@ -225,6 +221,11 @@ export function ChatComposer({
             </button>
           </div>
           <div className="chat-input-actions">
+            {!chatBlocked && !isStreaming && (
+              <span className="chat-shortcut-hint" aria-hidden>
+                ⏎ 发送 · ⇧⏎ 换行 · @ 文件
+              </span>
+            )}
             {debugMode && (
               <button
                 className="btn btn-ghost btn-sm"
