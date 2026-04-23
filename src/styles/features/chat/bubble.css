@@ -77,7 +77,7 @@
   font-size: 13px;
 }
 
-/* Avatar — flat mono glyph square. */
+/* Avatar — minimal glyph square. Houses a single geometric mark (✦ / ›). */
 .chat-avatar {
   width: 28px;
   height: 28px;
@@ -86,22 +86,42 @@
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1;
   flex-shrink: 0;
-  background: var(--bg-surface-active);
+  background: #2A2A32;
+  color: var(--text-1);
+  border: 1px solid var(--border-default);
+  box-shadow: none;
+  user-select: none;
+}
+
+.chat-avatar.user,
+.chat-avatar.assistant {
+  background: #2A2A32;
   color: var(--text-1);
   border: 1px solid var(--border-default);
   box-shadow: none;
 }
 
-.chat-avatar.user,
+.chat-avatar.user {
+  /* › sits slightly above optical center; nudge down. */
+  padding-bottom: 1px;
+  font-size: 15px;
+  color: var(--text-2);
+}
+
 .chat-avatar.assistant {
-  background: var(--bg-surface-active);
+  font-size: 12px;
   color: var(--text-1);
-  border: 1px solid var(--border-default);
-  box-shadow: none;
+}
+
+[data-theme="light"] .chat-avatar,
+[data-theme="light"] .chat-avatar.user,
+[data-theme="light"] .chat-avatar.assistant {
+  background: var(--bg-surface-active);
+  border-color: var(--border-default);
 }
 
 .chat-bubble-wrap {

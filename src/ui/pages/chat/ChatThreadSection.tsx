@@ -114,12 +114,13 @@ const ChatMessageRow = memo(function ChatMessageRow({
     message.role === "assistant" && message.assistantSpeaker?.label
       ? message.assistantSpeaker.label
       : assistantDisplayName;
-  const assistantAvatarLetter =
-    message.role === "assistant"
-      ? isExpertStageTurn
-        ? "专"
-        : (message.assistantSpeaker?.label ?? assistantDisplayName).charAt(0)
-      : "U";
+  const avatarGlyph = message.role === "user" ? "›" : "✦";
+  const avatarTooltip =
+    message.role === "user"
+      ? "你"
+      : isExpertStageTurn
+        ? (message.assistantSpeaker?.label ?? assistantDisplayName)
+        : assistantDisplayName;
 
   const timeSuffix = formatTime(message.createdAt)
     ? ` · ${formatTime(message.createdAt)}`
@@ -143,8 +144,12 @@ const ChatMessageRow = memo(function ChatMessageRow({
       data-topbar-anchor={rowAnchor}
       tabIndex={rowAnchor ? -1 : undefined}
     >
-      <div className={`chat-avatar ${message.role}`}>
-        {message.role === "user" ? "U" : assistantAvatarLetter}
+      <div
+        className={`chat-avatar ${message.role}`}
+        title={avatarTooltip}
+        aria-hidden
+      >
+        {avatarGlyph}
       </div>
       <div className="chat-bubble-wrap">
         {isExpertStageTurn && message.assistantSpeaker ? (
