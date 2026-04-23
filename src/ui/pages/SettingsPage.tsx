@@ -86,7 +86,7 @@ export function SettingsPage({
   onSave,
   onClose,
 }: SettingsPageProps): ReactElement {
-  const [activeTab, setActiveTab] = useState<SettingsTab>("agents");
+  const [activeTab, setActiveTab] = useState<SettingsTab>("model");
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [saveMessage, setSaveMessage] = useState<string>("");
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null);

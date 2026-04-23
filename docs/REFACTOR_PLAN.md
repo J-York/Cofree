@@ -29,7 +29,12 @@
 | ID | 任务 | 状态 | 暂缓理由 |
 |----|------|------|---------|
 | D4 | `ChatPage.tsx` 剩余 518 行 return block + 7 个 useEffect 再拆 | ⏸ | 现在 1107 行已是"组装器"形态，不是 god file。再切可能引入无用抽象层。**等下一次真改 ChatPage 功能时顺手做** |
-| D5 | `SettingsPage` 默认 tab 调整 | ⏸ | 只有一个内置 Agent 的情况下，从 `"agents"` 改成 `"models"` 或 `"general"` 作为落脚点更合理。但属于口味问题，没有硬证据支撑 |
+
+### 🟢 已完成（从暂缓区域提出）
+
+| ID | 任务 | 状态 | 说明 |
+|----|------|------|------|
+| D5 | `SettingsPage` 默认 tab 调整 | ✅ | 默认 tab 从 `"agents"` 改为 `"model"`（模型配置）。只有一个内置 Agent 的情况下，Agent 管理不适合作为落脚点；模型/供应商是用户最常调整的设置。tab 顺序保持不变 |
 
 ### 🔴 明确不做（等真实使用信号）
 
@@ -56,6 +61,7 @@
 
 <!-- 按时间倒序追加，格式：`YYYY-MM-DD [Dn] <一句话> (commit)` -->
 
+- 2026-04-23 [D5] `SettingsPage` 默认 tab 从 `"agents"` 改为 `"model"`，开箱落地到模型配置 (uncommitted)
 - 2026-04-22 [D3] `ConversationTopbarMode` 从 `single_agent` 重命名为 `active`，并同步相关测试与文案 (uncommitted)
 - 2026-04-22 [D2] 删除 plan step 的 `owner` 字段（类型、归一化、schema、UI 与测试）(uncommitted)
 - 2026-04-22 [D1] 删除 `ActionOrigin` 单值类型与 action 卡片来源 meta 渲染，清理关联逻辑与测试 (uncommitted)
