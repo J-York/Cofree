@@ -23,7 +23,7 @@ import type { ModelSelection } from "../lib/modelSelection";
 const ALL_TOOL_NAMES = [
   "list_files", "read_file", "grep", "glob",
   "git_status", "git_diff",
-  "propose_file_edit", "propose_apply_patch", "propose_shell",
+  "propose_file_edit", "propose_shell",
   "check_shell_job",
   "diagnostics", "fetch", "ask_user",
 ];

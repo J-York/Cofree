@@ -1,11 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildSkillPromptFragment,
   createSkillEntry,
+  invalidateSkillCache,
   matchSkills,
+  mentionsGenericSkillIntent,
   mergeDiscoveredSkills,
   parseSkillMarkdown,
+  subscribeToSkillCacheInvalidation,
+  type ResolvedSkill,
   type SkillEntry,
+  type SkillManifestEntry,
 } from "./skillStore";
 
 describe("skillStore", () => {
@@ -84,6 +90,7 @@ describe("skillStore", () => {
         enabled: true,
         createdAt: "2026-02-01T00:00:00.000Z",
         keywords: ["sql"],
+        instructions: "new instructions",
       },
     ];
 
@@ -95,8 +102,45 @@ describe("skillStore", () => {
       description: "new desc",
       enabled: false,
       keywords: ["sql"],
+      instructions: "new instructions",
     });
   });
+  it("drops stale discovered entries while preserving custom skills", () => {
+    const existing: SkillEntry[] = [
+      {
+        id: "workspace:old-skill",
+        name: "old-skill",
+        description: "stale",
+        source: "workspace",
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "custom:my-local",
+        name: "my-local",
+        description: "custom",
+        source: "custom",
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        instructions: "local instructions",
+      },
+    ];
+
+    const discovered: SkillEntry[] = [
+      {
+        id: "workspace:new-skill",
+        name: "new-skill",
+        description: "fresh",
+        source: "workspace",
+        enabled: true,
+        createdAt: "2026-02-01T00:00:00.000Z",
+      },
+    ];
+
+    const merged = mergeDiscoveredSkills(existing, discovered);
+    expect(merged.map((skill) => skill.id)).toEqual(["custom:my-local", "workspace:new-skill"]);
+  });
+
   it("matches glob-style file patterns for active files", () => {
     const skills: SkillEntry[] = [
       {
@@ -175,6 +219,238 @@ describe("skillStore", () => {
       const parsed = parseSkillMarkdown("# MySkill");
       expect(parsed.name).toBe("MySkill");
       expect(parsed.description).toBe("");
+    });
+
+    it("prefers YAML frontmatter name and description over H1", () => {
+      const content = [
+        "---",
+        "name: odps",
+        "description: MaxCompute (ODPS) data query skill. Use when working with ODPS or SQL.",
+        "---",
+        "",
+        "# ODPS Query Skill",
+        "**Just tell me what data you need.**",
+      ].join("\n");
+
+      const parsed = parseSkillMarkdown(content);
+      expect(parsed.name).toBe("odps");
+      expect(parsed.description).toBe(
+        "MaxCompute (ODPS) data query skill. Use when working with ODPS or SQL.",
+      );
+    });
+
+    it("parses frontmatter inline array keywords and file-patterns", () => {
+      const content = [
+        "---",
+        "name: sql",
+        'description: "SQL helper"',
+        "keywords: [SQL, odps, MaxCompute]",
+        'file-patterns: ["*.sql", "db/**/*.sql"]',
+        "---",
+        "",
+        "# fallback heading",
+      ].join("\n");
+
+      const parsed = parseSkillMarkdown(content);
+      expect(parsed.keywords).toEqual(["sql", "odps", "maxcompute"]);
+      expect(parsed.filePatterns).toEqual(["*.sql", "db/**/*.sql"]);
+    });
+
+    it("parses frontmatter block-list keywords", () => {
+      const content = [
+        "---",
+        "name: resume",
+        "description: Resume screener",
+        "keywords:",
+        "  - resume",
+        "  - 简历",
+        "  - HR",
+        "---",
+        "",
+        "# Resume Screener",
+      ].join("\n");
+
+      const parsed = parseSkillMarkdown(content);
+      expect(parsed.keywords).toEqual(["resume", "简历", "hr"]);
+    });
+
+    it("falls back to H1 when frontmatter lacks name, still honors frontmatter description", () => {
+      const content = [
+        "---",
+        "description: Some description",
+        "---",
+        "",
+        "# Heading Name",
+        "Unused body description",
+      ].join("\n");
+
+      const parsed = parseSkillMarkdown(content);
+      expect(parsed.name).toBe("Heading Name");
+      expect(parsed.description).toBe("Some description");
+    });
+
+    it("ignores unterminated frontmatter and falls back to markdown parsing", () => {
+      const content = [
+        "---",
+        "name: never-closed",
+        "description: leaked",
+        "# Real Heading",
+        "Real description",
+      ].join("\n");
+
+      const parsed = parseSkillMarkdown(content);
+      expect(parsed.name).toBe("Real Heading");
+      expect(parsed.description).toBe("Real description");
+    });
+
+    it("matches user messages against frontmatter-derived description tokens", () => {
+      const content = [
+        "---",
+        "name: odps",
+        "description: MaxCompute (ODPS) data query skill. Execute SQL queries and manage credentials.",
+        "---",
+        "",
+        "# ODPS Query Skill",
+        "**Just tell me what data you need.**",
+      ].join("\n");
+
+      const parsed = parseSkillMarkdown(content);
+      const skill: SkillEntry = {
+        id: "global:odps",
+        name: parsed.name,
+        description: parsed.description,
+        source: "global",
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        keywords: parsed.keywords,
+        filePatterns: parsed.filePatterns,
+      };
+
+      const matched = matchSkills([skill], "帮我查询 odps 里的一张表");
+      expect(matched).toHaveLength(1);
+      expect(matched[0].id).toBe("global:odps");
+    });
+  });
+
+  describe("cache invalidation subscription", () => {
+    it("notifies subscribers on full cache invalidation and not on path-only invalidation", () => {
+      const listener = vi.fn();
+      const unsubscribe = subscribeToSkillCacheInvalidation(listener);
+      try {
+        invalidateSkillCache("/absolute/path/SKILL.md");
+        expect(listener).not.toHaveBeenCalled();
+
+        invalidateSkillCache();
+        expect(listener).toHaveBeenCalledTimes(1);
+
+        invalidateSkillCache();
+        expect(listener).toHaveBeenCalledTimes(2);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("stops notifying after unsubscribe", () => {
+      const listener = vi.fn();
+      const unsubscribe = subscribeToSkillCacheInvalidation(listener);
+      unsubscribe();
+      invalidateSkillCache();
+      expect(listener).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("mentionsGenericSkillIntent", () => {
+    it("matches English 'skill' / 'skills' as whole words", () => {
+      expect(mentionsGenericSkillIntent("请你帮我使用 skill 检查表结构")).toBe(true);
+      expect(mentionsGenericSkillIntent("use a skill here")).toBe(true);
+      expect(mentionsGenericSkillIntent("check my skills please")).toBe(true);
+    });
+
+    it("matches Chinese 技能", () => {
+      expect(mentionsGenericSkillIntent("请用技能帮我处理")).toBe(true);
+    });
+
+    it("does not match unrelated mentions like 'skillet'", () => {
+      expect(mentionsGenericSkillIntent("I need a skillet for cooking")).toBe(false);
+      expect(mentionsGenericSkillIntent("unskilled hands")).toBe(false);
+    });
+  });
+
+  describe("buildSkillPromptFragment", () => {
+    const resolved: ResolvedSkill = {
+      id: "global:odps",
+      name: "odps",
+      description: "MaxCompute (ODPS) data query skill.",
+      instructions: "Run ./run.sh query.py --sql <SQL>",
+      source: "global",
+    };
+    const manifest: SkillManifestEntry[] = [
+      {
+        id: "global:odps",
+        name: "odps",
+        description: "MaxCompute (ODPS) data query skill.",
+        source: "global",
+      },
+      {
+        id: "global:resume-screener",
+        name: "resume-screener",
+        description: "Batch resume screening",
+        source: "global",
+      },
+    ];
+
+    it("returns empty string when nothing to render", () => {
+      expect(buildSkillPromptFragment([], [])).toBe("");
+    });
+
+    it("renders the manifest alone when no skill is resolved", () => {
+      const fragment = buildSkillPromptFragment([], manifest);
+      expect(fragment).toContain("可用 Skills（尚未激活）");
+      expect(fragment).toContain("**odps**");
+      expect(fragment).toContain("**resume-screener**");
+      expect(fragment).not.toContain("已激活的 Skills");
+    });
+
+    it("renders resolved full instructions plus remaining manifest without duplicates", () => {
+      const fragment = buildSkillPromptFragment([resolved], manifest);
+      expect(fragment).toContain("已激活的 Skills");
+      expect(fragment).toContain("Run ./run.sh query.py");
+      // resume-screener is in manifest but not resolved, so it must appear
+      expect(fragment).toContain("resume-screener");
+      // odps is already in the activated block — its manifest entry must be deduped
+      const afterManifestHeader = fragment.split("可用 Skills（尚未激活）")[1] ?? "";
+      expect(afterManifestHeader).not.toContain("**odps**");
+    });
+
+    it("renders the skill's absolute directory path and invocation hint when available", () => {
+      const resolvedWithPath: ResolvedSkill = {
+        ...resolved,
+        directoryPath: "/Users/jiyuhe/.cofree/skills/odps",
+      };
+      const fragment = buildSkillPromptFragment([resolvedWithPath], []);
+      expect(fragment).toContain("Skill 根目录（绝对路径）");
+      expect(fragment).toContain("/Users/jiyuhe/.cofree/skills/odps");
+      expect(fragment).toContain("以该目录为工作目录");
+      expect(fragment).toContain("cd /Users/jiyuhe/.cofree/skills/odps && ./run.sh");
+      expect(fragment).toContain("不在当前工作区内");
+    });
+
+    it("does not label workspace skill directories as outside the workspace", () => {
+      const workspaceSkill: ResolvedSkill = {
+        ...resolved,
+        id: "workspace:odps",
+        source: "workspace",
+        directoryPath: "/repo/.cofree/skills/odps",
+      };
+      const fragment = buildSkillPromptFragment([workspaceSkill], []);
+      expect(fragment).toContain("以该目录为工作目录");
+      expect(fragment).not.toContain("不在当前工作区内");
+    });
+
+    it("omits the directory/invocation block when the skill has no filesystem path", () => {
+      const fragment = buildSkillPromptFragment([resolved], []);
+      expect(fragment).not.toContain("Skill 根目录");
+      expect(fragment).not.toContain("不在当前工作区内");
     });
   });
 

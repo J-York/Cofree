@@ -37,7 +37,6 @@ export interface ToolPermissions {
   git_status: ToolPermissionLevel;
   git_diff: ToolPermissionLevel;
   propose_file_edit: ToolPermissionLevel;
-  propose_apply_patch: ToolPermissionLevel;
   propose_shell: ToolPermissionLevel;
   check_shell_job: ToolPermissionLevel;
   diagnostics: ToolPermissionLevel;
@@ -52,7 +51,6 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = {
   git_status: "auto",
   git_diff: "auto",
   propose_file_edit: "ask",
-  propose_apply_patch: "ask",
   propose_shell: "ask",
   check_shell_job: "auto",
   diagnostics: "auto",
@@ -800,6 +798,19 @@ function migrateLegacyProfilesToManagedResources(parsed: Partial<PersistedSettin
   };
 }
 
+function sanitizePersistedToolPermissions(raw: unknown): ToolPermissions {
+  const result: ToolPermissions = { ...DEFAULT_TOOL_PERMISSIONS };
+  if (!isRecord(raw)) return result;
+  const knownKeys = Object.keys(DEFAULT_TOOL_PERMISSIONS) as Array<keyof ToolPermissions>;
+  for (const key of knownKeys) {
+    const value = raw[key];
+    if (value === "auto" || value === "ask") {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 function normalizeToolPolicy(raw: unknown): ChatAgentToolPolicy {
   if (!isRecord(raw)) return {};
   const result: ChatAgentToolPolicy = {};
@@ -969,10 +980,7 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
       ...DEFAULT_SETTINGS.proxy,
       ...(isRecord(parsed.proxy) ? parsed.proxy : {}),
     },
-    toolPermissions: {
-      ...DEFAULT_TOOL_PERMISSIONS,
-      ...(isRecord(parsed.toolPermissions) ? parsed.toolPermissions : {}),
-    } as ToolPermissions,
+    toolPermissions: sanitizePersistedToolPermissions(parsed.toolPermissions),
   };
 
   const legacyModelContextWindow = normalizeIntegerTokenLimit(

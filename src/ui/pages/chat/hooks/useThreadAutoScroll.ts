@@ -8,7 +8,6 @@ import { CHAT_AUTO_SCROLL_THRESHOLD_PX } from "../constants";
  */
 export function useThreadAutoScroll() {
   const threadRef = useRef<HTMLDivElement | null>(null);
-  const contextAnchorRef = useRef<HTMLDivElement | null>(null);
   const shouldStickThreadToBottomRef = useRef(true);
   const forceThreadScrollRef = useRef(true);
 
@@ -50,7 +49,6 @@ export function useThreadAutoScroll() {
 
   return {
     threadRef,
-    contextAnchorRef,
     shouldStickThreadToBottomRef,
     forceThreadScrollRef,
     isThreadNearBottom,

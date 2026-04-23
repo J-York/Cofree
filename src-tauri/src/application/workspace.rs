@@ -1185,6 +1185,78 @@ pub fn start_shell_command(
 }
 
 #[tauri::command]
+pub fn open_system_terminal(workspace_path: String) -> Result<(), String> {
+    let trimmed = workspace_path.trim();
+    if trimmed.is_empty() {
+        return Err("workspace path is empty".to_string());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_dir() {
+        return Err(format!("workspace path is not a directory: {}", trimmed));
+    }
+    let path_str = path.to_string_lossy().to_string();
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .args(["-a", "Terminal", &path_str])
+            .spawn()
+            .map_err(|e| format!("failed to launch Terminal: {}", e))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if Command::new("wt.exe")
+            .args(["-d", &path_str])
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+        Command::new("cmd")
+            .args(["/C", "start", "", "cmd", "/K", "cd", "/D", &path_str])
+            .spawn()
+            .map_err(|e| format!("failed to launch cmd: {}", e))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let candidates: &[(&str, &[&str], bool)] = &[
+            ("x-terminal-emulator", &[], true),
+            ("gnome-terminal", &["--working-directory"], false),
+            ("konsole", &["--workdir"], false),
+            ("xfce4-terminal", &["--working-directory"], false),
+            ("alacritty", &["--working-directory"], false),
+            ("kitty", &["-d"], false),
+            ("xterm", &[], true),
+        ];
+        for (program, flag_args, use_cwd) in candidates {
+            let mut cmd = Command::new(program);
+            if !flag_args.is_empty() {
+                for flag in *flag_args {
+                    cmd.arg(flag);
+                }
+                cmd.arg(&path_str);
+            }
+            if *use_cwd {
+                cmd.current_dir(&path);
+            }
+            if cmd.spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        return Err("no supported terminal emulator found on PATH".to_string());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        Err("opening system terminal is not supported on this platform".to_string())
+    }
+}
+
+#[tauri::command]
 pub fn cancel_shell_command(
     jobs: State<'_, ShellJobStore>,
     job_id: String,
@@ -1870,7 +1942,10 @@ pub fn get_home_dir() -> Result<String, AppError> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn install_skill_from_zip() -> Result<String, String> {
+pub fn install_skill_from_zip(
+    install_location: String,
+    workspace_path: String,
+) -> Result<String, String> {
     let zip_path = rfd::FileDialog::new()
         .add_filter("Skill 安装包", &["zip"])
         .set_title("选择 Skill 安装包")
@@ -1891,8 +1966,21 @@ pub fn install_skill_from_zip() -> Result<String, String> {
         return Err("无效的 Skill 名称".to_string());
     }
 
-    let home_dir = dirs::home_dir().ok_or("无法获取用户主目录")?;
-    let skills_dir = home_dir.join(".cofree").join("skills");
+    // Determine target directory based on install location
+    let skills_dir = if install_location == "workspace" {
+        let ws = workspace_path.trim();
+        if ws.is_empty() {
+            return Err("未选择工作区，无法安装到工作区".to_string());
+        }
+        let ws_path = PathBuf::from(ws);
+        if !ws_path.is_dir() {
+            return Err(format!("工作区路径不存在: {}", ws));
+        }
+        ws_path.join(".cofree").join("skills")
+    } else {
+        let home_dir = dirs::home_dir().ok_or("无法获取用户主目录")?;
+        home_dir.join(".cofree").join("skills")
+    };
     let target_dir = skills_dir.join(&skill_name);
 
     if target_dir.exists() {
@@ -1975,7 +2063,7 @@ pub fn install_skill_from_zip() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn delete_skill_directory(file_path: String) -> Result<(), String> {
+pub fn delete_skill_directory(file_path: String, workspace_path: String) -> Result<(), String> {
     let path = Path::new(&file_path);
     if !path.is_absolute() {
         return Err("路径必须为绝对路径".to_string());
@@ -1992,11 +2080,12 @@ pub fn delete_skill_directory(file_path: String) -> Result<(), String> {
         path.to_path_buf()
     };
 
-    // Security: only allow deleting from ~/.cofree/skills/
+    let canonical = skill_dir
+        .canonicalize()
+        .map_err(|e| format!("无法解析路径: {}", e))?;
+
+    // Security: allow deleting from ~/.cofree/skills/
     if let Some(home) = dirs::home_dir() {
-        let canonical = skill_dir
-            .canonicalize()
-            .map_err(|e| format!("无法解析路径: {}", e))?;
         let global_skills = home.join(".cofree").join("skills");
         if let Ok(canonical_global) = global_skills.canonicalize() {
             if canonical.starts_with(&canonical_global) && canonical != canonical_global {
@@ -2007,7 +2096,21 @@ pub fn delete_skill_directory(file_path: String) -> Result<(), String> {
         }
     }
 
-    Err("只能删除位于 ~/.cofree/skills/ 目录下的 Skill".to_string())
+    // Security: also allow deleting from {workspace}/.cofree/skills/
+    let ws = workspace_path.trim();
+    if !ws.is_empty() {
+        let ws_path = PathBuf::from(ws);
+        if let Ok(canonical_ws) = ws_path.canonicalize() {
+            let workspace_skills = canonical_ws.join(".cofree").join("skills");
+            if canonical.starts_with(&workspace_skills) && canonical != workspace_skills {
+                fs::remove_dir_all(&canonical)
+                    .map_err(|e| format!("删除 Skill 目录失败: {}", e))?;
+                return Ok(());
+            }
+        }
+    }
+
+    Err("只能删除位于 ~/.cofree/skills/ 或工作区 .cofree/skills/ 目录下的 Skill".to_string())
 }
 
 #[cfg(test)]

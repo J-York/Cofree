@@ -20,9 +20,10 @@ use crate::commands::{
     get_home_dir, get_workspace_diagnostics, get_workspace_info, git_diff_workspace,
     git_status_workspace, glob_workspace_files, grep_workspace_files, healthcheck,
     install_skill_from_zip, list_workspace_files, load_latest_workflow_checkpoint, load_secure_api_key,
-    read_absolute_file, read_workspace_file, perform_http_request, restore_workspace_snapshot,
-    run_shell_command, save_file_dialog, save_secure_api_key, save_workflow_checkpoint,
-    scan_workspace_structure, select_workspace_folder, start_shell_command, validate_git_repo,
+    open_system_terminal, read_absolute_file, read_workspace_file, perform_http_request,
+    restore_workspace_snapshot, run_shell_command, save_file_dialog, save_secure_api_key,
+    save_workflow_checkpoint, scan_workspace_structure, select_workspace_folder,
+    start_shell_command, validate_git_repo,
 };
 use tauri::Manager;
 use tracing::info;
@@ -70,6 +71,7 @@ pub fn run() {
             start_shell_command,
             cancel_shell_command,
             check_shell_job,
+            open_system_terminal,
             grep_workspace_files,
             glob_workspace_files,
             save_workflow_checkpoint,

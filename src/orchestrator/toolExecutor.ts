@@ -17,7 +17,7 @@ import {
   type ToolPermissions,
 } from "../lib/settingsStore";
 import type { AskUserRequest } from "./askUserService";
-import type { ActionProposal, PlanStep, PlanStepStatus } from "./types";
+import type { ActionProposal, PlanStep } from "./types";
 import type { ToolCallRecord } from "./llmToolLoop";
 import type { CofreeRcConfig } from "../lib/cofreerc";
 import type { WorkingMemory } from "./workingMemory";
@@ -45,8 +45,6 @@ const ALL_TOOL_NAMES = [
   "glob",
   "git_status",
   "git_diff",
-  "update_plan",
-  "propose_apply_patch",
   "propose_file_edit",
   "propose_shell",
   "check_shell_job",
@@ -82,21 +80,6 @@ export interface ToolExecutorDeps {
   createActionId: (prefix: string) => string;
   nowIso: () => string;
   actionFingerprint: (action: ActionProposal) => string;
-  setActivePlanStep: (state: TodoPlanStateLike, stepId: string) => string;
-  setPlanStepStatus: (
-    state: TodoPlanStateLike,
-    stepId: string,
-    status: Exclude<PlanStepStatus, "pending" | "in_progress">,
-    note?: string,
-  ) => string;
-  addPlanStep: (state: TodoPlanStateLike, params: {
-    title: string;
-    summary?: string;
-    afterStepId?: string;
-    note?: string;
-  }) => PlanStep;
-  appendPlanStepNote: (step: PlanStep, note?: string) => void;
-  formatTodoPlanBlock: (state: TodoPlanStateLike) => string;
   smartTruncate: (content: string, maxLength: number, headRatio?: number) => string;
 }
 

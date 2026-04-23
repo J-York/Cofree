@@ -18,10 +18,8 @@ const TOOL_NAME_LABELS: Record<string, string> = {
   grep: "搜索代码",
   glob: "查找文件",
   propose_file_edit: "编辑文件",
-  propose_apply_patch: "应用补丁",
   propose_shell: "执行命令",
   task: "子任务",
-  update_plan: "更新 Todo",
   diagnostics: "诊断检查",
   fetch: "获取网页",
 };

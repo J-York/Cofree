@@ -15,10 +15,6 @@ import {
   type WorkingMemory,
 } from "./workingMemory";
 import {
-  buildTodoSystemPrompt,
-  type TodoPlanState,
-} from "./todoPlanState";
-import {
   type CofreeRcConfig,
 } from "../lib/cofreerc";
 import {
@@ -28,7 +24,6 @@ import {
 import { clearRepoMapCaches, generateRepoMap } from "./repoMapService";
 
 export const WORKING_MEMORY_NOTE_PREFIX = "[工作记忆刷新]";
-export const TODO_PLAN_NOTE_PREFIX = "[Todo Plan]";
 export const WORKSPACE_REFRESH_NOTE_PREFIX = "[工作区上下文更新]";
 
 /**
@@ -47,8 +42,7 @@ export function pruneStaleSystemMessages(
     const msg = messages[i];
     if (
       msg.role === "system" &&
-      !msg.content.startsWith(WORKING_MEMORY_NOTE_PREFIX) &&
-      !msg.content.startsWith(TODO_PLAN_NOTE_PREFIX)
+      !msg.content.startsWith(WORKING_MEMORY_NOTE_PREFIX)
     ) {
       interstitialIndices.push(i);
     }
@@ -131,20 +125,6 @@ export function upsertWorkingMemoryContextMessage(params: {
     prefix: WORKING_MEMORY_NOTE_PREFIX,
     content: `${WORKING_MEMORY_NOTE_PREFIX}\n${memoryContext}`,
   });
-}
-
-export function upsertTodoPlanContextMessage(
-  messages: LiteLLMMessage[],
-  planState: TodoPlanState,
-): string {
-  const todoPrompt = buildTodoSystemPrompt(planState);
-  upsertPinnedSystemMessage({
-    messages,
-    prefix: TODO_PLAN_NOTE_PREFIX,
-    content: todoPrompt,
-    insertionIndex: 2,
-  });
-  return todoPrompt;
 }
 
 /**

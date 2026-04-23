@@ -4,13 +4,10 @@ import type { ApprovalRuleOption } from "../../../lib/approvalRuleStore";
 import type { ChatMessageRecord } from "../../../lib/chatHistoryStore";
 import type { OrchestrationPlan } from "../../../orchestrator/types";
 import { formatTime } from "../../utils/chatUtils";
-import { ConversationTopbar, type ConversationTopbarAction } from "./ConversationTopbar";
-import type { ConversationTopbarState } from "./conversationTopbarState";
 import {
   AssistantToolCalls,
   ContextAttachmentPills,
   InlinePlan,
-  LiveToolStatus,
   MessageContent,
   ToolTracePanel,
 } from "./ChatPresentational";
@@ -35,14 +32,6 @@ function hasVisiblePlan(message: ChatMessageRecord): message is ChatMessageRecor
     message.plan !== null &&
     (message.plan.proposedActions.length > 0 || message.plan.steps.length > 0)
   );
-}
-
-function hasAskUserTrace(message: ChatMessageRecord): boolean {
-  return message.toolTrace?.some((trace) => trace.status === "waiting_for_user") ?? false;
-}
-
-function hasLiveAskUserCall(calls: LiveToolCall[]): boolean {
-  return calls.some((call) => call.status === "waiting_for_user");
 }
 
 interface ChatMessageRowProps {
@@ -73,11 +62,6 @@ interface ChatMessageRowProps {
   onCancel: (messageId: string, actionId: string) => Promise<void>;
   onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
   onRejectAll: (messageId: string) => void;
-  expandedPlanMessageId?: string | null;
-  expandedPlanActionId?: string | null;
-  expandedPlanRequestKey?: number;
-  askUserAnchorMessageId?: string | null;
-  restoreAnchorMessageId?: string | null;
 }
 
 const ChatMessageRow = memo(function ChatMessageRow({
@@ -96,11 +80,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
   onCancel,
   onApproveAll,
   onRejectAll,
-  expandedPlanMessageId,
-  expandedPlanActionId,
-  expandedPlanRequestKey = 0,
-  askUserAnchorMessageId,
-  restoreAnchorMessageId,
 }: ChatMessageRowProps): ReactElement {
   const activeShellActionIds = message.plan
     ? getActiveShellActionIds(message.id)
@@ -114,26 +93,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
     message.role === "assistant" && message.assistantSpeaker?.label
       ? message.assistantSpeaker.label
       : assistantDisplayName;
-  const avatarGlyph = message.role === "user" ? "›" : "✦";
-  const avatarTooltip =
-    message.role === "user"
-      ? "你"
-      : isExpertStageTurn
-        ? (message.assistantSpeaker?.label ?? assistantDisplayName)
-        : assistantDisplayName;
+  const avatarGlyph = "✦";
+  const avatarTooltip = isExpertStageTurn
+    ? (message.assistantSpeaker?.label ?? assistantDisplayName)
+    : assistantDisplayName;
 
   const timeSuffix = formatTime(message.createdAt)
     ? ` · ${formatTime(message.createdAt)}`
     : "";
-  const showAskUserAnchor =
-    message.id === askUserAnchorMessageId &&
-    (hasAskUserTrace(message) || (showStreamingStatus && hasLiveAskUserCall(liveToolCalls)));
-  const rowAnchor =
-    message.id === restoreAnchorMessageId
-      ? "restore"
-      : message.id === askUserAnchorMessageId && !showAskUserAnchor
-        ? "ask_user"
-        : undefined;
 
   return (
     <div
@@ -141,23 +108,19 @@ const ChatMessageRow = memo(function ChatMessageRow({
         message.assistantSpeaker ? " chat-row-expert-turn" : ""
       }`}
       data-chat-message-id={message.id}
-      data-topbar-anchor={rowAnchor}
-      tabIndex={rowAnchor ? -1 : undefined}
     >
-      <div
-        className={`chat-avatar ${message.role}`}
-        title={avatarTooltip}
-        aria-hidden
-      >
-        {avatarGlyph}
-      </div>
+      {message.role !== "user" && (
+        <div
+          className={`chat-avatar ${message.role}`}
+          title={avatarTooltip}
+          aria-hidden
+        >
+          {avatarGlyph}
+        </div>
+      )}
       <div className="chat-bubble-wrap">
         {isExpertStageTurn && message.assistantSpeaker ? (
-          <details
-            className="chat-expert-stage-details"
-            data-topbar-anchor="stage_summary"
-            tabIndex={-1}
-          >
+          <details className="chat-expert-stage-details">
             <summary className="chat-expert-stage-summary">
               <span className="chat-expert-stage-summary-main">
                 {message.assistantSpeaker.label}
@@ -179,26 +142,34 @@ const ChatMessageRow = memo(function ChatMessageRow({
         ) : (
           <>
             <p className="chat-meta">
-              {message.role === "user" ? "你" : assistantMetaLabel}
-              {formatTime(message.createdAt) ? timeSuffix : ""}
+              <span className="chat-meta-name">
+                {message.role === "user" ? "你" : assistantMetaLabel}
+              </span>
+              {formatTime(message.createdAt) && (
+                <span className="chat-meta-time">{timeSuffix}</span>
+              )}
+              {message.role === "assistant" && showStreamingStatus && (
+                <span className="chat-meta-live" aria-label="正在响应">
+                  <span className="chat-meta-live-dot" aria-hidden>
+                    ●
+                  </span>
+                  <span className="chat-meta-live-text">响应中</span>
+                </span>
+              )}
             </p>
             {message.role === "assistant" && debugMode && (
               <AssistantToolCalls toolCalls={message.tool_calls} />
             )}
             {message.role === "assistant" &&
-              showStreamingStatus &&
-              liveToolCalls.length > 0 && (
-                <LiveToolStatus
-                  calls={liveToolCalls}
-                  showAskUserAnchor={showAskUserAnchor}
+              ((message.toolTrace?.length ?? 0) > 0 ||
+                (showStreamingStatus && liveToolCalls.length > 0)) && (
+                <ToolTracePanel
+                  traces={message.toolTrace ?? []}
+                  liveToolCalls={
+                    showStreamingStatus ? liveToolCalls : undefined
+                  }
                 />
               )}
-            {message.role === "assistant" && (message.toolTrace?.length ?? 0) > 0 && (
-              <ToolTracePanel
-                traces={message.toolTrace!}
-                showAskUserAnchor={showAskUserAnchor}
-              />
-            )}
             {hasPlan && (
               <InlinePlan
                 plan={message.plan}
@@ -213,20 +184,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
                 onCancel={onCancel}
                 onApproveAll={onApproveAll}
                 onRejectAll={onRejectAll}
-                forceExpanded={expandedPlanMessageId === message.id}
-                forcedExpandedActionId={
-                  expandedPlanMessageId === message.id ? expandedPlanActionId ?? null : null
-                }
-                expandRequestKey={
-                  expandedPlanMessageId === message.id ? expandedPlanRequestKey : 0
-                }
               />
             )}
-            <div
-              className={`chat-bubble ${message.role}`}
-              data-topbar-anchor={message.id === restoreAnchorMessageId ? "restore" : undefined}
-              tabIndex={message.id === restoreAnchorMessageId ? -1 : undefined}
-            >
+            <div className={`chat-bubble ${message.role}`}>
               {message.role === "user" && (
                 <ContextAttachmentPills
                   attachments={message.contextAttachments ?? []}
@@ -282,13 +242,6 @@ export interface ChatThreadSectionProps {
   onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
   onRejectAll: (messageId: string) => void;
   onSuggestionClick: (text: string) => void;
-  topbarState: ConversationTopbarState;
-  onTopbarAction?: (action: ConversationTopbarAction) => void;
-  expandedPlanMessageId?: string | null;
-  expandedPlanActionId?: string | null;
-  expandedPlanRequestKey?: number;
-  askUserAnchorMessageId?: string | null;
-  restoreAnchorMessageId?: string | null;
 }
 
 export const ChatThreadSection = memo(function ChatThreadSection({
@@ -311,20 +264,12 @@ export const ChatThreadSection = memo(function ChatThreadSection({
   onApproveAll,
   onRejectAll,
   onSuggestionClick,
-  topbarState,
-  onTopbarAction,
-  expandedPlanMessageId,
-  expandedPlanActionId,
-  expandedPlanRequestKey = 0,
-  askUserAnchorMessageId,
-  restoreAnchorMessageId,
 }: ChatThreadSectionProps): ReactElement {
   const visibleMessages = messages.filter((message) => message.role !== "tool");
   const lastMessage = messages[messages.length - 1];
 
   return (
     <div className="chat-thread" ref={threadRef} onScroll={onThreadScroll}>
-      <ConversationTopbar state={topbarState} onAction={onTopbarAction} />
       {visibleMessages.length === 0 ? (
         <div className="chat-empty">
           <p className="chat-empty-text">你好，我是{assistantDisplayName}</p>
@@ -367,11 +312,6 @@ export const ChatThreadSection = memo(function ChatThreadSection({
               onCancel={onCancel}
               onApproveAll={onApproveAll}
               onRejectAll={onRejectAll}
-              expandedPlanMessageId={expandedPlanMessageId}
-              expandedPlanActionId={expandedPlanActionId}
-              expandedPlanRequestKey={expandedPlanRequestKey}
-              askUserAnchorMessageId={askUserAnchorMessageId}
-              restoreAnchorMessageId={restoreAnchorMessageId}
             />
           );
         })

@@ -18,10 +18,6 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function createPlanStepId(): string {
-  return `step-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-}
-
 function clonePlanStep(step: PlanStep): PlanStep {
   return {
     ...step,
@@ -179,35 +175,6 @@ export function setPlanStepStatus(
   return `步骤「${target.title}」已更新为 ${status}`;
 }
 
-export function addPlanStep(state: TodoPlanState, params: {
-  title: string;
-  summary?: string;
-  afterStepId?: string;
-  note?: string;
-}): PlanStep {
-  const step: PlanStep = {
-    id: createPlanStepId(),
-    title: sanitizeStepTitle(params.title, params.summary ?? params.title),
-    summary: params.summary?.trim() || params.title.trim(),
-    status: "pending",
-    note: params.note?.trim() || undefined,
-  };
-
-  const afterIndex = params.afterStepId
-    ? state.steps.findIndex((entry) => entry.id === params.afterStepId)
-    : -1;
-  if (afterIndex >= 0) {
-    state.steps.splice(afterIndex + 1, 0, step);
-  } else {
-    state.steps.push(step);
-  }
-
-  if (!state.activeStepId) {
-    promoteNextRunnableStep(state);
-  }
-  return step;
-}
-
 export function attachActionToPlanStep(state: TodoPlanState, action: ActionProposal): ActionProposal {
   const planStepId = action.planStepId ?? state.activeStepId;
   if (!planStepId) {
@@ -250,41 +217,6 @@ export function syncPlanStateWithActions(
     target.linkedActionIds = [...(target.linkedActionIds ?? []), action.id];
   }
   return normalizeTodoPlanStateInternal(next, options);
-}
-
-export function formatTodoPlanBlock(state: TodoPlanState): string {
-  if (!state.steps.length) {
-    return "暂无 todo。";
-  }
-  return state.steps
-    .map((step) => {
-      const icon = step.status === "completed"
-        ? "✓"
-        : step.status === "in_progress"
-          ? "▶"
-          : step.status === "blocked"
-            ? "⏸"
-            : step.status === "failed"
-              ? "✕"
-              : step.status === "skipped"
-                ? "↷"
-                : "○";
-      const suffix = step.id === state.activeStepId ? " [当前]" : "";
-      return `${icon} [${step.id}] (${step.status}) ${step.title}${suffix}`;
-    })
-    .join("\n");
-}
-
-export function buildTodoSystemPrompt(state: TodoPlanState): string {
-  if (!state.steps.length) {
-    return "";
-  }
-  return [
-    "[Todo Plan]",
-    "当前任务已经拆解为以下 todo。一次只推进一个步骤；完成、阻塞或失败时，必须调用 update_plan 更新状态。",
-    "如果新增了明确的子任务，可以用 update_plan 添加步骤；不要静默偏离当前 todo。",
-    formatTodoPlanBlock(state),
-  ].join("\n");
 }
 
 export function derivePlanWorkflowState(

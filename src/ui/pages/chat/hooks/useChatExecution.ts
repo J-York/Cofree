@@ -89,7 +89,6 @@ interface UseChatExecutionOptions {
   setLiveToolCalls: Dispatch<SetStateAction<LiveToolCall[]>>;
   setPrompt: Dispatch<SetStateAction<string>>;
   setComposerAttachments: Dispatch<SetStateAction<ChatContextAttachment[]>>;
-  setSelectedSkills: Dispatch<SetStateAction<SkillEntry[]>>;
   setFailedLlmRequestLog: Dispatch<SetStateAction<string | null>>;
   appendConversationDebugEntry: (
     conversationId: string | null | undefined,
@@ -152,7 +151,6 @@ export function useChatExecution(options: UseChatExecutionOptions) {
     setLiveToolCalls,
     setPrompt,
     setComposerAttachments,
-    setSelectedSkills,
     setFailedLlmRequestLog,
     appendConversationDebugEntry,
     appendAssistantStatusMessage,
@@ -217,17 +215,22 @@ export function useChatExecution(options: UseChatExecutionOptions) {
           return next;
         });
 
+        // Re-inject explicit skill IDs from the original message so HITL
+        // continuation preserves skill context without relying on UI state.
+        const continuationSkillIds = targetMessage?.explicitSkillIds ?? undefined;
+
         setTimeout(() => {
           void runChatCycle(decision.prompt, {
             visibleUserMessage: false,
             isContinuation: true,
             internalSystemNote: decision.internalSystemNote,
             existingPlan: plan,
+            explicitSkillIds: continuationSkillIds,
           }).catch((error) => {
-            const message = error instanceof Error ? error.message : "未知错误";
+            const msg = error instanceof Error ? error.message : "未知错误";
             setCategorizedError(classifyError(error));
-            setSessionNote(`自动续跑失败：${message}`);
-            appendAssistantStatusMessage(`自动续跑失败：${message}`);
+            setSessionNote(`自动续跑失败：${msg}`);
+            appendAssistantStatusMessage(`自动续跑失败：${msg}`);
           });
         }, 100);
       })
@@ -306,6 +309,7 @@ export function useChatExecution(options: UseChatExecutionOptions) {
       createdAt: now,
       plan: null,
       agentId: convBinding?.agentId ?? activeAgent.id,
+      explicitSkillIds: runOptions.explicitSkillIds,
     };
 
     let localStreamBuffer = "";
@@ -572,6 +576,7 @@ export function useChatExecution(options: UseChatExecutionOptions) {
           syncAskUserRequestForSession(request.sessionId ?? chatSessionId);
         },
         restoredWorkingMemory,
+        explicitSkillIds: runOptions.explicitSkillIds,
       });
 
       if (localRafId !== null) {
@@ -789,14 +794,17 @@ export function useChatExecution(options: UseChatExecutionOptions) {
 
     const previousPrompt = prompt;
     const previousAttachments = composerAttachments;
-    const previousSkills = selectedSkills;
     const explicitSkillIds =
       selectedSkills.length > 0
         ? selectedSkills.map((s) => s.id)
         : undefined;
     setPrompt("");
     setComposerAttachments([]);
-    setSelectedSkills([]);
+    // Deliberately do NOT clear selectedSkills — skill pills stay pinned to
+    // the conversation until the user removes them with the × button or
+    // switches conversations. Otherwise multi-turn flows (e.g. clarification
+    // rounds) lose the active skill after the first submit, and the model
+    // stops receiving the skill's full instructions.
     clearMentionUi();
 
     try {
@@ -807,7 +815,6 @@ export function useChatExecution(options: UseChatExecutionOptions) {
     } catch (error) {
       setPrompt(previousPrompt);
       setComposerAttachments(previousAttachments);
-      setSelectedSkills(previousSkills);
       syncActiveMention(previousPrompt);
       setCategorizedError(classifyError(error));
     }

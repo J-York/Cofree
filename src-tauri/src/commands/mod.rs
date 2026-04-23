@@ -26,6 +26,7 @@ pub use litellm::fetch_litellm_models;
 pub use patch::{apply_workspace_patch, build_workspace_edit_patch, check_workspace_patch};
 pub use secure_store::{delete_secure_api_key, load_secure_api_key, save_secure_api_key};
 pub use shell::{
-    cancel_shell_command, check_shell_job, run_shell_command, start_shell_command, ShellJobStore,
+    cancel_shell_command, check_shell_job, open_system_terminal, run_shell_command,
+    start_shell_command, ShellJobStore,
 };
 pub use snapshot::{create_workspace_snapshot, restore_workspace_snapshot};

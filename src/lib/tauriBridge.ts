@@ -202,6 +202,10 @@ export function cancelShellCommand(jobId: string): Promise<boolean> {
   return invoke<boolean>("cancel_shell_command", { jobId });
 }
 
+export function openSystemTerminal(workspacePath: string): Promise<void> {
+  return invoke<void>("open_system_terminal", { workspacePath });
+}
+
 export function checkShellJob(jobId: string): Promise<{
   running: boolean;
   found: boolean;

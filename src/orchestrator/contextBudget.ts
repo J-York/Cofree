@@ -486,7 +486,7 @@ export function scoreMessageImportance(msg: LiteLLMMessage): number {
   if (/架构|architecture|design|设计|决策|decision|constraint|约束/i.test(content)) score += 3;
 
   // File modification summaries
-  if (/propose_file_edit|propose_apply_patch|已修改|modified|created|deleted/i.test(content)) score += 2;
+  if (/propose_file_edit|已修改|modified|created|deleted/i.test(content)) score += 2;
 
   // Very short messages (likely status updates) are less important
   if (content.length < 50) score -= 1;

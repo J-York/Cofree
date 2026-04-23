@@ -20,7 +20,7 @@ interface TitleBarProps {
   activeModelId: string | null;
   agents: ChatAgentDefinition[];
   activeAgentId: string | null;
-  onToggleTerminal: () => void;
+  onOpenSystemTerminal: () => void;
   onToggleSettings: () => void;
   onSwitchModel: (modelId: string) => void;
   onSwitchAgent: (agentId: string) => void;
@@ -28,7 +28,6 @@ interface TitleBarProps {
   onSwitchWorkspace: (workspacePath: string) => void;
   onToggleSidebar: () => void;
   sidebarCollapsed: boolean;
-  terminalOpen: boolean;
 }
 
 function getWorkspaceLabel(workspacePath: string): string {
@@ -85,7 +84,7 @@ export function TitleBar({
   activeModelId,
   agents,
   activeAgentId,
-  onToggleTerminal,
+  onOpenSystemTerminal,
   onToggleSettings,
   onSwitchModel,
   onSwitchAgent,
@@ -93,7 +92,6 @@ export function TitleBar({
   onSwitchWorkspace,
   onToggleSidebar,
   sidebarCollapsed,
-  terminalOpen,
 }: TitleBarProps): ReactElement {
   const folderName = workspacePath ? getWorkspaceLabel(workspacePath) : "";
 
@@ -309,10 +307,10 @@ export function TitleBar({
 
       <div className="titlebar-right">
         <button
-          className={`titlebar-btn${terminalOpen ? " active" : ""}`}
-          onClick={onToggleTerminal}
+          className="titlebar-btn"
+          onClick={onOpenSystemTerminal}
           type="button"
-          title="终端 (⌘J)"
+          title="在系统终端打开工作区 (⌘J)"
         >
           <IconTerminal size={14} />
         </button>

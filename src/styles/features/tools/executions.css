@@ -1,139 +1,120 @@
-/* ── Live Tool Status ───────────────────────────────────── */
-.live-tool-status {
+/* ── Tool Activity Rail ─────────────────────────────────── */
+/* Thin gutter timeline replacing the old LiveToolStatus and ToolTrace cards.
+   Flat visual weight — no per-row background, no border. Status conveyed
+   purely via a glyph prefix and a 1px left rail. */
+
+.tool-rail {
+  margin-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  margin-top: 8px;
-  padding: 8px 10px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  gap: 4px;
 }
 
-.live-tool-item {
-  display: flex;
+.tool-rail-header {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
   align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-4);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 2px;
+}
+
+.tool-rail-header:hover { color: var(--text-3); }
+
+.tool-rail-chevron {
+  display: inline-block;
+  font-size: 9px;
+  transition: transform 0.15s ease;
+  color: var(--text-4);
+}
+
+.tool-rail-label { font-weight: 600; }
+
+.tool-rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0 4px 10px;
+  border-left: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tool-rail-row {
+  display: flex;
+  align-items: baseline;
   gap: 8px;
-  font-size: 11px;
-  color: var(--text-2);
-  min-height: 20px;
-}
-
-.live-tool-icon {
-  width: 14px;
-  height: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  flex-shrink: 0;
-}
-
-.live-tool-item.running .live-tool-icon {
-  color: var(--text-2);
-  animation: tool-spin 1s linear infinite;
-}
-
-.live-tool-item.success .live-tool-icon { color: var(--color-success); }
-.live-tool-item.pending_approval .live-tool-icon { color: var(--color-warning); }
-.live-tool-item.failed .live-tool-icon { color: var(--color-error); }
-
-.live-tool-name {
   font-family: var(--font-mono);
-  font-weight: 500;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-2);
+  padding: 1px 0;
+  min-width: 0;
+}
+
+.tool-rail-glyph {
+  flex-shrink: 0;
+  width: 10px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+.tool-rail-row-success  .tool-rail-glyph { color: var(--color-success); }
+.tool-rail-row-failed   .tool-rail-glyph { color: var(--color-error); }
+.tool-rail-row-pending_approval .tool-rail-glyph,
+.tool-rail-row-waiting_for_user .tool-rail-glyph { color: var(--color-warning); }
+
+.tool-rail-row.is-running .tool-rail-glyph {
+  color: var(--text-2);
+  animation: tool-rail-spin 1s linear infinite;
+}
+
+@keyframes tool-rail-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.tool-rail-name {
+  flex-shrink: 0;
   color: var(--text-1);
-  font-size: 11px;
-  flex-shrink: 0;
+  font-weight: 500;
 }
 
-.live-tool-args {
-  font-family: var(--font-mono);
-  font-size: 10px;
+.tool-rail-args {
   color: var(--text-4);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 260px;
+  min-width: 0;
+  flex: 1;
 }
 
-@keyframes tool-spin {
-  0%   { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
-.chat-layout:has(.conversation-topbar) .live-tool-status {
-  margin-top: 6px;
-  padding: 6px 8px;
-  border-color: var(--border-subtle);
-  background: var(--bg-panel);
-}
-
-/* ── Tool Trace ─────────────────────────────────────────── */
-.tool-trace {
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.tool-trace-label {
-  font-family: var(--font-mono);
+.tool-rail-tail {
+  flex-shrink: 0;
+  color: var(--text-4);
   font-size: 10px;
-  font-weight: 600;
+}
+
+.tool-rail-row-failed .tool-rail-tail { color: var(--color-error); }
+.tool-rail-row-pending_approval .tool-rail-tail,
+.tool-rail-row-waiting_for_user .tool-rail-tail { color: var(--color-warning); }
+
+.tool-rail-tag {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
   color: var(--text-4);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-}
-
-.tool-trace-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.tool-trace-item {
+  padding: 0 4px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--bg-panel);
-  padding: 6px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.tool-trace-item.failed  { border-left: 2px solid var(--color-error); }
-.tool-trace-item.success { border-left: 2px solid var(--color-success); }
-.tool-trace-item.pending { border-left: 2px solid var(--color-warning); }
-
-.tool-trace-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 6px;
-}
-
-.tool-trace-name {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-1);
-}
-
-.tool-trace-preview {
-  margin: 0;
-  max-height: 100px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-2);
-  padding: 8px 10px;
-  background: var(--bg-surface);
   border-radius: var(--r-xs);
-  border: 1px solid var(--border-subtle);
 }
 
 /* ── Shell Result ───────────────────────────────────────── */

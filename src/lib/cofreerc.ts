@@ -635,8 +635,9 @@ export function convertCofreeRcSkillEntries(
 ): SkillEntry[] {
   return convertCofreeRcSkills(config, workspacePath).map((skill) => ({
     ...skill,
-    source: "cofreerc",
+    source: "cofreerc" as const,
     enabled: true,
+    workspaceRoot: skill.filePath ? workspacePath : undefined,
     createdAt: new Date().toISOString(),
   }));
 }

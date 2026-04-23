@@ -36,6 +36,8 @@ export interface SkillEntry {
   description: string;
   /** Absolute path to the SKILL.md file (for file-based skills) */
   filePath?: string;
+  /** Workspace root under which this skill was discovered (enables read_workspace_file) */
+  workspaceRoot?: string;
   /** Inline instructions (for cofreerc / custom skills without a file) */
   instructions?: string;
   /** Where this skill was loaded from */
@@ -56,6 +58,25 @@ export interface ResolvedSkill {
   description: string;
   instructions: string;
   source: SkillSource;
+  /**
+   * Absolute path to the skill's directory (the folder containing SKILL.md).
+   * Used so the LLM can invoke scripts packaged alongside the skill (e.g.
+   * `./run.sh`, `query.py`) from the right working directory instead of
+   * searching for them inside the user's current workspace.
+   */
+  directoryPath?: string;
+}
+
+/**
+ * Brief metadata about an enabled skill — used to make the LLM aware that a
+ * skill exists without injecting its full instructions. Full instructions are
+ * only injected for skills that match the request or were selected explicitly.
+ */
+export interface SkillManifestEntry {
+  id: string;
+  name: string;
+  description: string;
+  source: SkillSource;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,7 +86,20 @@ export interface ResolvedSkill {
 const SKILL_FILENAME = "SKILL.md";
 const GLOBAL_SKILLS_DIR = "skills";
 const MAX_SKILL_INSTRUCTIONS_LENGTH = 16_000;
-const MAX_SKILLS_PER_REQUEST = 5;
+export const MAX_SKILLS_PER_REQUEST = 5;
+
+/**
+ * Regex used to detect generic skill-invocation intents in user messages
+ * (e.g. "请使用 skill 帮我…", "能不能用技能做…"). When matched and no
+ * specific skill scored, the resolver falls back to all enabled skills so
+ * the LLM actually has instructions to follow instead of denying the
+ * skill's existence.
+ */
+const GENERIC_SKILL_INTENT_PATTERN = /\bskills?\b|技能/i;
+
+export function mentionsGenericSkillIntent(message: string): boolean {
+  return GENERIC_SKILL_INTENT_PATTERN.test(message);
+}
 
 // ---------------------------------------------------------------------------
 // In-memory caches
@@ -162,6 +196,7 @@ export async function discoverSkillsFromDirectory(
           name: parsed.name || entry.name,
           description: parsed.description || `Skill: ${entry.name}`,
           filePath: skillFilePath,
+          workspaceRoot: baseDir,
           source,
           enabled: true,
           keywords: parsed.keywords,
@@ -249,40 +284,223 @@ interface ParsedSkillMarkdown {
   filePatterns?: string[];
 }
 
+const FRONTMATTER_KEYWORDS_KEYS = new Set(["keywords", "tags", "关键词"]);
+const FRONTMATTER_FILE_PATTERN_KEYS = new Set([
+  "file-patterns",
+  "filepatterns",
+  "file_patterns",
+  "globs",
+  "文件模式",
+]);
+
+/**
+ * Extract a leading YAML frontmatter block (between `---` fences) if present.
+ * Returns the parsed key/value map plus the body (content after the closing
+ * fence). When no frontmatter is present, returns an empty map and the
+ * original content.
+ *
+ * This is intentionally a minimal parser: it handles `key: value` pairs,
+ * quoted strings, inline arrays (`[a, b]`), and YAML block lists (`- item`).
+ * Nested structures are not supported — they're not needed for SKILL.md.
+ */
+function extractFrontmatter(content: string): {
+  frontmatter: Map<string, string | string[]>;
+  body: string;
+} {
+  const frontmatter = new Map<string, string | string[]>();
+  const lines = content.split("\n");
+
+  // Frontmatter must start on line 1 with a `---` fence.
+  if (lines.length === 0 || lines[0].trim() !== "---") {
+    return { frontmatter, body: content };
+  }
+
+  let closingIndex = -1;
+  for (let index = 1; index < lines.length; index += 1) {
+    if (lines[index].trim() === "---") {
+      closingIndex = index;
+      break;
+    }
+  }
+  if (closingIndex === -1) {
+    return { frontmatter, body: content };
+  }
+
+  let currentKey: string | null = null;
+  let currentList: string[] | null = null;
+  for (let index = 1; index < closingIndex; index += 1) {
+    const raw = lines[index];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    // Continuation of a block list under the current key.
+    if (currentList && trimmed.startsWith("-")) {
+      const item = stripQuotes(trimmed.slice(1).trim());
+      if (item) {
+        currentList.push(item);
+      }
+      continue;
+    }
+
+    const colonIndex = trimmed.indexOf(":");
+    if (colonIndex === -1) {
+      continue;
+    }
+
+    // Finalize the previous block list, if any.
+    if (currentList && currentKey) {
+      frontmatter.set(currentKey, currentList);
+      currentKey = null;
+      currentList = null;
+    }
+
+    const key = trimmed.slice(0, colonIndex).trim().toLowerCase();
+    const rawValue = trimmed.slice(colonIndex + 1).trim();
+    if (!key) {
+      continue;
+    }
+
+    if (!rawValue) {
+      // Value continues on subsequent lines as a block list.
+      currentKey = key;
+      currentList = [];
+      continue;
+    }
+
+    if (rawValue.startsWith("[") && rawValue.endsWith("]")) {
+      const items = rawValue
+        .slice(1, -1)
+        .split(",")
+        .map((item) => stripQuotes(item.trim()))
+        .filter(Boolean);
+      frontmatter.set(key, items);
+      continue;
+    }
+
+    frontmatter.set(key, stripQuotes(rawValue));
+  }
+
+  if (currentList && currentKey) {
+    frontmatter.set(currentKey, currentList);
+  }
+
+  const body = lines.slice(closingIndex + 1).join("\n");
+  return { frontmatter, body };
+}
+
+function stripQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length >= 2) {
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return trimmed;
+}
+
+function coerceStringList(value: string | string[] | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => item.trim()).filter(Boolean);
+  }
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 /**
  * Parse a SKILL.md file to extract metadata.
  *
- * Expected format:
- * ```markdown
- * # Skill Name
+ * Supports two metadata sources, in this priority order:
  *
- * Description of when and how to use this skill.
+ * 1. YAML frontmatter (preferred, matches the Claude Code / Anthropic Skills
+ *    convention):
  *
- * ## Keywords
- * keyword1, keyword2, keyword3
+ *    ```markdown
+ *    ---
+ *    name: odps
+ *    description: When to use this skill
+ *    keywords: [sql, odps]
+ *    file-patterns: ["*.sql"]
+ *    ---
+ *    ```
  *
- * ## File Patterns
- * *.sql, *.py
+ * 2. Markdown headings (legacy fallback):
  *
- * ## Instructions
- * ... (the actual skill instructions)
- * ```
+ *    ```markdown
+ *    # Skill Name
+ *    Description line.
+ *
+ *    ## Keywords
+ *    keyword1, keyword2
+ *
+ *    ## File Patterns
+ *    *.sql
+ *
+ *    ## Instructions
+ *    ...
+ *    ```
+ *
+ * Frontmatter values win when both are present; remaining fields fall back to
+ * the heading-based form.
  */
 export function parseSkillMarkdown(content: string): ParsedSkillMarkdown {
-  const lines = content.split("\n");
-  let name = "";
-  let description = "";
-  const keywords: string[] = [];
-  const filePatterns: string[] = [];
+  const { frontmatter, body } = extractFrontmatter(content);
+
+  const frontmatterName =
+    typeof frontmatter.get("name") === "string" ? (frontmatter.get("name") as string) : "";
+  const frontmatterDescription =
+    typeof frontmatter.get("description") === "string"
+      ? (frontmatter.get("description") as string)
+      : "";
+
+  const frontmatterKeywords = (() => {
+    for (const key of FRONTMATTER_KEYWORDS_KEYS) {
+      if (frontmatter.has(key)) {
+        return coerceStringList(frontmatter.get(key)).map((keyword) =>
+          keyword.toLowerCase(),
+        );
+      }
+    }
+    return [];
+  })();
+
+  const frontmatterFilePatterns = (() => {
+    for (const key of FRONTMATTER_FILE_PATTERN_KEYS) {
+      if (frontmatter.has(key)) {
+        return coerceStringList(frontmatter.get(key));
+      }
+    }
+    return [];
+  })();
+
+  const lines = body.split("\n");
+  let name = frontmatterName.trim();
+  let description = frontmatterDescription.trim();
+  const keywords: string[] = [...frontmatterKeywords];
+  const filePatterns: string[] = [...frontmatterFilePatterns];
 
   let currentSection = "header";
 
   for (const line of lines) {
     const trimmed = line.trim();
 
-    // Parse H1 as name
+    // Parse H1 as name (fallback — frontmatter wins)
     if (trimmed.startsWith("# ") && !name) {
       name = trimmed.slice(2).trim();
+      currentSection = "description";
+      continue;
+    }
+
+    // After the H1, treat any non-heading content as description fallback.
+    if (trimmed.startsWith("# ") && name) {
       currentSection = "description";
       continue;
     }
@@ -321,20 +539,24 @@ export function parseSkillMarkdown(content: string): ParsedSkillMarkdown {
         }
         break;
       case "keywords":
-        keywords.push(
-          ...trimmed
-            .split(",")
-            .map((keyword) => keyword.trim().toLowerCase())
-            .filter(Boolean),
-        );
+        if (keywords.length === 0) {
+          keywords.push(
+            ...trimmed
+              .split(",")
+              .map((keyword) => keyword.trim().toLowerCase())
+              .filter(Boolean),
+          );
+        }
         break;
       case "filePatterns":
-        filePatterns.push(
-          ...trimmed
-            .split(",")
-            .map((pattern) => pattern.trim())
-            .filter(Boolean),
-        );
+        if (filePatterns.length === 0) {
+          filePatterns.push(
+            ...trimmed
+              .split(",")
+              .map((pattern) => pattern.trim())
+              .filter(Boolean),
+          );
+        }
         break;
     }
   }
@@ -375,7 +597,7 @@ export async function loadSkillInstructions(
   }
 
   try {
-    const content = await readSkillFile(skill.filePath);
+    const content = await readSkillFile(skill.filePath, skill.workspaceRoot);
     if (!content.trim()) {
       return "";
     }
@@ -389,20 +611,55 @@ export async function loadSkillInstructions(
     });
 
     return truncated;
-  } catch {
+  } catch (error) {
+    console.warn(
+      "[skills] Failed to load skill instructions",
+      { id: skill.id, name: skill.name, filePath: skill.filePath },
+      error,
+    );
     return "";
   }
 }
 
-async function readSkillFile(absolutePath: string): Promise<string> {
-  // Use Tauri's read_absolute_file command for absolute paths
+/**
+ * Read a skill file using read_workspace_file (preferred, no home-dir restriction)
+ * with fallback to read_absolute_file (for backward-compat / custom skills).
+ */
+async function readSkillFile(
+  absolutePath: string,
+  workspaceRoot?: string,
+): Promise<string> {
+  // Prefer read_workspace_file when we have a workspace root — it works for
+  // paths outside $HOME and is consistent with the discovery path.
+  if (workspaceRoot) {
+    const normalizedRoot = workspaceRoot.replace(/\/+$/, "");
+    const normalizedPath = absolutePath.replace(/\/+$/, "");
+    if (normalizedPath.startsWith(normalizedRoot + "/")) {
+      const relativePath = normalizedPath.slice(normalizedRoot.length + 1);
+      try {
+        const result = await invoke<{
+          content: string;
+          total_lines: number;
+        }>("read_workspace_file", {
+          workspacePath: normalizedRoot,
+          relativePath,
+          startLine: null,
+          endLine: null,
+        });
+        return result.content ?? "";
+      } catch {
+        // Fall through to read_absolute_file
+      }
+    }
+  }
+
+  // Fallback for custom skills / backward-compat / non-standard paths
   try {
     const result = await invoke<string>("read_absolute_file", {
       path: absolutePath,
     });
     return result;
   } catch {
-    // Fallback: try to parse as workspace-relative
     return "";
   }
 }
@@ -410,12 +667,12 @@ async function readSkillFile(absolutePath: string): Promise<string> {
 /**
  * Extract the Instructions section from a SKILL.md file.
  * If no explicit ## Instructions header is found, returns the entire content
- * after the metadata sections.
+ * after the YAML frontmatter (if any).
  */
 function extractInstructionsSection(content: string): string {
-  const lines = content.split("\n");
+  const { body } = extractFrontmatter(content);
+  const lines = body.split("\n");
   let instructionsStart = -1;
-  let metadataSectionCount = 0;
 
   for (let index = 0; index < lines.length; index++) {
     const trimmed = lines[index].trim();
@@ -430,7 +687,6 @@ function extractInstructionsSection(content: string): string {
         instructionsStart = index + 1;
         break;
       }
-      metadataSectionCount++;
     }
   }
 
@@ -439,8 +695,8 @@ function extractInstructionsSection(content: string): string {
     return lines.slice(instructionsStart).join("\n").trim();
   }
 
-  // Otherwise return the full content (it's all instructions)
-  return content.trim();
+  // Otherwise return the body (content after frontmatter) — it's all instructions
+  return body.trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +886,12 @@ export async function resolveSkills(
   for (const skill of skills) {
     const instructions = await loadSkillInstructions(skill);
     if (!instructions) {
+      console.warn("[skills] Skipping skill with empty instructions", {
+        id: skill.id,
+        name: skill.name,
+        filePath: skill.filePath,
+        source: skill.source,
+      });
       continue;
     }
 
@@ -639,10 +901,27 @@ export async function resolveSkills(
       description: skill.description,
       instructions,
       source: skill.source,
+      directoryPath: deriveSkillDirectoryPath(skill),
     });
   }
 
   return resolved;
+}
+
+/**
+ * Derive the absolute directory path of a skill from its file-based metadata.
+ * Returns undefined for inline (cofreerc) or custom skills without a disk path.
+ */
+function deriveSkillDirectoryPath(skill: SkillEntry): string | undefined {
+  if (!skill.filePath) {
+    return undefined;
+  }
+  const normalized = skill.filePath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const slashIndex = normalized.lastIndexOf("/");
+  if (slashIndex <= 0) {
+    return undefined;
+  }
+  return normalized.slice(0, slashIndex);
 }
 
 // ---------------------------------------------------------------------------
@@ -650,30 +929,67 @@ export async function resolveSkills(
 // ---------------------------------------------------------------------------
 
 /**
- * Build a system prompt fragment from resolved skills.
+ * Build a system prompt fragment describing skills.
+ *
+ * - `resolvedSkills` — skills that matched this request (or were selected
+ *   explicitly by the user via @-mention); their full instructions are
+ *   injected.
+ * - `manifest` — all enabled skills in the registry, rendered as a compact
+ *   catalog so the LLM is always aware of what exists even when nothing
+ *   matched. Entries already present in `resolvedSkills` are deduplicated.
  */
 export function buildSkillPromptFragment(
-  resolvedSkills: ResolvedSkill[],
+  resolvedSkills: ReadonlyArray<ResolvedSkill>,
+  manifest: ReadonlyArray<SkillManifestEntry> = [],
 ): string {
-  if (resolvedSkills.length === 0) {
-    return "";
+  const resolvedIds = new Set(resolvedSkills.map((skill) => skill.id));
+  const remainingManifest = manifest.filter((entry) => !resolvedIds.has(entry.id));
+
+  const sections: string[] = [];
+
+  if (resolvedSkills.length > 0) {
+    const parts = resolvedSkills.map((skill) => {
+      const header = [`### Skill: ${skill.name}`, skill.description];
+      if (skill.directoryPath) {
+        header.push(
+          "",
+          `Skill 根目录（绝对路径）：${skill.directoryPath}`,
+          "调用方式：执行该 skill 的脚本（如 `./run.sh`、`query.py`）时，请**以该目录为工作目录**。例如：",
+          `\`cd ${skill.directoryPath} && ./run.sh query.py --sql "..."\``,
+          `或直接用绝对路径 \`${skill.directoryPath}/run.sh\`。`,
+        );
+
+        if (skill.source === "global") {
+          header.push("该目录不在当前工作区内；不要在当前工作区里搜寻 `./run.sh` 等文件。");
+        }
+      }
+      return [...header, "", skill.instructions].join("\n");
+    });
+    sections.push(
+      [
+        "## 已激活的 Skills",
+        "以下 Skills 与当前任务相关，请严格按照其指令执行：",
+        "",
+        ...parts,
+      ].join("\n"),
+    );
   }
 
-  const parts = resolvedSkills.map((skill) =>
-    [
-      `### Skill: ${skill.name}`,
-      `${skill.description}`,
-      "",
-      skill.instructions,
-    ].join("\n"),
-  );
+  if (remainingManifest.length > 0) {
+    const lines = remainingManifest.map(
+      (entry) => `- **${entry.name}** — ${entry.description}`,
+    );
+    sections.push(
+      [
+        "## 可用 Skills（尚未激活）",
+        "以下 Skills 已在本环境注册。若用户的需求匹配其中某个 skill 的场景，请直接告知用户并建议他们在输入框用 `@<skill 名>` 选中以加载完整指令；不要声称 skill 不存在。",
+        "",
+        ...lines,
+      ].join("\n"),
+    );
+  }
 
-  return [
-    "## 已激活的 Skills",
-    "以下 Skills 与当前任务相关，请严格按照其指令执行：",
-    "",
-    ...parts,
-  ].join("\n");
+  return sections.join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -707,10 +1023,12 @@ export function createSkillEntry(params: {
 
 /**
  * Merge discovered skills with existing registry entries.
- * Discovered skills are added if not already present; existing entries
- * preserve their enabled state.
+ * - `custom` entries are user-managed and always preserved.
+ * - File-based discovered entries (`global` / `workspace` / `cofreerc`) are kept
+ *   only when present in the current discovery result, eliminating stale skills.
+ * - Existing enabled state is preserved whenever a discovered entry is refreshed.
  *
- * Returns a new array — never mutates the input arrays (issue #3).
+ * Returns a new array — never mutates the input arrays.
  */
 export function mergeDiscoveredSkills(
   existing: ReadonlyArray<SkillEntry>,
@@ -718,27 +1036,32 @@ export function mergeDiscoveredSkills(
 ): SkillEntry[] {
   const discoveredById = new Map(discovered.map((skill) => [skill.id, skill]));
   const seenIds = new Set<string>();
+  const merged: SkillEntry[] = [];
 
-  // First pass: existing entries, updated with discovered metadata if matched
-  const merged: SkillEntry[] = existing.map((entry) => {
+  for (const entry of existing) {
     seenIds.add(entry.id);
     const discoveredMatch = discoveredById.get(entry.id);
-    if (!discoveredMatch) {
-      return { ...entry };
-    }
-    // Create new object: preserve enabled state from existing, update metadata from discovered
-    return {
-      ...entry,
-      name: discoveredMatch.name,
-      description: discoveredMatch.description,
-      filePath: discoveredMatch.filePath,
-      source: discoveredMatch.source,
-      filePatterns: discoveredMatch.filePatterns,
-      keywords: discoveredMatch.keywords,
-    };
-  });
 
-  // Second pass: add newly discovered skills not in existing
+    if (discoveredMatch) {
+      merged.push({
+        ...entry,
+        name: discoveredMatch.name,
+        description: discoveredMatch.description,
+        filePath: discoveredMatch.filePath,
+        workspaceRoot: discoveredMatch.workspaceRoot,
+        source: discoveredMatch.source,
+        instructions: discoveredMatch.instructions,
+        filePatterns: discoveredMatch.filePatterns,
+        keywords: discoveredMatch.keywords,
+      });
+      continue;
+    }
+
+    if (entry.source === "custom") {
+      merged.push({ ...entry });
+    }
+  }
+
   for (const skill of discovered) {
     if (!seenIds.has(skill.id)) {
       merged.push({ ...skill });
@@ -748,16 +1071,43 @@ export function mergeDiscoveredSkills(
   return merged;
 }
 
+// ---------------------------------------------------------------------------
+// Cache invalidation + subscription
+// ---------------------------------------------------------------------------
+
+const skillCacheListeners = new Set<() => void>();
+
+/**
+ * Subscribe to skill cache invalidations. Returns an unsubscribe function.
+ * Listeners fire only when the discovery cache is fully cleared (i.e. when
+ * `invalidateSkillCache()` is called with no argument — typically after a
+ * skill is installed, deleted, or otherwise changed on disk).
+ */
+export function subscribeToSkillCacheInvalidation(listener: () => void): () => void {
+  skillCacheListeners.add(listener);
+  return () => {
+    skillCacheListeners.delete(listener);
+  };
+}
+
 /**
  * Invalidate skill caches.
  * - If a filePath is given, only that content cache entry is cleared.
- * - If no argument, both content and discovery caches are fully cleared.
+ * - If no argument, both content and discovery caches are fully cleared and
+ *   subscribers are notified.
  */
 export function invalidateSkillCache(filePath?: string): void {
   if (filePath) {
     skillContentCache.delete(filePath);
-  } else {
-    skillContentCache.clear();
-    skillDiscoveryCache.clear();
+    return;
+  }
+  skillContentCache.clear();
+  skillDiscoveryCache.clear();
+  for (const listener of skillCacheListeners) {
+    try {
+      listener();
+    } catch (error) {
+      console.warn("[skills] cache invalidation listener threw", error);
+    }
   }
 }

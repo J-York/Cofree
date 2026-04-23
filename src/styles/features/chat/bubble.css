@@ -12,6 +12,8 @@
 
 .chat-row.user {
   flex-direction: row-reverse;
+  /* User rows have no avatar — cancel the row gap so the bubble sits flush right. */
+  gap: 0;
 }
 
 /* Expert-panel stage summary rows (assistantSpeaker) */
@@ -97,28 +99,15 @@
   user-select: none;
 }
 
-.chat-avatar.user,
 .chat-avatar.assistant {
   background: #2A2A32;
   color: var(--text-1);
   border: 1px solid var(--border-default);
   box-shadow: none;
-}
-
-.chat-avatar.user {
-  /* › sits slightly above optical center; nudge down. */
-  padding-bottom: 1px;
-  font-size: 15px;
-  color: var(--text-2);
-}
-
-.chat-avatar.assistant {
   font-size: 12px;
-  color: var(--text-1);
 }
 
 [data-theme="light"] .chat-avatar,
-[data-theme="light"] .chat-avatar.user,
 [data-theme="light"] .chat-avatar.assistant {
   background: var(--bg-surface-active);
   border-color: var(--border-default);
@@ -148,6 +137,37 @@
   color: var(--text-4);
   padding: 0 2px;
   font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  flex-wrap: wrap;
+}
+
+.chat-meta-name { color: var(--text-3); }
+.chat-meta-time { color: var(--text-4); }
+
+.chat-meta-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  color: var(--color-warning);
+}
+
+.chat-meta-live-dot {
+  font-size: 8px;
+  animation: chat-meta-live-pulse 1.2s ease-in-out infinite;
+}
+
+.chat-meta-live-text {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+@keyframes chat-meta-live-pulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
 }
 
 .chat-bubble {
@@ -221,16 +241,3 @@
   40% { opacity: 1; transform: scale(1.1); }
 }
 
-/* Expert inline stage panel: calmer when page-level topbar also summarizes activity */
-.chat-layout:has(.conversation-topbar) .chat-expert-stage-details {
-  border-color: var(--border-subtle);
-}
-
-.chat-layout:has(.conversation-topbar) .chat-expert-stage-summary {
-  font-size: 10px;
-  color: var(--text-3);
-}
-
-.chat-layout:has(.conversation-topbar) .chat-expert-stage-summary-action {
-  font-size: 10px;
-}

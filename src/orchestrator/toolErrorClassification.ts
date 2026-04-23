@@ -41,7 +41,6 @@ export function classifyToolError(message: string): ToolErrorCategory {
     lower.includes("命中被禁止的可执行程序") ||
     lower.includes("命中高风险关键字") ||
     lower.includes("解释器内联执行") ||
-    lower.includes("propose_apply_patch") ||
     lower.includes("直接改文件")
   ) {
     return "guardrail";

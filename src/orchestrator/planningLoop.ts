@@ -64,7 +64,6 @@ import { initWorkingMemoryForLoop, maybeEmitIncrementalCheckpoint } from "./chec
 import {
   pruneStaleSystemMessages,
   refreshWorkspaceContext,
-  upsertTodoPlanContextMessage,
   upsertWorkingMemoryContextMessage,
 } from "./loopPromptScaffolding";
 import {
@@ -82,15 +81,9 @@ import {
 } from "./planningCore";
 import type { PlanningSessionPhase, RunPlanningSessionInput, ToolCallEvent } from "./planningSessionTypes";
 import {
-  addPlanStep,
-  appendPlanStepNote,
   attachActionToPlanStep,
-  buildTodoSystemPrompt,
   clonePlanState,
-  formatTodoPlanBlock,
   normalizeTodoPlanState,
-  setActivePlanStep,
-  setPlanStepStatus,
   type TodoPlanState,
 } from "./todoPlanState";
 import { resolveMatchedSkills } from "./skillMatching";
@@ -290,11 +283,6 @@ const toolExecutorDeps: ToolExecutorDeps = {
   createActionId,
   nowIso,
   actionFingerprint,
-  setActivePlanStep,
-  setPlanStepStatus,
-  addPlanStep,
-  appendPlanStepNote,
-  formatTodoPlanBlock,
   smartTruncate,
 };
 
@@ -401,14 +389,14 @@ export async function runNativeToolCallingLoop(
         ...projectConfig.toolPermissions,
       } as ToolPermissions)
     : basePermissions;
-  const resolvedSkills = await resolveMatchedSkills(
+  const skillResolution = await resolveMatchedSkills(
     settings,
     projectConfig,
     prompt,
     focusedPaths,
     explicitSkillIds,
   );
-  const agentSystemPrompt = assembleSystemPrompt(runtime, resolvedSkills);
+  const agentSystemPrompt = assembleSystemPrompt(runtime, skillResolution);
   const effectiveRuntimeContext = assembleRuntimeContext(runtime, settings.workspacePath, INTERNAL_TOOL_NAMES);
   const requestedArtifactCount =
     phase === "default" ? estimateRequestedArtifactCount(prompt) : 0;
@@ -447,8 +435,6 @@ export async function runNativeToolCallingLoop(
   console.log(
     `[Loop] 会话开始 | phase=${phase} | continuation=${isContinuation ? "yes" : "no"}`,
   );
-  let lastTodoPlanPrompt = upsertTodoPlanContextMessage(messages, planState);
-
   const requestRecords: RequestRecord[] = [];
   const proposedActions: ActionProposal[] = [];
   const toolTrace: ToolExecutionTrace[] = [];
@@ -559,11 +545,6 @@ export async function runNativeToolCallingLoop(
       snapshot: currentWorkingMemorySnapshot,
       onLoopCheckpoint,
     });
-
-    const currentTodoPlanPrompt = buildTodoSystemPrompt(planState);
-    if (currentTodoPlanPrompt !== lastTodoPlanPrompt) {
-      lastTodoPlanPrompt = upsertTodoPlanContextMessage(messages, planState);
-    }
 
     if (turn > 0) {
       const currentFingerprint = computeWorkingMemoryFingerprint(workingMemory);
@@ -933,7 +914,7 @@ export async function runNativeToolCallingLoop(
         }
       } else {
         turnSuccessCount += 1;
-        if (toolCall.function.name === "propose_file_edit" || toolCall.function.name === "propose_apply_patch") {
+        if (toolCall.function.name === "propose_file_edit") {
           hasModifiedFiles = true;
         }
         try {
@@ -965,8 +946,7 @@ export async function runNativeToolCallingLoop(
       if (
         toolResult.success === false &&
         toolResult.errorCategory === "validation" &&
-        (toolCall.function.name === "propose_apply_patch" ||
-          toolCall.function.name === "propose_file_edit") &&
+        toolCall.function.name === "propose_file_edit" &&
         (toolResult.errorMessage ?? "").includes("Patch 预检失败")
       ) {
         patchPreflightFailure = toolResult.errorMessage ?? "Patch 预检失败";
@@ -1083,10 +1063,7 @@ export async function runNativeToolCallingLoop(
     for (const toolCall of mutationCalls) {
       const { toolResult, trace } = await executeSingleToolCall(toolCall);
       processToolResult(toolCall, toolResult, trace);
-      if (
-        toolCall.function.name === "update_plan" ||
-        toolCall.function.name.startsWith("propose_")
-      ) {
+      if (toolCall.function.name.startsWith("propose_")) {
         planMutatedThisTurn = true;
       }
     }

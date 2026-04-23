@@ -264,57 +264,6 @@ export const MessageContent = memo(function MessageContent({
   );
 });
 
-export function LiveToolStatus({
-  calls,
-  showAskUserAnchor = false,
-}: {
-  calls: LiveToolCall[];
-  showAskUserAnchor?: boolean;
-}) {
-  if (calls.length === 0) return null;
-
-  return (
-    <div className="live-tool-status" data-topbar-anchor="tools" tabIndex={-1}>
-      {calls.map((call) => {
-        const icon =
-          call.status === "running"
-            ? "◐"
-            : call.status === "success"
-              ? "✓"
-              : call.status === "pending_approval"
-                ? "⏸"
-                : call.status === "waiting_for_user"
-                  ? "?"
-                  : "✕";
-        const label =
-          call.status === "pending_approval"
-            ? `${formatToolName(call.toolName)} · 待审批`
-            : call.status === "waiting_for_user"
-              ? `${formatToolName(call.toolName)} · 等待您的输入`
-              : formatToolName(call.toolName);
-        return (
-          <div
-            key={call.callId}
-            className={`live-tool-item ${call.status}`}
-            data-topbar-anchor={
-              showAskUserAnchor && call.status === "waiting_for_user" ? "ask_user" : undefined
-            }
-            tabIndex={
-              showAskUserAnchor && call.status === "waiting_for_user" ? -1 : undefined
-            }
-          >
-            <span className="live-tool-icon">{icon}</span>
-            <span className="live-tool-name">{label}</span>
-            {call.argsPreview && (
-              <span className="live-tool-args">{call.argsPreview}</span>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export function AssistantToolCalls({
   toolCalls,
 }: {
@@ -325,114 +274,163 @@ export function AssistantToolCalls({
   }
 
   return (
-    <div className="tool-trace" style={{ marginTop: "8px" }}>
-      <p className="tool-trace-label" style={{ margin: "0 0 8px 0" }}>
-        模型工具调用 · {toolCalls.length} 次
-      </p>
-      <ul className="tool-trace-list">
-        {toolCalls.map((toolCall) => (
-          <li key={toolCall.id} className="tool-trace-item success">
-            <div className="tool-trace-head">
-              <span className="tool-trace-name">
+    <div className="tool-rail">
+      <div className="tool-rail-header" aria-hidden>
+        <span className="tool-rail-chevron">·</span>
+        <span className="tool-rail-label">
+          模型请求 · {toolCalls.length}
+        </span>
+      </div>
+      <ul className="tool-rail-list">
+        {toolCalls.map((toolCall) => {
+          const argsLine = firstLine(toolCall.function.arguments);
+          return (
+            <li key={toolCall.id} className="tool-rail-row tool-rail-row-success">
+              <span className="tool-rail-glyph" aria-hidden>↗</span>
+              <span className="tool-rail-name">
                 {formatToolName(toolCall.function.name)}
               </span>
-              <span className={actionStatusBadgeClass("pending")}>
-                REQUESTED
-              </span>
-            </div>
-            <pre className="tool-trace-preview">{toolCall.function.arguments}</pre>
-          </li>
-        ))}
+              {argsLine && (
+                <span className="tool-rail-args" title={toolCall.function.arguments}>
+                  {argsLine}
+                </span>
+              )}
+              <span className="tool-rail-tag">requested</span>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
 }
 
 
+type RailStatus = "running" | ToolExecutionTrace["status"];
+
+interface RailItem {
+  key: string;
+  name: string;
+  status: RailStatus;
+  argsPreview?: string;
+  tailNote?: string;
+  retried?: boolean;
+}
+
+const RAIL_GLYPH: Record<RailStatus, string> = {
+  running: "◐",
+  success: "✓",
+  failed: "✕",
+  pending_approval: "⏸",
+  waiting_for_user: "?",
+};
+
+function buildRailItems(
+  traces: ToolExecutionTrace[],
+  liveCalls: readonly LiveToolCall[],
+): RailItem[] {
+  const tracedIds = new Set<string>();
+  const items: RailItem[] = traces.map((trace) => {
+    tracedIds.add(trace.callId);
+    const tailNote =
+      trace.errorMessage || trace.errorCategory
+        ? `${trace.errorCategory ? `[${trace.errorCategory}] ` : ""}${trace.errorMessage ?? "失败"}`
+        : trace.status === "pending_approval"
+          ? "仅创建了待审批动作"
+          : trace.status === "waiting_for_user"
+            ? "等待用户输入"
+            : undefined;
+    return {
+      key: `${trace.callId}-${trace.startedAt}`,
+      name: formatToolName(trace.name),
+      status: trace.status,
+      argsPreview: firstLine(trace.arguments),
+      tailNote,
+      retried: trace.retried,
+    };
+  });
+
+  for (const call of liveCalls) {
+    if (tracedIds.has(call.callId)) continue;
+    items.push({
+      key: `live-${call.callId}`,
+      name: formatToolName(call.toolName),
+      status: call.status,
+      argsPreview: call.argsPreview,
+      tailNote:
+        call.status === "pending_approval"
+          ? "待审批"
+          : call.status === "waiting_for_user"
+            ? "等待输入"
+            : undefined,
+    });
+  }
+
+  return items;
+}
+
+function firstLine(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const line = raw.split("\n", 1)[0].trim();
+  if (!line) return undefined;
+  return line.length > 160 ? `${line.slice(0, 160)}…` : line;
+}
+
 export function ToolTracePanel({
   traces,
-  showAskUserAnchor = false,
+  liveToolCalls,
 }: {
   traces: ToolExecutionTrace[];
-  showAskUserAnchor?: boolean;
+  liveToolCalls?: readonly LiveToolCall[];
 }) {
-  const [expanded, setExpanded] = useState(false);
-  if (!traces.length) return null;
-  const hasCollapsedAskUserTarget =
-    showAskUserAnchor && traces.some((trace) => trace.status === "waiting_for_user");
+  const items = buildRailItems(traces, liveToolCalls ?? []);
+  const hasRunning = items.some((item) => item.status === "running");
+  const [userExpanded, setUserExpanded] = useState(false);
+  const expanded = userExpanded || hasRunning;
+
+  if (items.length === 0) return null;
+
   return (
-    <div className="tool-trace" data-topbar-anchor="tools" tabIndex={-1}>
-      <div
-        className="tool-trace-header"
-        data-topbar-anchor={hasCollapsedAskUserTarget ? "ask_user" : undefined}
-        tabIndex={hasCollapsedAskUserTarget ? -1 : undefined}
-        onClick={() => setExpanded(!expanded)}
-        style={{
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          paddingBottom: expanded ? "8px" : "0",
-        }}
+    <div className="tool-rail">
+      <button
+        type="button"
+        className="tool-rail-header"
+        onClick={() => setUserExpanded((v) => !v)}
+        aria-expanded={expanded}
       >
         <span
-          style={{
-            fontSize: "11px",
-            transition: "transform 0.2s",
-            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-          }}
+          className="tool-rail-chevron"
+          style={{ transform: expanded ? "rotate(90deg)" : "rotate(0deg)" }}
+          aria-hidden
         >
           ▶
         </span>
-        <p className="tool-trace-label" style={{ margin: 0 }}>
-          工具调用 · {traces.length} 次
-        </p>
-      </div>
+        <span className="tool-rail-label">
+          工具调用 · {items.length}
+          {hasRunning ? " · 进行中" : ""}
+        </span>
+      </button>
       {expanded && (
-        <ul className="tool-trace-list">
-          {traces.map((trace) => (
+        <ul className="tool-rail-list">
+          {items.map((item) => (
             <li
-              key={`${trace.callId}-${trace.startedAt}`}
-              className={`tool-trace-item ${trace.status === "pending_approval" ? "pending" : trace.status === "waiting_for_user" ? "pending" : trace.status}`}
-              data-topbar-anchor={
-                trace.status === "failed"
-                  ? "blocked_output"
-                  : showAskUserAnchor && trace.status === "waiting_for_user"
-                    ? "ask_user"
-                    : undefined
-              }
-              tabIndex={
-                trace.status === "failed" ||
-                (showAskUserAnchor && trace.status === "waiting_for_user")
-                  ? -1
-                  : undefined
-              }
+              key={item.key}
+              className={`tool-rail-row tool-rail-row-${item.status}${
+                item.status === "running" ? " is-running" : ""
+              }`}
+              title={item.argsPreview ?? item.name}
             >
-              <div className="tool-trace-head">
-                <span className="tool-trace-name">{trace.name}</span>
-                <span className={actionStatusBadgeClass(trace.status)}>
-                  {trace.status.toUpperCase()}
-                  {trace.retried ? " · retried" : ""}
-                </span>
-              </div>
-              {trace.status === "pending_approval" && (
-                <p className="status-note">
-                  该工具调用仅创建了待审批动作，尚未实际执行。
-                </p>
+              <span className="tool-rail-glyph" aria-hidden>
+                {RAIL_GLYPH[item.status]}
+              </span>
+              <span className="tool-rail-name">{item.name}</span>
+              {item.argsPreview && (
+                <span className="tool-rail-args">{item.argsPreview}</span>
               )}
-              {trace.status === "waiting_for_user" && (
-                <p className="status-note">
-                  正在等待用户输入，请在弹出的对话框中回答问题。
-                </p>
+              {item.tailNote && (
+                <span className="tool-rail-tail">→ {item.tailNote}</span>
               )}
-              {(trace.errorCategory || trace.errorMessage) && (
-                <p className="status-error">
-                  {trace.errorCategory ? `[${trace.errorCategory}] ` : ""}
-                  {trace.errorMessage ?? "工具调用失败"}
-                </p>
-              )}
-              {trace.resultPreview && (
-                <pre className="tool-trace-preview">{trace.resultPreview}</pre>
+              {item.retried && (
+                <span className="tool-rail-tag">retried</span>
               )}
             </li>
           ))}
@@ -457,11 +455,24 @@ function ActionPayloadFields({
   const disabled = action.status === "running";
 
   if (action.type === "apply_patch") {
+    const stats = summarizePatchStats(action.payload.patch);
     return (
       <div className="action-grid">
         <div className="action-field action-wide">
-          <span>差异预览</span>
-          <DiffViewer patch={action.payload.patch} />
+          <details className="patch-preview-details" open={action.status === "pending"}>
+            <summary className="patch-preview-summary">
+              <span className="patch-preview-chevron" aria-hidden>▸</span>
+              <span className="patch-preview-label">查看差异</span>
+              <span className="patch-preview-stats">
+                {stats.files} 文件 ·{" "}
+                <span className="patch-preview-add">+{stats.adds}</span> /{" "}
+                <span className="patch-preview-del">−{stats.dels}</span>
+              </span>
+            </summary>
+            <div className="patch-preview-body">
+              <DiffViewer patch={action.payload.patch} />
+            </div>
+          </details>
         </div>
 
         <div className="action-field action-wide">
@@ -533,6 +544,17 @@ function ActionPayloadFields({
   }
 
   return null;
+}
+
+function summarizePatchStats(patch: string): {
+  files: number;
+  adds: number;
+  dels: number;
+} {
+  const files = (patch.match(/^diff --git a\//gm) ?? []).length;
+  const adds = (patch.match(/^\+(?!\+\+)/gm) ?? []).length;
+  const dels = (patch.match(/^-(?!--)/gm) ?? []).length;
+  return { files, adds, dels };
 }
 
 function getAffectedFiles(actions: ApplyPatchActionProposal[]): string[] {
@@ -645,12 +667,7 @@ function PlanActionCard({
   const isCancelling = executingActionId === `cancel:${action.id}`;
 
   return (
-    <li
-      className="action-item"
-      data-topbar-action-id={action.id}
-      data-topbar-anchor={action.status === "failed" ? "blocked_output" : undefined}
-      tabIndex={-1}
-    >
+    <li className="action-item">
       <div className="action-header">
         <h4 className="action-title">{action.type}</h4>
         <span className={actionStatusBadgeClass(action.status)}>
@@ -685,36 +702,59 @@ function PlanActionCard({
       )}
 
       <div className="action-footer">
-        {canApproveAction(action) && approvalOptions.length > 0 && (
-          <select
-            className="select action-approval-select"
-            disabled={Boolean(executingActionId)}
-            onChange={(event) => setRememberOptionKey(event.target.value)}
-            value={rememberOptionKey}
-          >
-            <option value="">仅本次批准</option>
-            {approvalOptions.map((option) => (
-              <option key={option.key} value={option.key}>
-                当前工作区始终允许：{option.label}
-              </option>
-            ))}
-          </select>
-        )}
         {canApproveAction(action) && (
-          <button
-            className="btn btn-primary btn-sm"
-            disabled={Boolean(executingActionId)}
-            onClick={() =>
-              void onApprove(messageId, action.id, plan, selectedRememberOption)
-            }
-            type="button"
-          >
-            {executingActionId === action.id
-              ? "执行中…"
-              : selectedRememberOption
-                ? "✓ 批准并记住"
-                : "✓ 批准"}
-          </button>
+          <div className="action-approve-group">
+            <button
+              className="btn btn-primary btn-sm action-approve-main"
+              disabled={Boolean(executingActionId)}
+              onClick={() =>
+                void onApprove(messageId, action.id, plan, selectedRememberOption)
+              }
+              type="button"
+            >
+              {executingActionId === action.id
+                ? "执行中…"
+                : selectedRememberOption
+                  ? "✓ 批准并记住"
+                  : "✓ 批准"}
+            </button>
+            {approvalOptions.length > 0 && (
+              <details className="action-approve-menu">
+                <summary
+                  className="btn btn-primary btn-sm action-approve-trigger"
+                  aria-label="批准选项"
+                  title="批准选项"
+                >
+                  <span aria-hidden>▾</span>
+                </summary>
+                <div className="action-approve-popover" role="menu">
+                  <label className="action-approve-option">
+                    <input
+                      type="radio"
+                      name={`approve-${action.id}`}
+                      checked={!rememberOptionKey}
+                      onChange={() => setRememberOptionKey("")}
+                    />
+                    <span className="action-approve-option-main">仅本次批准</span>
+                  </label>
+                  {approvalOptions.map((option) => (
+                    <label key={option.key} className="action-approve-option">
+                      <input
+                        type="radio"
+                        name={`approve-${action.id}`}
+                        checked={rememberOptionKey === option.key}
+                        onChange={() => setRememberOptionKey(option.key)}
+                      />
+                      <span className="action-approve-option-main">记住此类</span>
+                      <span className="action-approve-option-hint">
+                        {option.label}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
         )}
         {canRetryAction(action) && (
           <button
@@ -723,7 +763,7 @@ function PlanActionCard({
             onClick={() => void onRetry(messageId, action.id, plan)}
             type="button"
           >
-            {executingActionId === action.id ? "重试中…" : "↻ 重试命令"}
+            {executingActionId === action.id ? "重试中…" : "↻ 重试"}
           </button>
         )}
         {canCancelAction(action, hasActiveShellJob) && (
@@ -733,28 +773,28 @@ function PlanActionCard({
             onClick={() => void onCancel(messageId, action.id)}
             type="button"
           >
-            {isCancelling ? "取消中…" : "■ 取消命令"}
+            {isCancelling ? "取消中…" : "■ 取消"}
           </button>
         )}
         <button
-          className="btn btn-ghost btn-sm"
-          disabled={
-            !canReviewAction(action) || Boolean(executingActionId)
-          }
+          className="btn btn-ghost btn-sm action-icon-btn"
+          disabled={!canReviewAction(action) || Boolean(executingActionId)}
           onClick={() => onReject(messageId, action.id)}
           type="button"
+          aria-label="拒绝"
+          title="拒绝"
         >
-          ✕ 拒绝
+          ✕
         </button>
         <button
-          className="btn btn-ghost btn-sm"
-          disabled={
-            !canReviewAction(action) || Boolean(executingActionId)
-          }
+          className="btn btn-ghost btn-sm action-icon-btn"
+          disabled={!canReviewAction(action) || Boolean(executingActionId)}
           onClick={() => onComment(messageId, action.id)}
           type="button"
+          aria-label="备注"
+          title="备注"
         >
-          💬 备注
+          💬
         </button>
       </div>
     </li>
@@ -774,9 +814,6 @@ export function InlinePlan({
   onApproveAll,
   onRejectAll,
   activeShellActionIds,
-  forceExpanded = false,
-  forcedExpandedActionId = null,
-  expandRequestKey = 0,
 }: {
   plan: OrchestrationPlan;
   messageId: string;
@@ -802,45 +839,20 @@ export function InlinePlan({
   onCancel: (messageId: string, actionId: string) => Promise<void>;
   onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
   onRejectAll: (messageId: string) => void;
-  forceExpanded?: boolean;
-  forcedExpandedActionId?: string | null;
-  expandRequestKey?: number;
 }) {
   const safePlan: OrchestrationPlan = {
     ...plan,
-    steps: Array.isArray(plan.steps)
-      ? plan.steps.map((step, index) => ({
-        ...step,
-        title:
-          typeof step.title === "string" && step.title.trim()
-            ? step.title
-            : step.summary || `步骤 ${index + 1}`,
-        summary: step.summary || step.title || `步骤 ${index + 1}`,
-        status: step.status || "pending",
-        linkedActionIds: Array.isArray(step.linkedActionIds)
-          ? step.linkedActionIds
-          : [],
-      }))
-      : [],
+    steps: [],
     proposedActions: Array.isArray(plan.proposedActions)
       ? plan.proposedActions
       : [],
   };
 
-  const allStepsResolved =
-    safePlan.steps.length > 0 &&
-    safePlan.steps.every(
-      (step) =>
-        step.status === "completed" ||
-        step.status === "failed" ||
-        step.status === "skipped",
-    );
   const allResolved =
-    (safePlan.proposedActions.length === 0 ||
-      safePlan.proposedActions.every(
-        (action) => action.status !== "pending" && action.status !== "running",
-      )) &&
-    (safePlan.steps.length === 0 || allStepsResolved);
+    safePlan.proposedActions.length === 0 ||
+    safePlan.proposedActions.every(
+      (action) => action.status !== "pending" && action.status !== "running",
+    );
 
   const [expanded, setExpanded] = useState(!allResolved);
 
@@ -852,283 +864,175 @@ export function InlinePlan({
     prevAllResolved.current = allResolved;
   }, [allResolved]);
 
-  useEffect(() => {
-    if (!forceExpanded && !forcedExpandedActionId) {
-      return;
-    }
-    if (
-      forcedExpandedActionId &&
-      !safePlan.proposedActions.some((action) => action.id === forcedExpandedActionId)
-    ) {
-      return;
-    }
-    setExpanded(true);
-  }, [expandRequestKey, forceExpanded, forcedExpandedActionId, safePlan.proposedActions]);
+  if (safePlan.proposedActions.length === 1) {
+    const onlyAction = safePlan.proposedActions[0];
+    return (
+      <ul className="action-list action-list-compact">
+        <PlanActionCard
+          action={onlyAction}
+          plan={safePlan}
+          messageId={messageId}
+          executingActionId={executingActionId}
+          onPlanUpdate={onPlanUpdate}
+          onApprove={onApprove}
+          onRetry={onRetry}
+          onReject={onReject}
+          onComment={onComment}
+          onCancel={onCancel}
+          activeShellActionIds={activeShellActionIds}
+        />
+      </ul>
+    );
+  }
 
-  const approvedCount = safePlan.proposedActions.filter(
-    (action) => action.status === "completed",
-  ).length;
-  const rejectedCount = safePlan.proposedActions.filter(
-    (action) => action.status === "rejected",
-  ).length;
-  const failedCount = safePlan.proposedActions.filter(
-    (action) => action.status === "failed",
-  ).length;
   const pendingCount = safePlan.proposedActions.filter(
     (action) => action.status === "pending",
   ).length;
-  const todoCompletedCount = safePlan.steps.filter(
-    (step) => step.status === "completed" || step.status === "skipped",
+  const approvedCount = safePlan.proposedActions.filter(
+    (action) => action.status === "completed",
   ).length;
-  const todoBlockedCount = safePlan.steps.filter(
-    (step) => step.status === "blocked" || step.status === "failed",
+  const failedCount = safePlan.proposedActions.filter(
+    (action) => action.status === "failed" || action.status === "rejected",
   ).length;
-  const todoInProgressCount = safePlan.steps.filter(
-    (step) => step.status === "in_progress",
-  ).length;
-  const actionsByStepId = safePlan.proposedActions.reduce((acc, action) => {
-    if (!action.planStepId) {
-      return acc;
-    }
-    const current = acc.get(action.planStepId) ?? [];
-    current.push(action);
-    acc.set(action.planStepId, current);
-    return acc;
-  }, new Map<string, ActionProposal[]>());
-  const actionCountByStepId = Array.from(actionsByStepId.entries()).reduce(
-    (acc, [stepId, actions]) => acc.set(stepId, actions.length),
-    new Map<string, number>(),
-  );
 
-  const stateLabel = allResolved ? "已完成" : safePlan.state;
   const pendingPatchActions = safePlan.proposedActions.filter(
     (action): action is ApplyPatchActionProposal =>
       action.status === "pending" && action.type === "apply_patch",
   );
-  const unlinkedActions = safePlan.proposedActions.filter(
-    (action) => !action.planStepId,
-  );
+
+  const headerSegments: PlanHeaderSegment[] = [];
+  if (pendingCount > 0) {
+    headerSegments.push({ text: `审批 · ${pendingCount} 待处理`, tone: "pending" });
+  } else {
+    headerSegments.push({ text: `审批 · ${safePlan.proposedActions.length}` });
+  }
+  if (approvedCount > 0 && pendingCount === 0) {
+    headerSegments.push({ text: `${approvedCount} 已批准`, tone: "done" });
+  }
+  if (failedCount > 0) {
+    headerSegments.push({ text: `${failedCount} 失败`, tone: "failed" });
+  }
 
   return (
-    <div
-      className={`inline-plan${allResolved && !expanded ? " inline-plan-collapsed" : ""}`}
-      data-topbar-anchor="plan"
-      tabIndex={-1}
-    >
-      <div
+    <div className="plan-rail">
+      <button
+        type="button"
+        className="plan-rail-header"
         onClick={() => setExpanded(!expanded)}
-        style={{
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          paddingBottom: expanded ? "8px" : "0",
-        }}
+        aria-expanded={expanded}
       >
         <span
-          style={{
-            fontSize: "11px",
-            transition: "transform 0.2s",
-            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-            color: "var(--text-3)",
-          }}
+          className="tool-rail-chevron"
+          style={{ transform: expanded ? "rotate(90deg)" : "rotate(0deg)" }}
+          aria-hidden
         >
           ▶
         </span>
-        <p className="inline-plan-title" style={{ margin: 0 }}>
-          执行计划 · {stateLabel}
-        </p>
-        {!expanded && (safePlan.proposedActions.length > 0 || safePlan.steps.length > 0) && (
-          <span className="plan-summary-badges">
-            {safePlan.steps.length > 0 && (
-              <span className="plan-badge">
-                {todoCompletedCount}/{safePlan.steps.length} 已完成
-              </span>
-            )}
-            {todoInProgressCount > 0 && (
-              <span className="plan-badge plan-badge-pending">{todoInProgressCount} 进行中</span>
-            )}
-            {todoBlockedCount > 0 && (
-              <span className="plan-badge plan-badge-failed">{todoBlockedCount} 阻塞</span>
-            )}
-            {approvedCount > 0 && (
-              <span className="plan-badge plan-badge-approved">✓ {approvedCount}</span>
-            )}
-            {rejectedCount > 0 && (
-              <span className="plan-badge plan-badge-rejected">✕ {rejectedCount}</span>
-            )}
-            {failedCount > 0 && (
-              <span className="plan-badge plan-badge-failed">! {failedCount}</span>
-            )}
-            {pendingCount > 0 && (
-              <span className="plan-badge plan-badge-pending">{pendingCount} 待审批</span>
-            )}
-          </span>
-        )}
-      </div>
+        <span className="plan-rail-label">
+          {headerSegments.map((seg, i) => (
+            <span
+              key={i}
+              className={`plan-rail-label-seg${seg.tone ? ` is-${seg.tone}` : ""}`}
+            >
+              {seg.text}
+            </span>
+          ))}
+        </span>
+      </button>
 
-      {expanded && safePlan.steps.length > 0 && (
-        <ol className="plan-step-list">
-          {safePlan.steps.map((step) => {
-            const stepActions = actionsByStepId.get(step.id) ?? [];
-            return (
-              <li
-                key={step.id}
-                className={`plan-item plan-step plan-step-${step.status}${step.id === safePlan.activeStepId ? " is-active" : ""}`}
-                data-topbar-anchor={
-                  step.status === "blocked" || step.status === "failed"
-                    ? "blocked_output"
-                    : undefined
-                }
-                tabIndex={
-                  step.status === "blocked" || step.status === "failed" ? -1 : undefined
-                }
-              >
-                <div className="plan-step-header">
-                  <span className="plan-step-title">
-                    {step.title}
-                    {step.id === safePlan.activeStepId ? " · 当前" : ""}
-                  </span>
-                  <span className={`plan-badge plan-step-status plan-step-status-${step.status}`}>
-                    {step.status}
-                  </span>
-                </div>
-                <div className="plan-step-summary">{step.summary}</div>
-                <div className="plan-step-meta">
-                  {actionCountByStepId.get(step.id) ? (
-                    <span>{actionCountByStepId.get(step.id)} 个关联动作</span>
-                  ) : null}
-                  {step.dependsOn?.length ? <span>依赖 {step.dependsOn.length} 项</span> : null}
-                </div>
-                {step.note?.trim() && (
-                  <div className="plan-step-note">{step.note.trim()}</div>
-                )}
-                {stepActions.length > 0 && (
-                  <div className="plan-step-actions">
-                    <div className="plan-section-label">
-                      关联动作 · {stepActions.length}
-                    </div>
-                    <ul className="action-list plan-step-action-list">
-                      {stepActions.map((action) => (
-                        <PlanActionCard
-                          key={action.id}
-                          action={action}
-                          plan={safePlan}
-                          messageId={messageId}
-                          executingActionId={executingActionId}
-                          onPlanUpdate={onPlanUpdate}
-                          onApprove={onApprove}
-                          onRetry={onRetry}
-                          onReject={onReject}
-                          onComment={onComment}
-                          onCancel={onCancel}
-                          activeShellActionIds={activeShellActionIds}
-                        />
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ol>
+      {expanded && pendingCount > 1 && (
+        <PlanBatchBar
+          pendingCount={pendingCount}
+          pendingPatchActions={pendingPatchActions}
+          executingActionId={executingActionId}
+          onApproveAll={() => void onApproveAll(messageId, safePlan)}
+          onRejectAll={() => onRejectAll(messageId)}
+        />
       )}
 
       {expanded && safePlan.proposedActions.length > 0 && (
-        <>
-          {pendingCount > 1 && (
-            <div style={{ marginBottom: "8px" }}>
-              {(() => {
-                const batchAffectedFiles = getAffectedFiles(pendingPatchActions);
-                return (
-                  batchAffectedFiles.length > 0 && (
-                    <div
-                      style={{
-                        fontSize: "13px",
-                        color: "var(--text-3)",
-                        marginBottom: "6px",
-                        padding: "6px 10px",
-                        background: "var(--bg-surface)",
-                        borderRadius: "6px",
-                        lineHeight: "1.6",
-                      }}
-                    >
-                      <strong>
-                        批量变更涉及 {batchAffectedFiles.length} 个文件
-                      </strong>
-                      {pendingPatchActions.length > 1 && (
-                        <span style={{ marginLeft: "4px", opacity: 0.7 }}>
-                          (原子执行：全部成功或全部回滚)
-                        </span>
-                      )}
-                      {pendingPatchActions.length > 1 && renderAtomicStatus(pendingPatchActions)}
-                      <div style={{ marginTop: "2px" }}>
-                        {batchAffectedFiles.map((file) => (
-                          <span
-                            key={file}
-                            style={{
-                              display: "inline-block",
-                              marginRight: "8px",
-                              fontFamily: "monospace",
-                              fontSize: "12px",
-                            }}
-                          >
-                            📄 {file}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                );
-              })()}
-              <div style={{ display: "flex", gap: "8px" }}>
-                <button
-                  className="btn btn-primary btn-sm"
-                  disabled={Boolean(executingActionId)}
-                  onClick={() => void onApproveAll(messageId, safePlan)}
-                  type="button"
-                >
-                  ✓ 全部批准 ({pendingCount})
-                </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  disabled={Boolean(executingActionId)}
-                  onClick={() => onRejectAll(messageId)}
-                  type="button"
-                >
-                  ✕ 全部拒绝
-                </button>
-              </div>
-            </div>
-          )}
-
-          {unlinkedActions.length > 0 && (
-            <div className="plan-action-section">
-              <div className="plan-section-label">
-                未关联动作 · {unlinkedActions.length}
-              </div>
-              <ul className="action-list">
-                {unlinkedActions.map((action) => (
-                  <PlanActionCard
-                    key={action.id}
-                    action={action}
-                    plan={safePlan}
-                    messageId={messageId}
-                    executingActionId={executingActionId}
-                    onPlanUpdate={onPlanUpdate}
-                    onApprove={onApprove}
-                    onRetry={onRetry}
-                    onReject={onReject}
-                    onComment={onComment}
-                    onCancel={onCancel}
-                    activeShellActionIds={activeShellActionIds}
-                  />
-                ))}
-              </ul>
-            </div>
-          )}
-        </>
+        <ul className="action-list">
+          {safePlan.proposedActions.map((action) => (
+            <PlanActionCard
+              key={action.id}
+              action={action}
+              plan={safePlan}
+              messageId={messageId}
+              executingActionId={executingActionId}
+              onPlanUpdate={onPlanUpdate}
+              onApprove={onApprove}
+              onRetry={onRetry}
+              onReject={onReject}
+              onComment={onComment}
+              onCancel={onCancel}
+              activeShellActionIds={activeShellActionIds}
+            />
+          ))}
+        </ul>
       )}
+    </div>
+  );
+}
+
+type PlanHeaderTone = "pending" | "failed" | "done";
+
+interface PlanHeaderSegment {
+  text: string;
+  tone?: PlanHeaderTone;
+}
+
+function PlanBatchBar({
+  pendingCount,
+  pendingPatchActions,
+  executingActionId,
+  onApproveAll,
+  onRejectAll,
+}: {
+  pendingCount: number;
+  pendingPatchActions: ApplyPatchActionProposal[];
+  executingActionId: string;
+  onApproveAll: () => void;
+  onRejectAll: () => void;
+}) {
+  const batchAffectedFiles = getAffectedFiles(pendingPatchActions);
+  return (
+    <div className="plan-batch-bar">
+      {batchAffectedFiles.length > 0 && (
+        <div className="plan-batch-summary">
+          <span className="plan-batch-count">
+            批量 · {batchAffectedFiles.length} 个文件
+          </span>
+          {pendingPatchActions.length > 1 && (
+            <span className="plan-batch-hint">原子执行：全部成功或全部回滚</span>
+          )}
+          {pendingPatchActions.length > 1 && renderAtomicStatus(pendingPatchActions)}
+          <span className="plan-batch-files">
+            {batchAffectedFiles.map((file) => (
+              <code key={file} className="plan-batch-file">
+                {file}
+              </code>
+            ))}
+          </span>
+        </div>
+      )}
+      <div className="plan-batch-actions">
+        <button
+          className="btn btn-primary btn-sm"
+          disabled={Boolean(executingActionId)}
+          onClick={onApproveAll}
+          type="button"
+        >
+          ✓ 全部批准 ({pendingCount})
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
+          disabled={Boolean(executingActionId)}
+          onClick={onRejectAll}
+          type="button"
+        >
+          ✕ 全部拒绝
+        </button>
+      </div>
     </div>
   );
 }
@@ -1191,7 +1095,11 @@ export function TokenUsageRing({
           className={isStreaming ? "" : "token-usage-ring-animated"}
         />
       </svg>
-      <span>{formatTokens(used)}</span>
+      <span className="token-usage-ring-label">
+        <span className="token-usage-ring-used">{formatTokens(used)}</span>
+        <span className="token-usage-ring-sep">/</span>
+        <span className="token-usage-ring-max">{formatTokens(max)}</span>
+      </span>
     </div>
   );
 }

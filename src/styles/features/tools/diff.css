@@ -89,6 +89,60 @@
 .patch-line.remove  { background: var(--color-error-bg); color: var(--color-error); }
 .patch-line.context { background: transparent; color: var(--text-2); }
 
+.patch-preview-details {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.patch-preview-summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  user-select: none;
+}
+
+.patch-preview-summary::-webkit-details-marker { display: none; }
+
+.patch-preview-summary:hover { background: var(--bg-surface-hover); }
+
+.patch-preview-chevron {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--text-4);
+  transition: transform 0.15s ease;
+}
+
+.patch-preview-details[open] .patch-preview-chevron {
+  transform: rotate(90deg);
+}
+
+.patch-preview-label { color: var(--text-1); }
+
+.patch-preview-stats {
+  margin-left: auto;
+  color: var(--text-4);
+  font-weight: 500;
+  font-size: 10px;
+}
+
+.patch-preview-add { color: var(--color-success); }
+.patch-preview-del { color: var(--color-error); }
+
+.patch-preview-body {
+  border-top: 1px solid var(--border-subtle);
+  padding: 10px;
+  background: var(--bg-app);
+}
+
 .patch-raw-details {
   border: 1px dashed var(--border-subtle);
   border-radius: var(--r-sm);

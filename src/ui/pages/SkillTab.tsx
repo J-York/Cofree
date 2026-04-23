@@ -43,7 +43,7 @@ function SkillRow({
   onRequestDelete: () => void;
   onCancelDelete: () => void;
 }): ReactElement {
-  const canDelete = skill.source === "custom" || skill.source === "global";
+  const canDelete = skill.source === "custom" || skill.source === "global" || skill.source === "workspace";
 
   return (
     <div className={`skill-row${skill.enabled ? "" : " disabled"}`}>
@@ -256,6 +256,7 @@ export function SkillTab({ draft, setDraft }: SkillTabProps): ReactElement {
   const [discoveryError, setDiscoveryError] = useState<string>("");
   const [installMessage, setInstallMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [installLocation, setInstallLocation] = useState<"pending" | "global" | "workspace" | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [discoveryKey, setDiscoveryKey] = useState(0);
 
@@ -303,11 +304,15 @@ export function SkillTab({ draft, setDraft }: SkillTabProps): ReactElement {
     [draft.skills, discoveredSkills],
   );
 
-  const handleInstallSkill = async () => {
+  const handleInstallSkill = async (location: "global" | "workspace") => {
     setInstalling(true);
     setInstallMessage(null);
+    setInstallLocation(null);
     try {
-      const skillName = await invoke<string>("install_skill_from_zip");
+      const skillName = await invoke<string>("install_skill_from_zip", {
+        installLocation: location,
+        workspacePath: draft.workspacePath,
+      });
       invalidateSkillCache();
       setDiscoveryKey((prev) => prev + 1);
       setInstallMessage({ text: `Skill "${skillName}" 安装成功`, type: "success" });
@@ -330,11 +335,14 @@ export function SkillTab({ draft, setDraft }: SkillTabProps): ReactElement {
   };
 
   const handleDeleteSkill = async (skill: SkillEntry) => {
-    const canDeleteFromDisk = skill.source === "global" && !!skill.filePath;
+    const canDeleteFromDisk = (skill.source === "global" || skill.source === "workspace") && !!skill.filePath;
 
     if (canDeleteFromDisk) {
       try {
-        await invoke("delete_skill_directory", { filePath: skill.filePath });
+        await invoke("delete_skill_directory", {
+          filePath: skill.filePath,
+          workspacePath: draft.workspacePath,
+        });
         invalidateSkillCache();
       } catch (error) {
         setInstallMessage({ text: String(error), type: "error" });
@@ -372,11 +380,11 @@ export function SkillTab({ draft, setDraft }: SkillTabProps): ReactElement {
           </div>
           <button
             className="btn btn-primary"
-            onClick={handleInstallSkill}
+            onClick={() => setInstallLocation("pending")}
             type="button"
             disabled={installing}
           >
-            {installing ? "安装中…" : "+ 安装 Skill"}
+            {installing ? "安装中\u2026" : "+ 安装 Skill"}
           </button>
         </div>
 
@@ -396,6 +404,44 @@ export function SkillTab({ draft, setDraft }: SkillTabProps): ReactElement {
         )}
         {discoveryError && <div className="settings-inline-feedback">{discoveryError}</div>}
       </div>
+
+      {installLocation && (
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <h3 className="settings-card-title">选择安装位置</h3>
+          </div>
+          <p className="settings-card-desc">
+            选择 Skill 的安装位置。全局安装对所有项目生效，工作区安装仅对当前项目生效。
+          </p>
+          <div className="skill-form-actions">
+            <button
+              className="btn btn-primary"
+              onClick={() => handleInstallSkill("global")}
+              type="button"
+              disabled={installing}
+            >
+              安装到全局
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => handleInstallSkill("workspace")}
+              type="button"
+              disabled={installing || !draft.workspacePath.trim()}
+              title={!draft.workspacePath.trim() ? "需要先选择工作区" : undefined}
+            >
+              安装到工作区
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => setInstallLocation(null)}
+              type="button"
+              disabled={installing}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
 
       {editingSkill && (
         <EditSkillForm

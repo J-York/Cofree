@@ -66,6 +66,7 @@ import {
   createAttachmentFromSuggestion,
   findActiveMention,
   rankMentionSuggestions,
+  type ActiveMention,
   type MentionRankingSignals,
   type MentionSuggestion,
 } from "./chat/mentions";
@@ -73,11 +74,7 @@ import { type SkillEntry } from "../../lib/skillStore";
 import type {
   LiveToolCall,
 } from "./chat/types";
-import { CHECKPOINT_RESTORE_SESSION_NOTE } from "./chat/constants";
-import {
-  findLatestVisibleAssistantPlanMessage,
-  isLlmResponseFailureCategory,
-} from "./chat/chatPageHelpers";
+import { isLlmResponseFailureCategory } from "./chat/chatPageHelpers";
 import { useChatStreaming } from "./chat/hooks/useChatStreaming";
 import { useApprovalQueue } from "./chat/hooks/useApprovalQueue";
 import { useSkillDiscovery } from "./chat/hooks/useSkillDiscovery";
@@ -86,7 +83,6 @@ import { useThreadAutoScroll } from "./chat/hooks/useThreadAutoScroll";
 import { useConversationLifecycle } from "./chat/hooks/useConversationLifecycle";
 import { useConversationDebugLog } from "./chat/hooks/useConversationDebugLog";
 import { useShellJobs } from "./chat/hooks/useShellJobs";
-import { useConversationTopbar } from "./chat/hooks/useConversationTopbar";
 import { useApprovalActions } from "./chat/hooks/useApprovalActions";
 import { useChatExecution } from "./chat/hooks/useChatExecution";
 import { ChatComposer } from "./chat/composer/ChatComposer";
@@ -97,6 +93,13 @@ interface ChatPageProps {
   activeAgent: ChatAgentDefinition;
   isVisible?: boolean;
   sidebarCollapsed?: boolean;
+}
+
+function isSameActiveMention(a: ActiveMention | null, b: ActiveMention | null): boolean {
+  if (!a || !b) {
+    return a === b;
+  }
+  return a.query === b.query && a.start === b.start && a.end === b.end;
 }
 
 /* ── Main ChatPage ────────────────────────────────────────── */
@@ -166,7 +169,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   const lastContextAttachmentsRef = useRef<ChatContextAttachment[]>([]);
   const {
     threadRef,
-    contextAnchorRef,
     shouldStickThreadToBottomRef,
     forceThreadScrollRef,
     isThreadNearBottom: _isThreadNearBottom,
@@ -337,6 +339,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     conversationDebugEntriesRef,
     setPrompt,
     setComposerAttachments,
+    setSelectedSkills,
     clearMentionUi,
     requestThreadScrollToBottom,
     setIsStreaming,
@@ -447,9 +450,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
         ? caretIndex
         : textareaRef.current?.selectionStart ?? nextText.length;
     const mention = findActiveMention(nextText, resolvedCaret);
+    if (isSameActiveMention(activeMention, mention)) {
+      return;
+    }
     setActiveMention(mention);
     setMentionSelectionIndex(0);
-    if (!mention || mention.query.trim().length === 0) {
+    if (!mention) {
       setMentionSuggestions([]);
     }
   };
@@ -531,7 +537,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     setLiveToolCalls,
     setPrompt,
     setComposerAttachments,
-    setSelectedSkills,
     setFailedLlmRequestLog,
     appendConversationDebugEntry,
     appendAssistantStatusMessage,
@@ -549,10 +554,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
 
   const visibleMessages = messages.filter((message) => message.role !== "tool");
   const lastVisibleMessage = visibleMessages[visibleMessages.length - 1];
-  const activePlanMessage = findLatestVisibleAssistantPlanMessage(visibleMessages);
-  const activePlan = activePlanMessage?.plan ?? null;
-  const hasAskUserPending = askUserRequest !== null;
-  const hasRestoreNotice = sessionNote === CHECKPOINT_RESTORE_SESSION_NOTE;
   const lastVisiblePlanState = lastVisibleMessage?.plan?.state ?? "";
   const lastVisibleActionStatuses =
     lastVisibleMessage?.plan?.proposedActions
@@ -915,31 +916,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     messageCount: messages.length,
     activeAgentName: activeAgent.name,
   });
-  const activeConversationIdentity = resolveScopedSessionId(currentConversation);
-
-  const {
-    expandedPlanMessageId,
-    expandedPlanActionId,
-    expandedPlanRequestKey,
-    askUserAnchorMessageId,
-    restoreAnchorMessageId,
-    topbarState,
-    handleTopbarAction,
-  } = useConversationTopbar({
-    assistantDisplayName,
-    activeConversationIdentity,
-    messages,
-    visibleMessages,
-    lastVisibleMessage,
-    activePlan,
-    isStreaming,
-    liveToolCalls,
-    hasAskUserPending,
-    hasRestoreNotice,
-    sessionNote,
-    threadRef,
-    contextAnchorRef,
-  });
 
   // Listen for global new-conversation shortcut
   useEffect(() => {
@@ -994,13 +970,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
             onApproveAll={handleApproveAllActionsForThread}
             onRejectAll={handleRejectAllActionsForThread}
             onSuggestionClick={handleSuggestionClickForThread}
-            topbarState={topbarState}
-            onTopbarAction={handleTopbarAction}
-            expandedPlanMessageId={expandedPlanMessageId}
-            expandedPlanActionId={expandedPlanActionId}
-            expandedPlanRequestKey={expandedPlanRequestKey}
-            askUserAnchorMessageId={askUserAnchorMessageId}
-            restoreAnchorMessageId={restoreAnchorMessageId}
           />
 
           {/* ── Input ── */}
@@ -1039,7 +1008,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
             )}
             <ChatComposer
               textareaRef={textareaRef}
-              contextAnchorRef={contextAnchorRef}
               prompt={prompt}
               chatBlocked={chatBlocked}
               composerAttachments={composerAttachments}

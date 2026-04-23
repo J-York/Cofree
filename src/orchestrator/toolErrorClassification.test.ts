@@ -41,7 +41,6 @@ describe("classifyToolError", () => {
     ["命中被禁止的可执行程序", "guardrail"],
     ["命中高风险关键字", "guardrail"],
     ["解释器内联执行禁止", "guardrail"],
-    ["请使用 propose_apply_patch 工具", "guardrail"],
     ["禁止直接改文件", "guardrail"],
   ])("classifies %p as guardrail", (msg, expected) => {
     expect(classifyToolError(msg)).toBe(expected);
@@ -79,8 +78,8 @@ describe("classifyToolError", () => {
   });
 
   it("checks validation before guardrail when both keywords match", () => {
-    // "propose_apply_patch" is a guardrail keyword but "预检失败" wins (listed first in code)
-    expect(classifyToolError("Patch 预检失败: propose_apply_patch 仅允许单文件")).toBe(
+    // "受限目录" is a guardrail keyword but "预检失败" wins (listed first in code)
+    expect(classifyToolError("Patch 预检失败: 受限目录 src/secret")).toBe(
       "validation",
     );
   });

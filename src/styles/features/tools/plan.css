@@ -1,150 +1,84 @@
-/* ── Inline Plan / HITL ─────────────────────────────────── */
-.inline-plan {
-  margin-top: 12px;
-  padding: 12px 14px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  border-left: 2px solid var(--border-strong);
-  border-radius: var(--r-sm);
+/* ── Plan Rail (approval summary header) ────────────────── */
+/* Mirrors the visual language of `.tool-rail-*` in executions.css.
+   No outer card; flat inline header that summarises pending approvals. */
+
+.plan-rail {
+  margin-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 4px;
 }
 
-.chat-layout:has(.conversation-topbar) .inline-plan {
-  margin-top: 10px;
-  padding: 10px 12px;
-  border-left-width: 1px;
-  border-left-color: var(--border-subtle);
-}
-
-.chat-layout:has(.conversation-topbar) .inline-plan.inline-plan-collapsed {
-  padding: 5px 10px;
-  gap: 0;
-}
-
-.inline-plan-collapsed {
-  padding: 6px 12px;
-  gap: 0;
-  border-left-width: 1px;
-  border-left-color: var(--border-subtle);
-}
-
-.inline-plan-title {
+.plan-rail-header {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--font-mono);
   font-size: 10px;
-  font-weight: 500;
   color: var(--text-4);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  margin: 0;
+  padding: 0 2px;
 }
+.plan-rail-header:hover { color: var(--text-3); }
 
-.plan-summary-badges {
-  display: flex;
+.plan-rail-label {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
-}
-
-.plan-badge {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: var(--r-sm);
-  font-weight: 600;
-  white-space: nowrap;
-  line-height: 1.6;
-  border: 1px solid var(--border-subtle);
-}
-
-.plan-badge-approved { background: var(--color-success-bg); color: var(--color-success); }
-.plan-badge-rejected,
-.plan-badge-failed   { background: var(--color-error-bg);   color: var(--color-error); }
-.plan-badge-pending  { background: var(--color-warning-bg); color: var(--color-warning); }
-
-.plan-item { font-size: 13px; color: var(--text-2); margin: 0; }
-
-.plan-step-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.plan-step {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--bg-surface);
-  padding: 10px 12px;
-}
-
-.plan-step.is-active {
-  border-color: var(--border-default);
-  background: var(--bg-surface-hover);
-}
-
-.plan-step-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-.plan-step-title { color: var(--text-1); font-size: 13px; font-weight: 600; }
-.plan-step-summary { color: var(--text-2); font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
-
-.plan-step-meta {
-  display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 6px;
-  font-family: var(--font-mono);
-  color: var(--text-4);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
-.plan-step-note {
+.plan-rail-label-seg { font-weight: 600; }
+.plan-rail-label-seg + .plan-rail-label-seg::before {
+  content: "·";
+  margin-right: 6px;
+  color: var(--text-4);
+  font-weight: 400;
+}
+.plan-rail-label-seg.is-pending { color: var(--color-warning); }
+.plan-rail-label-seg.is-failed  { color: var(--color-error); }
+.plan-rail-label-seg.is-done    { color: var(--color-success); }
+
+/* ── Plan Batch Bar (multi-pending approvals) ───────────── */
+.plan-batch-bar {
   margin-top: 8px;
   padding: 8px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
-  background: var(--bg-panel);
-  color: var(--text-2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-batch-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
-  white-space: pre-wrap;
+  color: var(--text-3);
 }
 
-.plan-step-status { text-transform: none; }
-.plan-step-status-in_progress { background: var(--color-warning-bg); color: var(--color-warning); }
-.plan-step-status-completed,
-.plan-step-status-skipped    { background: var(--color-success-bg); color: var(--color-success); }
-.plan-step-status-blocked,
-.plan-step-status-failed     { background: var(--color-error-bg); color: var(--color-error); }
+.plan-batch-count { font-weight: 600; color: var(--text-1); }
+.plan-batch-hint  { color: var(--text-4); font-size: 11px; }
 
-.plan-step-actions {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.plan-action-section { display: flex; flex-direction: column; gap: 8px; }
-
-.plan-section-label {
+.plan-batch-files { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.plan-batch-file {
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--text-4);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-size: 11px;
+  color: var(--text-2);
+  padding: 1px 6px;
+  background: var(--bg-panel);
+  border-radius: var(--r-xs);
 }
 
-.plan-step-action-list { margin-top: 8px; }
+.plan-batch-actions { display: flex; gap: 8px; }
 
+/* ── Action List & Cards (kept for HITL approvals) ──────── */
 .action-list {
   display: flex;
   flex-direction: column;
@@ -152,6 +86,10 @@
   padding: 0;
   list-style: none;
   margin: 10px 0 0;
+}
+
+.action-list-compact {
+  margin-top: 12px;
 }
 
 .action-item {
@@ -206,7 +144,90 @@
   border-top: 1px solid var(--border-subtle);
 }
 
-.action-approval-select {
-  min-width: 220px;
+/* ── Approve Split Button ──────────────────────────────── */
+.action-approve-group {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.action-approve-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  margin-right: -1px;
+}
+
+.action-approve-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.action-approve-trigger {
+  list-style: none;
+  cursor: pointer;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding-left: 8px;
+  padding-right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.action-approve-trigger::-webkit-details-marker { display: none; }
+.action-approve-trigger::marker { content: ""; }
+
+.action-approve-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 240px;
   max-width: 320px;
+  padding: 6px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 10;
+}
+
+.action-approve-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--r-xs);
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.action-approve-option:hover { background: var(--bg-surface-hover); }
+
+.action-approve-option input[type="radio"] {
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.action-approve-option-main { color: var(--text-1); font-weight: 500; }
+
+.action-approve-option-hint {
+  color: var(--text-4);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Icon-only reject/comment buttons */
+.action-icon-btn {
+  padding: 4px 8px;
+  min-width: 32px;
+  font-size: 13px;
 }

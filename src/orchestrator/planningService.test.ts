@@ -40,7 +40,6 @@ vi.mock("../agents/resolveAgentRuntime", () => ({
             git_status: "auto",
             git_diff: "auto",
             propose_file_edit: "ask",
-            propose_apply_patch: "ask",
             propose_shell: "ask",
             diagnostics: "auto",
             fetch: "ask",
@@ -82,7 +81,6 @@ import {
     type LiteLLMMessage,
 } from "../lib/piAiBridge";
 import { resolveAgentRuntime } from "../agents/resolveAgentRuntime";
-import { assembleRuntimeContext } from "../agents/promptAssembly";
 import { DEFAULT_SETTINGS, type AppSettings } from "../lib/settingsStore";
 import { createFileContextAttachment } from "../lib/contextAttachments";
 import { generateRepoMap } from "./repoMapService";
@@ -260,31 +258,6 @@ describe("planningService approval-flow repair", () => {
         expect(prompt).toContain("给出结构化总结");
     });
 
-    it("passes update_plan as an internal tool to assembleRuntimeContext so it appears in 本轮可用工具", async () => {
-        vi.mocked(gatewayComplete).mockResolvedValue({
-            status: 200,
-            endpoint: "http://localhost:4000/chat/completions",
-            body: JSON.stringify({
-                id: "chatcmpl-ctx",
-                choices: [{ message: { role: "assistant", content: "done" } }],
-                usage: { prompt_tokens: 4, completion_tokens: 2 },
-            }),
-        });
-
-        await runPlanningSession({
-            prompt: "请帮我做一个MVP",
-            settings: createSettings(),
-            conversationHistory: [],
-        });
-
-        const calls = vi.mocked(assembleRuntimeContext).mock.calls;
-        expect(calls.length).toBeGreaterThan(0);
-        // The third argument must be an array that contains "update_plan"
-        const internalTools = calls[0]?.[2] as string[] | undefined;
-        expect(Array.isArray(internalTools)).toBe(true);
-        expect(internalTools).toContain("update_plan");
-    });
-
     it("builds tool-loop request bodies through modelGateway", async () => {
         vi.mocked(gatewayComplete).mockResolvedValue({
             status: 200,
@@ -446,7 +419,6 @@ describe("planningService approval-flow repair", () => {
                 git_status: "auto",
                 git_diff: "auto",
                 propose_file_edit: "ask",
-                propose_apply_patch: "ask",
                 propose_shell: "ask",
                 diagnostics: "auto",
                 fetch: "ask",
@@ -500,7 +472,6 @@ describe("planningService approval-flow repair", () => {
                 git_status: "auto",
                 git_diff: "auto",
                 propose_file_edit: "ask",
-                propose_apply_patch: "ask",
                 propose_shell: "ask",
                 diagnostics: "auto",
                 fetch: "ask",
@@ -730,16 +701,12 @@ describe("planningService approval-flow repair", () => {
         const shellTool = firstRequestOptions?.tools?.find(
             (tool) => tool.function.name === "propose_shell",
         );
-        const planTool = firstRequestOptions?.tools?.find(
-            (tool: any) => tool.function.name === "update_plan",
-        );
 
         expect(shellTool?.function.description).toContain("PowerShell");
         expect(shellTool?.function.description).toContain("Non-interactive");
         expect(shellTool?.function.parameters.properties.shell.description).toContain(
             "Windows",
         );
-        expect(planTool?.function.description).toContain("todo plan");
     });
 
     it("passes task description and focused paths into repo-map generation on first turn", async () => {
@@ -786,150 +753,6 @@ describe("planningService approval-flow repair", () => {
                 maxFiles: undefined,
             },
         );
-    });
-
-    it("updates todo plan state through the internal update_plan tool", async () => {
-        const planState = {
-            steps: [
-                {
-                    id: "step-plan",
-                    title: "分析需求",
-                    summary: "分析需求并拆解",
-                    status: "in_progress" as const,
-                },
-                {
-                    id: "step-implement",
-                    title: "执行实现",
-                    summary: "执行代码改动",
-                    status: "pending" as const,
-                    dependsOn: ["step-plan"],
-                },
-            ],
-            activeStepId: "step-plan",
-        };
-
-        const result = await planningServiceTestUtils.executeToolCall(
-            {
-                id: "tool-plan-1",
-                type: "function",
-                function: {
-                    name: "update_plan",
-                    arguments: JSON.stringify({
-                        operation: "complete",
-                        step_id: "step-plan",
-                        note: "需求已分析完成",
-                    }),
-                },
-            },
-            "d:/Code/cofree",
-            DEFAULT_SETTINGS.toolPermissions,
-            undefined,
-            undefined,
-            undefined,
-            planState as any,
-        );
-
-        const payload = JSON.parse(result.content) as Record<string, unknown>;
-
-        expect(result.success).toBe(true);
-        expect(planState.steps[0].status).toBe("completed");
-        expect((planState.steps[0] as any).note).toContain("需求已分析完成");
-        expect(planState.steps[1].status).toBe("in_progress");
-        expect(planState.activeStepId).toBe("step-implement");
-        expect(payload.active_step_id).toBe("step-implement");
-    });
-
-    it("refreshes the todo system prompt after update_plan before the next turn", async () => {
-        vi.mocked(gatewayComplete)
-            .mockResolvedValueOnce({
-                status: 200,
-                endpoint: "http://localhost:4000/chat/completions",
-                body: JSON.stringify({
-                    id: "chatcmpl-plan-refresh-1",
-                    choices: [
-                        {
-                            message: {
-                                role: "assistant",
-                                content: "",
-                                tool_calls: [
-                                    {
-                                        id: "call-plan-refresh-1",
-                                        type: "function",
-                                        function: {
-                                            name: "update_plan",
-                                            arguments: JSON.stringify({
-                                                operation: "complete",
-                                                step_id: "step-plan",
-                                                note: "需求已分析完成",
-                                            }),
-                                        },
-                                    },
-                                ],
-                            },
-                        },
-                    ],
-                    usage: {
-                        prompt_tokens: 16,
-                        completion_tokens: 8,
-                    },
-                }),
-            })
-            .mockResolvedValueOnce({
-                status: 200,
-                endpoint: "http://localhost:4000/chat/completions",
-                body: JSON.stringify({
-                    id: "chatcmpl-plan-refresh-2",
-                    choices: [
-                        {
-                            message: {
-                                role: "assistant",
-                                content: "done",
-                            },
-                        },
-                    ],
-                    usage: {
-                        prompt_tokens: 14,
-                        completion_tokens: 2,
-                    },
-                }),
-            });
-
-        await runPlanningSession({
-            prompt: "完成 todo 列表中的当前工作",
-            settings: createSettings(),
-            conversationHistory: [],
-            existingPlan: {
-                state: "planning",
-                prompt: "完成 todo 列表中的当前工作",
-                steps: [
-                    {
-                        id: "step-plan",
-                        title: "分析需求",
-                        summary: "分析需求并拆解",
-                        status: "in_progress",
-                    },
-                    {
-                        id: "step-implement",
-                        title: "执行实现",
-                        summary: "执行代码改动",
-                        status: "pending",
-                        dependsOn: ["step-plan"],
-                    },
-                ],
-                activeStepId: "step-plan",
-                proposedActions: [],
-                workspacePath: "d:/Code/cofree",
-            },
-        });
-
-        const secondMessages = (vi.mocked(gatewayComplete).mock.calls[1]?.[0] ?? []) as Array<{ role: string; content: string }>;
-        const todoMessages = secondMessages.filter(
-            (message) => message.role === "system" && message.content.startsWith("[Todo Plan]"),
-        );
-
-        expect(todoMessages).toHaveLength(1);
-        expect(todoMessages[0]?.content).toContain("(completed) 分析需求");
-        expect(todoMessages[0]?.content).toContain("(in_progress) 执行实现 [当前]");
     });
 
     it("returns explicit pending-approval semantics for gated shell proposals", async () => {
@@ -1488,7 +1311,6 @@ describe("planningService approval-flow repair", () => {
                 git_status: "auto",
                 git_diff: "auto",
                 propose_file_edit: "ask",
-                propose_apply_patch: "ask",
                 propose_shell: "ask",
                 diagnostics: "auto",
                 fetch: "ask",
@@ -1933,7 +1755,7 @@ describe("planningService approval-flow repair", () => {
         expect(buildCalls).toHaveLength(1);
     });
 
-    it("rejects multi-file propose_apply_patch requests", async () => {
+    it("rejects multi-file propose_file_edit patch requests", async () => {
         vi.mocked(invoke).mockImplementation(async (command: string, args?: any) => {
             if (command === "check_workspace_patch") {
                 expect(args?.patch).toContain("diff --git a/src/a.ts b/src/a.ts");
@@ -1967,8 +1789,9 @@ describe("planningService approval-flow repair", () => {
                 id: "tool-raw-patch-multifile",
                 type: "function",
                 function: {
-                    name: "propose_apply_patch",
+                    name: "propose_file_edit",
                     arguments: JSON.stringify({
+                        operation: "patch",
                         patch: multiFilePatch,
                     }),
                 },
@@ -1976,7 +1799,7 @@ describe("planningService approval-flow repair", () => {
             "d:/Code/cofree",
             {
                 ...DEFAULT_SETTINGS.toolPermissions,
-                propose_apply_patch: "ask",
+                propose_file_edit: "ask",
             },
         );
 
@@ -2287,7 +2110,7 @@ describe("clearOldToolUses", () => {
         const result = await compressMessagesToFitBudget({
             messages: [
                 { role: "system", content: "system prompt" },
-                { role: "system", content: "[Todo Plan]\n○ [step-plan] (planner/in_progress) 分析需求 [当前]" },
+                { role: "system", content: "[工作记忆刷新]\n- cached fact" },
                 { role: "user", content: "A".repeat(600) },
                 { role: "assistant", content: "B".repeat(600) },
             ],
@@ -2304,7 +2127,7 @@ describe("clearOldToolUses", () => {
         expect(result.messages[0]).toMatchObject({ role: "system", content: "system prompt" });
         expect(result.messages[1]).toMatchObject({
             role: "system",
-            content: "[Todo Plan]\n○ [step-plan] (planner/in_progress) 分析需求 [当前]",
+            content: "[工作记忆刷新]\n- cached fact",
         });
     });
 });

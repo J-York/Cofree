@@ -52,7 +52,6 @@ describe("promptAssembly system prompt", () => {
         enabledTools: ["read_file"],
       }),
       "/workspace",
-      ["update_plan"],
     );
 
     expect(runtimeContext).toContain("本轮可用工具");

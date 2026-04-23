@@ -198,9 +198,17 @@
   color: var(--text-4);
 }
 
-.token-usage-ring span {
+.token-usage-ring-label {
   font-family: var(--font-mono);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  font-size: 11px;
 }
+
+.token-usage-ring-used { color: var(--text-2); font-weight: 500; }
+.token-usage-ring-sep  { color: var(--text-4); }
+.token-usage-ring-max  { color: var(--text-4); }
 
 .token-usage-ring-svg {
   transform: rotate(-90deg);

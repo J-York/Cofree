@@ -96,7 +96,7 @@ export function detectPseudoToolJsonTranscript(content: string): string | null {
     /"content_preview"\s*:/i,
     /"showing_lines"\s*:/i,
     /"approval_required"\s*:/i,
-    /\b(?:read_file|list_files|grep|glob|git_status|git_diff|propose_file_edit|propose_apply_patch|propose_shell|fetch|ask_user)\s+failed\b/i,
+    /\b(?:read_file|list_files|grep|glob|git_status|git_diff|propose_file_edit|propose_shell|fetch|ask_user)\s+failed\b/i,
   ];
 
   const hasToolArguments = toolArgumentPatterns.some((pattern) => pattern.test(normalized));
@@ -171,12 +171,13 @@ export function summarizeToolArgs(toolName: string, argsJson: string): string {
       return "";
     case "git_diff":
       return pathPreview || "(all)";
-    case "propose_file_edit":
-      return pathPreview;
-    case "propose_apply_patch": {
+    case "propose_file_edit": {
+      if (pathPreview) {
+        return pathPreview;
+      }
       const patch = extractStringArg(argsJson, ["patch"]);
       const match = patch.match(/^diff --git a\/(.+?) b\//m);
-      return match ? match[1] : "(patch)";
+      return match ? match[1] : "";
     }
     case "propose_shell": {
       const cmd = extractStringArg(argsJson, ["shell"]);
@@ -186,11 +187,6 @@ export function summarizeToolArgs(toolName: string, argsJson: string): string {
       const role = extractStringArg(argsJson, ["role"]);
       const description = extractStringArg(argsJson, ["description"]);
       return role ? `${role}: ${description.slice(0, 30)}...` : "";
-    }
-    case "update_plan": {
-      const operation = extractStringArg(argsJson, ["operation"]);
-      const stepId = extractStringArg(argsJson, ["step_id"]);
-      return `${operation}: ${stepId}`.trim();
     }
     case "diagnostics":
       return argsJson.includes("\"changed_files\"") ? "changed files" : "(all)";

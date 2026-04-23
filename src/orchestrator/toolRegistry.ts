@@ -1,7 +1,7 @@
 import type { LiteLLMToolDefinition } from "../lib/piAiBridge";
 import type { ResolvedAgentRuntime } from "../agents/types";
 
-export const INTERNAL_TOOL_NAMES = ["update_plan"] as const;
+export const INTERNAL_TOOL_NAMES = [] as const;
 
 const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
   {
@@ -146,30 +146,6 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
   {
     type: "function",
     function: {
-      name: "propose_apply_patch",
-      description:
-        "Submit a SINGLE-FILE unified diff patch for HITL approval. Use only when explicit patch is requested. Multi-file patches rejected.",
-      parameters: {
-        type: "object",
-        required: ["patch"],
-        additionalProperties: false,
-        properties: {
-          patch: {
-            type: "string",
-            description:
-              "Unified diff for ONE file. Must include 'diff --git' header. New files: '--- /dev/null'. Deletes: '+++ /dev/null'.",
-          },
-          description: {
-            type: "string",
-            description: "Optional description.",
-          },
-        },
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
       name: "propose_file_edit",
       description: [
         "Propose a single-file text edit for HITL approval. Operations:",
@@ -177,22 +153,23 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
         "- INSERT: operation='insert', content + (anchor OR line), position='before'|'after'",
         "- DELETE: operation='delete' + (search OR start_line/end_line)",
         "- CREATE: operation='create', content (+ overwrite=true to overwrite existing)",
+        "- PATCH: operation='patch', patch (raw single-file unified diff)",
         "",
-        "Rules: search/anchor must exactly match file content (no line number prefixes '行号│'). relative_path is REQUIRED.",
+        "Rules: search/anchor must exactly match file content (no line number prefixes '行号│'). relative_path is REQUIRED for every operation EXCEPT 'patch' (path is parsed from the diff header).",
       ].join("\n"),
       parameters: {
         type: "object",
-        required: ["relative_path"],
         additionalProperties: false,
         properties: {
           relative_path: {
             type: "string",
             minLength: 1,
-            description: "Workspace-relative file path.",
+            description:
+              "Workspace-relative file path. Required for all operations except 'patch'.",
           },
           operation: {
             type: "string",
-            enum: ["replace", "insert", "delete", "create"],
+            enum: ["replace", "insert", "delete", "create", "patch"],
             description:
               "Edit operation. Defaults to 'replace' for backward compatibility.",
           },
@@ -252,6 +229,11 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
             type: "boolean",
             description:
               "For create: when true and file already exists, update file content instead of failing.",
+          },
+          patch: {
+            type: "string",
+            description:
+              "For operation='patch': unified diff for ONE file. Must include 'diff --git' header. New files: '--- /dev/null'. Deletes: '+++ /dev/null'. Multi-file patches rejected.",
           },
           description: {
             type: "string",
@@ -328,47 +310,6 @@ const TOOL_DEFINITIONS: LiteLLMToolDefinition[] = [
           job_id: {
             type: "string",
             description: "The job_id from propose_shell background result.",
-          },
-        },
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "update_plan",
-      description:
-        "Update the todo plan: mark steps active/completed/blocked/failed/skipped, add notes, or append new steps. No workspace side effects.",
-      parameters: {
-        type: "object",
-        required: ["operation", "step_id"],
-        additionalProperties: false,
-        properties: {
-          operation: {
-            type: "string",
-            enum: ["set_active", "complete", "block", "fail", "skip", "note", "add"],
-            description: "Operation to perform.",
-          },
-          step_id: {
-            type: "string",
-            minLength: 1,
-            description: "Target step id.",
-          },
-          title: {
-            type: "string",
-            description: "Required for 'add'. Step title.",
-          },
-          summary: {
-            type: "string",
-            description: "Optional step summary for 'add'.",
-          },
-          note: {
-            type: "string",
-            description: "Optional note.",
-          },
-          after_step_id: {
-            type: "string",
-            description: "Insertion anchor for 'add'.",
           },
         },
       },

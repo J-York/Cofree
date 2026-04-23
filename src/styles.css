@@ -23,7 +23,6 @@
 @import './styles/features/chat/panel.css';
 @import './styles/features/chat/layout.css';
 @import './styles/features/chat/bubble.css';
-@import './styles/features/chat/topbar.css';
 @import './styles/features/chat/markdown.css';
 @import './styles/features/chat/input.css';
 @import './styles/features/tools/executions.css';

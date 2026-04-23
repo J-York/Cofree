@@ -157,7 +157,10 @@ function dedupeMentionSuggestions(suggestions: MentionSuggestion[]): MentionSugg
   const result: MentionSuggestion[] = [];
 
   for (const suggestion of suggestions) {
-    const key = `${suggestion.kind}:${normalizePath(suggestion.relativePath)}`;
+    const key =
+      suggestion.kind === "skill" && suggestion.skillId
+        ? `skill:${suggestion.skillId}`
+        : `${suggestion.kind}:${normalizePath(suggestion.relativePath)}`;
     if (seen.has(key)) {
       continue;
     }
@@ -296,17 +299,26 @@ export function buildSkillMentionSuggestions(
         kws.includes(normalizedQuery)
       );
     })
-    .map((skill) => ({
-      kind: "skill" as const,
-      relativePath: skill.name,
-      displayName: skill.name,
-      modified: 0,
-      size: 0,
-      source: "skill" as const,
-      skillId: skill.id,
-      description: skill.description,
-      keywords: skill.keywords,
-    }));
+    .map((skill) => {
+      // Include source label so same-name skills from different
+      // origins are visually distinguishable in the suggestion list.
+      const sourceLabel =
+        skill.source === "global" ? "global" :
+          skill.source === "workspace" ? "workspace" :
+          skill.source === "cofreerc" ? "cofreerc" :
+          "custom";
+      return {
+        kind: "skill" as const,
+        relativePath: skill.name,
+        displayName: `${skill.name} (${sourceLabel})`,
+        modified: 0,
+        size: 0,
+        source: "skill" as const,
+        skillId: skill.id,
+        description: skill.description,
+        keywords: skill.keywords,
+      };
+    })
 }
 
 export function rankMentionSuggestions(

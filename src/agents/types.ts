@@ -60,7 +60,7 @@ export type ChatAgentOverride = Partial<
 export const ALL_AGENT_TOOL_NAMES = [
   "list_files", "read_file", "grep", "glob",
   "git_status", "git_diff",
-  "propose_file_edit", "propose_apply_patch", "propose_shell",
+  "propose_file_edit", "propose_shell",
   "check_shell_job",
   "diagnostics", "fetch",
 ] as const;
@@ -79,7 +79,6 @@ export const AGENT_TOOL_CATALOG: ReadonlyArray<{
   { name: "diagnostics", label: "诊断", category: "read" },
   { name: "check_shell_job", label: "查询后台进程", category: "read" },
   { name: "propose_file_edit", label: "编辑文件", category: "write" },
-  { name: "propose_apply_patch", label: "应用补丁", category: "write" },
   { name: "propose_shell", label: "执行命令", category: "write" },
   { name: "fetch", label: "网络请求", category: "write" },
 ];

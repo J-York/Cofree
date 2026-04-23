@@ -14,8 +14,8 @@ import {
 import { getAllChatAgents, getChatAgentFromSettings } from "./agents/builtinChatAgents";
 import { ChatPage } from "./ui/pages/ChatPage";
 import { TitleBar } from "./ui/components/TitleBar";
-import { TerminalPanel } from "./ui/components/TerminalPanel";
 import { UpdateBanner } from "./ui/components/UpdateBanner";
+import { openSystemTerminal } from "./lib/tauriBridge";
 import { useUpdater } from "./hooks/useUpdater";
 import { useTheme } from "./hooks/useTheme";
 import {
@@ -52,7 +52,6 @@ export default function App(): ReactElement {
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [terminalOpen, setTerminalOpen] = useState(false);
   const [gitBranch, setGitBranch] = useState<string>("");
 
   const sessionActions: SessionActions = useMemo(
@@ -154,12 +153,19 @@ export default function App(): ReactElement {
     setSettings(next);
   }, []);
 
+  const handleOpenSystemTerminal = useCallback(() => {
+    const workspacePath = settingsRef.current.workspacePath;
+    if (!workspacePath) return;
+    void openSystemTerminal(workspacePath).catch((err) => {
+      console.error("open_system_terminal failed", err);
+    });
+  }, []);
+
   // ── Global keyboard shortcuts ──
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (settingsOpen) { setSettingsOpen(false); e.preventDefault(); }
-        else if (terminalOpen) { setTerminalOpen(false); e.preventDefault(); }
         return;
       }
 
@@ -177,18 +183,17 @@ export default function App(): ReactElement {
           break;
         case "j":
           e.preventDefault();
-          setTerminalOpen((v) => !v);
+          handleOpenSystemTerminal();
           break;
         case "n":
           e.preventDefault();
-          // Dispatch a custom event that ChatPage listens to
           window.dispatchEvent(new CustomEvent("cofree:new-conversation"));
           break;
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [settingsOpen, terminalOpen]);
+  }, [settingsOpen, handleOpenSystemTerminal]);
 
   return (
     <SessionContext.Provider value={{ state: sessionState, actions: sessionActions }}>
@@ -207,7 +212,7 @@ export default function App(): ReactElement {
           activeModelId={settings.activeModelId}
           agents={getAllChatAgents(settings)}
           activeAgentId={settings.activeAgentId}
-          onToggleTerminal={() => setTerminalOpen((v) => !v)}
+          onOpenSystemTerminal={handleOpenSystemTerminal}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
           onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
           sidebarCollapsed={sidebarCollapsed}
@@ -215,7 +220,6 @@ export default function App(): ReactElement {
           onSwitchAgent={handleSwitchAgent}
           onSelectWorkspace={() => void handleSelectWorkspace()}
           onSwitchWorkspace={handleSwitchWorkspace}
-          terminalOpen={terminalOpen}
         />
 
         <div className="app-body">
@@ -226,12 +230,6 @@ export default function App(): ReactElement {
             sidebarCollapsed={sidebarCollapsed}
           />
         </div>
-
-        <TerminalPanel
-          isOpen={terminalOpen}
-          workspacePath={settings.workspacePath}
-          onClose={() => setTerminalOpen(false)}
-        />
 
         {settingsOpen && (
           <div className="settings-modal-backdrop">

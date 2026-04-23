@@ -237,3 +237,60 @@ describe("chat mention helpers", () => {
     expect(defaults[0]!.skillId).toBe("global:odps");
   });
 });
+
+
+  it("builds skill suggestions with source labels and preserves different skillIds for same-name skills", () => {
+    const sameNameSkills: SkillEntry[] = [
+      {
+        id: "global:odps",
+        name: "odps",
+        description: "Global ODPS skill",
+        source: "global",
+        enabled: true,
+        createdAt: "",
+      },
+      {
+        id: "workspace:odps",
+        name: "odps",
+        description: "Workspace ODPS skill",
+        source: "workspace",
+        enabled: true,
+        createdAt: "",
+      },
+    ];
+
+    const suggestions = buildSkillMentionSuggestions(sameNameSkills, "");
+    expect(suggestions).toHaveLength(2);
+    expect(suggestions.map((s) => s.skillId)).toEqual(["global:odps", "workspace:odps"]);
+    expect(suggestions[0]!.displayName).toContain("global");
+    expect(suggestions[1]!.displayName).toContain("workspace");
+  });
+
+  it("deduplicates skills by skillId so same-name skills from different sources both survive", () => {
+    const ranked = rankMentionSuggestions("", [
+      {
+        kind: "skill",
+        relativePath: "odps",
+        displayName: "odps (global)",
+        modified: 0,
+        size: 0,
+        source: "skill",
+        skillId: "global:odps",
+        description: "Global ODPS",
+        keywords: ["odps"],
+      },
+      {
+        kind: "skill",
+        relativePath: "odps",
+        displayName: "odps (workspace)",
+        modified: 0,
+        size: 0,
+        source: "skill",
+        skillId: "workspace:odps",
+        description: "Workspace ODPS",
+        keywords: ["odps"],
+      },
+    ]);
+    const skillIds = ranked.filter((s) => s.kind === "skill").map((s) => s.skillId);
+    expect(skillIds).toEqual(["global:odps", "workspace:odps"]);
+  });

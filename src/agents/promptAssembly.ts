@@ -5,7 +5,7 @@
  */
 
 import type { ResolvedAgentRuntime } from "./types";
-import type { ResolvedSkill } from "../lib/skillStore";
+import type { ResolvedSkill, SkillManifestEntry } from "../lib/skillStore";
 import { buildSkillPromptFragment } from "../lib/skillStore";
 
 // ---------------------------------------------------------------------------
@@ -14,17 +14,16 @@ import { buildSkillPromptFragment } from "../lib/skillStore";
 
 const RULE_CORE = [
   "通过工具获取事实，基于上下文推理。遵守以下原则：",
-  "1) **先思考再行动**：修改前分析问题，理解架构和依赖。复杂任务先拆解步骤。",
+  "1) **先思考再行动**：修改前分析问题，理解架构和依赖。",
   "2) **高质量代码**：包含类型定义、错误处理、一致风格，考虑边界条件。",
   "3) **基于事实迭代**：工具返回的报错/成功就是事实，出错后查阅 stderr 并用 read_file 校验后修正。",
   "4) **原子修改**：每次写入只改一个文件。跨文件任务拆成多个顺序的 propose_file_edit。",
-  "5) **Todo 一致性**：有 todo 时一次只推进一个步骤，状态变更必须调用 update_plan。",
 ].join("\n");
 
 const RULE_EDITING = [
   "修改文件/执行命令时：",
-  "1) 不要输出代码，只通过工具提出动作。优选 `propose_file_edit`（search 必须精确匹配文件内容，不含行号前缀 `123│`）。",
-  "2) 命令执行用 `propose_shell`（Windows=PowerShell，Unix=sh）。除非用户要求，不要用 `propose_apply_patch`。",
+  "1) 不要输出代码，只通过工具提出动作。优选结构化 `propose_file_edit`（search 必须精确匹配文件内容，不含行号前缀 `123│`）。",
+  "2) 命令执行用 `propose_shell`（Windows=PowerShell，Unix=sh）。仅在用户明确要求时才使用 `propose_file_edit` + operation='patch' 提交原始 unified diff。",
   "3) 报错后：读取相关源码/日志 → 推理原因 → 一次修正。",
 ].join("\n");
 
@@ -48,7 +47,6 @@ const RULE_TASK_COMPLETION = [
   "## 任务完成",
   "- 所有交付物完成后，给出结构化总结（修改了什么、为什么、如何验证）。不要只回复「已完成」。",
   "- 不要主动优化/重构已完成的代码。同一文件连续修改 2 次失败则停下来。",
-  "- 完成前调用 update_plan 将已完成步骤标为 completed。",
 ].join("\n");
 
 const RULE_REVIEW_STRATEGY = [
@@ -128,17 +126,26 @@ function isWindowsHost(): boolean {
 /**
  * Assemble the full system prompt for a resolved agent runtime.
  *
- * @param resolvedSkills - Optional resolved skills to inject into the prompt.
+ * @param skillResolution - Optional skill resolution result. `resolved`
+ *   entries have their full instructions injected; `available` entries are
+ *   listed as a compact manifest so the LLM is always aware of what skills
+ *   exist even when nothing matched.
  */
 export function assembleSystemPrompt(
   runtime: ResolvedAgentRuntime,
-  resolvedSkills?: ResolvedSkill[],
+  skillResolution?: {
+    resolved: ReadonlyArray<ResolvedSkill>;
+    available?: ReadonlyArray<SkillManifestEntry>;
+  },
 ): string {
   const rules = SYSTEM_RULE_BLOCKS.join("\n\n");
   const parts = [runtime.systemPrompt, rules];
 
-  if (resolvedSkills && resolvedSkills.length > 0) {
-    const skillFragment = buildSkillPromptFragment(resolvedSkills);
+  if (skillResolution) {
+    const skillFragment = buildSkillPromptFragment(
+      skillResolution.resolved,
+      skillResolution.available ?? [],
+    );
     if (skillFragment) {
       parts.push(skillFragment);
     }
@@ -151,10 +158,10 @@ export function assembleSystemPrompt(
  * Assemble a runtime context block that describes the current workspace,
  * available tools.
  *
- * @param internalTools - Additional always-available internal tools (e.g. `update_plan`)
- *   that are not in `runtime.enabledTools` but should appear in the `本轮可用工具` list
- *   so the model sees a consistent tool inventory matching the actual function definitions
- *   sent to the LLM.  Internal tools are always auto-executed (no approval required).
+ * @param internalTools - Additional always-available internal tools that are not in
+ *   `runtime.enabledTools` but should still appear in the `本轮可用工具` list so the
+ *   model sees a tool inventory matching the actual function definitions sent to the
+ *   LLM. Internal tools are always auto-executed (no approval required).
  */
 export function assembleRuntimeContext(
   runtime: ResolvedAgentRuntime,

@@ -7,7 +7,6 @@ import type { ActiveMention, MentionSuggestion } from "../mentions";
 
 export interface ChatComposerProps {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
-  contextAnchorRef: RefObject<HTMLDivElement | null>;
   prompt: string;
   chatBlocked: boolean;
   composerAttachments: ChatContextAttachment[];
@@ -39,7 +38,6 @@ export interface ChatComposerProps {
 
 export function ChatComposer({
   textareaRef,
-  contextAnchorRef,
   prompt,
   chatBlocked,
   composerAttachments,
@@ -82,12 +80,7 @@ export function ChatComposer({
         void onSubmit();
       }}
     >
-      <div
-        className="chat-input-box"
-        data-topbar-anchor="context"
-        ref={contextAnchorRef}
-        tabIndex={-1}
-      >
+      <div className="chat-input-box">
         <ContextAttachmentPills
           attachments={composerAttachments}
           onRemove={onRemoveComposerAttachment}
@@ -184,12 +177,22 @@ export function ChatComposer({
               event.currentTarget.selectionStart ?? event.currentTarget.value.length,
             )
           }
-          onKeyUp={(event) =>
+          onKeyUp={(event) => {
+            if (
+              activeMention &&
+              mentionSuggestions.length > 0 &&
+              (event.key === "ArrowDown" ||
+                event.key === "ArrowUp" ||
+                event.key === "Escape" ||
+                (event.key === "Enter" && !event.shiftKey))
+            ) {
+              return;
+            }
             onMentionSync(
               event.currentTarget.value,
               event.currentTarget.selectionStart ?? event.currentTarget.value.length,
-            )
-          }
+            );
+          }}
           placeholder={chatBlocked ? "请先完成设置…" : "描述你的编码任务…"}
           rows={1}
         />

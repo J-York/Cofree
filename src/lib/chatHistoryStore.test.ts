@@ -100,4 +100,49 @@ describe("chatHistoryStore context attachments", () => {
 
     expect(loadChatHistory()).toEqual([]);
   });
-});
+
+  it("persists and normalizes explicitSkillIds round-trip", () => {
+    const messages: ChatMessageRecord[] = [
+      {
+        id: "asst-1",
+        role: "assistant",
+        content: "doing work",
+        createdAt: "2026-04-01T00:00:00.000Z",
+        plan: null,
+        explicitSkillIds: ["global:odps", "workspace:resume-screener"],
+      },
+      {
+        id: "asst-2",
+        role: "assistant",
+        content: "no skills",
+        createdAt: "2026-04-01T00:00:01.000Z",
+        plan: null,
+      },
+    ];
+
+    saveChatHistory(messages);
+
+    const loaded = loadChatHistory();
+    expect(loaded).toHaveLength(2);
+    expect(loaded[0]!.explicitSkillIds).toEqual(["global:odps", "workspace:resume-screener"]);
+    expect(loaded[1]!.explicitSkillIds).toBeUndefined();
+  });
+
+  it("strips non-string entries from explicitSkillIds during normalization", () => {
+    const raw = [
+      {
+        id: "asst-3",
+        role: "assistant",
+        content: "mixed",
+        createdAt: "2026-04-01T00:00:02.000Z",
+        explicitSkillIds: ["global:odps", 42, null],
+      },
+    ];
+
+    saveChatHistory(raw as any);
+
+    // The invalid entries cause the entire explicitSkillIds to be stripped
+    const loaded = loadChatHistory();
+    expect(loaded[0]!.explicitSkillIds).toBeUndefined();
+  });
+  });

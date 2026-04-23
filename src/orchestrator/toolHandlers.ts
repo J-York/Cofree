@@ -339,197 +339,6 @@ const handleGlob: ToolHandler = async ({ args, safeWorkspace, projectConfig, dep
   };
 };
 
-const handleUpdatePlan: ToolHandler = async ({ args, planState, deps }) => {
-  if (!planState) {
-    const message = "update_plan 缺少当前计划上下文";
-    return {
-      content: JSON.stringify({ error: message }),
-      success: false,
-      errorCategory: "validation",
-      errorMessage: message,
-    };
-  }
-
-  const operation = asString(args.operation).trim();
-  const stepId = asString(args.step_id).trim();
-  const note = asString(args.note).trim();
-  if (!operation) {
-    const message = "operation 不能为空";
-    return {
-      content: JSON.stringify({ error: message }),
-      success: false,
-      errorCategory: "validation",
-      errorMessage: message,
-    };
-  }
-  if (!stepId) {
-    const message = "step_id 不能为空";
-    return {
-      content: JSON.stringify({ error: message }),
-      success: false,
-      errorCategory: "validation",
-      errorMessage: message,
-    };
-  }
-
-  let message = "";
-  switch (operation) {
-    case "set_active":
-      message = deps.setActivePlanStep(planState, stepId);
-      break;
-    case "complete":
-      message = deps.setPlanStepStatus(planState, stepId, "completed", note);
-      break;
-    case "block":
-      message = deps.setPlanStepStatus(planState, stepId, "blocked", note);
-      break;
-    case "fail":
-      message = deps.setPlanStepStatus(planState, stepId, "failed", note);
-      break;
-    case "skip":
-      message = deps.setPlanStepStatus(planState, stepId, "skipped", note);
-      break;
-    case "note": {
-      const target = planState.steps.find((step) => step.id === stepId);
-      if (!target) {
-        message = `未找到步骤 ${stepId}`;
-      } else {
-        deps.appendPlanStepNote(target, note || asString(args.summary).trim());
-        message = `步骤「${target.title}」备注已更新`;
-      }
-      break;
-    }
-    case "add": {
-      const title = asString(args.title).trim() || stepId;
-      if (!title) {
-        message = "operation=add 时必须提供 title";
-        break;
-      }
-      const added = deps.addPlanStep(planState, {
-        title,
-        summary: asString(args.summary).trim(),
-        afterStepId: asString(args.after_step_id).trim() || undefined,
-        note,
-      });
-      message = `已新增步骤「${added.title}」`;
-      break;
-    }
-    default:
-      message = `不支持的 update_plan operation: ${operation}`;
-  }
-
-  const isError =
-    message.startsWith("未找到") ||
-    message.startsWith("不支持") ||
-    message.startsWith("operation=");
-  return {
-    content: JSON.stringify({
-      ok: !isError,
-      action_type: "update_plan",
-      operation,
-      step_id: stepId,
-      message,
-      active_step_id: planState.activeStepId ?? null,
-      plan_summary: deps.formatTodoPlanBlock(planState),
-      steps: planState.steps.map((step) => ({
-        id: step.id,
-        title: step.title,
-        status: step.status,
-        linkedActionIds: step.linkedActionIds ?? [],
-      })),
-    }),
-    success: !isError,
-    errorCategory: isError ? "validation" : undefined,
-    errorMessage: isError ? message : undefined,
-  };
-};
-
-const handleProposeApplyPatch: ToolHandler = async ({
-  args,
-  call,
-  safeWorkspace,
-  deps,
-  planState,
-  toolPermissions,
-  autoExecutionPolicy,
-}) => {
-  const patch = asString(args.patch).trim();
-  if (!patch) {
-    const message = "patch 不能为空";
-    return {
-      content: JSON.stringify({ error: message }),
-      success: false,
-      errorCategory: "validation",
-      errorMessage: message,
-    };
-  }
-  const preflight = await invoke<PatchApplyResult>("check_workspace_patch", {
-    workspacePath: safeWorkspace,
-    patch,
-  });
-  if (!preflight.success) {
-    const message = `Patch 预检失败: ${preflight.message}`;
-    return {
-      content: JSON.stringify({ error: message, files: preflight.files }),
-      success: false,
-      errorCategory: "validation",
-      errorMessage: message,
-    };
-  }
-  if (preflight.files.length > 1) {
-    const message = `propose_apply_patch 仅允许单文件 patch；当前 patch 涉及 ${preflight.files.length} 个文件。请改用 propose_file_edit 按文件逐个提交。`;
-    return {
-      content: JSON.stringify({ error: message, files: preflight.files }),
-      success: false,
-      errorCategory: "validation",
-      errorMessage: message,
-    };
-  }
-  const actionBase: ActionProposal = {
-    id: deps.createActionId("gate-a-apply-patch"),
-    toolCallId: call.id,
-    toolName: call.function.name,
-    planStepId: planState?.activeStepId,
-    type: "apply_patch",
-    description: asString(
-      args.description,
-      "Apply generated patch to workspace (Gate A)",
-    ),
-    gateRequired: true,
-    status: "pending",
-    executed: false,
-    payload: { patch },
-  };
-  const action: ActionProposal = {
-    ...actionBase,
-    fingerprint: deps.actionFingerprint(actionBase),
-  };
-  const matchedRule = findMatchingApprovalRule(safeWorkspace, action);
-  const autoApprovalSource = resolveSensitiveActionAutoApprovalSource({
-    permissionLevel: toolPermissions.propose_apply_patch,
-    matchedRule,
-    autoExecutionPolicy,
-  });
-  if (autoApprovalSource) {
-    return autoExecutePatchProposal({
-      workspacePath: safeWorkspace,
-      patch,
-      autoApprovalMeta: buildAutoApprovalMeta(autoApprovalSource, matchedRule),
-    });
-  }
-  return {
-    content: JSON.stringify({
-      ok: true,
-      action_type: "apply_patch",
-      action_id: action.id,
-      patch_length: patch.length,
-      files: preflight.files,
-    }),
-    success: true,
-    proposedAction: action,
-  };
-};
-
 const handleProposeFileEdit: ToolHandler = async ({
   args,
   call,
@@ -539,9 +348,91 @@ const handleProposeFileEdit: ToolHandler = async ({
   toolPermissions,
   autoExecutionPolicy,
 }) => {
-  const relativePath = normalizeRelativePath(args.relative_path);
   const operationRaw = asString(args.operation, "replace").trim().toLowerCase();
   const operation = operationRaw || "replace";
+
+  if (operation === "patch") {
+    const patch = asString(args.patch).trim();
+    if (!patch) {
+      const message =
+        "patch 不能为空。operation='patch' 必须提供 patch 参数（单文件 unified diff）。";
+      return {
+        content: JSON.stringify({ error: message }),
+        success: false,
+        errorCategory: "validation",
+        errorMessage: message,
+      };
+    }
+    const preflight = await invoke<PatchApplyResult>("check_workspace_patch", {
+      workspacePath: safeWorkspace,
+      patch,
+    });
+    if (!preflight.success) {
+      const message = `Patch 预检失败: ${preflight.message}`;
+      return {
+        content: JSON.stringify({ error: message, files: preflight.files }),
+        success: false,
+        errorCategory: "validation",
+        errorMessage: message,
+      };
+    }
+    if (preflight.files.length > 1) {
+      const message = `operation='patch' 仅允许单文件 patch；当前 patch 涉及 ${preflight.files.length} 个文件。请改用结构化 operation（replace/insert/delete/create）按文件逐个提交。`;
+      return {
+        content: JSON.stringify({ error: message, files: preflight.files }),
+        success: false,
+        errorCategory: "validation",
+        errorMessage: message,
+      };
+    }
+    const actionBase: ActionProposal = {
+      id: deps.createActionId("gate-a-apply-patch"),
+      toolCallId: call.id,
+      toolName: call.function.name,
+      planStepId: planState?.activeStepId,
+      type: "apply_patch",
+      description: asString(
+        args.description,
+        "Apply generated patch to workspace (Gate A)",
+      ),
+      gateRequired: true,
+      status: "pending",
+      executed: false,
+      payload: { patch },
+    };
+    const action: ActionProposal = {
+      ...actionBase,
+      fingerprint: deps.actionFingerprint(actionBase),
+    };
+    const matchedRule = findMatchingApprovalRule(safeWorkspace, action);
+    const autoApprovalSource = resolveSensitiveActionAutoApprovalSource({
+      permissionLevel: toolPermissions.propose_file_edit,
+      matchedRule,
+      autoExecutionPolicy,
+    });
+    if (autoApprovalSource) {
+      return autoExecutePatchProposal({
+        workspacePath: safeWorkspace,
+        patch,
+        autoApprovalMeta: buildAutoApprovalMeta(autoApprovalSource, matchedRule),
+      });
+    }
+    return {
+      content: JSON.stringify({
+        ok: true,
+        action_type: "apply_patch",
+        action_id: action.id,
+        mode: "patch",
+        operation,
+        patch_length: patch.length,
+        files: preflight.files,
+      }),
+      success: true,
+      proposedAction: action,
+    };
+  }
+
+  const relativePath = normalizeRelativePath(args.relative_path);
   const applyAll = asBoolean(args.apply_all, asBoolean(args.replace_all, false));
   const positionCandidate = asString(args.position, "after").trim().toLowerCase();
   const insertPosition = positionCandidate === "before" ? "before" : "after";
@@ -1234,8 +1125,6 @@ export const TOOL_HANDLERS: Record<string, ToolHandler> = {
   git_diff: handleGitDiff,
   grep: handleGrep,
   glob: handleGlob,
-  update_plan: handleUpdatePlan,
-  propose_apply_patch: handleProposeApplyPatch,
   propose_file_edit: handleProposeFileEdit,
   propose_shell: handleProposeShell,
   check_shell_job: handleCheckShellJob,

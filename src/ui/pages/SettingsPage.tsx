@@ -724,7 +724,6 @@ export function SettingsPage({
                       tone: "warn" as const,
                       items: [
                         ["propose_file_edit", "写入文件内容"],
-                        ["propose_apply_patch", "应用补丁修改文件"],
                         ["propose_shell", "执行 shell 命令"],
                         ["fetch", "访问网络资源"],
                       ] as Array<[keyof AppSettings["toolPermissions"], string]>,
