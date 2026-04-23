@@ -2,7 +2,7 @@
 
 > **本地优先的 AI 编程助手**——你提需求、看审批、做验收，AI 负责读代码、生成 patch、执行命令。
 
-[![Version](https://img.shields.io/badge/version-0.1.2-blue)](package.json)
+[![Version](https://img.shields.io/badge/version-0.1.3-blue)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](docs/BUILD.md)
 
