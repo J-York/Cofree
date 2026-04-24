@@ -513,7 +513,6 @@ export function SettingsPage({
                 onConfirmDeleteVendorChange={setConfirmDeleteVendorId}
                 onConfirmDeleteModelChange={setConfirmDeleteModelId}
                 onUpdateSelectedVendor={handleUpdateSelectedVendor}
-                onUpdateProxy={handleUpdateProxy}
                 onCreateVendor={handleCreateVendor}
                 onDeleteVendor={handleDeleteVendor}
                 onRenameModel={handleRenameModel}
@@ -603,12 +602,14 @@ export function SettingsPage({
               onSelectWorkspace={handleSelectWorkspace}
               onClearWorkspaceHistory={handleClearWorkspaceHistory}
               onClearAllHistory={handleClearAllHistory}
+              onUpdateProxy={handleUpdateProxy}
+              onOpenAudit={() => setActiveTab("audit")}
               saveMessage={saveMessage}
               setSaveMessage={setSaveMessage}
             />
           )}
 
-          {activeTab === "audit" && <AuditTab />}
+          {activeTab === "audit" && <AuditTab onBack={() => setActiveTab("advanced")} />}
         </div>
 
         <SettingsPageFooter saveMessage={saveMessage} onSave={handleSave} />
@@ -782,6 +783,8 @@ interface AdvancedTabProps {
   onSelectWorkspace: () => Promise<void>;
   onClearWorkspaceHistory: () => void;
   onClearAllHistory: () => void;
+  onUpdateProxy: (updates: Partial<AppSettings["proxy"]>) => void;
+  onOpenAudit: () => void;
   saveMessage: string;
   setSaveMessage: (message: string) => void;
 }
@@ -798,6 +801,8 @@ function AdvancedTab({
   onSelectWorkspace,
   onClearWorkspaceHistory,
   onClearAllHistory,
+  onUpdateProxy,
+  onOpenAudit,
 }: AdvancedTabProps): ReactElement {
   const { theme, setTheme } = useTheme();
 
@@ -806,7 +811,7 @@ function AdvancedTab({
       <header className="settings-pane-header">
         <h2 className="settings-pane-title">高级</h2>
         <p className="settings-pane-desc">
-          工作区、上下文和全局历史等高级设置。
+          外观、工作区、网络代理以及历史清理。更细的开发者选项在下方折叠区内。
         </p>
       </header>
 
@@ -815,9 +820,7 @@ function AdvancedTab({
           <div className="settings-card-header">
             <div>
               <h3 className="settings-card-title">外观</h3>
-              <p className="settings-card-desc">
-                选择应用的主题外观。
-              </p>
+              <p className="settings-card-desc">选择应用的主题外观。</p>
             </div>
           </div>
           <div className="field">
@@ -876,107 +879,41 @@ function AdvancedTab({
         <div className="settings-card">
           <div className="settings-card-header">
             <div>
-              <h3 className="settings-card-title">上下文限制</h3>
+              <h3 className="settings-card-title">网络代理</h3>
               <p className="settings-card-desc">
-                控制自动读取时的片段大小和总体上下文预算。
+                仅在 Tauri 桌面端生效。关闭时将遵循系统代理。
               </p>
             </div>
           </div>
           <div className="grid-2">
             <div className="field">
-              <label className="field-label">单次代码片段最大行数</label>
+              <label className="field-label">代理模式</label>
               <select
                 className="select"
-                value={draft.maxSnippetLines}
+                value={draft.proxy.mode}
                 onChange={(e) =>
-                  setDraft((current) =>
-                    updateContextSettings(current, {
-                      maxSnippetLines: Number(e.target.value) as AppSettings["maxSnippetLines"],
-                    }),
-                  )
+                  onUpdateProxy({
+                    mode: e.target.value as AppSettings["proxy"]["mode"],
+                  })
                 }
               >
-                <option value={200}>200 行</option>
-                <option value={500}>500 行</option>
-                <option value={2000}>2000 行</option>
+                <option value="off">关闭</option>
+                <option value="http">HTTP</option>
+                <option value="https">HTTPS</option>
+                <option value="socks5">SOCKS5</option>
               </select>
             </div>
             <div className="field">
-              <label className="field-label">上下文 Token 上限</label>
+              <label className="field-label">代理地址</label>
               <input
                 className="input"
-                value={draft.maxContextTokens}
-                onChange={(e) =>
-                  setDraft((current) =>
-                    updateContextSettings(current, {
-                      maxContextTokens: Math.max(0, Number(e.target.value) || 0),
-                    }),
-                  )
-                }
-                type="number"
-                min={0}
+                value={draft.proxy.url}
+                onChange={(e) => onUpdateProxy({ url: e.target.value })}
+                placeholder="http://127.0.0.1:7890"
+                type="text"
               />
             </div>
           </div>
-          <label className="field-checkbox">
-            <input
-              checked={draft.sendRelativePathOnly}
-              onChange={(e) =>
-                setDraft((current) =>
-                  updateContextSettings(current, {
-                    sendRelativePathOnly: e.target.checked,
-                  }),
-                )
-              }
-              type="checkbox"
-            />
-            <span>尽量只向模型发送相对路径，减少泄露绝对路径</span>
-          </label>
-        </div>
-
-        <div className="settings-card">
-          <div className="settings-card-header">
-            <div>
-              <h3 className="settings-card-title">云模型限制</h3>
-              <p className="settings-card-desc">
-                开启后可阻止非本地模型在当前环境中发送请求。
-              </p>
-            </div>
-          </div>
-          <label className="field-checkbox">
-            <input
-              checked={draft.allowCloudModels}
-              onChange={(e) =>
-                setDraft((current) => updateAllowCloudModels(current, e.target.checked))
-              }
-              type="checkbox"
-            />
-            <span>允许使用云端模型</span>
-          </label>
-        </div>
-
-        <div className="settings-card">
-          <div className="settings-card-header">
-            <div>
-              <h3 className="settings-card-title">调试视图</h3>
-              <p className="settings-card-desc">
-                控制聊天页是否显示模型原始工具请求等调试信息。
-              </p>
-            </div>
-          </div>
-          <label className="field-checkbox">
-            <input
-              checked={draft.debugMode}
-              onChange={(e) =>
-                setDraft((current) => ({
-                  ...current,
-                  debugMode: e.target.checked,
-                }))
-              }
-              type="checkbox"
-            />
-            <span>启用调试模式</span>
-          </label>
         </div>
 
         <div className="settings-card">
@@ -984,7 +921,7 @@ function AdvancedTab({
             <div>
               <h3 className="settings-card-title">清空历史</h3>
               <p className="settings-card-desc">
-                可按范围删除对话记录，以及你在审批时保存的本地信任规则。当前工作区清理只影响本工作区；全局清理会删除所有工作区记录。
+                按范围删除对话记录及审批时保存的本地信任规则。当前工作区清理只影响本工作区；全局清理会删除所有工作区记录。
               </p>
             </div>
           </div>
@@ -1036,6 +973,127 @@ function AdvancedTab({
             </button>
           )}
         </div>
+
+        <details className="settings-dev-details">
+          <summary className="settings-dev-summary">
+            <span className="settings-dev-summary-title">开发者选项</span>
+            <span className="settings-dev-summary-hint">
+              上下文、调试与审计日志
+            </span>
+          </summary>
+
+          <div className="settings-dev-body">
+            <div className="settings-card">
+              <div className="settings-card-header">
+                <div>
+                  <h3 className="settings-card-title">上下文限制</h3>
+                  <p className="settings-card-desc">
+                    控制自动读取时的片段大小和总体上下文预算。
+                  </p>
+                </div>
+              </div>
+              <div className="grid-2">
+                <div className="field">
+                  <label className="field-label">单次代码片段最大行数</label>
+                  <select
+                    className="select"
+                    value={draft.maxSnippetLines}
+                    onChange={(e) =>
+                      setDraft((current) =>
+                        updateContextSettings(current, {
+                          maxSnippetLines: Number(e.target.value) as AppSettings["maxSnippetLines"],
+                        }),
+                      )
+                    }
+                  >
+                    <option value={200}>200 行</option>
+                    <option value={500}>500 行</option>
+                    <option value={2000}>2000 行</option>
+                  </select>
+                </div>
+              </div>
+              <label className="field-checkbox">
+                <input
+                  checked={draft.sendRelativePathOnly}
+                  onChange={(e) =>
+                    setDraft((current) =>
+                      updateContextSettings(current, {
+                        sendRelativePathOnly: e.target.checked,
+                      }),
+                    )
+                  }
+                  type="checkbox"
+                />
+                <span>尽量只向模型发送相对路径，减少泄露绝对路径</span>
+              </label>
+            </div>
+
+            <div className="settings-card">
+              <div className="settings-card-header">
+                <div>
+                  <h3 className="settings-card-title">云模型限制</h3>
+                  <p className="settings-card-desc">
+                    关闭后将阻止非本地模型在当前环境中发送请求。
+                  </p>
+                </div>
+              </div>
+              <label className="field-checkbox">
+                <input
+                  checked={draft.allowCloudModels}
+                  onChange={(e) =>
+                    setDraft((current) => updateAllowCloudModels(current, e.target.checked))
+                  }
+                  type="checkbox"
+                />
+                <span>允许使用云端模型</span>
+              </label>
+            </div>
+
+            <div className="settings-card">
+              <div className="settings-card-header">
+                <div>
+                  <h3 className="settings-card-title">调试视图</h3>
+                  <p className="settings-card-desc">
+                    控制聊天页是否显示模型原始工具请求等调试信息。
+                  </p>
+                </div>
+              </div>
+              <label className="field-checkbox">
+                <input
+                  checked={draft.debugMode}
+                  onChange={(e) =>
+                    setDraft((current) => ({
+                      ...current,
+                      debugMode: e.target.checked,
+                    }))
+                  }
+                  type="checkbox"
+                />
+                <span>启用调试模式</span>
+              </label>
+            </div>
+
+            <div className="settings-card">
+              <div className="settings-card-header">
+                <div>
+                  <h3 className="settings-card-title">审计日志</h3>
+                  <p className="settings-card-desc">
+                    查看工具调用、错误与审批事件的历史记录。
+                  </p>
+                </div>
+              </div>
+              <div className="btn-row">
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={onOpenAudit}
+                  type="button"
+                >
+                  打开审计日志
+                </button>
+              </div>
+            </div>
+          </div>
+        </details>
       </div>
     </>
   );

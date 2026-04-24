@@ -20,7 +20,7 @@ import {
   shouldApplyCheckpointRecovery,
 } from "./chat/checkpointRecovery";
 import { ConversationSidebar } from "../components/ConversationSidebar";
-import { getActiveManagedModel, isActiveModelLocal } from "../../lib/settingsStore";
+import { getActiveManagedModel, isActiveModelLocal, resolveEffectiveContextTokenLimit } from "../../lib/settingsStore";
 import type { AppSettings } from "../../lib/settingsStore";
 import { globWorkspaceFiles } from "../../lib/tauriBridge";
 import type { ChatAgentDefinition } from "../../agents/types";
@@ -1044,9 +1044,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
               onClearMentionUi={clearMentionUi}
               onSubmit={handleSubmit}
               liveContextTokens={liveContextTokens}
-              maxContextTokens={
-                settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000
-              }
+              maxContextTokens={resolveEffectiveContextTokenLimit(settings)}
               isStreaming={isStreaming}
               executingActionId={executingActionId}
               messagesCount={messages.length}

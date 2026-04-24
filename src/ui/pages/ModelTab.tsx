@@ -37,7 +37,6 @@ export function ModelTab({
   onConfirmDeleteVendorChange,
   onConfirmDeleteModelChange,
   onUpdateSelectedVendor,
-  onUpdateProxy,
   onCreateVendor,
   onDeleteVendor,
   onRenameModel,
@@ -455,36 +454,6 @@ export function ModelTab({
           </div>
         )}
 
-        <div className="settings-divider">
-          <span>代理设置</span>
-        </div>
-
-        <div className="field">
-          <label className="field-label">代理模式</label>
-          <div className="grid-2">
-            <select
-              className="select"
-              value={draft.proxy.mode}
-              onChange={(e) =>
-                onUpdateProxy({
-                  mode: e.target.value as typeof draft.proxy.mode,
-                })
-              }
-            >
-              <option value="off">关闭</option>
-              <option value="http">HTTP</option>
-              <option value="https">HTTPS</option>
-              <option value="socks5">SOCKS5</option>
-            </select>
-            <input
-              className="input"
-              value={draft.proxy.url}
-              onChange={(e) => onUpdateProxy({ url: e.target.value })}
-              placeholder="http://127.0.0.1:7890"
-              type="text"
-            />
-          </div>
-        </div>
       </div>
 
       {metaEditorModel && (

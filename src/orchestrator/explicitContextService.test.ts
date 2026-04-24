@@ -32,7 +32,6 @@ describe("explicitContextService", () => {
       settings: {
         ...DEFAULT_SETTINGS,
         workspacePath: "/repo",
-        maxContextTokens: 4000,
       },
       ignorePatterns: ["dist/**"],
     });

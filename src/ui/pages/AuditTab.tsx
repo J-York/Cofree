@@ -69,7 +69,7 @@ function ErrorRow({
   );
 }
 
-export function AuditTab(): ReactElement {
+export function AuditTab({ onBack }: { onBack?: () => void } = {}): ReactElement {
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [note, setNote] = useState<string>("");
@@ -122,9 +122,20 @@ export function AuditTab(): ReactElement {
   };
 
   return (
-    <div className="settings-pane">
+    <>
       <header className="settings-pane-header">
-        <h2 className="settings-pane-title">审计日志</h2>
+        <div className="audit-header-row">
+          <h2 className="settings-pane-title">审计日志</h2>
+          {onBack && (
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={onBack}
+              type="button"
+            >
+              ← 返回高级
+            </button>
+          )}
+        </div>
         <p className="settings-pane-desc">
           查看错误分类、LLM 请求和敏感操作的审计记录，支持问题回放和调试导出。
         </p>
@@ -235,6 +246,6 @@ export function AuditTab(): ReactElement {
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

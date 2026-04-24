@@ -110,7 +110,6 @@ export function sanitizeSettingsForDebugExport(settings: AppSettings) {
     debugMode: settings.debugMode,
     allowCloudModels: settings.allowCloudModels,
     maxSnippetLines: settings.maxSnippetLines,
-    maxContextTokens: settings.maxContextTokens,
     sendRelativePathOnly: settings.sendRelativePathOnly,
     workspacePath: settings.workspacePath,
     toolPermissions: settings.toolPermissions,

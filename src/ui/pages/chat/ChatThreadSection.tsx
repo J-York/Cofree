@@ -31,7 +31,7 @@ function hasVisiblePlan(message: ChatMessageRecord): message is ChatMessageRecor
   return (
     message.role === "assistant" &&
     message.plan !== null &&
-    (message.plan.proposedActions.length > 0 || message.plan.steps.length > 0)
+    message.plan.proposedActions.length > 0
   );
 }
 

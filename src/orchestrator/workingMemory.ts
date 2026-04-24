@@ -8,6 +8,16 @@
  */
 
 import { estimateTokensFromText } from "./contextBudget";
+import {
+  CHECKPOINT_WM_MAX_FACT_CONTENT_CHARS,
+  CHECKPOINT_WM_MAX_FACT_SOURCE_CHARS,
+  CHECKPOINT_WM_MAX_FILE_SUMMARY_CHARS,
+  CHECKPOINT_WM_MAX_PROJECT_CONTEXT_CHARS,
+  MAX_DISCOVERED_FACTS,
+  MAX_FILE_SUMMARY_CHARS,
+  MAX_RETRIEVED_FACTS,
+  MAX_RETRIEVED_FILES,
+} from "./contextPolicy";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -81,10 +91,6 @@ export interface WorkingMemoryQueryOptions {
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_DISCOVERED_FACTS = 50;
-const MAX_FILE_SUMMARY_CHARS = 200;
-const MAX_RETRIEVED_FILES = 12;
-const MAX_RETRIEVED_FACTS = 10;
 const QUERY_TERM_LIMIT = 10;
 const QUERY_STOPWORDS = new Set([
   "add", "and", "bug", "build", "change", "code", "create", "current",
@@ -633,10 +639,6 @@ export function normalizeWorkingMemorySnapshot(
 
 // --- Checkpoint persistence: truncate + size cap (P3-1) ---
 
-const CHECKPOINT_WM_MAX_FILE_SUMMARY_CHARS = 2000;
-const CHECKPOINT_WM_MAX_FACT_CONTENT_CHARS = 2000;
-const CHECKPOINT_WM_MAX_FACT_SOURCE_CHARS = 2000;
-const CHECKPOINT_WM_MAX_PROJECT_CONTEXT_CHARS = 8000;
 /** Target max JSON size for persisted working memory (soft cap; evict entries if exceeded). */
 export const CHECKPOINT_WORKING_MEMORY_MAX_JSON_BYTES = 512 * 1024;
 

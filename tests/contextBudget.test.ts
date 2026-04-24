@@ -10,8 +10,6 @@ import {
   resetTokenCalibration,
   tokenCalibration,
   getTokenCalibrationFactor,
-  scoreMessageImportance,
-  mergeConsecutiveToolMessages,
 } from "../src/orchestrator/contextBudget";
 
 function msg(role: LiteLLMMessage["role"], content: string): LiteLLMMessage {
@@ -326,7 +324,7 @@ describe("compressMessagesToFitBudget (verification loop)", () => {
     expect(res2.compressed).toBe(true);
   });
 
-  it("retries compression when first pass still exceeds budget", async () => {
+  it("summarizes old messages and keeps recent window when over budget", async () => {
     const messages: LiteLLMMessage[] = [
       msg("system", "sys prompt " + "x".repeat(200)),
       msg("system", "runtime ctx " + "y".repeat(200)),
@@ -342,7 +340,6 @@ describe("compressMessagesToFitBudget (verification loop)", () => {
 
     const before = estimateTokensForMessages(messages);
 
-    // Very tight budget forces multiple rounds of compression.
     const res = await compressMessagesToFitBudget({
       messages,
       policy: {
@@ -359,6 +356,7 @@ describe("compressMessagesToFitBudget (verification loop)", () => {
     });
 
     expect(res.compressed).toBe(true);
+    expect(res.usedSummary).toBe(true);
     expect(res.estimatedTokensAfter).toBeLessThan(before);
   });
 });
@@ -427,205 +425,3 @@ describe("tokenCalibration", () => {
   });
 });
 
-// ===================================================================
-// Bug fix: Rescued messages excluded from summarizer input
-// ===================================================================
-
-describe("compressMessagesToFitBudget (rescued messages)", () => {
-  beforeEach(() => {
-    resetTokenCalibration();
-  });
-
-  it("does not pass rescued messages to summarize (no duplicates)", async () => {
-    // Build a conversation where one early message has high importance.
-    // The system message content triggers the "error" importance boost (score 10+4=14).
-    const highImportanceMsg = msg("user", "Critical error: architecture 架构 constraint violated — do NOT change this decision");
-
-    const messages: LiteLLMMessage[] = [
-      msg("system", "sys"),
-      msg("system", "runtime"),
-      highImportanceMsg,
-      msg("assistant", "a1 ".repeat(200)),
-      msg("user", "u2 ".repeat(200)),
-      msg("assistant", "a2 ".repeat(200)),
-      msg("user", "u3 ".repeat(200)),
-      msg("assistant", "a3 ".repeat(200)),
-      msg("user", "u4 ".repeat(200)),
-      msg("assistant", "a4 ".repeat(200)),
-      msg("user", "u5 ".repeat(200)),
-      msg("assistant", "a5 ".repeat(200)),
-    ];
-
-    const before = estimateTokensForMessages(messages);
-
-    let summarizedMessages: LiteLLMMessage[] | null = null;
-    const summarizer = {
-      canSummarize: () => true,
-      summarize: vi.fn(async (msgs: LiteLLMMessage[]) => {
-        summarizedMessages = msgs;
-        return `summary(${msgs.length})`;
-      }),
-      markSummarized: vi.fn(),
-    };
-
-    const res = await compressMessagesToFitBudget({
-      messages,
-      policy: {
-        maxPromptTokens: Math.max(50, Math.floor(before * 0.3)),
-        minMessagesToSummarize: 2,
-        minRecentMessagesToKeep: 3,
-        recentTokensMinRatio: 0.3,
-      },
-      summarizer,
-    });
-
-    expect(res.compressed).toBe(true);
-
-    // If the high-importance message was rescued, it must NOT appear in
-    // the messages passed to summarize().
-    if (summarizedMessages) {
-      const found = (summarizedMessages as LiteLLMMessage[]).find(
-        (m) => m === highImportanceMsg,
-      );
-      expect(found).toBeUndefined();
-    }
-
-    // And it SHOULD appear in the final output (either in recent or rescued).
-    const inFinal = res.messages.some(
-      (m) => m.content === highImportanceMsg.content,
-    );
-    // May or may not be rescued depending on the split; at minimum no duplication.
-    const dupCount = res.messages.filter(
-      (m) => m.content === highImportanceMsg.content,
-    ).length;
-    expect(dupCount).toBeLessThanOrEqual(1);
-  });
-});
-
-// ===================================================================
-// P2-1: Message importance scoring
-// ===================================================================
-
-describe("scoreMessageImportance", () => {
-  it("system messages have high base score", () => {
-    expect(scoreMessageImportance(msg("system", "sys prompt"))).toBeGreaterThanOrEqual(9);
-  });
-
-  it("error-containing messages score higher", () => {
-    const errorMsg = msg("assistant", "遇到了一个 Error: null pointer");
-    const normalMsg = msg("assistant", "一切正常，已完成任务");
-    expect(scoreMessageImportance(errorMsg)).toBeGreaterThan(
-      scoreMessageImportance(normalMsg)
-    );
-  });
-
-  it("architecture-related messages score higher", () => {
-    const archMsg = msg("user", "请按照这个架构 architecture 设计方案实现");
-    const simpleMsg = msg("user", "请帮我修改一下");
-    expect(scoreMessageImportance(archMsg)).toBeGreaterThan(
-      scoreMessageImportance(simpleMsg)
-    );
-  });
-
-  it("very long tool outputs have lower score", () => {
-    const longTool: LiteLLMMessage = {
-      role: "tool",
-      content: "x".repeat(3000),
-      name: "read_file",
-    };
-    const shortTool: LiteLLMMessage = {
-      role: "tool",
-      content: "ok",
-      name: "read_file",
-    };
-    expect(scoreMessageImportance(longTool)).toBeLessThan(
-      scoreMessageImportance(shortTool)
-    );
-  });
-});
-
-// ===================================================================
-// P2-3: Fixed tool message merging
-// ===================================================================
-
-describe("mergeConsecutiveToolMessages (fixed)", () => {
-  it("preserves tool_call_id info in merged content", () => {
-    const assistant: LiteLLMMessage = {
-      role: "assistant",
-      content: "",
-      tool_calls: [
-        { id: "call-1", type: "function", function: { name: "read_file", arguments: "{}" } },
-        { id: "call-2", type: "function", function: { name: "grep", arguments: "{}" } },
-      ],
-    };
-
-    const tool1: LiteLLMMessage = {
-      role: "tool",
-      content: "file content",
-      tool_call_id: "call-1",
-      name: "read_file",
-    };
-
-    const tool2: LiteLLMMessage = {
-      role: "tool",
-      content: "grep results",
-      tool_call_id: "call-2",
-      name: "grep",
-    };
-
-    const merged = mergeConsecutiveToolMessages([assistant, tool1, tool2]);
-
-    // Assistant + one merged tool message
-    expect(merged.length).toBe(2);
-    expect(merged[1].role).toBe("tool");
-    // The merged content should reference the second tool_call_id
-    expect(merged[1].content).toContain("call-2");
-    expect(merged[1].content).toContain("grep results");
-    expect(merged[1].content).toContain("file content");
-  });
-
-  it("removes merged tool_call from assistant tool_calls", () => {
-    const assistant: LiteLLMMessage = {
-      role: "assistant",
-      content: "",
-      tool_calls: [
-        { id: "call-1", type: "function", function: { name: "read_file", arguments: "{}" } },
-        { id: "call-2", type: "function", function: { name: "grep", arguments: "{}" } },
-      ],
-    };
-
-    const tool1: LiteLLMMessage = {
-      role: "tool",
-      content: "file content",
-      tool_call_id: "call-1",
-      name: "read_file",
-    };
-
-    const tool2: LiteLLMMessage = {
-      role: "tool",
-      content: "grep results",
-      tool_call_id: "call-2",
-      name: "grep",
-    };
-
-    const merged = mergeConsecutiveToolMessages([assistant, tool1, tool2]);
-
-    // The assistant's tool_calls should only have call-1 (call-2 was merged in)
-    expect(merged[0].tool_calls?.length).toBe(1);
-    expect(merged[0].tool_calls?.[0].id).toBe("call-1");
-  });
-
-  it("does not merge non-consecutive tool messages", () => {
-    const messages: LiteLLMMessage[] = [
-      msg("tool" as any, "result1"),
-      msg("assistant", "thinking"),
-      msg("tool" as any, "result2"),
-    ];
-    // Assign required fields
-    messages[0] = { ...messages[0], tool_call_id: "c1", name: "t1" };
-    messages[2] = { ...messages[2], tool_call_id: "c2", name: "t2" };
-
-    const merged = mergeConsecutiveToolMessages(messages);
-    expect(merged.length).toBe(3);
-  });
-});

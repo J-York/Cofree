@@ -28,7 +28,9 @@ export function SettingsNav({ activeTab, onTabChange, onClose }: SettingsNavProp
                   ? "🤖"
                   : tab.id === "tools"
                     ? "🛠"
-                    : "⚙️"}
+                    : tab.id === "advanced"
+                      ? "⚙️"
+                      : ""}
             </span>
             <span className="settings-tab-label">{tab.label}</span>
           </button>

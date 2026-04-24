@@ -16,11 +16,11 @@
 import { gatewaySummarize, type LiteLLMMessage } from "../lib/piAiBridge";
 import type { AppSettings } from "../lib/settingsStore";
 import { SummaryCache } from "../lib/summaryCache";
-
-const SUMMARY_CACHE_TTL_MS = 10 * 60 * 1000;
-const SUMMARY_CACHE_MAX_ENTRIES = 100;
-// P1-2: Max chars per chunk for single-pass summarization.
-const SUMMARY_CHUNK_MAX_CHARS = 8000;
+import {
+  SUMMARY_CACHE_MAX_ENTRIES,
+  SUMMARY_CACHE_TTL_MS,
+  SUMMARY_CHUNK_MAX_CHARS,
+} from "./contextPolicy";
 
 const SUMMARY_SYSTEM_PROMPT = [
   "你是一个代码助手内置的上下文压缩引擎。你的任务是将冗长的对话历史压缩为高密度的摘要，保留对后续工作至关重要的事实与技术上下文。",

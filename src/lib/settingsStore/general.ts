@@ -99,7 +99,6 @@ export interface AppSettings {
   debugMode: boolean;
   allowCloudModels: boolean;
   maxSnippetLines: 200 | 500 | 2000;
-  maxContextTokens: number;
   sendRelativePathOnly: boolean;
   lastSavedAt: string | null;
   workspacePath: string;
@@ -275,7 +274,6 @@ function createInitialSettings(): AppSettings {
     debugMode: false,
     allowCloudModels: true,
     maxSnippetLines: 500,
-    maxContextTokens: 128000,
     sendRelativePathOnly: true,
     lastSavedAt: null,
     workspacePath: "",
@@ -540,16 +538,11 @@ export function syncRuntimeSettings(settings: AppSettings, apiKey = settings.api
 }
 
 export function resolveEffectiveContextTokenLimit(
-  settings: Pick<AppSettings, "maxContextTokens" | "managedModels" | "activeModelId">,
+  settings: Pick<AppSettings, "managedModels" | "activeModelId">,
 ): number {
-  const contextLimit = settings.maxContextTokens > 0 ? settings.maxContextTokens : 128000;
   const activeModel = getManagedModelById(settings, settings.activeModelId);
   const modelLimit = activeModel?.metaSettings.contextWindowTokens ?? 0;
-  const modelWindowLimit =
-    modelLimit > 0
-      ? modelLimit
-      : Number.POSITIVE_INFINITY;
-  return Math.max(1, Math.min(contextLimit, modelWindowLimit));
+  return modelLimit > 0 ? modelLimit : 128000;
 }
 
 export function updateWorkspacePath(settings: AppSettings, workspacePath: string): AppSettings {
@@ -597,7 +590,6 @@ export function updateContextSettings(
     Pick<
       AppSettings,
       | "maxSnippetLines"
-      | "maxContextTokens"
       | "sendRelativePathOnly"
     >
   >,

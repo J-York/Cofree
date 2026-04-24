@@ -23,12 +23,11 @@ export interface SettingsPageProps {
 
 export type SettingsTab = "skills" | "model" | "tools" | "advanced" | "audit";
 
-export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+export const SETTINGS_TABS: { id: Exclude<SettingsTab, "audit">; label: string }[] = [
   { id: "skills", label: "Skills" },
   { id: "model", label: "模型配置" },
   { id: "tools", label: "工具权限" },
   { id: "advanced", label: "高级" },
-  { id: "audit", label: "审计日志" },
 ];
 
 export interface ToolPermissionRowProps {
@@ -113,7 +112,6 @@ export interface ModelTabProps {
   onConfirmDeleteVendorChange: (value: string | null) => void;
   onConfirmDeleteModelChange: (value: string | null) => void;
   onUpdateSelectedVendor: (updates: Partial<Omit<VendorConfig, "id" | "createdAt">>) => void;
-  onUpdateProxy: (updates: Partial<AppSettings["proxy"]>) => void;
   onCreateVendor: () => void;
   onDeleteVendor: (vendorId: string) => Promise<void>;
   onRenameModel: (modelId: string) => void;

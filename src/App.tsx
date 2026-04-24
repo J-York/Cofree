@@ -211,27 +211,23 @@ export default function App(): ReactElement {
         />
 
         <div className="app-body">
-          <ChatPage
-            settings={settings}
-            activeAgent={DEFAULT_CHAT_AGENT}
-            isVisible={true}
-            sidebarCollapsed={sidebarCollapsed}
-          />
+          {settingsOpen ? (
+            <Suspense fallback={<DeferredPaneFallback label="设置" />}>
+              <SettingsPage
+                settings={settings}
+                onSave={handleSaveSettings}
+                onClose={() => setSettingsOpen(false)}
+              />
+            </Suspense>
+          ) : (
+            <ChatPage
+              settings={settings}
+              activeAgent={DEFAULT_CHAT_AGENT}
+              isVisible={true}
+              sidebarCollapsed={sidebarCollapsed}
+            />
+          )}
         </div>
-
-        {settingsOpen && (
-          <div className="settings-modal-backdrop">
-            <div className="settings-modal">
-              <Suspense fallback={<DeferredPaneFallback label="设置" />}>
-                <SettingsPage
-                  settings={settings}
-                  onSave={handleSaveSettings}
-                  onClose={() => setSettingsOpen(false)}
-                />
-              </Suspense>
-            </div>
-          </div>
-        )}
 
         <UpdateBanner
           {...updater}

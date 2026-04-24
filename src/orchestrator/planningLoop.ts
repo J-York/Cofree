@@ -11,13 +11,17 @@ import type { ResolvedAgentRuntime } from "../agents/types";
 import type { CofreeRcConfig } from "../lib/cofreerc";
 import { runWithConcurrencyLimit } from "../lib/concurrency";
 import {
-  clearOldToolUses,
   compressMessagesToFitBudget,
   estimateTokensForToolDefinitions,
   initialSystemPrefixLength,
   MessageTokenTracker,
   updateTokenCalibration,
 } from "./contextBudget";
+import {
+  MIN_MESSAGES_TO_SUMMARIZE,
+  computeAdaptiveCompressionParams,
+  computeMaxToolOutputChars,
+} from "./contextPolicy";
 import { executeToolCompletionForTurn, type RequestRecord, type ToolCallRecord } from "./llmToolLoop";
 import {
   detectPseudoToolCallNarration,
@@ -92,8 +96,6 @@ import type { ActionProposal } from "./types";
 
 const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
-const MIN_MESSAGES_TO_SUMMARIZE = 4;
-const CONTEXT_EDIT_CLEAR_AT_LEAST = 3;
 const MAX_MULTI_ARTIFACT_REMINDER_ROUNDS = 2;
 const MAX_PROPOSED_ACTIONS_PER_BATCH = 5;
 const MAX_LLM_REQUEST_RETRIES = 3;
@@ -111,18 +113,6 @@ const PARALLEL_SAFE_TOOL_NAMES = new Set([
 ]);
 const MAX_PARALLEL_READ_TOOLS = 15;
 
-interface AdaptiveCompressionParams {
-  toolMessageMaxChars: number;
-  minRecentMessagesToKeep: number;
-  recentTokensMinRatio: number;
-  contextEditTriggerTokenRatio: number;
-  contextEditKeepRecentTurns: number;
-  contextEditTriggerEveryNTurns: number;
-  outputReserveRatio: number;
-  softBudgetRatio: number;
-  compressionSafeZoneRatio: number;
-}
-
 export interface NativeToolLoopResult {
   assistantReply: string;
   requestRecords: RequestRecord[];
@@ -132,46 +122,6 @@ export interface NativeToolLoopResult {
   assistantToolCalls?: LiteLLMMessage["tool_calls"];
   assistantToolCallsFromFinalTurn?: boolean;
   workingMemorySnapshot?: WorkingMemorySnapshot;
-}
-
-function computeAdaptiveCompressionParams(limitTokens: number): AdaptiveCompressionParams {
-  if (limitTokens >= 100_000) {
-    return {
-      toolMessageMaxChars: 8000,
-      minRecentMessagesToKeep: 20,
-      recentTokensMinRatio: 0.5,
-      contextEditTriggerTokenRatio: 0.92,
-      contextEditKeepRecentTurns: 16,
-      contextEditTriggerEveryNTurns: 16,
-      outputReserveRatio: 0.10,
-      softBudgetRatio: 0.95,
-      compressionSafeZoneRatio: 0.72,
-    };
-  }
-  if (limitTokens >= 32_000) {
-    return {
-      toolMessageMaxChars: 5000,
-      minRecentMessagesToKeep: 12,
-      recentTokensMinRatio: 0.45,
-      contextEditTriggerTokenRatio: 0.88,
-      contextEditKeepRecentTurns: 10,
-      contextEditTriggerEveryNTurns: 12,
-      outputReserveRatio: 0.12,
-      softBudgetRatio: 0.92,
-      compressionSafeZoneRatio: 0.68,
-    };
-  }
-  return {
-    toolMessageMaxChars: 3000,
-    minRecentMessagesToKeep: 8,
-    recentTokensMinRatio: 0.4,
-    contextEditTriggerTokenRatio: 0.85,
-    contextEditKeepRecentTurns: 8,
-    contextEditTriggerEveryNTurns: 8,
-    outputReserveRatio: 0.15,
-    softBudgetRatio: 0.9,
-    compressionSafeZoneRatio: 0.62,
-  };
 }
 
 function computeWorkingMemoryFingerprint(wm: WorkingMemory): string {
@@ -472,6 +422,7 @@ export async function runNativeToolCallingLoop(
   const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
   const softPromptBudget = Math.floor(hardPromptBudget * adaptiveParams.softBudgetRatio);
   const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
+  const maxToolOutputChars = computeMaxToolOutputChars(hardPromptBudget);
   const toolDefTokens = estimateTokensForToolDefinitions(activeTools);
   console.log(`[Loop] 工具定义 token 开销: ~${toolDefTokens} tokens (${activeTools.length} tools)`);
 
@@ -495,8 +446,6 @@ export async function runNativeToolCallingLoop(
     minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
     minRecentMessagesToKeep: adaptiveParams.minRecentMessagesToKeep,
     recentTokensMinRatio: adaptiveParams.recentTokensMinRatio,
-    toolMessageMaxChars: adaptiveParams.toolMessageMaxChars,
-    mergeToolMessages: true,
     toolDefinitionTokens: toolDefTokens,
   };
 
@@ -640,26 +589,6 @@ export async function runNativeToolCallingLoop(
       console.log(`[Loop] 清理陈旧系统消息: 移除 ${removed} 条`);
     }
 
-    const shouldEditByTurns = adaptiveParams.contextEditTriggerEveryNTurns > 0
-      && turn > 0 && turn % adaptiveParams.contextEditTriggerEveryNTurns === 0;
-    const shouldEditByTokens = estimateCurrentTokens() >
-      promptBudgetTarget * adaptiveParams.contextEditTriggerTokenRatio;
-
-    if (shouldEditByTurns || shouldEditByTokens) {
-      const editResult = clearOldToolUses(messages, {
-        keepRecentTurns: adaptiveParams.contextEditKeepRecentTurns,
-        clearAtLeast: CONTEXT_EDIT_CLEAR_AT_LEAST,
-        pinnedPrefixLen,
-      });
-      if (editResult.cleared) {
-        replaceMessages(editResult.messages);
-        console.log(
-          `[Loop] Context Editing: 清除 ${editResult.pairsRemoved} 个旧 tool-use 轮次 | ` +
-          `释放 ~${editResult.tokensFreed} tokens | 剩余 ${messages.length} messages`,
-        );
-      }
-    }
-
     const safeZoneEval = evaluateCompressionSafeZone({
       tokenTracker,
       messages,
@@ -689,6 +618,28 @@ export async function runNativeToolCallingLoop(
       console.log(`[Loop] 上下文压缩: ${beforeLen} → ${messages.length} messages | ~${afterTokens} tokens`);
     }
     emitContextUpdate();
+
+    // Phase 0 measurement: record state going into the LLM request.
+    // Fields are pipe-delimited key=value so downstream parsing (grep / awk / CSV) is trivial.
+    {
+      const estIn = estimateCurrentTokens();
+      const usedPct = promptBudgetTarget > 0 ? (estIn / promptBudgetTarget) * 100 : 0;
+      const compressionType = compression.compressed
+        ? compression.usedSummary
+          ? "summary"
+          : compression.usedTruncation
+            ? "truncation"
+            : compression.usedToolCompression
+              ? "tool"
+              : "other"
+        : "none";
+      console.log(
+        `[CtxMetric:pre] turn=${turn + 1} | est=${estIn} | budget=${promptBudgetTarget} | ctx=${limitTokens}` +
+        ` | usedPct=${usedPct.toFixed(1)} | compressionFired=${compression.compressed}` +
+        ` | compressionType=${compressionType} | msgs=${messages.length} | toolDefTokens=${toolDefTokens}` +
+        ` | model=${settings.model}`,
+      );
+    }
 
     let completion;
     {
@@ -748,6 +699,17 @@ export async function runNativeToolCallingLoop(
     if (completion.requestRecord.inputTokens) {
       const estBeforeCall = estimateCurrentTokens() + toolDefTokens;
       updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens, settings.model);
+
+      // Phase 0 measurement: record actual-vs-estimated token count from API usage.
+      // ratio <1 means we over-estimate (conservative, wastes budget); >1 means we under-estimate (risks overflow).
+      const actualIn = completion.requestRecord.inputTokens;
+      const ratio = estBeforeCall > 0 ? actualIn / estBeforeCall : 0;
+      const outTokens = completion.requestRecord.outputTokens ?? 0;
+      console.log(
+        `[CtxMetric:post] turn=${turn + 1} | est=${estBeforeCall} | actual=${actualIn}` +
+        ` | ratio=${ratio.toFixed(3)} | outputTokens=${outTokens}` +
+        ` | budget=${promptBudgetTarget} | model=${settings.model}`,
+      );
     }
 
     if (
@@ -1026,8 +988,8 @@ export async function runNativeToolCallingLoop(
         tool_call_id: toolCall.id,
         name: toolCall.function.name,
         content: trimToolContentForContext(
-          toolCall.function.name,
           toolResult.content,
+          maxToolOutputChars,
           { smartTruncate },
         ),
       });

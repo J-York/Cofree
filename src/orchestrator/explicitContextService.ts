@@ -10,14 +10,15 @@ import {
   type ChatContextAttachment,
 } from "../lib/contextAttachments";
 import { estimateTokensFromText } from "./contextBudget";
-
-const MAX_CONTEXT_ATTACHMENTS = 8;
-const MIN_ATTACHMENT_BUDGET_TOKENS = 800;
-const MAX_ATTACHMENT_BUDGET_TOKENS = 5000;
-const MAX_FOLDER_SAMPLE_FILES = 4;
-const MAX_RULE_CONTEXT_FILES = 6;
-const MIN_RULE_BUDGET_TOKENS = 400;
-const MAX_RULE_BUDGET_TOKENS = 2400;
+import {
+  MAX_ATTACHMENT_BUDGET_TOKENS,
+  MAX_CONTEXT_ATTACHMENTS,
+  MAX_FOLDER_SAMPLE_FILES,
+  MAX_RULE_BUDGET_TOKENS,
+  MAX_RULE_CONTEXT_FILES,
+  MIN_ATTACHMENT_BUDGET_TOKENS,
+  MIN_RULE_BUDGET_TOKENS,
+} from "./contextPolicy";
 
 function truncateWithMarker(text: string, maxChars: number, marker: string): string {
   if (maxChars <= 0 || text.length <= maxChars) {

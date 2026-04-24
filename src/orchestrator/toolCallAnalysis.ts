@@ -2,14 +2,6 @@ export interface ToolContentTrimDeps {
   smartTruncate: (content: string, maxLength: number, headRatio?: number) => string;
 }
 
-const MAX_TOOL_OUTPUT_CHARS = 15000; // hard cap for tool content injected into LLM context
-const MAX_GREP_PREVIEW_MATCHES = 30;
-const MAX_GREP_PREVIEW_CHARS = 8000;
-const MAX_GLOB_PREVIEW_FILES = 60;
-const MAX_GLOB_PREVIEW_CHARS = 6000;
-const MAX_SHELL_TOOL_PREVIEW_CHARS = 6000;
-const MAX_FETCH_PREVIEW_CHARS = 10000;
-
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -197,132 +189,16 @@ export function summarizeToolArgs(toolName: string, argsJson: string): string {
   }
 }
 
-function limitJsonField(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  return value.slice(0, maxChars) + "\n...[truncated]";
-}
-
-function smartTruncateWithHint(
-  text: string,
-  limit: number,
-  hint: string,
-  deps: ToolContentTrimDeps,
-): { text: string; truncated: boolean; hint?: string } {
-  if (text.length <= limit) {
-    return { text, truncated: false };
-  }
-  const truncatedText = deps.smartTruncate(text, limit);
-  return {
-    text: truncatedText,
-    truncated: true,
-    hint,
-  };
-}
-
+/**
+ * Truncate a tool result string to fit within the single budget-derived cap.
+ * No per-tool dispatch: the cap is uniform, the smartTruncate takes care of
+ * cutting at line boundaries so the model still sees a coherent head + tail.
+ */
 export function trimToolContentForContext(
-  toolName: string,
   jsonText: string,
+  maxToolOutputChars: number,
   deps: ToolContentTrimDeps,
 ): string {
-  // Tool content is JSON string. We structurally trim heavy fields per tool.
-  try {
-    const obj = JSON.parse(jsonText) as Record<string, any>;
-
-    if (toolName === "read_file") {
-      if (typeof obj.content_preview === "string") {
-        obj.content_preview = limitJsonField(
-          obj.content_preview,
-          MAX_TOOL_OUTPUT_CHARS
-        );
-      }
-      // Keep hint/metadata; never include any full raw file contents field.
-    }
-
-    if (toolName === "grep") {
-      if (typeof obj.matches_preview === "string") {
-        obj.matches_preview = limitJsonField(
-          obj.matches_preview,
-          MAX_GREP_PREVIEW_CHARS
-        );
-      }
-      if (
-        typeof obj.match_count === "number" &&
-        obj.match_count > MAX_GREP_PREVIEW_MATCHES
-      ) {
-        obj.note = `matches_preview 已限制为前 ${MAX_GREP_PREVIEW_MATCHES} 条，并做了字符裁剪。`;
-      }
-    }
-
-    if (toolName === "glob") {
-      if (typeof obj.files_preview === "string") {
-        obj.files_preview = limitJsonField(
-          obj.files_preview,
-          MAX_GLOB_PREVIEW_CHARS
-        );
-      }
-      if (
-        typeof obj.file_count === "number" &&
-        obj.file_count > MAX_GLOB_PREVIEW_FILES
-      ) {
-        obj.note = `files_preview 已限制为前 ${MAX_GLOB_PREVIEW_FILES} 条，并做了字符裁剪。`;
-      }
-    }
-
-    if (toolName === "diagnostics") {
-      // diagnostics tool already aggregates; just cap preview.
-      if (typeof obj.diagnostics_preview === "string") {
-        obj.diagnostics_preview = limitJsonField(
-          obj.diagnostics_preview,
-          MAX_TOOL_OUTPUT_CHARS
-        );
-      }
-    }
-
-    if (toolName === "fetch") {
-      if (typeof obj.content_preview === "string") {
-        obj.content_preview = limitJsonField(
-          obj.content_preview,
-          MAX_FETCH_PREVIEW_CHARS
-        );
-      }
-    }
-
-    if (toolName === "propose_shell") {
-      if (typeof obj.stdout === "string") {
-        obj.stdout = limitJsonField(
-          obj.stdout,
-          MAX_SHELL_TOOL_PREVIEW_CHARS
-        );
-      }
-      if (typeof obj.stderr === "string") {
-        obj.stderr = limitJsonField(
-          obj.stderr,
-          MAX_SHELL_TOOL_PREVIEW_CHARS
-        );
-      }
-    }
-
-    const stringified = JSON.stringify(obj);
-    if (stringified.length <= MAX_TOOL_OUTPUT_CHARS) {
-      return stringified;
-    }
-
-    // Absolute hard cap
-    const hard = smartTruncateWithHint(
-      stringified,
-      MAX_TOOL_OUTPUT_CHARS,
-      `tool(${toolName}) 输出过长，已做硬裁剪。`,
-      deps,
-    );
-    return hard.text;
-  } catch {
-    // Not JSON or parse failed: fallback to char cap
-    const hard = smartTruncateWithHint(
-      jsonText,
-      MAX_TOOL_OUTPUT_CHARS,
-      `tool(${toolName}) 输出过长，已做硬裁剪。`,
-      deps,
-    );
-    return hard.text;
-  }
+  if (jsonText.length <= maxToolOutputChars) return jsonText;
+  return deps.smartTruncate(jsonText, maxToolOutputChars);
 }
