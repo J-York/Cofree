@@ -41,11 +41,8 @@ const baseSettings: AppSettings = {
   },
   activeVendorId: "vendor-openai",
   activeModelId: "model-gpt4o-mini",
-  activeAgentId: "fullstack",
   vendors: [],
   managedModels: [],
-  customAgents: [],
-  builtinAgentOverrides: {},
   skills: [],
 };
 
@@ -64,7 +61,6 @@ describe("debug export helpers", () => {
       toolPermissions: baseSettings.toolPermissions,
       activeVendorId: "vendor-openai",
       activeModelId: "model-gpt4o-mini",
-      activeAgentId: "fullstack",
       proxy: {
         mode: "http",
         url: "http://proxy.local",

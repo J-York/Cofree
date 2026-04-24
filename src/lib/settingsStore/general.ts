@@ -1,10 +1,5 @@
 import { migrateLegacyConversationBindings } from "../conversationMaintenance";
 import type { ModelSelection } from "../modelSelection";
-import type {
-  ChatAgentDefinition,
-  ChatAgentOverride,
-  ChatAgentToolPolicy,
-} from "../../agents/types";
 import type { SkillEntry } from "../skillStore";
 
 export const SETTINGS_STORAGE_KEY = "cofree.settings.v1";
@@ -113,11 +108,8 @@ export interface AppSettings {
   proxy: ProxySettings;
   activeVendorId: string | null;
   activeModelId: string | null;
-  activeAgentId: string | null;
   vendors: VendorConfig[];
   managedModels: ManagedModel[];
-  customAgents: ChatAgentDefinition[];
-  builtinAgentOverrides: Record<string, ChatAgentOverride>;
   skills: SkillEntry[];
 }
 
@@ -298,11 +290,8 @@ function createInitialSettings(): AppSettings {
     },
     activeVendorId: defaults.vendor.id,
     activeModelId: defaults.model.id,
-    activeAgentId: null,
     vendors: [defaults.vendor],
     managedModels: [defaults.model],
-    customAgents: [],
-    builtinAgentOverrides: {},
     skills: [],
   };
 }
@@ -510,48 +499,6 @@ function ensureUniqueManagedModelIds(settings: AppSettings): AppSettings {
   return changed ? { ...settings, managedModels } : settings;
 }
 
-function normalizeModelSelection(
-  settings: Pick<AppSettings, "vendors" | "managedModels">,
-  selection?: ModelSelection,
-): ModelSelection | undefined {
-  if (!selection) return undefined;
-  const resolved = resolveManagedModelSelection(settings, selection);
-  const directModel = getManagedModelById(settings, selection.modelId);
-  if (!resolved || !directModel) {
-    return undefined;
-  }
-  return {
-    vendorId: resolved.vendor.id,
-    modelId: directModel.id,
-  };
-}
-
-function withNormalizedAgentSelections(settings: AppSettings): AppSettings {
-  const customAgents = settings.customAgents.map((agent) => ({
-    ...agent,
-    modelSelection: normalizeModelSelection(settings, agent.modelSelection),
-  }));
-
-  const builtinAgentOverrides = Object.fromEntries(
-    Object.entries(settings.builtinAgentOverrides).flatMap(([agentId, override]) => {
-      const nextOverride: ChatAgentOverride = { ...override };
-      const normalizedSelection = normalizeModelSelection(settings, override.modelSelection);
-      if (normalizedSelection) {
-        nextOverride.modelSelection = normalizedSelection;
-      } else {
-        delete nextOverride.modelSelection;
-      }
-      return Object.keys(nextOverride).length > 0 ? [[agentId, nextOverride]] : [];
-    }),
-  );
-
-  return {
-    ...settings,
-    customAgents,
-    builtinAgentOverrides,
-  };
-}
-
 function withRuntimeSelection(settings: AppSettings, apiKey = settings.apiKey): AppSettings {
   const workspacePath = normalizeWorkspacePath(settings.workspacePath);
   const recentWorkspaces = normalizeRecentWorkspaces(
@@ -577,7 +524,7 @@ function withRuntimeSelection(settings: AppSettings, apiKey = settings.apiKey): 
     };
   }
 
-  return withNormalizedAgentSelections({
+  return {
     ...normalized,
     apiKey,
     activeVendorId: resolved.vendor.id,
@@ -585,7 +532,7 @@ function withRuntimeSelection(settings: AppSettings, apiKey = settings.apiKey): 
     provider: resolved.vendor.name,
     model: resolved.managedModel.name,
     liteLLMBaseUrl: resolved.vendor.baseUrl,
-  });
+  };
 }
 
 export function syncRuntimeSettings(settings: AppSettings, apiKey = settings.apiKey): AppSettings {
@@ -811,70 +758,6 @@ function sanitizePersistedToolPermissions(raw: unknown): ToolPermissions {
   return result;
 }
 
-function normalizeToolPolicy(raw: unknown): ChatAgentToolPolicy {
-  if (!isRecord(raw)) return {};
-  const result: ChatAgentToolPolicy = {};
-  if (Array.isArray(raw.enabledTools)) {
-    result.enabledTools = raw.enabledTools.filter((value): value is string => typeof value === "string");
-  }
-  if (isRecord(raw.toolPermissionOverrides)) {
-    result.toolPermissionOverrides = Object.fromEntries(
-      Object.entries(raw.toolPermissionOverrides)
-        .filter(([, value]) => value === "auto" || value === "ask"),
-    ) as ChatAgentToolPolicy["toolPermissionOverrides"];
-  }
-  return result;
-}
-
-function normalizeAgentModelSelection(
-  raw: Record<string, unknown>,
-  legacyProfileSelections: Record<string, LegacyProfileSelection>,
-): ModelSelection | undefined {
-  if (isRecord(raw.modelSelection)) {
-    const vendorId = typeof raw.modelSelection.vendorId === "string"
-      ? raw.modelSelection.vendorId
-      : undefined;
-    const modelId = typeof raw.modelSelection.modelId === "string"
-      ? raw.modelSelection.modelId
-      : undefined;
-    if (vendorId && modelId) {
-      return { vendorId, modelId };
-    }
-  }
-
-  if (typeof raw.defaultProfileId === "string") {
-    const migrated = legacyProfileSelections[raw.defaultProfileId];
-    if (migrated) {
-      return {
-        vendorId: migrated.vendorId,
-        modelId: migrated.modelId,
-      };
-    }
-  }
-
-  return undefined;
-}
-
-function normalizeCustomAgents(
-  raw: unknown,
-  legacyProfileSelections: Record<string, LegacyProfileSelection>,
-): ChatAgentDefinition[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((item): item is Record<string, unknown> => isRecord(item) && typeof item.id === "string")
-    .map((item) => ({
-      id: item.id as string,
-      name: typeof item.name === "string" ? item.name : "Agent",
-      description: typeof item.description === "string" ? item.description : "",
-      icon: typeof item.icon === "string" ? item.icon : undefined,
-      systemPromptTemplate:
-        typeof item.systemPromptTemplate === "string" ? item.systemPromptTemplate : "",
-      toolPolicy: normalizeToolPolicy(item.toolPolicy),
-      modelSelection: normalizeAgentModelSelection(item, legacyProfileSelections),
-      builtin: false as const,
-    }));
-}
-
 function normalizeSkillEntries(raw: unknown): SkillEntry[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -907,30 +790,6 @@ function normalizeSkillEntries(raw: unknown): SkillEntry[] {
     }));
 }
 
-function normalizeBuiltinAgentOverrides(
-  raw: unknown,
-  legacyProfileSelections: Record<string, LegacyProfileSelection>,
-): Record<string, ChatAgentOverride> {
-  if (!isRecord(raw)) return {};
-  const result: Record<string, ChatAgentOverride> = {};
-  for (const [key, value] of Object.entries(raw)) {
-    if (!isRecord(value)) continue;
-    const entry: ChatAgentOverride = {};
-    if (typeof value.name === "string") entry.name = value.name;
-    if (typeof value.description === "string") entry.description = value.description;
-    if (typeof value.systemPromptTemplate === "string") {
-      entry.systemPromptTemplate = value.systemPromptTemplate;
-    }
-    const modelSelection = normalizeAgentModelSelection(value, legacyProfileSelections);
-    if (modelSelection) {
-      entry.modelSelection = modelSelection;
-    }
-    if (value.toolPolicy) entry.toolPolicy = normalizeToolPolicy(value.toolPolicy);
-    if (Object.keys(entry).length > 0) result[key] = entry;
-  }
-  return result;
-}
-
 function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
   settings: AppSettings;
   legacyProfileSelections: Record<string, LegacyProfileSelection>;
@@ -953,7 +812,7 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
     ? migrateLegacyProfilesToManagedResources(parsed)
     : null;
 
-  const baseWithoutAgents: AppSettings = {
+  const baseSettings: AppSettings = {
     ...DEFAULT_SETTINGS,
     ...parsed,
     apiKey: "",
@@ -968,14 +827,8 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
       typeof parsed.activeModelId === "string"
         ? parsed.activeModelId
         : legacyMigration?.activeModelId ?? DEFAULT_SETTINGS.activeModelId,
-    activeAgentId:
-      typeof (parsed as Record<string, unknown>).activeAgentId === "string"
-        ? ((parsed as Record<string, unknown>).activeAgentId as string)
-        : null,
     vendors: legacyMigration?.vendors ?? normalizedVendors,
     managedModels: legacyMigration?.managedModels ?? normalizedManagedModels,
-    customAgents: [],
-    builtinAgentOverrides: {},
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...(isRecord(parsed.proxy) ? parsed.proxy : {}),
@@ -992,8 +845,8 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
   const hasLegacyModelMeta = legacyModelContextWindow > 0 || legacyModelMaxOutput > 0;
   const withLegacyModelMeta = hasLegacyModelMeta
     ? {
-      ...baseWithoutAgents,
-      managedModels: baseWithoutAgents.managedModels.map((model) => {
+      ...baseSettings,
+      managedModels: baseSettings.managedModels.map((model) => {
         const alreadyConfigured =
           model.metaSettings.contextWindowTokens > 0 ||
           model.metaSettings.maxOutputTokens > 0;
@@ -1010,7 +863,7 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
         };
       }),
     }
-    : baseWithoutAgents;
+    : baseSettings;
 
   const legacyProfileSelections = legacyMigration?.legacyProfileSelections ?? (() => {
     const rawProfiles = Array.isArray((parsed as Record<string, unknown>).profiles)
@@ -1026,21 +879,21 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
     );
   })();
 
-  const withAgents: AppSettings = {
+  const finalSettings: AppSettings = {
     ...withLegacyModelMeta,
-    customAgents: normalizeCustomAgents(
-      (parsed as Record<string, unknown>).customAgents,
-      legacyProfileSelections,
-    ),
-    builtinAgentOverrides: normalizeBuiltinAgentOverrides(
-      (parsed as Record<string, unknown>).builtinAgentOverrides,
-      legacyProfileSelections,
-    ),
     skills: normalizeSkillEntries((parsed as Record<string, unknown>).skills),
   };
 
+  // Strip legacy custom-agent fields that may have been spread in from older
+  // persisted settings via `...parsed`. The feature has been removed; leaving
+  // the keys around would cause them to be re-serialized on save.
+  const record = finalSettings as unknown as Record<string, unknown>;
+  delete record.customAgents;
+  delete record.builtinAgentOverrides;
+  delete record.activeAgentId;
+
   return {
-    settings: syncRuntimeSettings(withAgents),
+    settings: syncRuntimeSettings(finalSettings),
     legacyProfileSelections,
   };
 }

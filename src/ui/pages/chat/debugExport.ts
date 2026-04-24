@@ -116,7 +116,6 @@ export function sanitizeSettingsForDebugExport(settings: AppSettings) {
     toolPermissions: settings.toolPermissions,
     activeVendorId: settings.activeVendorId,
     activeModelId: settings.activeModelId,
-    activeAgentId: settings.activeAgentId,
     proxy: {
       mode: settings.proxy.mode,
       url: settings.proxy.url,

@@ -6,12 +6,12 @@
   gap: 6px;
   border: 1px solid transparent;
   border-radius: var(--r-sm);
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: 8px 14px;
+  font-size: 13px;
   font-weight: 500;
   font-family: var(--font-sans);
   cursor: pointer;
-  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
   white-space: nowrap;
   outline: none;
   position: relative;
@@ -23,26 +23,31 @@
 
 .btn:focus-visible {
   border-color: var(--border-focus);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
 }
 
 .btn:disabled {
   cursor: not-allowed;
   transform: none !important;
+  opacity: 0.6;
 }
 
 /* Primary: near-white on dark, black on light. */
 .btn-primary {
-  background: #E8E8EC;
-  color: #18181B;
+  background: var(--text-1);
+  color: var(--bg-app);
   border: none;
   font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.15);
 }
 .btn-primary:hover:not(:disabled) {
-  background: #FFFFFF;
+  background: var(--accent-hover);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.25);
 }
 .btn-primary:disabled {
   background: var(--bg-surface-active);
   color: var(--text-3);
+  box-shadow: none;
 }
 
 [data-theme="light"] .btn-primary {

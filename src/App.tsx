@@ -7,11 +7,10 @@ import {
   saveSettings,
   saveVendorApiKey,
   setActiveManagedModelSelection,
-  switchAgent,
   syncRuntimeSettings,
   updateWorkspacePath,
 } from "./lib/settingsStore";
-import { getAllChatAgents, getChatAgentFromSettings } from "./agents/builtinChatAgents";
+import { DEFAULT_CHAT_AGENT } from "./agents/builtinChatAgents";
 import { ChatPage } from "./ui/pages/ChatPage";
 import { TitleBar } from "./ui/components/TitleBar";
 import { UpdateBanner } from "./ui/components/UpdateBanner";
@@ -145,14 +144,6 @@ export default function App(): ReactElement {
     commitWorkspaceSelection(workspacePath);
   }, [commitWorkspaceSelection]);
 
-  const handleSwitchAgent = useCallback((agentId: string) => {
-    const current = settingsRef.current;
-    if (agentId === current.activeAgentId) return;
-    const next = switchAgent(current, agentId);
-    saveSettings(next);
-    setSettings(next);
-  }, []);
-
   const handleOpenSystemTerminal = useCallback(() => {
     const workspacePath = settingsRef.current.workspacePath;
     if (!workspacePath) return;
@@ -210,14 +201,11 @@ export default function App(): ReactElement {
             modelName: managedModel.name,
           }))}
           activeModelId={settings.activeModelId}
-          agents={getAllChatAgents(settings)}
-          activeAgentId={settings.activeAgentId}
           onOpenSystemTerminal={handleOpenSystemTerminal}
           onToggleSettings={() => setSettingsOpen((v) => !v)}
           onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
           sidebarCollapsed={sidebarCollapsed}
           onSwitchModel={(id) => void handleSwitchModel(id)}
-          onSwitchAgent={handleSwitchAgent}
           onSelectWorkspace={() => void handleSelectWorkspace()}
           onSwitchWorkspace={handleSwitchWorkspace}
         />
@@ -225,7 +213,7 @@ export default function App(): ReactElement {
         <div className="app-body">
           <ChatPage
             settings={settings}
-            activeAgent={getChatAgentFromSettings(settings.activeAgentId, settings)}
+            activeAgent={DEFAULT_CHAT_AGENT}
             isVisible={true}
             sidebarCollapsed={sidebarCollapsed}
           />

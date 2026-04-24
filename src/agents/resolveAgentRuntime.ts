@@ -1,11 +1,11 @@
 /**
  * Cofree - AI Programming Cafe
  * File: src/agents/resolveAgentRuntime.ts
- * Description: Resolves a ChatAgentDefinition + AppSettings into a concrete
+ * Description: Resolves the default ChatAgent + AppSettings into a concrete
  *              ResolvedAgentRuntime that the orchestrator can execute against.
  */
 
-import type { AppSettings, ToolPermissions, ToolPermissionLevel } from "../lib/settingsStore";
+import type { AppSettings, ToolPermissionLevel } from "../lib/settingsStore";
 import {
   getActiveVendor,
   getActiveManagedModel,
@@ -13,11 +13,10 @@ import {
   DEFAULT_TOOL_PERMISSIONS,
 } from "../lib/settingsStore";
 import type {
-  ChatAgentDefinition,
   ResolvedAgentRuntime,
   ConversationAgentBinding,
 } from "./types";
-import { getChatAgentFromSettings } from "./builtinChatAgents";
+import { DEFAULT_CHAT_AGENT } from "./builtinChatAgents";
 import type { ModelSelection } from "../lib/modelSelection";
 
 const ALL_TOOL_NAMES = [
@@ -28,44 +27,13 @@ const ALL_TOOL_NAMES = [
   "diagnostics", "fetch", "ask_user",
 ];
 
-function resolveEnabledTools(agent: ChatAgentDefinition): string[] {
-  if (agent.toolPolicy.enabledTools && agent.toolPolicy.enabledTools.length > 0) {
-    const base = new Set(agent.toolPolicy.enabledTools);
-    base.add("ask_user");
-    return ALL_TOOL_NAMES.filter((toolName) => base.has(toolName));
-  }
-  return [...ALL_TOOL_NAMES];
-}
-
 function resolveToolPermissions(
-  agent: ChatAgentDefinition,
-  globalPermissions: ToolPermissions,
+  settings: AppSettings,
 ): Record<string, ToolPermissionLevel> {
-  const merged: Record<string, ToolPermissionLevel> = {
+  return {
     ...DEFAULT_TOOL_PERMISSIONS,
-    ...globalPermissions,
+    ...settings.toolPermissions,
   };
-  if (agent.toolPolicy.toolPermissionOverrides) {
-    for (const [tool, level] of Object.entries(agent.toolPolicy.toolPermissionOverrides)) {
-      if (level) {
-        merged[tool] = level;
-      }
-    }
-  }
-  return merged;
-}
-
-function resolveSelectionForAgent(
-  agent: ChatAgentDefinition,
-  binding: ConversationAgentBinding | null,
-): ModelSelection | undefined {
-  if (binding) {
-    return {
-      vendorId: binding.vendorId,
-      modelId: binding.modelId,
-    };
-  }
-  return agent.modelSelection;
 }
 
 export function resolveAgentRuntime(
@@ -75,12 +43,11 @@ export function resolveAgentRuntime(
   const binding =
     agentIdOrBinding && typeof agentIdOrBinding === "object" ? agentIdOrBinding : null;
 
-  const agentId = binding?.agentId ?? (typeof agentIdOrBinding === "string" ? agentIdOrBinding : null);
-  const agent = getChatAgentFromSettings(agentId, settings);
-  const selection = resolveManagedModelSelection(
-    settings,
-    resolveSelectionForAgent(agent, binding),
-  );
+  const agent = DEFAULT_CHAT_AGENT;
+  const bindingSelection: ModelSelection | undefined = binding
+    ? { vendorId: binding.vendorId, modelId: binding.modelId }
+    : undefined;
+  const selection = resolveManagedModelSelection(settings, bindingSelection);
   const vendor = selection?.vendor ?? getActiveVendor(settings);
   const model = selection?.managedModel ?? getActiveManagedModel(settings);
 
@@ -88,8 +55,8 @@ export function resolveAgentRuntime(
     agentId: agent.id,
     agentName: agent.name,
     systemPrompt: agent.systemPromptTemplate,
-    enabledTools: resolveEnabledTools(agent),
-    toolPermissions: resolveToolPermissions(agent, settings.toolPermissions),
+    enabledTools: [...ALL_TOOL_NAMES],
+    toolPermissions: resolveToolPermissions(settings),
     vendorId: vendor?.id || settings.activeVendorId || "",
     modelId: model?.id || settings.activeModelId || "",
     modelRef: model?.name || settings.model,

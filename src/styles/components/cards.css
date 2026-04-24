@@ -2,14 +2,17 @@
 .card {
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  padding: 20px;
-  transition: background var(--t-fast), border-color var(--t-fast);
+  border-radius: var(--r-lg);
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  transition: background var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast);
 }
 
 .card:hover {
   border-color: var(--border-default);
   background: var(--bg-surface);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 
 .card-title {

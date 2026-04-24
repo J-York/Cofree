@@ -144,7 +144,7 @@
 }
 
 .chat-meta-name { color: var(--text-3); }
-.chat-meta-time { color: var(--text-4); }
+.chat-meta-time, .chat-meta-model, .chat-meta-tokens { color: var(--text-4); }
 
 .chat-meta-live {
   display: inline-flex;
@@ -162,7 +162,7 @@
 .chat-meta-live-text {
   font-size: 10px;
   letter-spacing: 0.04em;
-  text-transform: uppercase;
+  text-transform: lowercase;
 }
 
 @keyframes chat-meta-live-pulse {

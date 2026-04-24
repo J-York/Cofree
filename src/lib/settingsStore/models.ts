@@ -181,37 +181,10 @@ function clearRemovedSelections(
       ? null
       : settings.activeModelId;
 
-  const customAgents = settings.customAgents.map((agent) => ({
-    ...agent,
-    modelSelection:
-      agent.modelSelection &&
-      (agent.modelSelection.vendorId === removedVendorId ||
-        removedModelIds.has(agent.modelSelection.modelId))
-        ? undefined
-        : agent.modelSelection,
-  }));
-
-  const builtinAgentOverrides = Object.fromEntries(
-    Object.entries(settings.builtinAgentOverrides).flatMap(([agentId, override]) => {
-      const shouldClear =
-        override.modelSelection &&
-        (override.modelSelection.vendorId === removedVendorId ||
-          removedModelIds.has(override.modelSelection.modelId));
-      const nextOverride = shouldClear
-        ? Object.fromEntries(
-            Object.entries(override).filter(([key]) => key !== "modelSelection"),
-          )
-        : override;
-      return Object.keys(nextOverride).length > 0 ? [[agentId, nextOverride]] : [];
-    }),
-  );
-
   return {
     ...settings,
     activeVendorId,
     activeModelId,
-    customAgents,
-    builtinAgentOverrides,
   };
 }
 

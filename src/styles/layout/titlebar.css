@@ -129,21 +129,6 @@
   border-color: var(--border-default);
 }
 
-.titlebar-agent-name {
-  font-family: var(--font-sans);
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-1);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.titlebar-model-divider {
-  color: var(--text-4);
-  font-size: 12px;
-}
-
 .titlebar-model-name {
   font-family: var(--font-mono);
   font-size: 11px;

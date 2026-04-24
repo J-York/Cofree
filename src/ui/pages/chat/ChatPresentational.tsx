@@ -375,6 +375,43 @@ function firstLine(raw: string | undefined): string | undefined {
   return line.length > 160 ? `${line.slice(0, 160)}…` : line;
 }
 
+export function MessageMeta({
+  name,
+  time,
+  model,
+  tokens,
+  status,
+}: {
+  role?: "user" | "assistant" | "tool";
+  name: string;
+  time?: string;
+  model?: string;
+  tokens?: number;
+  status?: "thinking" | "running" | "done";
+}) {
+  return (
+    <p className="chat-meta">
+      <span className="chat-meta-name">{name}</span>
+      {time && <span className="chat-meta-time"> · {time}</span>}
+      {model && <span className="chat-meta-model"> · {model}</span>}
+      {tokens !== undefined && (
+        <span className="chat-meta-tokens">
+          {" · "}
+          {tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tokens
+        </span>
+      )}
+      {status && (
+        <span className="chat-meta-live" aria-label={status}>
+          <span className="chat-meta-live-dot" aria-hidden>
+            {status === "thinking" ? "●" : status === "running" ? "◐" : "✓"}
+          </span>
+          <span className="chat-meta-live-text">{status}</span>
+        </span>
+      )}
+    </p>
+  );
+}
+
 export function ToolTracePanel({
   traces,
   liveToolCalls,
@@ -383,59 +420,36 @@ export function ToolTracePanel({
   liveToolCalls?: readonly LiveToolCall[];
 }) {
   const items = buildRailItems(traces, liveToolCalls ?? []);
-  const hasRunning = items.some((item) => item.status === "running");
-  const [userExpanded, setUserExpanded] = useState(false);
-  const expanded = userExpanded || hasRunning;
 
   if (items.length === 0) return null;
 
   return (
     <div className="tool-rail">
-      <button
-        type="button"
-        className="tool-rail-header"
-        onClick={() => setUserExpanded((v) => !v)}
-        aria-expanded={expanded}
-      >
-        <span
-          className="tool-rail-chevron"
-          style={{ transform: expanded ? "rotate(90deg)" : "rotate(0deg)" }}
-          aria-hidden
-        >
-          ▶
-        </span>
-        <span className="tool-rail-label">
-          工具调用 · {items.length}
-          {hasRunning ? " · 进行中" : ""}
-        </span>
-      </button>
-      {expanded && (
-        <ul className="tool-rail-list">
-          {items.map((item) => (
-            <li
-              key={item.key}
-              className={`tool-rail-row tool-rail-row-${item.status}${
-                item.status === "running" ? " is-running" : ""
-              }`}
-              title={item.argsPreview ?? item.name}
-            >
-              <span className="tool-rail-glyph" aria-hidden>
-                {RAIL_GLYPH[item.status]}
-              </span>
-              <span className="tool-rail-name">{item.name}</span>
-              {item.argsPreview && (
-                <span className="tool-rail-args">{item.argsPreview}</span>
-              )}
-              {item.tailNote && (
-                <span className="tool-rail-tail">→ {item.tailNote}</span>
-              )}
-              {item.retried && (
-                <span className="tool-rail-tag">retried</span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul className="tool-rail-list">
+        {items.map((item) => (
+          <li
+            key={item.key}
+            className={`tool-rail-row tool-rail-row-${item.status}${
+              item.status === "running" ? " is-running" : ""
+            }`}
+            title={item.argsPreview ?? item.name}
+          >
+            <span className="tool-rail-glyph" aria-hidden>
+              {RAIL_GLYPH[item.status]}
+            </span>
+            <span className="tool-rail-name">{item.name}</span>
+            {item.argsPreview && (
+              <span className="tool-rail-args">{item.argsPreview}</span>
+            )}
+            {item.tailNote && (
+              <span className="tool-rail-tail">→ {item.tailNote}</span>
+            )}
+            {item.retried && (
+              <span className="tool-rail-tag">retried</span>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -459,7 +473,7 @@ function ActionPayloadFields({
     return (
       <div className="action-grid">
         <div className="action-field action-wide">
-          <details className="patch-preview-details" open={action.status === "pending"}>
+          <details className="patch-preview-details">
             <summary className="patch-preview-summary">
               <span className="patch-preview-chevron" aria-hidden>▸</span>
               <span className="patch-preview-label">查看差异</span>
@@ -518,10 +532,17 @@ function ActionPayloadFields({
     return (
       <div className="action-grid">
         <div className="action-field action-wide">
-          <span>命令</span>
-          <code className="action-command-preview">
-            {action.payload.shell || "(empty command)"}
-          </code>
+          <details className="patch-preview-details">
+            <summary className="patch-preview-summary">
+              <span className="patch-preview-chevron" aria-hidden>▸</span>
+              <span className="patch-preview-label">查看命令</span>
+            </summary>
+            <div className="patch-preview-body" style={{ marginTop: "8px" }}>
+              <code className="action-command-preview">
+                {action.payload.shell || "(empty command)"}
+              </code>
+            </div>
+          </details>
         </div>
         {hasShellOutput && (
           <div className="action-field action-wide">
@@ -659,10 +680,6 @@ function PlanActionCard({
   onCancel: (messageId: string, actionId: string) => Promise<void>;
 }) {
   const approvalOptions = buildApprovalRuleOptions(action);
-  const [rememberOptionKey, setRememberOptionKey] = useState("");
-  const selectedRememberOption = approvalOptions.find(
-    (option) => option.key === rememberOptionKey,
-  );
   const hasActiveShellJob = activeShellActionIds.includes(action.id);
   const isCancelling = executingActionId === `cancel:${action.id}`;
 
@@ -687,78 +704,65 @@ function PlanActionCard({
         onPlanUpdate={onPlanUpdate}
       />
 
-      {action.executionResult && (
-        <p
-          className={
-            action.status === "running" || action.status === "background"
-              ? "status-note"
-              : action.executionResult.success
-              ? "status-success"
-              : "status-error"
-          }
-        >
-          {action.executionResult.message}
-        </p>
-      )}
-
       <div className="action-footer">
         {canApproveAction(action) && (
           <div className="action-approve-group">
             <button
               className="btn btn-primary btn-sm action-approve-main"
               disabled={Boolean(executingActionId)}
-              onClick={() =>
-                void onApprove(messageId, action.id, plan, selectedRememberOption)
-              }
+              onClick={() => void onApprove(messageId, action.id, plan)}
               type="button"
             >
-              {executingActionId === action.id
-                ? "执行中…"
-                : selectedRememberOption
-                  ? "✓ 批准并记住"
-                  : "✓ 批准"}
+              {executingActionId === action.id ? "执行中…" : "✓ 批准"}
             </button>
-            {approvalOptions.length > 0 && (
-              <details className="action-approve-menu">
-                <summary
-                  className="btn btn-primary btn-sm action-approve-trigger"
-                  aria-label="批准选项"
-                  title="批准选项"
-                >
-                  <span aria-hidden>▾</span>
-                </summary>
-                <div className="action-approve-popover" role="menu">
-                  <label className="action-approve-option">
-                    <input
-                      type="radio"
-                      name={`approve-${action.id}`}
-                      checked={!rememberOptionKey}
-                      onChange={() => setRememberOptionKey("")}
-                    />
-                    <span className="action-approve-option-main">仅本次批准</span>
-                  </label>
-                  {approvalOptions.map((option) => (
-                    <label key={option.key} className="action-approve-option">
-                      <input
-                        type="radio"
-                        name={`approve-${action.id}`}
-                        checked={rememberOptionKey === option.key}
-                        onChange={() => setRememberOptionKey(option.key)}
-                      />
-                      <span className="action-approve-option-main">记住此类</span>
-                      <span className="action-approve-option-hint">
-                        {option.label}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </details>
-            )}
+            <details className="action-approve-menu">
+              <summary
+                className={`btn btn-primary btn-sm action-approve-trigger${
+                  executingActionId ? " is-disabled" : ""
+                }`}
+                aria-label="更多操作"
+                title="更多操作"
+              >
+                <span aria-hidden>▾</span>
+              </summary>
+              <div className="action-approve-popover" role="menu">
+                {approvalOptions.map((option) => (
+                  <button
+                    key={option.key}
+                    className="action-approve-option-btn"
+                    onClick={() => void onApprove(messageId, action.id, plan, option)}
+                    type="button"
+                  >
+                    <span className="action-approve-option-main">批准并记住</span>
+                    <span className="action-approve-option-hint">{option.label}</span>
+                  </button>
+                ))}
+                {canReviewAction(action) && (
+                  <>
+                    {approvalOptions.length > 0 && <div className="action-approve-divider" />}
+                    <button
+                      className="action-approve-option-btn text-danger"
+                      onClick={() => onReject(messageId, action.id)}
+                      type="button"
+                    >
+                      ✕ 拒绝
+                    </button>
+                    <button
+                      className="action-approve-option-btn"
+                      onClick={() => onComment(messageId, action.id)}
+                      type="button"
+                    >
+                      💬 备注
+                    </button>
+                  </>
+                )}
+              </div>
+            </details>
           </div>
         )}
         {canRetryAction(action) && (
           <button
-            className="btn btn-primary btn-sm"
+            className="btn btn-ghost btn-sm"
             disabled={Boolean(executingActionId)}
             onClick={() => void onRetry(messageId, action.id, plan)}
             type="button"
@@ -768,7 +772,7 @@ function PlanActionCard({
         )}
         {canCancelAction(action, hasActiveShellJob) && (
           <button
-            className="btn btn-ghost btn-sm"
+            className="btn btn-ghost btn-sm text-danger"
             disabled={Boolean(executingActionId)}
             onClick={() => void onCancel(messageId, action.id)}
             type="button"
@@ -776,28 +780,7 @@ function PlanActionCard({
             {isCancelling ? "取消中…" : "■ 取消"}
           </button>
         )}
-        <button
-          className="btn btn-ghost btn-sm action-icon-btn"
-          disabled={!canReviewAction(action) || Boolean(executingActionId)}
-          onClick={() => onReject(messageId, action.id)}
-          type="button"
-          aria-label="拒绝"
-          title="拒绝"
-        >
-          ✕
-        </button>
-        <button
-          className="btn btn-ghost btn-sm action-icon-btn"
-          disabled={!canReviewAction(action) || Boolean(executingActionId)}
-          onClick={() => onComment(messageId, action.id)}
-          type="button"
-          aria-label="备注"
-          title="备注"
-        >
-          💬
-        </button>
-      </div>
-    </li>
+      </div>    </li>
   );
 }
 
@@ -901,13 +884,14 @@ export function InlinePlan({
   );
 
   const headerSegments: PlanHeaderSegment[] = [];
-  if (pendingCount > 0) {
-    headerSegments.push({ text: `审批 · ${pendingCount} 待处理`, tone: "pending" });
-  } else {
-    headerSegments.push({ text: `审批 · ${safePlan.proposedActions.length}` });
+  const totalCount = safePlan.proposedActions.length;
+  headerSegments.push({ text: `${totalCount} 步` });
+
+  if (approvedCount > 0) {
+    headerSegments.push({ text: `${approvedCount} 完成`, tone: "done" });
   }
-  if (approvedCount > 0 && pendingCount === 0) {
-    headerSegments.push({ text: `${approvedCount} 已批准`, tone: "done" });
+  if (pendingCount > 0) {
+    headerSegments.push({ text: `${pendingCount} 待办`, tone: "pending" });
   }
   if (failedCount > 0) {
     headerSegments.push({ text: `${failedCount} 失败`, tone: "failed" });

@@ -9,28 +9,28 @@
 /* ── Tokens (Dark Mode - Default) ─────────────────────────── */
 :root {
   /* Background layers */
-  --bg-app:             #0A0A0B;
-  --bg-panel:           #131316;
-  --bg-surface:         #1A1A1F;
-  --bg-surface-hover:   #22222A;
-  --bg-surface-active:  #2A2A32;
+  --bg-app:             #09090B;
+  --bg-panel:           #121214;
+  --bg-surface:         #18181B;
+  --bg-surface-hover:   #27272A;
+  --bg-surface-active:  #3F3F46;
 
   /* Borders */
-  --border-subtle:      #1F1F24;
-  --border-default:     #26262C;
-  --border-strong:      #35353D;
-  --border-focus:       #3D3D48;
+  --border-subtle:      #27272A;
+  --border-default:     #3F3F46;
+  --border-strong:      #52525B;
+  --border-focus:       #A1A1AA;
 
   /* Text hierarchy */
-  --text-1: #E8E8EC;
-  --text-2: #9B9BA3;
-  --text-3: #6B6B75;
-  --text-4: #4A4A52;
+  --text-1: #FAFAFA;
+  --text-2: #A1A1AA;
+  --text-3: #71717A;
+  --text-4: #52525B;
 
   /* Accent — kept as hook, defaults to near-white neutral */
-  --accent:         #E8E8EC;
+  --accent:         #FAFAFA;
   --accent-hover:   #FFFFFF;
-  --accent-subtle:  rgba(232,232,236,0.08);
+  --accent-subtle:  rgba(250,250,250,0.1);
 
   /* Semantic colors */
   --color-success:  #4ADE80;

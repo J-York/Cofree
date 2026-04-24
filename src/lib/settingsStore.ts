@@ -64,17 +64,6 @@ export {
 } from "./settingsStore/models";
 
 export {
-  switchAgent,
-  generateAgentId,
-  createCustomAgent,
-  updateCustomAgent,
-  deleteCustomAgent,
-  cloneAgentAsCustom,
-  updateBuiltinAgentOverride,
-  resetBuiltinAgentOverride,
-} from "./settingsStore/agents";
-
-export {
   addSkill,
   updateSkill,
   deleteSkill,

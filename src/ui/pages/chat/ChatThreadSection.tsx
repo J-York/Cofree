@@ -9,6 +9,7 @@ import {
   ContextAttachmentPills,
   InlinePlan,
   MessageContent,
+  MessageMeta,
   ToolTracePanel,
 } from "./ChatPresentational";
 import type { LiveToolCall } from "./types";
@@ -141,22 +142,18 @@ const ChatMessageRow = memo(function ChatMessageRow({
           </details>
         ) : (
           <>
-            <p className="chat-meta">
-              <span className="chat-meta-name">
-                {message.role === "user" ? "你" : assistantMetaLabel}
-              </span>
-              {formatTime(message.createdAt) && (
-                <span className="chat-meta-time">{timeSuffix}</span>
-              )}
-              {message.role === "assistant" && showStreamingStatus && (
-                <span className="chat-meta-live" aria-label="正在响应">
-                  <span className="chat-meta-live-dot" aria-hidden>
-                    ●
-                  </span>
-                  <span className="chat-meta-live-text">响应中</span>
-                </span>
-              )}
-            </p>
+            <MessageMeta
+              role={message.role}
+              name={message.role === "user" ? "你" : assistantMetaLabel}
+              time={formatTime(message.createdAt)}
+              status={
+                message.role === "assistant" && showStreamingStatus
+                  ? liveToolCalls.length > 0
+                    ? "running"
+                    : "thinking"
+                  : undefined
+              }
+            />
             {message.role === "assistant" && debugMode && (
               <AssistantToolCalls toolCalls={message.tool_calls} />
             )}

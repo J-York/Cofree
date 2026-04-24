@@ -6,7 +6,6 @@ import type {
   VendorConfig,
   VendorProtocol,
 } from "../../lib/settingsStore";
-import type { ChatAgentDefinition } from "../../agents/types";
 
 export interface WorkspaceInfo {
   git_branch?: string;
@@ -22,10 +21,9 @@ export interface SettingsPageProps {
   onClose?: () => void;
 }
 
-export type SettingsTab = "agents" | "skills" | "model" | "tools" | "advanced" | "audit";
+export type SettingsTab = "skills" | "model" | "tools" | "advanced" | "audit";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
-  { id: "agents", label: "Agent 管理" },
   { id: "skills", label: "Skills" },
   { id: "model", label: "模型配置" },
   { id: "tools", label: "工具权限" },
@@ -71,22 +69,6 @@ export interface ModelPickerOverlayProps {
   onCancel: () => void;
 }
 
-export interface AgentEditorProps {
-  agent: ChatAgentDefinition;
-  isBuiltin: boolean;
-  isOverridden: boolean;
-  originalBuiltin: ChatAgentDefinition | null;
-  vendors: AppSettings["vendors"];
-  managedModels: ManagedModel[];
-  confirmDeleteId: string | null;
-  onUpdate: (updates: Partial<Omit<ChatAgentDefinition, "id" | "builtin">>) => void;
-  onReset: () => void;
-  onClone: () => void;
-  onConfirmDelete: () => void;
-  onDelete: () => void;
-  onCancelDelete: () => void;
-}
-
 export interface SettingsNavProps {
   activeTab: SettingsTab;
   onTabChange: (tab: SettingsTab) => void;
@@ -96,24 +78,6 @@ export interface SettingsNavProps {
 export interface SettingsFooterProps {
   saveMessage: string;
   onSave: () => void | Promise<void>;
-}
-
-export interface AgentsTabProps {
-  draft: AppSettings;
-  allAgents: ChatAgentDefinition[];
-  selectedAgent: ChatAgentDefinition | null;
-  selectedAgentId: string | null;
-  isSelectedBuiltin: boolean;
-  isSelectedOverridden: boolean;
-  originalBuiltin: ChatAgentDefinition | null;
-  confirmDeleteAgentId: string | null;
-  showNewAgent: boolean;
-  newAgentName: string;
-  setSelectedAgentId: (value: string | null) => void;
-  setConfirmDeleteAgentId: (value: string | null) => void;
-  setShowNewAgent: (value: boolean) => void;
-  setNewAgentName: (value: string) => void;
-  setDraft: (updater: AppSettings | ((current: AppSettings) => AppSettings)) => void;
 }
 
 export interface ModelTabProps {
