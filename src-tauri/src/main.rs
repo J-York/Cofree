@@ -16,7 +16,8 @@ use crate::commands::ShellJobStore;
 use crate::commands::{
     apply_workspace_patch, build_workspace_edit_patch, cancel_http_request, cancel_shell_command,
     check_shell_job, check_workspace_patch,
-    create_workspace_snapshot, delete_secure_api_key, delete_skill_directory, fetch_litellm_models, fetch_url,
+    create_workspace_snapshot, delete_secure_api_key, delete_skill_directory,
+    delete_workflow_checkpoints, fetch_litellm_models, fetch_url,
     get_home_dir, get_workspace_diagnostics, get_workspace_info, git_diff_workspace,
     git_status_workspace, glob_workspace_files, grep_workspace_files, healthcheck,
     install_skill_from_zip, list_workspace_files, load_latest_workflow_checkpoint, load_secure_api_key,
@@ -76,6 +77,7 @@ pub fn run() {
             glob_workspace_files,
             save_workflow_checkpoint,
             load_latest_workflow_checkpoint,
+            delete_workflow_checkpoints,
             fetch_litellm_models,
             load_secure_api_key,
             save_secure_api_key,

@@ -79,6 +79,11 @@ pub fn load_latest_workflow_checkpoint(session_id: String) -> Result<RecoveryRes
 }
 
 #[tauri::command]
+pub fn delete_workflow_checkpoints(session_prefix: String) -> Result<u64, AppError> {
+    application::delete_workflow_checkpoints(session_prefix)
+}
+
+#[tauri::command]
 pub fn save_file_dialog(file_name: String, content: String) -> Result<String, String> {
     let path = rfd::FileDialog::new()
         .set_file_name(&file_name)

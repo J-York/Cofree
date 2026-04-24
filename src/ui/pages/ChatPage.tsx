@@ -747,40 +747,59 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
           return;
         }
         lastRestoredCheckpointRecordRef.current = checkpointRecord;
+
+        // 已完成的工作流无需恢复：plan.state === "done" 时消息里已经反映了最终状态，
+        // 再次注入只会触发多余的渲染和 sessionNote 误报。
+        if (latest.payload.plan.state === "done") {
+          workingMemoryBySessionRef.current.delete(sessionId);
+          resetHitlContinuationMemory(sessionId);
+          return;
+        }
+
+        let orphan = false;
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === latest.messageId);
+          if (idx < 0) {
+            orphan = true;
+            return prev;
+          }
+          const next = prev.map((m, i) =>
+            i === idx
+              ? {
+                  ...m,
+                  plan: latest.payload.plan,
+                  toolTrace: latest.payload.toolTrace ?? m.toolTrace,
+                  tool_calls: buildToolCallsFromPlan(latest.payload.plan),
+                }
+              : m,
+          );
+          messagesRef.current = next;
+          return next;
+        });
+
+        if (orphan) {
+          // checkpoint 的 messageId 在当前会话消息中找不到——数据一致性异常（conversation
+          // 已被删除 / 消息未持久化 / 历史被截断）。不再 append 占位消息污染会话，
+          // 直接丢弃这条 checkpoint 的副作用，让会话从干净状态继续。
+          workingMemoryBySessionRef.current.delete(sessionId);
+          resetHitlContinuationMemory(sessionId);
+          recordErrorAudit({
+            category: "checkpoint-restore-orphan",
+            title: "checkpoint 与会话消息不一致",
+            message: `sessionId=${sessionId} messageId=${latest.messageId}`,
+            retriable: false,
+            guidance: "请检查会话是否被截断或删除；如需保留恢复能力，请反馈该 sessionId。",
+            timestamp: new Date().toISOString(),
+            conversationId: checkpointRestoreScope.conversationId ?? undefined,
+          });
+          setSessionNote("checkpoint 与当前会话不一致，已忽略本次恢复");
+          return;
+        }
+
         workingMemoryBySessionRef.current.set(
           sessionId,
           latest.payload.workingMemory ?? null,
         );
-        setMessages((prev) => {
-          const idx = prev.findIndex((m) => m.id === latest.messageId);
-          const next =
-            idx >= 0
-              ? prev.map((m, i) =>
-                i === idx
-                  ? {
-                    ...m,
-                    plan: latest.payload.plan,
-                    toolTrace: latest.payload.toolTrace ?? m.toolTrace,
-                    tool_calls: buildToolCallsFromPlan(latest.payload.plan),
-                  }
-                  : m
-              )
-              : [
-                ...prev,
-                {
-                  id: latest.messageId,
-                  role: "assistant",
-                  content: "已从审批点恢复上一轮工作流状态。",
-                  createdAt: new Date().toISOString(),
-                  plan: latest.payload.plan,
-                  toolTrace: latest.payload.toolTrace ?? [],
-                  tool_calls: buildToolCallsFromPlan(latest.payload.plan),
-                  agentId: checkpointRestoreScope.agentId,
-                } satisfies ChatMessageRecord,
-              ].slice(-80);
-          messagesRef.current = next;
-          return next;
-        });
         hydrateHitlContinuationMemory(sessionId, latest.payload.continuationMemory);
         setSessionNote("已从 checkpoint 恢复审批状态");
       } catch {

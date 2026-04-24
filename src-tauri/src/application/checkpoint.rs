@@ -15,3 +15,7 @@ pub fn save_workflow_checkpoint(
 pub fn load_latest_workflow_checkpoint(session_id: String) -> AppResult<RecoveryResult> {
     infrastructure::load_latest_checkpoint(&session_id)
 }
+
+pub fn delete_workflow_checkpoints(session_prefix: String) -> AppResult<u64> {
+    infrastructure::delete_checkpoints_by_session_prefix(&session_prefix)
+}

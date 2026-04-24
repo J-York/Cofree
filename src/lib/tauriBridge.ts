@@ -516,6 +516,14 @@ export function loadLatestWorkflowCheckpoint(
   });
 }
 
+export function deleteWorkflowCheckpoints(
+  sessionPrefix: string,
+): Promise<number> {
+  return invoke<number>("delete_workflow_checkpoints", {
+    sessionPrefix,
+  });
+}
+
 // ── LiteLLM ──────────────────────────────────────────────────────────────────
 
 export function fetchLitellmModels(params: {

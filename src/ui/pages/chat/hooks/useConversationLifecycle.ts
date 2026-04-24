@@ -32,6 +32,7 @@ import {
   type AppSettings,
 } from "../../../../lib/settingsStore";
 import type { SessionActions } from "../../../../lib/sessionContext";
+import { deleteWorkflowCheckpointsForConversation } from "../../../../orchestrator/checkpointStore";
 import { buildDraftConversationBindingUpdate } from "../conversationAgentDisplay";
 import { resolveConversationDebugKey, type ConversationDebugEntry } from "../debugExport";
 import {
@@ -409,6 +410,9 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
 
     const clearedConversation = createClearedConversation(currentConversation);
     saveConversation(wsPath, clearedConversation);
+    // 同步清理该 conversation 下所有 agent 变体的 checkpoint；消息已被清空，保留
+    // checkpoint 只会在下一次 mount 时触发 orphan 分支。
+    void deleteWorkflowCheckpointsForConversation(currentConversation.id).catch(() => {});
     setCurrentConversation(clearedConversation);
     applyChatViewState(createEmptyChatViewState());
     setConversations(loadConversationList(wsPath));
@@ -510,6 +514,9 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
         : null;
 
     deleteConversation(wsPath, conversationId);
+    // 级联清理 SQLite 中的 workflow checkpoints，避免删除会话后 orphan checkpoint 残留
+    // （以及未来复用相同 conversationId 时被误恢复）。fire-and-forget，失败不阻断 UI 流程。
+    void deleteWorkflowCheckpointsForConversation(conversationId).catch(() => {});
     const updatedList = loadConversationList(wsPath);
     setConversations(updatedList);
 

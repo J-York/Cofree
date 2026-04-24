@@ -7,6 +7,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { invoke } from "@tauri-apps/api/core";
 import {
   buildScopedSessionKey,
+  deleteWorkflowCheckpointsByPrefix,
+  deleteWorkflowCheckpointsForConversation,
   loadLatestWorkflowCheckpoint,
   saveWorkflowCheckpoint,
 } from "./checkpointStore";
@@ -121,5 +123,34 @@ describe("checkpointStore", () => {
     };
     const firstEntry = parsed.workingMemory?.fileKnowledge?.[0];
     expect(firstEntry?.[1]?.summary?.length).toBeLessThanOrEqual(2002);
+  });
+
+  it("deleteWorkflowCheckpointsByPrefix forwards trimmed prefix to invoke", async () => {
+    vi.mocked(invoke).mockResolvedValue(3);
+    const deleted = await deleteWorkflowCheckpointsByPrefix("  csess:conv-xyz  ");
+    expect(deleted).toBe(3);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("delete_workflow_checkpoints", {
+      sessionPrefix: "csess:conv-xyz",
+    });
+  });
+
+  it("deleteWorkflowCheckpointsByPrefix short-circuits empty input", async () => {
+    const deleted = await deleteWorkflowCheckpointsByPrefix("   ");
+    expect(deleted).toBe(0);
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+  });
+
+  it("deleteWorkflowCheckpointsForConversation uses csess:<id> prefix", async () => {
+    vi.mocked(invoke).mockResolvedValue(2);
+    await deleteWorkflowCheckpointsForConversation("conv-42");
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("delete_workflow_checkpoints", {
+      sessionPrefix: "csess:conv-42",
+    });
+  });
+
+  it("deleteWorkflowCheckpointsForConversation returns 0 on empty id", async () => {
+    const deleted = await deleteWorkflowCheckpointsForConversation("   ");
+    expect(deleted).toBe(0);
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
   });
 });

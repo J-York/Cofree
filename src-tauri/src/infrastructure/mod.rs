@@ -3,7 +3,9 @@
 mod checkpoint_repo;
 mod paths;
 
-pub use checkpoint_repo::{load_latest_checkpoint, save_checkpoint};
+pub use checkpoint_repo::{
+    delete_checkpoints_by_session_prefix, load_latest_checkpoint, save_checkpoint,
+};
 pub use paths::{
     canonicalize_workspace_root, generate_id, snapshots_root_dir, validate_workspace_path,
 };

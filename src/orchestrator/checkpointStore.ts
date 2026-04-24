@@ -295,3 +295,31 @@ export async function loadLatestWorkflowCheckpoint(
     }
   };
 }
+
+/**
+ * 按 session_id 前缀批量删除 checkpoint。
+ * 前缀通常是 `csess:${conversationId}`，用于在 conversation 被删除时一起清理所有
+ * agent 变体的 checkpoint（session_id 形如 `csess:{convId}:{agentId}`）。
+ * 返回被删除的 checkpoint 条数；DB 不存在或无匹配时返回 0。
+ */
+export async function deleteWorkflowCheckpointsByPrefix(
+  sessionPrefix: string,
+): Promise<number> {
+  const trimmed = sessionPrefix.trim();
+  if (!trimmed) return 0;
+  return invoke<number>("delete_workflow_checkpoints", {
+    sessionPrefix: trimmed,
+  });
+}
+
+/**
+ * 删除某 conversation 下所有 agent 变体的 checkpoint。内部直接拼 `csess:${conversationId}`
+ * 前缀，覆盖 `buildScopedSessionKey` 生成的全部 key。
+ */
+export async function deleteWorkflowCheckpointsForConversation(
+  conversationId: string,
+): Promise<number> {
+  const normalized = conversationId.trim();
+  if (!normalized) return 0;
+  return deleteWorkflowCheckpointsByPrefix(`csess:${normalized}`);
+}

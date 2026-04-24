@@ -163,6 +163,33 @@ export function useChatExecution(options: UseChatExecutionOptions) {
     buildSubmittedPrompt,
   } = options;
 
+  /**
+   * Flush the latest messages of a conversation to localStorage *before* a
+   * workflow checkpoint is written to SQLite. This guarantees the ordering
+   *   1) message persisted → 2) checkpoint persisted
+   * which removes the orphan window where the checkpoint references an
+   * assistantMessageId that hasn't yet been committed to disk (e.g. if the
+   * process crashes between `setMessages` and the save-on-messages useEffect).
+   *
+   * Works for both active and background conversations: reads existing
+   * conversation metadata from disk, overlays the freshest messages from React
+   * state or the background stream snapshot, and writes back synchronously.
+   */
+  const flushConversationMessagesToDisk = (convId: string | null | undefined): void => {
+    if (!convId) return;
+    const existing = loadConversation(wsPath, convId);
+    if (!existing) return;
+    const latestMessages =
+      convId === activeConversationIdRef.current
+        ? messagesRef.current
+        : backgroundStreamsRef.current.get(convId)?.messages ?? existing.messages;
+    saveConversation(wsPath, {
+      ...existing,
+      messages: latestMessages,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
   const handleCancel = (): void => {
     if (activeConversationId) {
       abortControllersRef.current.get(activeConversationId)?.abort();
@@ -540,6 +567,9 @@ export function useChatExecution(options: UseChatExecutionOptions) {
               checkpoint.workingMemorySnapshot,
             );
           }
+          // Persist messages first so the assistantMessageId is reachable on
+          // reload even if checkpoint-save wins the race.
+          flushConversationMessagesToDisk(streamConvId);
           void saveWorkflowCheckpoint(
             chatSessionId,
             assistantMessageId,
@@ -657,6 +687,10 @@ export function useChatExecution(options: UseChatExecutionOptions) {
               : "done",
       );
 
+      // Flush messages to disk before the HITL-entry checkpoint is written, so
+      // that on reload the assistantMessageId is always findable in the saved
+      // conversation and the restore path never hits the orphan branch.
+      flushConversationMessagesToDisk(streamConvId);
       void saveWorkflowCheckpoint(
         chatSessionId,
         assistantMessageId,
@@ -845,6 +879,9 @@ export function useChatExecution(options: UseChatExecutionOptions) {
         currentConversation,
         targetMessage.agentId,
       );
+      // Flush messages before writing the plan-update checkpoint so the
+      // target messageId is always present in the on-disk conversation.
+      flushConversationMessagesToDisk(currentConversation?.id ?? null);
       void saveWorkflowCheckpoint(
         sessionId,
         messageId,

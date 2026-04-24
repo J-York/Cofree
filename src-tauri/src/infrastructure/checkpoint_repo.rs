@@ -75,6 +75,29 @@ pub fn save_checkpoint(
     })
 }
 
+pub fn delete_checkpoints_by_session_prefix(prefix: &str) -> AppResult<u64> {
+    if prefix.trim().is_empty() {
+        return Err(AppError::validation("session prefix 不能为空"));
+    }
+    let db_path = paths::sqlite_db_path()?;
+    if !db_path.exists() {
+        return Ok(0);
+    }
+
+    let conn = Connection::open(&db_path)
+        .map_err(|e| AppError::checkpoint(format!("打开 checkpoint DB 失败: {}", e)))?;
+    ensure_checkpoint_table(&conn)?;
+
+    let like_pattern = format!("{}%", prefix.trim().replace('%', "\\%").replace('_', "\\_"));
+    let affected = conn
+        .execute(
+            "DELETE FROM workflow_checkpoints WHERE session_id LIKE ?1 ESCAPE '\\'",
+            params![like_pattern],
+        )
+        .map_err(|e| AppError::checkpoint(format!("删除 checkpoint 失败: {}", e)))?;
+    Ok(affected as u64)
+}
+
 pub fn load_latest_checkpoint(session_id: &str) -> AppResult<RecoveryResult> {
     if session_id.trim().is_empty() {
         return Err(AppError::validation("session_id 不能为空"));
