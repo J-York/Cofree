@@ -38,7 +38,6 @@ import {
   summarizeToolArgs,
 } from "./toolCallAnalysis";
 import { pruneStaleSystemMessages } from "./loopPromptScaffolding";
-import { evaluateCompressionSafeZone } from "./compressionScheduler";
 import { sanitizeMessagesForToolCalling } from "./llmToolLoop";
 import {
   actionFingerprint,
@@ -391,7 +390,6 @@ export const planningServiceTestUtils = {
   pruneStaleSystemMessages,
   detectPseudoToolCallNarration,
   detectPseudoToolJsonTranscript,
-  evaluateCompressionSafeZone,
 };
 
 function assertLocalOnlyPolicy(settings: AppSettings): void {

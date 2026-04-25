@@ -1,10 +1,5 @@
 import type { LiteLLMMessage, LiteLLMToolDefinition } from "../lib/piAiBridge";
-import {
-  CALIBRATION_EMA_ALPHA,
-  CALIBRATION_MAX,
-  CALIBRATION_MIN,
-  TOOL_STRUCTURAL_OVERHEAD,
-} from "./contextPolicy";
+import { TOOL_STRUCTURAL_OVERHEAD } from "./contextPolicy";
 
 // ---------------------------------------------------------------------------
 // P0-1: Multi-script token estimation
@@ -29,16 +24,11 @@ const CJK_RANGES = /[\u2E80-\u2FFF\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\u3100-
 const CODE_PUNCT = /[{}()\[\];:=<>+\-*/%&|^~!@#$`\\]/;
 
 /**
- * Classify characters and estimate token count with per-script ratios.
- *
- * The calibration factor (default 1.0) can be dynamically adjusted by
- * comparing this estimate against real API-reported token counts.
- * See {@link tokenCalibration}.
+ * Classify characters and estimate token count with per-script ratios. Static
+ * multi-script weights (no dynamic per-model calibration); with prompt caching
+ * the ±15% drift on uncached input is irrelevant to billing.
  */
-export function estimateTokensFromText(
-  text: string,
-  calibrationFactor: number = tokenCalibration.factor,
-): number {
+export function estimateTokensFromText(text: string): number {
   const s = text ?? "";
   if (s.length === 0) return 0;
 
@@ -72,7 +62,7 @@ export function estimateTokensFromText(
     digit / 3 +         // ~3 chars/token
     whitespace / 6;     // ~6 chars/token
 
-  return Math.ceil(raw * calibrationFactor);
+  return Math.ceil(raw);
 }
 
 export function estimateTokensForMessage(message: LiteLLMMessage): number {
@@ -91,101 +81,6 @@ export function estimateTokensForMessage(message: LiteLLMMessage): number {
 
 export function estimateTokensForMessages(messages: LiteLLMMessage[]): number {
   return messages.reduce((sum, msg) => sum + estimateTokensForMessage(msg), 0);
-}
-
-// ---------------------------------------------------------------------------
-// Incremental token tracking for hot-loop usage
-// ---------------------------------------------------------------------------
-// In the orchestration loop, `estimateTokensForMessages` is called 3-8 times
-// per turn on the same (or nearly-same) messages array.  Each call re-scans
-// every message's full text, which becomes expensive as context grows.
-//
-// `MessageTokenTracker` maintains a per-message token cache keyed by object
-// identity (WeakRef) and content length.  When messages are appended or
-// spliced the tracker incrementally updates only the changed portion.
-// ---------------------------------------------------------------------------
-
-/**
- * Tracks token counts for a mutable messages array with O(1) amortized
- * lookups after the initial scan.  Call `update(messages)` whenever the
- * array may have changed; it returns the total token count.
- *
- * Accuracy guarantee: uses the same `estimateTokensForMessage` function,
- * so results are identical to the non-cached version.  The cache is
- * invalidated per-message when content length changes (covers in-place
- * content mutation such as tool message compression).
- */
-export class MessageTokenTracker {
-  private cachedTokens: WeakMap<LiteLLMMessage, { contentLen: number; toolCallsLen: number; tokens: number }> = new WeakMap();
-  private lastMessages: LiteLLMMessage[] = [];
-  private lastTotal = 0;
-
-  /**
-   * Recompute the total token count, reusing cached per-message values
-   * when the message object and its content length haven't changed.
-   */
-  update(messages: LiteLLMMessage[]): number {
-    // Fast path: same array reference, same length, last element unchanged
-    if (
-      messages === this.lastMessages &&
-      messages.length > 0 &&
-      this.lastTotal > 0
-    ) {
-      // Check only the tail (most common mutation is append)
-      const lastMsg = messages[messages.length - 1];
-      const cached = this.cachedTokens.get(lastMsg);
-      const contentLen = (lastMsg.content ?? "").length;
-      const toolCallsLen = lastMsg.tool_calls ? JSON.stringify(lastMsg.tool_calls).length : 0;
-      if (cached && cached.contentLen === contentLen && cached.toolCallsLen === toolCallsLen) {
-        return this.lastTotal;
-      }
-    }
-
-    let total = 0;
-    for (const msg of messages) {
-      const contentLen = (msg.content ?? "").length;
-      const toolCallsLen = msg.tool_calls ? JSON.stringify(msg.tool_calls).length : 0;
-      const cached = this.cachedTokens.get(msg);
-
-      if (cached && cached.contentLen === contentLen && cached.toolCallsLen === toolCallsLen) {
-        total += cached.tokens;
-      } else {
-        const tokens = estimateTokensForMessage(msg);
-        this.cachedTokens.set(msg, { contentLen, toolCallsLen, tokens });
-        total += tokens;
-      }
-    }
-
-    this.lastMessages = messages;
-    this.lastTotal = total;
-    return total;
-  }
-
-  /**
-   * Notify the tracker that a message was appended.  This is O(1) — it
-   * computes tokens only for the new message and adds to the running total.
-   */
-  notifyAppend(messages: LiteLLMMessage[], appendedMessage: LiteLLMMessage): number {
-    const tokens = estimateTokensForMessage(appendedMessage);
-    const contentLen = (appendedMessage.content ?? "").length;
-    const toolCallsLen = appendedMessage.tool_calls ? JSON.stringify(appendedMessage.tool_calls).length : 0;
-    this.cachedTokens.set(appendedMessage, { contentLen, toolCallsLen, tokens });
-    this.lastMessages = messages;
-    this.lastTotal += tokens;
-    return this.lastTotal;
-  }
-
-  /** Reset all cached state (e.g. after context compression replaces the array). */
-  invalidate(): void {
-    this.cachedTokens = new WeakMap();
-    this.lastMessages = [];
-    this.lastTotal = 0;
-  }
-
-  /** Current cached total (may be stale if `update` hasn't been called). */
-  get total(): number {
-    return this.lastTotal;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,92 +110,6 @@ export function estimateTokensForToolDefinitions(
   total += 4;
 
   return total;
-}
-
-// ---------------------------------------------------------------------------
-// P1-3: Dynamic calibration via API-reported token counts
-// ---------------------------------------------------------------------------
-// After each LLM call we know: (estimated tokens, actual tokens).
-// We maintain an exponential moving average of the ratio actual/estimated
-// and use it to correct future estimates.
-//
-// Calibration is per-model because different tokenizers have different
-// chars-per-token characteristics (e.g. cl100k_base vs o200k_base).
-// ---------------------------------------------------------------------------
-
-export interface TokenCalibrationState {
-  factor: number;
-  sampleCount: number;
-}
-
-const calibrationByModel = new Map<string, TokenCalibrationState>();
-
-// Default / active calibration — resolves to the active model's state.
-// Kept as a module-level reference for backward compatibility with
-// estimateTokensFromText()'s default parameter.
-export const tokenCalibration: TokenCalibrationState = {
-  factor: 1.0,
-  sampleCount: 0,
-};
-
-function getCalibrationForModel(modelId: string): TokenCalibrationState {
-  let state = calibrationByModel.get(modelId);
-  if (!state) {
-    state = { factor: 1.0, sampleCount: 0 };
-    calibrationByModel.set(modelId, state);
-  }
-  return state;
-}
-
-/**
- * Update calibration for a specific model.  When `modelId` is provided the
- * per-model state is updated *and* the shared `tokenCalibration` singleton
- * is synced to that model's state (so that subsequent `estimateTokensFromText`
- * calls without an explicit factor automatically use the latest value).
- */
-export function updateTokenCalibration(
-  estimatedTokens: number,
-  actualTokens: number,
-  modelId?: string,
-): void {
-  if (estimatedTokens <= 0 || actualTokens <= 0) return;
-
-  const ratio = actualTokens / estimatedTokens;
-  if (ratio < CALIBRATION_MIN || ratio > CALIBRATION_MAX) return;
-
-  const target = modelId ? getCalibrationForModel(modelId) : tokenCalibration;
-
-  if (target.sampleCount === 0) {
-    target.factor = ratio;
-  } else {
-    target.factor =
-      CALIBRATION_EMA_ALPHA * ratio +
-      (1 - CALIBRATION_EMA_ALPHA) * target.factor;
-  }
-  target.sampleCount += 1;
-
-  // Keep the shared singleton in sync with the model that was just updated.
-  if (modelId) {
-    tokenCalibration.factor = target.factor;
-    tokenCalibration.sampleCount = target.sampleCount;
-  }
-}
-
-export function resetTokenCalibration(modelId?: string): void {
-  if (modelId) {
-    calibrationByModel.delete(modelId);
-  } else {
-    calibrationByModel.clear();
-  }
-  tokenCalibration.factor = 1.0;
-  tokenCalibration.sampleCount = 0;
-}
-
-export function getTokenCalibrationFactor(modelId?: string): number {
-  if (modelId) {
-    return getCalibrationForModel(modelId).factor;
-  }
-  return tokenCalibration.factor;
 }
 
 export function initialSystemPrefixLength(messages: LiteLLMMessage[]): number {
@@ -365,6 +174,23 @@ export function sliceRecentMessagesByBudget(params: {
     break;
   }
 
+  // Invariant: the recent slice must contain at least one user message so the
+  // compressed conversation remains a valid prompt (LLMs require a user turn).
+  // If the budget-driven slice missed all users, walk further back until one
+  // is included. Only the search for a user is unbounded; budget is allowed
+  // to overflow here because the alternative — sending an LLM request with no
+  // user message — is strictly worse.
+  const sliceHasUser = (start: number): boolean => {
+    for (let i = start; i < messages.length; i++) {
+      if (messages[i].role === "user") return true;
+    }
+    return false;
+  };
+  while (splitIndex > 0 && !sliceHasUser(splitIndex)) {
+    splitIndex -= 1;
+    recentTokens += estimateTokensForMessage(messages[splitIndex]);
+  }
+
   splitIndex = adjustSplitIndexToAvoidOrphanToolMessages(messages, splitIndex);
   return { splitIndex, recentTokens };
 }
@@ -380,9 +206,7 @@ export interface ContextCompressionPolicy {
 }
 
 export interface ContextSummarizer {
-  canSummarize: () => boolean;
   summarize: (messagesToSummarize: LiteLLMMessage[]) => Promise<string>;
-  markSummarized: () => void;
 }
 
 /**
@@ -456,28 +280,30 @@ export async function compressMessagesToFitBudget(params: {
   const oldMessages = compressible.slice(0, effectiveSplitIndex);
   const recentMessages = compressible.slice(effectiveSplitIndex);
 
-  const lastUserContent =
-    [...messages]
-      .reverse()
-      .find((m) => m.role === "user" && (m.content ?? "").trim())?.content ?? "";
-
-  const ensureUserPresence = (nextMessages: LiteLLMMessage[]): LiteLLMMessage[] => {
-    if (nextMessages.some((m) => m.role === "user")) return nextMessages;
-    if (!lastUserContent.trim()) return nextMessages;
-    return [
-      ...nextMessages.slice(0, pinnedLen),
-      { role: "user", content: lastUserContent },
-      ...nextMessages.slice(pinnedLen),
-    ];
+  const assertUserPresence = (nextMessages: LiteLLMMessage[]): LiteLLMMessage[] => {
+    if (nextMessages.some((m) => m.role === "user")) {
+      return nextMessages;
+    }
+    // Reaching here means upstream slicing produced a compressed conversation
+    // with zero user messages — should be unreachable given pinnedLen + recent
+    // slice logic. Crash loudly instead of silently re-injecting the last user
+    // message; a silent fix masks the underlying bug.
+    throw new Error(
+      `[contextBudget] Compressed messages have no user role` +
+        ` | pinnedLen=${pinnedLen}` +
+        ` | oldMessages=${oldMessages.length}` +
+        ` | recentMessages=${recentMessages.length}` +
+        ` | totalIn=${messages.length}`,
+    );
   };
 
   let usedSummary = false;
   let usedTruncation = false;
   let next: LiteLLMMessage[];
 
-  if (oldMessages.length < policy.minMessagesToSummarize) {
+  if (oldMessages.length < policy.minMessagesToSummarize || !summarizer) {
     usedTruncation = true;
-    next = ensureUserPresence([
+    next = assertUserPresence([
       ...pinned,
       {
         role: "system",
@@ -486,26 +312,14 @@ export async function compressMessagesToFitBudget(params: {
       },
       ...recentMessages,
     ]);
-  } else if (summarizer && summarizer.canSummarize()) {
+  } else {
     const summary = await summarizer.summarize(oldMessages);
-    summarizer.markSummarized();
     usedSummary = true;
-    next = ensureUserPresence([
+    next = assertUserPresence([
       ...pinned,
       {
         role: "system",
         content: `[对话历史摘要] 以下是之前 ${oldMessages.length} 条对话消息的压缩摘要：\n\n${summary}\n\n请基于此摘要和后续最新消息继续工作。`,
-      },
-      ...recentMessages,
-    ]);
-  } else {
-    usedTruncation = true;
-    next = ensureUserPresence([
-      ...pinned,
-      {
-        role: "system",
-        content:
-          "[系统提示] 由于达到上下文长度限制，之前的对话历史已被截断（摘要冷却窗口内或不可用，已跳过生成摘要）。请基于现有的最新信息继续工作。",
       },
       ...recentMessages,
     ]);

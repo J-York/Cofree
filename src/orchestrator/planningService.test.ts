@@ -1909,41 +1909,6 @@ describe("P3-2: restoredWorkingMemory in runPlanningSession", () => {
 });
 
 
-describe("evaluateCompressionSafeZone", () => {
-    const { evaluateCompressionSafeZone } = planningServiceTestUtils;
-
-    it("uses the latest token estimate when deciding compression safe-zone bypass", () => {
-        const tokenTracker = {
-            update: vi.fn()
-                .mockReturnValueOnce(120)
-                .mockReturnValueOnce(820),
-        } as any;
-
-        const messages: LiteLLMMessage[] = [
-            { role: "user", content: "start" },
-        ];
-
-        // Simulate the turn-start estimate that is now stale after system-note injection.
-        const turnStartTokens = tokenTracker.update(messages);
-        expect(turnStartTokens).toBe(120);
-
-        messages.push({
-            role: "system",
-            content: "late injected system message that increases token usage",
-        });
-
-        const evaluation = evaluateCompressionSafeZone({
-            tokenTracker,
-            messages,
-            promptBudgetTarget: 1000,
-            safeZoneRatio: 0.7,
-        });
-
-        expect(tokenTracker.update).toHaveBeenCalledTimes(2);
-        expect(evaluation.currentTokens).toBe(820);
-        expect(evaluation.skipCompression).toBe(false);
-    });
-});
 // ---------------------------------------------------------------------------
 // Message sanitization tests
 // ---------------------------------------------------------------------------

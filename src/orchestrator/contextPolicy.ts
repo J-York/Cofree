@@ -18,13 +18,6 @@ export const DEFAULT_CHARS_PER_TOKEN = 2.5;
 /** Fixed structural overhead (type/function/name keys) added per tool definition. */
 export const TOOL_STRUCTURAL_OVERHEAD = 12;
 
-/** EMA smoothing factor for per-model calibration of estimated-vs-actual tokens. */
-export const CALIBRATION_EMA_ALPHA = 0.3;
-
-/** Bounds on calibration factor (actual/estimated). Samples outside are discarded as outliers. */
-export const CALIBRATION_MIN = 0.5;
-export const CALIBRATION_MAX = 3.0;
-
 // ============================================================================
 // Compression policy — global
 // ============================================================================
@@ -47,7 +40,6 @@ export const COMPRESSION_PARAMS = {
   recentTokensMinRatio: 0.5,
   outputReserveRatio: 0.10,
   softBudgetRatio: 0.85,
-  compressionSafeZoneRatio: 0.75,
 } as const;
 
 // ============================================================================

@@ -80,7 +80,7 @@ export interface ToolExecutorDeps {
   createActionId: (prefix: string) => string;
   nowIso: () => string;
   actionFingerprint: (action: ActionProposal) => string;
-  smartTruncate: (content: string, maxLength: number, headRatio?: number) => string;
+  smartTruncate: (content: string, maxLength: number) => string;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

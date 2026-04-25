@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LiteLLMMessage, LiteLLMToolDefinition } from "../src/lib/litellm";
 import {
   compressMessagesToFitBudget,
@@ -6,10 +6,6 @@ import {
   estimateTokensForMessages,
   estimateTokensFromText,
   estimateTokensForToolDefinitions,
-  updateTokenCalibration,
-  resetTokenCalibration,
-  tokenCalibration,
-  getTokenCalibrationFactor,
 } from "../src/orchestrator/contextBudget";
 
 function msg(role: LiteLLMMessage["role"], content: string): LiteLLMMessage {
@@ -17,9 +13,6 @@ function msg(role: LiteLLMMessage["role"], content: string): LiteLLMMessage {
 }
 
 describe("contextBudget", () => {
-  beforeEach(() => {
-    resetTokenCalibration();
-  });
 
   it("does not compress when under budget", async () => {
     const messages: LiteLLMMessage[] = [
@@ -37,9 +30,7 @@ describe("contextBudget", () => {
         recentTokensMinRatio: 0.4,
       },
       summarizer: {
-        canSummarize: () => true,
         summarize: async () => "should-not-run",
-        markSummarized: () => {},
       },
     });
 
@@ -64,11 +55,9 @@ describe("contextBudget", () => {
 
   it("summarizes older messages when over budget and summarizer is available", async () => {
     const summarizer = {
-      canSummarize: () => true,
       summarize: vi.fn(async (messagesToSummarize: LiteLLMMessage[]) => {
         return `summary(${messagesToSummarize.length})`;
       }),
-      markSummarized: vi.fn(),
     };
 
     const messages: LiteLLMMessage[] = [
@@ -104,7 +93,6 @@ describe("contextBudget", () => {
     expect(res.compressed).toBe(true);
     expect(res.usedSummary).toBe(true);
     expect(summarizer.summarize).toHaveBeenCalledTimes(1);
-    expect(summarizer.markSummarized).toHaveBeenCalledTimes(1);
 
     expect(res.messages[0]?.role).toBe("system");
     expect(res.messages[1]?.role).toBe("system");
@@ -156,11 +144,7 @@ describe("contextBudget", () => {
         minRecentMessagesToKeep: 2,
         recentTokensMinRatio: 0.2,
       },
-      summarizer: {
-        canSummarize: () => false,
-        summarize: async () => "",
-        markSummarized: () => {},
-      },
+      summarizer: undefined,
     });
 
     expect(res.compressed).toBe(true);
@@ -175,10 +159,6 @@ describe("contextBudget", () => {
 // ===================================================================
 
 describe("estimateTokensFromText (multi-script)", () => {
-  beforeEach(() => {
-    resetTokenCalibration();
-  });
-
   it("estimates more tokens for CJK text than Latin text of same char count", () => {
     const chineseText = "你好世界测试代码"; // 8 CJK chars
     const englishText = "abcdefgh";          // 8 Latin chars
@@ -220,13 +200,6 @@ describe("estimateTokensFromText (multi-script)", () => {
     );
   });
 
-  it("respects calibration factor", () => {
-    const text = "Hello world";
-    const base = estimateTokensFromText(text, 1.0);
-    const doubled = estimateTokensFromText(text, 2.0);
-    expect(doubled).toBeGreaterThanOrEqual(base * 1.5); // ceil rounding
-    expect(doubled).toBeLessThanOrEqual(base * 2.5);
-  });
 });
 
 // ===================================================================
@@ -285,10 +258,6 @@ describe("estimateTokensForToolDefinitions", () => {
 // ===================================================================
 
 describe("compressMessagesToFitBudget (verification loop)", () => {
-  beforeEach(() => {
-    resetTokenCalibration();
-  });
-
   it("subtracts toolDefinitionTokens from effective budget", async () => {
     const messages: LiteLLMMessage[] = [
       msg("system", "sys"),
@@ -349,79 +318,13 @@ describe("compressMessagesToFitBudget (verification loop)", () => {
         recentTokensMinRatio: 0.2,
       },
       summarizer: {
-        canSummarize: () => true,
         summarize: async (msgs) => `compressed(${msgs.length})`,
-        markSummarized: vi.fn(),
       },
     });
 
     expect(res.compressed).toBe(true);
     expect(res.usedSummary).toBe(true);
     expect(res.estimatedTokensAfter).toBeLessThan(before);
-  });
-});
-
-// ===================================================================
-// P1-3: Dynamic calibration
-// ===================================================================
-
-describe("tokenCalibration", () => {
-  beforeEach(() => {
-    resetTokenCalibration();
-  });
-
-  it("starts with factor 1.0", () => {
-    expect(tokenCalibration.factor).toBe(1.0);
-    expect(tokenCalibration.sampleCount).toBe(0);
-  });
-
-  it("updates factor on first sample", () => {
-    updateTokenCalibration(100, 150);
-    expect(tokenCalibration.factor).toBeCloseTo(1.5, 1);
-    expect(tokenCalibration.sampleCount).toBe(1);
-  });
-
-  it("uses EMA for subsequent samples", () => {
-    updateTokenCalibration(100, 150); // factor = 1.5
-    updateTokenCalibration(100, 100); // ratio=1.0, EMA: 0.3*1.0 + 0.7*1.5 = 1.35
-    expect(tokenCalibration.factor).toBeCloseTo(1.35, 1);
-    expect(tokenCalibration.sampleCount).toBe(2);
-  });
-
-  it("rejects extreme ratios", () => {
-    updateTokenCalibration(100, 500); // ratio=5.0 exceeds max 3.0
-    expect(tokenCalibration.factor).toBe(1.0);
-    expect(tokenCalibration.sampleCount).toBe(0);
-  });
-
-  it("resets correctly", () => {
-    updateTokenCalibration(100, 150);
-    resetTokenCalibration();
-    expect(tokenCalibration.factor).toBe(1.0);
-    expect(tokenCalibration.sampleCount).toBe(0);
-  });
-
-  it("maintains per-model calibration independently", () => {
-    updateTokenCalibration(100, 150, "gpt-4o");     // gpt-4o factor = 1.5
-    updateTokenCalibration(100, 200, "claude-3.5");  // claude factor = 2.0
-
-    expect(getTokenCalibrationFactor("gpt-4o")).toBeCloseTo(1.5, 1);
-    expect(getTokenCalibrationFactor("claude-3.5")).toBeCloseTo(2.0, 1);
-
-    // Shared singleton should reflect last-updated model
-    expect(tokenCalibration.factor).toBeCloseTo(2.0, 1);
-  });
-
-  it("resets single model without affecting others", () => {
-    updateTokenCalibration(100, 150, "gpt-4o");
-    updateTokenCalibration(100, 200, "claude-3.5");
-
-    resetTokenCalibration("gpt-4o");
-
-    // gpt-4o should be gone (returns default 1.0)
-    expect(getTokenCalibrationFactor("gpt-4o")).toBe(1.0);
-    // claude should be untouched
-    expect(getTokenCalibrationFactor("claude-3.5")).toBeCloseTo(2.0, 1);
   });
 });
 

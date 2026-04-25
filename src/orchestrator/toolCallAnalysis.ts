@@ -1,5 +1,5 @@
 export interface ToolContentTrimDeps {
-  smartTruncate: (content: string, maxLength: number, headRatio?: number) => string;
+  smartTruncate: (content: string, maxLength: number) => string;
 }
 
 function escapeRegex(value: string): string {

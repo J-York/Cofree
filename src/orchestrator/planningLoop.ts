@@ -12,10 +12,9 @@ import type { CofreeRcConfig } from "../lib/cofreerc";
 import { runWithConcurrencyLimit } from "../lib/concurrency";
 import {
   compressMessagesToFitBudget,
+  estimateTokensForMessages,
   estimateTokensForToolDefinitions,
   initialSystemPrefixLength,
-  MessageTokenTracker,
-  updateTokenCalibration,
 } from "./contextBudget";
 import {
   MIN_MESSAGES_TO_SUMMARIZE,
@@ -70,11 +69,6 @@ import {
   refreshWorkspaceContext,
   upsertWorkingMemoryContextMessage,
 } from "./loopPromptScaffolding";
-import {
-  canSummarizeNow,
-  evaluateCompressionSafeZone,
-  markSummarizedNow,
-} from "./compressionScheduler";
 import { requestSummary } from "./summarization";
 import type { AskUserRequest } from "./askUserService";
 import { buildAgentToolDefs, INTERNAL_TOOL_NAMES } from "./toolRegistry";
@@ -134,29 +128,32 @@ function truncateAtLineEnd(content: string, maxIndex: number): number {
   return lastNewline >= 0 ? lastNewline + 1 : maxIndex;
 }
 
-function truncateAtLineStart(content: string, minIndex: number): number {
-  if (minIndex <= 0) return 0;
-  const nextNewline = content.indexOf("\n", minIndex);
-  return nextNewline >= 0 ? nextNewline + 1 : minIndex;
-}
-
-function smartTruncate(content: string, maxLength: number, headRatio = 0.5): string {
+/**
+ * Tail-cut truncation: keep the head, drop the tail. The marker reports total
+ * size + dropped size so the LLM can decide whether to re-query the missing
+ * portion via read_file (with a line range) or grep (with a narrower pattern).
+ *
+ * Replaced the previous head+tail-50% strategy because real tool outputs
+ * (read_file / grep / list_files) almost always have head-anchored semantics:
+ * the relevant content is at the start, pagination units are "first N items",
+ * and head/tail concatenation rarely matches anything sensible.
+ */
+function smartTruncate(content: string, maxLength: number): string {
   if (content.length <= maxLength) return content;
 
-  const ellipsis = "\n\n...[已截断中间部分]...\n\n";
-  const availableLength = maxLength - ellipsis.length;
-  if (availableLength <= 0) return content.slice(0, maxLength);
+  const droppedChars = content.length - maxLength;
+  const totalLines = (content.match(/\n/g)?.length ?? 0) + 1;
+  const marker =
+    `\n\n[已截断尾部 ${droppedChars} 字符 / 原文 ${content.length} 字符 / 总 ${totalLines} 行；` +
+    `如需后续内容请用 read_file 指定行号或 grep 缩小范围再读]`;
 
-  const headTarget = Math.floor(availableLength * headRatio);
-  const tailTarget = availableLength - headTarget;
-  const headEnd = truncateAtLineEnd(content, headTarget);
-  const tailStart = truncateAtLineStart(content, content.length - tailTarget);
-
-  if (headEnd >= tailStart) {
+  const headTarget = Math.max(0, maxLength - marker.length);
+  if (headTarget <= 0) {
+    // Marker alone exceeds budget — fall back to a plain head slice.
     return content.slice(0, maxLength);
   }
-
-  return content.slice(0, headEnd) + ellipsis + content.slice(tailStart);
+  const headEnd = truncateAtLineEnd(content, headTarget);
+  return content.slice(0, headEnd) + marker;
 }
 
 function createActionId(prefix: string): string {
@@ -425,14 +422,12 @@ export async function runNativeToolCallingLoop(
   const toolDefTokens = estimateTokensForToolDefinitions(activeTools);
   console.log(`[Loop] 工具定义 token 开销: ~${toolDefTokens} tokens (${activeTools.length} tools)`);
 
-  const tokenTracker = new MessageTokenTracker();
-  const estimateCurrentTokens = (): number => tokenTracker.update(messages);
+  const estimateCurrentTokens = (): number => estimateTokensForMessages(messages);
   const replaceMessages = (nextMessages: LiteLLMMessage[]): void => {
     if (nextMessages === messages) {
       return;
     }
     messages.splice(0, messages.length, ...nextMessages);
-    tokenTracker.invalidate();
   };
   const emitContextUpdate = (): number => {
     const estimatedTokens = estimateCurrentTokens();
@@ -449,12 +444,10 @@ export async function runNativeToolCallingLoop(
   };
 
   const summarizer = {
-    canSummarize: () => canSummarizeNow(settings.workspacePath, estimateCurrentTokens()),
     summarize: (messagesToSummarize: LiteLLMMessage[]) =>
       requestSummary(messagesToSummarize, settings, {
         workspacePath: settings.workspacePath,
       }),
-    markSummarized: () => markSummarizedNow(settings.workspacePath),
   };
 
   for (let turn = 0; ; turn += 1) {
@@ -589,28 +582,16 @@ export async function runNativeToolCallingLoop(
       console.log(`[Loop] 清理陈旧系统消息: 移除 ${removed} 条`);
     }
 
-    const safeZoneEval = evaluateCompressionSafeZone({
-      tokenTracker,
+    // Single-threshold compression: hand off to compressMessagesToFitBudget on
+    // every turn — its internal "tokens already fit" check is the no-op fast
+    // path. Replaces the prior 3-tier decision (safe-zone gate + dynamic
+    // cooldown + softBudgetRatio).
+    const compression = await compressMessagesToFitBudget({
       messages,
-      promptBudgetTarget,
-      safeZoneRatio: COMPRESSION_PARAMS.compressionSafeZoneRatio,
+      policy: compressionPolicy,
+      summarizer,
+      pinnedPrefixLen,
     });
-    const compression = safeZoneEval.skipCompression
-      ? {
-          compressed: false,
-          messages,
-          usedSummary: false,
-          usedTruncation: false,
-          usedToolCompression: false,
-          estimatedTokensBefore: safeZoneEval.currentTokens,
-          estimatedTokensAfter: safeZoneEval.currentTokens,
-        }
-      : await compressMessagesToFitBudget({
-          messages,
-          policy: compressionPolicy,
-          summarizer,
-          pinnedPrefixLen,
-        });
     if (compression.compressed && compression.messages !== messages) {
       const beforeLen = messages.length;
       replaceMessages(compression.messages);
@@ -697,11 +678,10 @@ export async function runNativeToolCallingLoop(
     }
 
     if (completion.requestRecord.inputTokens) {
+      // Static multi-script estimator: track ratio for visibility but no dynamic
+      // calibration is applied (with prompt caching, ±15% drift on uncached
+      // input is below the noise floor).
       const estBeforeCall = estimateCurrentTokens() + toolDefTokens;
-      updateTokenCalibration(estBeforeCall, completion.requestRecord.inputTokens, settings.model);
-
-      // Phase 0 measurement: record actual-vs-estimated token count from API usage.
-      // ratio <1 means we over-estimate (conservative, wastes budget); >1 means we under-estimate (risks overflow).
       const actualIn = completion.requestRecord.inputTokens;
       const ratio = estBeforeCall > 0 ? actualIn / estBeforeCall : 0;
       const outTokens = completion.requestRecord.outputTokens ?? 0;

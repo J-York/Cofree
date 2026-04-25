@@ -104,7 +104,7 @@
 
 每项格式：状态 / 当前位置 / 砍掉理由 / 简化方案 / 风险。
 
-### [ ] X1. 三层"是否压缩"判决合并成一层
+### [x] X1. 三层"是否压缩"判决合并成一层
 
 - **当前位置**：`src/orchestrator/compressionScheduler.ts`
 - **现状**：判决链 = `evaluateCompressionSafeZone(≤75%跳过)` → `canSummarizeNow(动态冷却)` → `softBudgetRatio=0.85`，三个机制 overlap
@@ -113,7 +113,7 @@
 - **预期减码**：约 -150 行
 - **风险**：失去"短时间反复压缩"的保护——但上了 prompt caching 后，重复触发摘要本身就便宜很多，且 Safe-Zone 已是最强的 gate
 
-### [ ] X2. 删除 `MessageTokenTracker` 增量缓存
+### [x] X2. 删除 `MessageTokenTracker` 增量缓存
 
 - **当前位置**：`src/orchestrator/contextBudget.ts:118-189`
 - **砍掉理由**：每 turn 调用 3-8 次 `estimateTokensForMessages`，100 条消息每次 <1ms。这是"为不存在的瓶颈优化"，但代码占 70 行 + 引入 invalidate 隐性契约
@@ -121,7 +121,7 @@
 - **预期减码**：-70 行
 - **风险**：极端长会话（500+ 消息）可能感知；先 profile，真的有瓶颈再加回
 
-### [ ] X3. 删除 per-model EMA token 校准
+### [x] X3. 删除 per-model EMA token 校准
 
 - **当前位置**：`src/orchestrator/contextBudget.ts:230-303`
 - **砍掉理由**：
@@ -156,7 +156,7 @@
 - **预期减码**：`workingMemory.ts` 700+ 行可压到 ~300 行
 - **风险**：序列化格式变更——需要 checkpoint migration（旧 checkpoint 反序列化时做兼容转换）
 
-### [ ] X7. `smartTruncate` 改尾切
+### [x] X7. `smartTruncate` 改尾切
 
 - **当前位置**：`src/orchestrator/planningLoop.ts:143-158`
 - **现状**：保留头 50% + 尾 50%，中间 `[已截断]`
@@ -175,7 +175,7 @@
 - **预期收益**：代码可读性提升；为 M1（prompt caching）的"前缀稳定"目标铺路
 - **风险**：低，纯重构
 
-### [ ] X9. `ensureUserPresence` 改为 assert
+### [x] X9. `ensureUserPresence` 改为 assert
 
 - **当前位置**：`src/orchestrator/contextBudget.ts:464-472`
 - **现状**：压缩后整个数组没有 user 消息时塞回最后一条——理论上不可达的兜底
@@ -207,13 +207,22 @@
 ### 第二周：纯砍代码
 **目标**：把 caching 之后不再必要的复杂度清掉。预计 -300~400 行，行为等价或略优。
 
-- [ ] X1 三层压缩判决合一
-- [ ] X2 删 MessageTokenTracker
-- [ ] X3 删 per-model 校准
-- [ ] X7 smartTruncate 改尾切
-- [ ] X9 ensureUserPresence 改 assert
+- [x] X1 三层压缩判决合一
+- [x] X2 删 MessageTokenTracker
+- [x] X3 删 per-model 校准
+- [x] X7 smartTruncate 改尾切
+- [x] X9 ensureUserPresence 改 assert
 
 **完成标志**：`pnpm test` 全绿；`compressionScheduler.ts` + `contextBudget.ts` 行数显著下降。
+
+**第二周实现备注（2026-04-25）**：
+- X1 删除 `compressionScheduler.ts` 整个文件（safe-zone gate / 动态冷却 / canSummarizeNow / markSummarizedNow）。每 turn 直接调 `compressMessagesToFitBudget`，由它内部的 "tokens already fit" 快速路径做无操作短路
+- X2 删除 `MessageTokenTracker` class 与所有 `update/invalidate/notifyAppend` 调用。`estimateCurrentTokens` 直接走 `estimateTokensForMessages`，把"无瓶颈优化"砍掉
+- X3 删除 `tokenCalibration` / `updateTokenCalibration` / `resetTokenCalibration` / `getTokenCalibrationFactor` / `calibrationByModel` / `TokenCalibrationState`，估算用静态多脚本权重（保留对中文友好的部分）。`[CtxMetric:post]` 日志保留以便监测漂移
+- X9 不可达兜底改 assert 后跑测试发现 2 处真触发——把"必有 user 消息"的不变量推到了 `sliceRecentMessagesByBudget`：循环结束后若 recent 切片无 user，就额外往前走直到找到一条 user。不变量落到合理位置，assert 是真正的最后防线
+- X7 `smartTruncate` 从"头 50% + 尾 50% + 中间省略"改为"头 + 尾切"，截断标记带 `已截断尾部 N 字符 / 原文 X 字符 / 总 Y 行 / 用 read_file/grep 再读`；移除 `headRatio` 参数
+
+**净减码**：~250 行（compressionScheduler 122 + MessageTokenTracker 70 + EMA calibration 70 + smartTruncate 简化 ~10，扣除新增不变量代码）
 
 ### 第三周以后：补关键能力
 **目标**：补齐与成熟工具的核心差距。这两项较大，按团队优先级二选一先做。
