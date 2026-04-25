@@ -51,7 +51,7 @@
   - [ ] 一次大型 grep 任务，主上下文新增 token 数 < 直接调 grep 的 1/10
   - [ ] 主 LLM 仍能基于摘要做出正确决策（人工抽查 5 个 case）
 
-### [ ] M3. 文件作为一等公民（消除 stale read）
+### [x] M3. 文件作为一等公民（消除 stale read）
 
 - **优先级**：🟠 P1
 - **工作量**：约 1 周
@@ -148,7 +148,7 @@
 - **预期减码**：-10 行 + 一层间接调用
 - **风险**：无
 
-### [ ] X6. 合并 `discoveredFacts` 与 `fileKnowledge`
+### [~] X6. 合并 `discoveredFacts` 与 `fileKnowledge`（X6-lite 已完成；完整 merge 需要 checkpoint migration，留作后续）
 
 - **当前位置**：`src/orchestrator/workingMemory.ts`
 - **现状**：两个独立桶（上限 50 / 12），各自驱逐策略。但语义上"我知道 foo.ts 里的 bar 函数做 X" 既可以是 fact 也可以是 fileKnowledge
@@ -228,8 +228,16 @@
 **目标**：补齐与成熟工具的核心差距。这两项较大，按团队优先级二选一先做。
 
 - [ ] M2 Sub-agent 隔离探索
-- [ ] M3 文件作为一等公民
-- [ ] M6（合并）`discoveredFacts` ↔ `fileKnowledge`（与 M3 联动做更顺）
+- [x] M3 文件作为一等公民
+- [~] X6 合并 `discoveredFacts` ↔ `fileKnowledge`（已做 X6-lite；完整结构合并 + checkpoint migration 留待后续）
+
+**第三周（M3 + X6-lite）实现备注（2026-04-25）**：
+- M3 保守变体：read_file 行为不变（首次读 LLM 同步看到 content_preview），但工具成功后把完整 body 缓存到 `WorkingMemory.fileKnowledge[path].content`；下一 turn 进 LLM 前 `dedupeStaleFileReads` 把更早的 read 重写为 stub，只保留最新一份完整内容
+- M3 核心 API: `setFileContent(memory, path, content, ...)` 幂等且 contentVersion 仅在内容真变时 bump；`invalidateFileContent` 清空 content + version 但保留 metadata
+- M3 失效策略：propose_file_edit 一旦成功（无论 auto-execute 还是 HITL pending）就失效目标 slot——LLM 即将编辑的文件，缓存内容应被视为不可信。Speculative invalidation 在 HITL 拒绝场景的代价仅是一次额外 read_file，永不送过期 bytes
+- M3 已知 gap：HITL 跨 session 路径未做。用户 approve 之后下一个 session 从 checkpoint 恢复 WM，slot 仍带旧 content。下一轮 session 起步时按 mtime 校验 slot 新鲜度可填这个洞，留作后续
+- X6-lite 范围：未改 checkpoint 格式，避开 migration 风险；只把 fact section 重复渲染逻辑抽成 `buildFactSection`，并在 serializeWorkingMemory 的"已读取文件"行加 `✓ 内容已缓存 v{N}` 标记，让 LLM 知道可不重读
+- X6 完整版（统一 ContextEntity）需要 V2 snapshot + restore 兼容旧 checkpoint，留待下次 session
 
 ### 第四周以后（看反馈）
 - [ ] M4 Repo-map symbol 化

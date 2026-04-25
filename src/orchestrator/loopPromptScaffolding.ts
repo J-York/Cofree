@@ -105,6 +105,92 @@ export function setPinnedSlot(
 }
 
 /**
+ * M3: replace older read_file tool results in the message stream with stubs
+ * for any path whose current content is cached in working memory. The most
+ * recent read_file result for each path is left untouched (it provided the
+ * snapshot the LLM is currently reasoning about); earlier copies become
+ * "[文件 X 已重新读取，旧版本省略]" so the same content body never sits in the
+ * conversation more than once.
+ *
+ * If a path has been invalidated (apply_patch dropped its cached content),
+ * older read_file results for that path are rewritten to a stale-warning
+ * stub so the LLM doesn't act on outdated bytes.
+ *
+ * Returns the number of messages rewritten.
+ */
+export function dedupeStaleFileReads(
+  messages: LiteLLMMessage[],
+  workingMemory: WorkingMemory,
+): number {
+  if (workingMemory.fileKnowledge.size === 0) return 0;
+
+  // Walk back-to-front to find each path's MOST RECENT read_file tool result.
+  const seenLatestPerPath = new Map<string, number>();
+  const readFileResults: Array<{ index: number; path: string }> = [];
+
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.role !== "tool" || !msg.content) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(msg.content);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    const obj = parsed as Record<string, unknown>;
+    const path = typeof obj.relative_path === "string" ? obj.relative_path.trim() : "";
+    if (!path) continue;
+    const hasContentPreview =
+      typeof obj.content_preview === "string" && obj.content_preview.length > 0;
+    if (!hasContentPreview) continue;
+    if (obj.ok !== true) continue;
+
+    if (!seenLatestPerPath.has(path)) {
+      seenLatestPerPath.set(path, i);
+    }
+    readFileResults.push({ index: i, path });
+  }
+
+  let rewriteCount = 0;
+  for (const { index, path } of readFileResults) {
+    const fk = workingMemory.fileKnowledge.get(path);
+    if (!fk) continue;
+    const isLatest = seenLatestPerPath.get(path) === index;
+    if (isLatest && fk.content) {
+      // Latest read AND content still cached — keep the original message.
+      continue;
+    }
+
+    let stubMessage: string;
+    if (!fk.content) {
+      // Slot was invalidated (apply_patch). All copies — including the latest —
+      // are now stale.
+      stubMessage =
+        `文件 ${path} 已被修改（apply_patch 通过）。此次旧读取的内容已过时，` +
+        `如需最新版本请重新调用 read_file。`;
+    } else {
+      stubMessage =
+        `文件 ${path} 已重新读取，旧版本省略以避免重复占用 context。` +
+        `如需查看当前内容请参考工作记忆 slot 或重新 read_file。`;
+    }
+
+    const stubEnvelope = JSON.stringify({
+      ok: true,
+      relative_path: path,
+      stale: true,
+      hint: stubMessage,
+    });
+    if (messages[index].content !== stubEnvelope) {
+      messages[index] = { ...messages[index], content: stubEnvelope };
+      rewriteCount += 1;
+    }
+  }
+
+  return rewriteCount;
+}
+
+/**
  * Remove stale tail-appended system reminders (efficiency warnings, turn-count
  * notes) that accumulate between tool turns. Keeps only the most recent N
  * post-prefix system messages. Head-pinned slots are protected by

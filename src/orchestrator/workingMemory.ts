@@ -11,8 +11,10 @@ import { estimateTokensFromText } from "./contextBudget";
 import {
   CHECKPOINT_WM_MAX_FACT_CONTENT_CHARS,
   CHECKPOINT_WM_MAX_FACT_SOURCE_CHARS,
+  CHECKPOINT_WM_MAX_FILE_CONTENT_CHARS,
   CHECKPOINT_WM_MAX_FILE_SUMMARY_CHARS,
   CHECKPOINT_WM_MAX_PROJECT_CONTEXT_CHARS,
+  FILE_SLOT_MAX_CONTENT_CHARS,
   MAX_DISCOVERED_FACTS,
   MAX_FILE_SUMMARY_CHARS,
   MAX_RETRIEVED_FACTS,
@@ -31,6 +33,15 @@ export interface FileKnowledge {
   lastReadAt: string;
   lastReadTurn: number;
   readByAgent: string;
+  /**
+   * M3: cached full file content (or a head slice if huge). When present, the
+   * de-duplication pass (`dedupeStaleFileReads`) replaces older read_file tool
+   * results in the message stream with stubs pointing here. `contentVersion`
+   * bumps each time the cached content actually changes; an `apply_patch`
+   * success drops both fields back to undefined to force a re-read.
+   */
+  content?: string;
+  contentVersion?: number;
 }
 
 export interface DiscoveredFact {
@@ -166,6 +177,65 @@ export function addDiscoveredFact(
 
 function cloneFileKnowledge(value: FileKnowledge): FileKnowledge {
   return { ...value };
+}
+
+/**
+ * M3: replace-or-create cached full content for `path`. Bumps `contentVersion`
+ * only when content actually changes (byte-identical re-reads stay version-stable
+ * so prompt-cache hits survive). Truncates oversized files at the head with a
+ * marker so the cache stays bounded.
+ */
+export function setFileContent(
+  memory: WorkingMemory,
+  path: string,
+  content: string,
+  metadata: {
+    totalLines?: number;
+    language?: string;
+    turnNumber?: number;
+    agentId?: string;
+    summary?: string;
+  } = {},
+): void {
+  if (!path) return;
+
+  const trimmed =
+    content.length > FILE_SLOT_MAX_CONTENT_CHARS
+      ? `${content.slice(0, FILE_SLOT_MAX_CONTENT_CHARS)}\n[文件超出 slot 缓存上限 ${FILE_SLOT_MAX_CONTENT_CHARS} 字符，已截断头部]`
+      : content;
+
+  const existing = memory.fileKnowledge.get(path);
+  const sameContent = existing?.content === trimmed;
+  const nextVersion = sameContent
+    ? existing!.contentVersion ?? 1
+    : (existing?.contentVersion ?? 0) + 1;
+
+  memory.fileKnowledge.set(path, {
+    relativePath: path,
+    summary: metadata.summary ?? existing?.summary ?? "",
+    totalLines: metadata.totalLines ?? existing?.totalLines ?? 0,
+    language: metadata.language ?? existing?.language,
+    lastReadAt: new Date().toISOString(),
+    lastReadTurn: metadata.turnNumber ?? existing?.lastReadTurn ?? 0,
+    readByAgent: metadata.agentId ?? existing?.readByAgent ?? "",
+    content: trimmed,
+    contentVersion: nextVersion,
+  });
+}
+
+/**
+ * M3: drop cached content for `path` (e.g. after a successful apply_patch).
+ * Keeps the file's metadata so the LLM still knows we've seen it; only the
+ * content body and version are cleared, forcing a re-read.
+ */
+export function invalidateFileContent(memory: WorkingMemory, path: string): void {
+  const existing = memory.fileKnowledge.get(path);
+  if (!existing) return;
+  memory.fileKnowledge.set(path, {
+    ...existing,
+    content: undefined,
+    contentVersion: undefined,
+  });
 }
 
 function cloneDiscoveredFact(value: DiscoveredFact): DiscoveredFact {
@@ -315,6 +385,31 @@ export function extractFileKnowledge(
 // Serialization: WorkingMemory → LLM-consumable context string
 // ---------------------------------------------------------------------------
 
+function buildFactSection(params: {
+  facts: DiscoveredFact[];
+  label: string;
+  priority: number;
+  bonusFor: (f: DiscoveredFact) => number;
+  formatLine: (f: DiscoveredFact) => string;
+  queryTerms: string[];
+  focusedPaths: string[];
+}): { priority: number; label: string; content: string } | null {
+  if (params.facts.length === 0) return null;
+  const ranked = rankByRelevance({
+    items: params.facts,
+    getTimestamp: (f) => f.createdAt,
+    getFocusPath: (f) => f.source,
+    getBonusScore: params.bonusFor,
+    queryTerms: params.queryTerms,
+    focusedPaths: params.focusedPaths,
+  });
+  return {
+    priority: params.priority,
+    label: params.label,
+    content: ranked.slice(0, MAX_RETRIEVED_FACTS).map(params.formatLine).join("\n"),
+  };
+}
+
 export function serializeWorkingMemory(
   memory: WorkingMemory,
   tokenBudget: number,
@@ -336,27 +431,19 @@ export function serializeWorkingMemory(
   }
 
   // 2. High-confidence facts
-  const highFacts = memory.discoveredFacts.filter((f) => f.confidence === "high");
-  if (highFacts.length > 0) {
-    const ranked = rankByRelevance({
-      items: highFacts,
-      getTimestamp: (f) => f.createdAt,
-      getFocusPath: (f) => f.source,
-      getBonusScore: (f) => f.confidence === "high" ? 4 : 2,
-      queryTerms,
-      focusedPaths,
-    });
-    sections.push({
-      priority: 2,
-      label: "已确认事实",
-      content: ranked
-        .slice(0, MAX_RETRIEVED_FACTS)
-        .map((f) => `- [${f.category}] ${f.content}`)
-        .join("\n"),
-    });
-  }
+  const highSection = buildFactSection({
+    facts: memory.discoveredFacts.filter((f) => f.confidence === "high"),
+    label: "已确认事实",
+    priority: 2,
+    bonusFor: () => 4,
+    formatLine: (f) => `- [${f.category}] ${f.content}`,
+    queryTerms,
+    focusedPaths,
+  });
+  if (highSection) sections.push(highSection);
 
-  // 3. File knowledge (sorted by recency)
+  // 3. File knowledge (sorted by recency). M3: surface cached-content marker
+  // so the LLM knows it can reference the slot instead of re-reading.
   const fileEntries = [...memory.fileKnowledge.values()];
   if (fileEntries.length > 0) {
     const sorted = rankByRelevance({
@@ -364,17 +451,17 @@ export function serializeWorkingMemory(
       getTimestamp: (f) => f.lastReadAt,
       getFocusPath: (f) => f.relativePath,
       getSearchCorpus: (f) => `${f.relativePath} ${f.summary} ${f.language ?? ""}`,
-      getBonusScore: (f) => {
-        let bonus = Math.min(f.lastReadTurn ?? 0, 10);
-        return bonus;
-      },
+      getBonusScore: (f) => Math.min(f.lastReadTurn ?? 0, 10),
       queryTerms,
       focusedPaths,
     });
     const fileLines = sorted.slice(0, MAX_RETRIEVED_FILES).map((fk) => {
       const lang = fk.language ? ` (${fk.language})` : "";
       const turnInfo = fk.lastReadTurn > 0 ? `, turn ${fk.lastReadTurn}` : "";
-      return `- ${fk.relativePath}${lang}: ${fk.summary} [${fk.totalLines} lines${turnInfo}]`;
+      const cacheMarker = fk.content
+        ? ` [✓ 内容已缓存 v${fk.contentVersion ?? 1}，无需重读]`
+        : "";
+      return `- ${fk.relativePath}${lang}: ${fk.summary} [${fk.totalLines} lines${turnInfo}]${cacheMarker}`;
     });
     sections.push({
       priority: 3,
@@ -383,27 +470,17 @@ export function serializeWorkingMemory(
     });
   }
 
-
   // 4. Medium/low confidence facts (lowest priority)
-  const otherFacts = memory.discoveredFacts.filter((f) => f.confidence !== "high");
-  if (otherFacts.length > 0) {
-    const ranked = rankByRelevance({
-      items: otherFacts,
-      getTimestamp: (f) => f.createdAt,
-      getFocusPath: (f) => f.source,
-      getBonusScore: (f) => f.confidence === "medium" ? 2 : 0,
-      queryTerms,
-      focusedPaths,
-    });
-    sections.push({
-      priority: 4,
-      label: "其他发现",
-      content: ranked
-        .slice(0, MAX_RETRIEVED_FACTS)
-        .map((f) => `- [${f.category}/${f.confidence}] ${f.content}`)
-        .join("\n"),
-    });
-  }
+  const otherSection = buildFactSection({
+    facts: memory.discoveredFacts.filter((f) => f.confidence !== "high"),
+    label: "其他发现",
+    priority: 4,
+    bonusFor: (f) => (f.confidence === "medium" ? 2 : 0),
+    formatLine: (f) => `- [${f.category}/${f.confidence}] ${f.content}`,
+    queryTerms,
+    focusedPaths,
+  });
+  if (otherSection) sections.push(otherSection);
 
   // Build output, respecting token budget (truncate from lowest priority)
   sections.sort((a, b) => a.priority - b.priority);
@@ -662,6 +739,9 @@ export function sanitizeWorkingMemoryForCheckpoint(
         ...fk,
         summary: truncateCheckpointText(fk.summary, CHECKPOINT_WM_MAX_FILE_SUMMARY_CHARS),
         relativePath: truncateCheckpointText(fk.relativePath, 1024),
+        content: fk.content
+          ? truncateCheckpointText(fk.content, CHECKPOINT_WM_MAX_FILE_CONTENT_CHARS)
+          : undefined,
       };
       return [path, next];
     },
@@ -704,6 +784,18 @@ export function capWorkingMemorySnapshotJsonSize(
   let guard = 0;
   while (JSON.stringify(s).length > maxBytes && guard < 512) {
     guard += 1;
+    // Drop cached file content (heaviest payload) before discarding the
+    // metadata-only entries — content can be re-fetched, metadata cannot.
+    const idxWithContent = s.fileKnowledge.findIndex(([, fk]) => fk.content);
+    if (idxWithContent >= 0) {
+      const next = [...s.fileKnowledge];
+      next[idxWithContent] = [
+        next[idxWithContent][0],
+        { ...next[idxWithContent][1], content: undefined, contentVersion: undefined },
+      ];
+      s = { ...s, fileKnowledge: next };
+      continue;
+    }
     if (s.fileKnowledge.length > 0) {
       s = { ...s, fileKnowledge: s.fileKnowledge.slice(1) };
       continue;

@@ -59,12 +59,15 @@ import {
 import type { ToolExecutionTrace } from "./toolTraceTypes";
 import {
   extractFileKnowledge,
+  invalidateFileContent,
+  setFileContent,
   snapshotWorkingMemory,
   type WorkingMemory,
   type WorkingMemorySnapshot,
 } from "./workingMemory";
 import { initWorkingMemoryForLoop, maybeEmitIncrementalCheckpoint } from "./checkpointBridge";
 import {
+  dedupeStaleFileReads,
   pruneStaleSystemMessages,
   refreshWorkspaceContext,
   upsertWorkingMemoryContextMessage,
@@ -582,6 +585,12 @@ export async function runNativeToolCallingLoop(
       console.log(`[Loop] 清理陈旧系统消息: 移除 ${removed} 条`);
     }
 
+    // M3: scrub older read_file results once their content is cached in WM.
+    const dedupedReads = dedupeStaleFileReads(messages, workingMemory);
+    if (dedupedReads > 0) {
+      console.log(`[Loop] 去重历史 read_file: 重写 ${dedupedReads} 条`);
+    }
+
     // Single-threshold compression: hand off to compressMessagesToFitBudget on
     // every turn — its internal "tokens already fit" check is the no-op fast
     // path. Replaces the prior 3-tier decision (safe-zone gate + dynamic
@@ -864,6 +873,26 @@ export async function runNativeToolCallingLoop(
           if (parsedContent.status === "cached") {
             turnDedupHitCount += 1;
           }
+
+          // M3-4: invalidate cached content for any file targeted by a
+          // successful propose_file_edit. Covers both branches:
+          //   - auto_executed: files were already written to disk
+          //   - HITL-pending: files are about to change pending approval
+          // Speculative invalidation in the HITL-pending case is safe — if
+          // the user rejects, the cache miss costs one extra read_file and
+          // never serves stale bytes. dedupeStaleFileReads picks up the
+          // invalidation and rewrites older read results to a stale stub.
+          if (
+            toolCall.function.name === "propose_file_edit" &&
+            parsedContent?.ok === true &&
+            Array.isArray(parsedContent.files)
+          ) {
+            for (const f of parsedContent.files) {
+              if (typeof f === "string" && f.trim()) {
+                invalidateFileContent(workingMemory, f.trim());
+              }
+            }
+          }
         } catch {
           // noop
         }
@@ -879,6 +908,35 @@ export async function runNativeToolCallingLoop(
           );
           if (knowledge) {
             workingMemory.fileKnowledge.set(knowledge.relativePath, knowledge);
+          }
+
+          // M3: cache the actual file content body (not just the 200-char
+          // summary). On subsequent turns dedupeStaleFileReads scrubs older
+          // copies of the same file from the message stream, so the cached
+          // body becomes the single source of truth.
+          if (toolCall.function.name === "read_file") {
+            try {
+              const parsed = JSON.parse(toolResult.content);
+              if (
+                parsed?.ok === true &&
+                typeof parsed.content_preview === "string" &&
+                parsed.content_preview.length > 0
+              ) {
+                const path = String(parsedArgs.relative_path ?? parsedArgs.path ?? "").trim();
+                if (path) {
+                  setFileContent(workingMemory, path, parsed.content_preview, {
+                    totalLines: typeof parsed.total_lines === "number" ? parsed.total_lines : undefined,
+                    turnNumber: turn,
+                    agentId: "main",
+                    summary: knowledge?.summary,
+                    language: knowledge?.language,
+                  });
+                }
+              }
+            } catch {
+              // Non-JSON or malformed result — slot stays empty, falls back
+              // to the existing message-stream copy.
+            }
           }
         } catch {
           // noop

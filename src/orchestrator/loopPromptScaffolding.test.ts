@@ -2,8 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { LiteLLMMessage } from "../lib/piAiBridge";
 import {
   PINNED_SLOT_KEYS,
+  dedupeStaleFileReads,
   setPinnedSlot,
 } from "./loopPromptScaffolding";
+import {
+  createWorkingMemory,
+  invalidateFileContent,
+  setFileContent,
+} from "./workingMemory";
 
 const initial = (): LiteLLMMessage[] => [
   { role: "system", content: "Agent prompt" },
@@ -97,5 +103,92 @@ describe("setPinnedSlot", () => {
     const snapshot = JSON.stringify(messages);
     setPinnedSlot(messages, PINNED_SLOT_KEYS.WORKING_MEMORY, content);
     expect(JSON.stringify(messages)).toBe(snapshot);
+  });
+});
+
+describe("dedupeStaleFileReads (M3)", () => {
+  function makeReadResult(path: string, body: string): LiteLLMMessage {
+    return {
+      role: "tool",
+      tool_call_id: `call-${path}-${body.length}`,
+      name: "read_file",
+      content: JSON.stringify({
+        ok: true,
+        relative_path: path,
+        total_lines: body.split("\n").length,
+        showing_lines: `1-${body.split("\n").length}`,
+        content_preview: body,
+      }),
+    };
+  }
+
+  it("rewrites earlier read_file results once content is cached, keeps the latest", () => {
+    const memory = createWorkingMemory({ maxTokenBudget: 4000 });
+    setFileContent(memory, "src/a.ts", "current body");
+
+    const messages: LiteLLMMessage[] = [
+      { role: "user", content: "task" },
+      makeReadResult("src/a.ts", "first read body"),
+      { role: "assistant", content: "intermediate" },
+      makeReadResult("src/a.ts", "current body"),
+    ];
+
+    const rewrites = dedupeStaleFileReads(messages, memory);
+    expect(rewrites).toBe(1);
+
+    const first = JSON.parse(messages[1].content);
+    expect(first.stale).toBe(true);
+    expect(first.hint).toContain("旧版本省略");
+
+    // The latest read is preserved.
+    const latest = JSON.parse(messages[3].content);
+    expect(latest.content_preview).toBe("current body");
+  });
+
+  it("rewrites EVERY copy (including the latest) when slot is invalidated", () => {
+    const memory = createWorkingMemory({ maxTokenBudget: 4000 });
+    setFileContent(memory, "src/a.ts", "stale body");
+    invalidateFileContent(memory, "src/a.ts");
+
+    const messages: LiteLLMMessage[] = [
+      { role: "user", content: "task" },
+      makeReadResult("src/a.ts", "stale body"),
+      { role: "assistant", content: "intermediate" },
+      makeReadResult("src/a.ts", "another stale body"),
+    ];
+
+    expect(dedupeStaleFileReads(messages, memory)).toBe(2);
+    for (const idx of [1, 3]) {
+      const parsed = JSON.parse(messages[idx].content);
+      expect(parsed.stale).toBe(true);
+      expect(parsed.hint).toContain("已被修改");
+    }
+  });
+
+  it("leaves unrelated paths untouched", () => {
+    const memory = createWorkingMemory({ maxTokenBudget: 4000 });
+    setFileContent(memory, "src/a.ts", "a body");
+
+    const messages: LiteLLMMessage[] = [
+      makeReadResult("src/a.ts", "old a body"),
+      makeReadResult("src/a.ts", "a body"),
+      makeReadResult("src/b.ts", "untracked b body"),
+    ];
+
+    expect(dedupeStaleFileReads(messages, memory)).toBe(1);
+    expect(JSON.parse(messages[2].content).content_preview).toBe("untracked b body");
+  });
+
+  it("is idempotent — running twice rewrites nothing further", () => {
+    const memory = createWorkingMemory({ maxTokenBudget: 4000 });
+    setFileContent(memory, "src/a.ts", "current");
+
+    const messages: LiteLLMMessage[] = [
+      makeReadResult("src/a.ts", "old"),
+      makeReadResult("src/a.ts", "current"),
+    ];
+
+    expect(dedupeStaleFileReads(messages, memory)).toBe(1);
+    expect(dedupeStaleFileReads(messages, memory)).toBe(0);
   });
 });

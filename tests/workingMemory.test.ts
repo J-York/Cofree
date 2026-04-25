@@ -9,6 +9,8 @@ import {
   normalizeWorkingMemorySnapshot,
   sanitizeWorkingMemoryForCheckpoint,
   capWorkingMemorySnapshotJsonSize,
+  setFileContent,
+  invalidateFileContent,
   CHECKPOINT_WORKING_MEMORY_MAX_JSON_BYTES,
   type WorkingMemory,
   type FileKnowledge,
@@ -434,5 +436,67 @@ describe("sanitizeWorkingMemoryForCheckpoint / capWorkingMemorySnapshotJsonSize"
     expect(JSON.stringify(sanitized).length).toBeLessThanOrEqual(
       CHECKPOINT_WORKING_MEMORY_MAX_JSON_BYTES,
     );
+  });
+});
+
+describe("setFileContent / invalidateFileContent (M3)", () => {
+  it("creates a new fileKnowledge entry with content + version on first call", () => {
+    const mem = makeMemory();
+    setFileContent(mem, "src/a.ts", "export const x = 1;\n", {
+      totalLines: 1,
+      language: "typescript",
+      turnNumber: 3,
+      agentId: "main",
+    });
+
+    const fk = mem.fileKnowledge.get("src/a.ts");
+    expect(fk?.content).toBe("export const x = 1;\n");
+    expect(fk?.contentVersion).toBe(1);
+    expect(fk?.totalLines).toBe(1);
+    expect(fk?.language).toBe("typescript");
+    expect(fk?.lastReadTurn).toBe(3);
+    expect(fk?.readByAgent).toBe("main");
+  });
+
+  it("does NOT bump version when content is byte-identical (cache stability)", () => {
+    const mem = makeMemory();
+    setFileContent(mem, "src/a.ts", "stable body");
+    setFileContent(mem, "src/a.ts", "stable body");
+    expect(mem.fileKnowledge.get("src/a.ts")?.contentVersion).toBe(1);
+  });
+
+  it("bumps version when content changes", () => {
+    const mem = makeMemory();
+    setFileContent(mem, "src/a.ts", "v1");
+    setFileContent(mem, "src/a.ts", "v2");
+    expect(mem.fileKnowledge.get("src/a.ts")?.contentVersion).toBe(2);
+    expect(mem.fileKnowledge.get("src/a.ts")?.content).toBe("v2");
+  });
+
+  it("invalidateFileContent clears content + version but preserves metadata", () => {
+    const mem = makeMemory();
+    setFileContent(mem, "src/a.ts", "body", {
+      totalLines: 10,
+      language: "typescript",
+    });
+    invalidateFileContent(mem, "src/a.ts");
+
+    const fk = mem.fileKnowledge.get("src/a.ts");
+    expect(fk?.content).toBeUndefined();
+    expect(fk?.contentVersion).toBeUndefined();
+    expect(fk?.totalLines).toBe(10);
+    expect(fk?.language).toBe("typescript");
+  });
+
+  it("snapshot/restore round-trip preserves content + version", () => {
+    const mem = makeMemory();
+    setFileContent(mem, "src/a.ts", "round-trip body");
+    setFileContent(mem, "src/a.ts", "round-trip body v2");
+
+    const snap = snapshotWorkingMemory(mem);
+    const restored = restoreWorkingMemory(snap);
+
+    expect(restored.fileKnowledge.get("src/a.ts")?.content).toBe("round-trip body v2");
+    expect(restored.fileKnowledge.get("src/a.ts")?.contentVersion).toBe(2);
   });
 });

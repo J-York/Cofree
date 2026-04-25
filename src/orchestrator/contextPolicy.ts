@@ -90,6 +90,11 @@ export const CHECKPOINT_WM_MAX_FACT_CONTENT_CHARS = 2000;
 export const CHECKPOINT_WM_MAX_FACT_SOURCE_CHARS = 2000;
 export const CHECKPOINT_WM_MAX_PROJECT_CONTEXT_CHARS = 8000;
 
+/** Cap on persisted file-content slots (M3). 32k chars ≈ ~8k tokens upper bound. */
+export const CHECKPOINT_WM_MAX_FILE_CONTENT_CHARS = 32_000;
+/** In-memory cap per file slot — enough for most real source files; bigger files are stored truncated with a marker. */
+export const FILE_SLOT_MAX_CONTENT_CHARS = 64_000;
+
 // ============================================================================
 // Summarization cache / chunking
 // ============================================================================
