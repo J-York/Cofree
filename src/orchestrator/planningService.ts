@@ -625,6 +625,10 @@ export async function runPlanningSession(
         timestamp: new Date().toISOString(),
         inputLength: record.inputLength,
         outputLength: record.outputLength,
+        inputTokens: record.inputTokens,
+        outputTokens: record.outputTokens,
+        cacheCreationTokens: record.cacheCreationTokens,
+        cacheReadTokens: record.cacheReadTokens,
       });
     }
 
@@ -635,6 +639,14 @@ export async function runPlanningSession(
     const totalOutputTokens = loopResult.requestRecords.reduce((sum, record) => {
       return sum + (record.outputTokens ?? Math.ceil(record.outputLength / 2.5));
     }, 0);
+    const totalCacheReadTokens = loopResult.requestRecords.reduce(
+      (sum, record) => sum + (record.cacheReadTokens ?? 0),
+      0,
+    );
+    const totalCacheCreationTokens = loopResult.requestRecords.reduce(
+      (sum, record) => sum + (record.cacheCreationTokens ?? 0),
+      0,
+    );
 
     const sessionElapsed = ((performance.now() - sessionT0) / 1000).toFixed(2);
     console.log(
@@ -642,7 +654,10 @@ export async function runPlanningSession(
       ` | turns=${loopResult.requestRecords.length}` +
       ` | tools=${loopResult.toolTrace.length}` +
       ` | actions=${loopResult.proposedActions.length}` +
-      ` | in≈${totalInputTokens} out≈${totalOutputTokens}`,
+      ` | in≈${totalInputTokens} out≈${totalOutputTokens}` +
+      (totalCacheReadTokens > 0 || totalCacheCreationTokens > 0
+        ? ` | cacheRead=${totalCacheReadTokens} cacheCreate=${totalCacheCreationTokens}`
+        : ""),
     );
 
     const proposedActions = buildProposedActions(

@@ -19,7 +19,7 @@ import {
 } from "./contextBudget";
 import {
   MIN_MESSAGES_TO_SUMMARIZE,
-  computeAdaptiveCompressionParams,
+  COMPRESSION_PARAMS,
   computeMaxToolOutputChars,
 } from "./contextPolicy";
 import { executeToolCompletionForTurn, type RequestRecord, type ToolCallRecord } from "./llmToolLoop";
@@ -405,22 +405,21 @@ export async function runNativeToolCallingLoop(
   let lastWorkspaceRefreshTurn = -1;
 
   const limitTokens = resolveEffectiveContextTokenLimit(settings);
-  const adaptiveParams = computeAdaptiveCompressionParams(limitTokens);
   const workingMemory = initWorkingMemoryForLoop({
     restoredSnapshot: restoredWorkingMemory,
     limitTokens,
-    outputReserveRatio: adaptiveParams.outputReserveRatio,
-    softBudgetRatio: adaptiveParams.softBudgetRatio,
+    outputReserveRatio: COMPRESSION_PARAMS.outputReserveRatio,
+    softBudgetRatio: COMPRESSION_PARAMS.softBudgetRatio,
     internalSystemNote,
   });
   const currentWorkingMemorySnapshot = (): WorkingMemorySnapshot | undefined =>
     snapshotWorkingMemory(workingMemory);
   const outputBufferTokens = Math.min(
     8000,
-    Math.max(512, Math.floor(limitTokens * adaptiveParams.outputReserveRatio)),
+    Math.max(512, Math.floor(limitTokens * COMPRESSION_PARAMS.outputReserveRatio)),
   );
   const hardPromptBudget = Math.max(0, limitTokens - outputBufferTokens);
-  const softPromptBudget = Math.floor(hardPromptBudget * adaptiveParams.softBudgetRatio);
+  const softPromptBudget = Math.floor(hardPromptBudget * COMPRESSION_PARAMS.softBudgetRatio);
   const promptBudgetTarget = softPromptBudget > 0 ? softPromptBudget : hardPromptBudget;
   const maxToolOutputChars = computeMaxToolOutputChars(hardPromptBudget);
   const toolDefTokens = estimateTokensForToolDefinitions(activeTools);
@@ -444,8 +443,8 @@ export async function runNativeToolCallingLoop(
   const compressionPolicy = {
     maxPromptTokens: promptBudgetTarget,
     minMessagesToSummarize: MIN_MESSAGES_TO_SUMMARIZE,
-    minRecentMessagesToKeep: adaptiveParams.minRecentMessagesToKeep,
-    recentTokensMinRatio: adaptiveParams.recentTokensMinRatio,
+    minRecentMessagesToKeep: COMPRESSION_PARAMS.minRecentMessagesToKeep,
+    recentTokensMinRatio: COMPRESSION_PARAMS.recentTokensMinRatio,
     toolDefinitionTokens: toolDefTokens,
   };
 
@@ -531,6 +530,7 @@ export async function runNativeToolCallingLoop(
               normalizedPrompt: prompt,
               sessionFocusedPaths: focusedPaths,
               turnNumber: turn,
+              contextLimitTokens: limitTokens,
             });
             lastWorkspaceRefreshTurn = turn;
             hasModifiedFiles = false;
@@ -593,7 +593,7 @@ export async function runNativeToolCallingLoop(
       tokenTracker,
       messages,
       promptBudgetTarget,
-      safeZoneRatio: adaptiveParams.compressionSafeZoneRatio,
+      safeZoneRatio: COMPRESSION_PARAMS.compressionSafeZoneRatio,
     });
     const compression = safeZoneEval.skipCompression
       ? {

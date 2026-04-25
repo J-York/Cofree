@@ -40,29 +40,15 @@ export const MIN_MESSAGES_TO_SUMMARIZE = 4;
 // the compression path. One set of knobs works fine for every window size;
 // the char-level caps that actually mattered (tool output) now scale with
 // budget instead of tier (see computeMaxToolOutputChars).
-//
-// Fields kept here are used by the current compression pipeline
-// (contextBudget.ts). Phase 4 will further reduce this to the final 4-field
-// policy once the 5-stage pipeline is replaced.
 // ============================================================================
 
-export interface AdaptiveCompressionParams {
-  minRecentMessagesToKeep: number;
-  recentTokensMinRatio: number;
-  outputReserveRatio: number;
-  softBudgetRatio: number;
-  compressionSafeZoneRatio: number;
-}
-
-export function computeAdaptiveCompressionParams(_limitTokens: number): AdaptiveCompressionParams {
-  return {
-    minRecentMessagesToKeep: 16,
-    recentTokensMinRatio: 0.5,
-    outputReserveRatio: 0.10,
-    softBudgetRatio: 0.85,
-    compressionSafeZoneRatio: 0.75,
-  };
-}
+export const COMPRESSION_PARAMS = {
+  minRecentMessagesToKeep: 16,
+  recentTokensMinRatio: 0.5,
+  outputReserveRatio: 0.10,
+  softBudgetRatio: 0.85,
+  compressionSafeZoneRatio: 0.75,
+} as const;
 
 // ============================================================================
 // Tool output caps (see toolCallAnalysis.ts → trim paths at tool-result entry)

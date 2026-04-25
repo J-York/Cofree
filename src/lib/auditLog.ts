@@ -24,6 +24,10 @@ export interface LLMAuditRecord {
   timestamp: string;
   inputLength: number;
   outputLength: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
 }
 
 export interface ErrorAuditRecord {
@@ -235,10 +239,11 @@ export function exportAuditToCSV(): string {
   const actions = readSensitiveActionAuditRecords();
   const errors = readErrorAuditRecords();
 
-  const llmHeader = "type,requestId,provider,model,timestamp,inputLength,outputLength";
+  const llmHeader =
+    "type,requestId,provider,model,timestamp,inputLength,outputLength,inputTokens,outputTokens,cacheCreationTokens,cacheReadTokens";
   const llmRows = llm.map(
     (r) =>
-      `llm,"${r.requestId}","${r.provider}","${r.model}","${r.timestamp}",${r.inputLength},${r.outputLength}`
+      `llm,"${r.requestId}","${r.provider}","${r.model}","${r.timestamp}",${r.inputLength},${r.outputLength},${r.inputTokens ?? ""},${r.outputTokens ?? ""},${r.cacheCreationTokens ?? ""},${r.cacheReadTokens ?? ""}`
   );
 
   const actionHeader = "type,actionId,actionType,status,startedAt,finishedAt,executor,reason,workspacePath";

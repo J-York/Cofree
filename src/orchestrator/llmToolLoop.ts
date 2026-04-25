@@ -24,6 +24,8 @@ export interface RequestRecord {
   outputLength: number;
   inputTokens?: number;
   outputTokens?: number;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
 }
 
 export interface ToolCallEvent {
@@ -51,6 +53,11 @@ interface ChatCompletionPayload {
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    /** Anthropic-style cache fields, surfaced by piAiBridge for both protocols. */
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+    /** OpenAI-style nested cache field; piAiBridge mirrors cacheRead here too. */
+    prompt_tokens_details?: { cached_tokens?: number };
   };
 }
 
@@ -453,11 +460,18 @@ export async function requestToolCompletion(
 
   const inTok = payload.usage?.prompt_tokens;
   const outTok = payload.usage?.completion_tokens;
+  const cacheCreate = payload.usage?.cache_creation_input_tokens;
+  const cacheReadFromAnthropic = payload.usage?.cache_read_input_tokens;
+  const cacheReadFromOpenAI = payload.usage?.prompt_tokens_details?.cached_tokens;
+  const cacheRead = cacheReadFromAnthropic ?? cacheReadFromOpenAI;
   console.log(
     `[LLM] 收到响应 | ${elapsed}s | toolCalls=${toolCalls.length}` +
     (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
     (finishReason ? ` | finish_reason=${finishReason}` : "") +
     (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
+    (cacheRead != null || cacheCreate != null
+      ? ` | cacheRead=${cacheRead ?? 0} cacheCreate=${cacheCreate ?? 0}`
+      : "") +
     ` | id=${requestId}`
   );
 
@@ -484,6 +498,8 @@ export async function requestToolCompletion(
       outputLength: response.body.length,
       inputTokens: inTok ?? undefined,
       outputTokens: outTok ?? undefined,
+      cacheCreationTokens: cacheCreate ?? undefined,
+      cacheReadTokens: cacheRead ?? undefined,
     },
   };
 }
@@ -570,11 +586,18 @@ async function requestToolCompletionWithStream(
 
   const inTok = payload.usage?.prompt_tokens;
   const outTok = payload.usage?.completion_tokens;
+  const cacheCreate = payload.usage?.cache_creation_input_tokens;
+  const cacheReadFromAnthropic = payload.usage?.cache_read_input_tokens;
+  const cacheReadFromOpenAI = payload.usage?.prompt_tokens_details?.cached_tokens;
+  const cacheRead = cacheReadFromAnthropic ?? cacheReadFromOpenAI;
   console.log(
     `[LLM] 收到响应 | ${elapsed}s | toolCalls=${toolCalls.length}` +
     (droppedCount > 0 ? ` dropped=${droppedCount}` : "") +
     (finishReason ? ` | finish_reason=${finishReason}` : "") +
     (inTok != null || outTok != null ? ` | in=${inTok ?? "?"} out=${outTok ?? "?"}` : "") +
+    (cacheRead != null || cacheCreate != null
+      ? ` | cacheRead=${cacheRead ?? 0} cacheCreate=${cacheCreate ?? 0}`
+      : "") +
     ` | id=${requestId}`
   );
 
@@ -606,6 +629,8 @@ async function requestToolCompletionWithStream(
       outputLength: response.body.length,
       inputTokens: inTok ?? undefined,
       outputTokens: outTok ?? undefined,
+      cacheCreationTokens: cacheCreate ?? undefined,
+      cacheReadTokens: cacheRead ?? undefined,
     },
   };
 }

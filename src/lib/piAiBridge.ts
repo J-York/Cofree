@@ -469,6 +469,9 @@ function assistantMessageToNormalizedBody(msg: AssistantMessage): string {
     }
   }
 
+  const cacheRead = msg.usage.cacheRead ?? 0;
+  const cacheWrite = msg.usage.cacheWrite ?? 0;
+
   return JSON.stringify({
     choices: [{
       message: {
@@ -482,6 +485,11 @@ function assistantMessageToNormalizedBody(msg: AssistantMessage): string {
       prompt_tokens: msg.usage.input,
       completion_tokens: msg.usage.output,
       total_tokens: msg.usage.input + msg.usage.output,
+      // Surface cache token counts in both vendor-native shapes so downstream
+      // audit (auditLog.ts) can read either without protocol-specific code.
+      cache_creation_input_tokens: cacheWrite,
+      cache_read_input_tokens: cacheRead,
+      prompt_tokens_details: { cached_tokens: cacheRead },
     },
   });
 }
@@ -802,6 +810,47 @@ function resolveEffectiveMaxTokens(
   return maxTokens > 0 ? maxTokens : undefined;
 }
 
+/**
+ * Inject Anthropic prompt-cache control on the system prompt. This is the
+ * single cache anchor strategy (M1): mark the entire system prompt as the
+ * cached prefix. Subsequent turns with byte-identical system prompts will
+ * be served from cache (cache_read_input_tokens > 0).
+ *
+ * Anthropic accepts `system` as either a string or an array of content
+ * blocks. We rewrite the string form into an array of one text block carrying
+ * `cache_control: { type: "ephemeral" }`. If the field is already an array
+ * (caller-supplied), we attach cache_control to the last block.
+ *
+ * The `messages` field is left untouched: tail-appended system reminders
+ * become "[System] ..." user messages downstream which appear AFTER the
+ * cache anchor, so they neither hit nor invalidate the cache.
+ *
+ * OpenAI uses automatic prefix caching (no explicit markers required); the
+ * X8 byte-stable head prefix is the only thing it needs.
+ */
+export function applyAnthropicCacheAnchor(payload: Record<string, unknown>): void {
+  const system = payload.system;
+  if (system == null || system === "") {
+    return;
+  }
+  if (typeof system === "string") {
+    payload.system = [
+      {
+        type: "text",
+        text: system,
+        cache_control: { type: "ephemeral" },
+      },
+    ];
+    return;
+  }
+  if (Array.isArray(system) && system.length > 0) {
+    const last = system[system.length - 1];
+    if (last && typeof last === "object") {
+      (last as Record<string, unknown>).cache_control = { type: "ephemeral" };
+    }
+  }
+}
+
 function normalizeToolChoiceForProtocol(
   protocol: VendorProtocol,
   toolChoice: GatewayRequestOptions["toolChoice"],
@@ -866,6 +915,9 @@ export async function gatewayComplete(
           if (normalizedToolChoice !== undefined && hasTools) {
             p.tool_choice = normalizedToolChoice;
           }
+          if (protocol === "anthropic-messages") {
+            applyAnthropicCacheAnchor(p);
+          }
         }
         return undefined;
       },
@@ -921,6 +973,9 @@ export async function gatewayStream(
             const p = payload as Record<string, unknown>;
             if (normalizedToolChoice !== undefined && hasTools) {
               p.tool_choice = normalizedToolChoice;
+            }
+            if (protocol === "anthropic-messages") {
+              applyAnthropicCacheAnchor(p);
             }
           }
           return undefined;

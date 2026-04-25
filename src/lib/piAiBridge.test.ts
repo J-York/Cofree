@@ -29,6 +29,7 @@ vi.mock("./tauriBridge", async (importOriginal) => {
 });
 
 import {
+  applyAnthropicCacheAnchor,
   gatewayComplete,
   gatewayStream,
   piAiChatStream,
@@ -196,5 +197,56 @@ describe("piAiBridge tauri runtime regressions", () => {
       url: "https://example.com/stream-check",
     }));
     expect(onChunk).toHaveBeenCalledWith("chunk");
+  });
+});
+
+describe("applyAnthropicCacheAnchor (M1 prompt-cache injection)", () => {
+  it("converts a string system prompt into a single text block with cache_control", () => {
+    const payload: Record<string, unknown> = {
+      model: "claude-sonnet-4",
+      system: "You are a helpful assistant.",
+      messages: [],
+    };
+    applyAnthropicCacheAnchor(payload);
+
+    expect(payload.system).toEqual([
+      {
+        type: "text",
+        text: "You are a helpful assistant.",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
+  });
+
+  it("attaches cache_control to the LAST block when system is already an array", () => {
+    const payload: Record<string, unknown> = {
+      system: [
+        { type: "text", text: "Block one" },
+        { type: "text", text: "Block two" },
+      ],
+    };
+    applyAnthropicCacheAnchor(payload);
+
+    const blocks = payload.system as Array<Record<string, unknown>>;
+    expect(blocks[0].cache_control).toBeUndefined();
+    expect(blocks[1].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("is a no-op when system is missing or empty", () => {
+    const a: Record<string, unknown> = { messages: [] };
+    applyAnthropicCacheAnchor(a);
+    expect(a.system).toBeUndefined();
+
+    const b: Record<string, unknown> = { system: "" };
+    applyAnthropicCacheAnchor(b);
+    expect(b.system).toBe("");
+  });
+
+  it("produces byte-identical output for identical system prompts (cache stability invariant)", () => {
+    const a: Record<string, unknown> = { system: "stable prefix" };
+    const b: Record<string, unknown> = { system: "stable prefix" };
+    applyAnthropicCacheAnchor(a);
+    applyAnthropicCacheAnchor(b);
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 });

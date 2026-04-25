@@ -1,7 +1,14 @@
 /**
- * Tool-loop prompt scaffolding: pinned system-note maintenance for
- * working-memory, todo-plan, and workspace-refresh notes, plus the
- * async workspace-context refresher.
+ * Tool-loop prompt scaffolding: pinned system-slot maintenance for the head
+ * prefix block (working-memory, workspace-refresh) plus pruning of
+ * tail-appended transient reminders, plus the async workspace-context
+ * refresher.
+ *
+ * Head pinned slots have a deterministic order (PINNED_SLOT_ORDER): identical
+ * slot content always lands at the same byte offset regardless of which slot
+ * was set first this turn. This byte-stability is the prerequisite for prompt
+ * caching (M1) — Anthropic / OpenAI cache hits depend on the cached prefix
+ * being unchanged across turns.
  *
  * Kept separate from `src/agents/promptAssembly.ts` (which builds the
  * initial static agent prompt) — this module mutates the live `messages`
@@ -23,13 +30,86 @@ import {
 } from "./readOnlyWorkspaceService";
 import { clearRepoMapCaches, generateRepoMap } from "./repoMapService";
 
-export const WORKING_MEMORY_NOTE_PREFIX = "[工作记忆刷新]";
-export const WORKSPACE_REFRESH_NOTE_PREFIX = "[工作区上下文更新]";
+export const PINNED_SLOT_KEYS = {
+  WORKSPACE_REFRESH: "[工作区上下文更新]",
+  WORKING_MEMORY: "[工作记忆刷新]",
+} as const;
+
+export type PinnedSlotKey =
+  (typeof PINNED_SLOT_KEYS)[keyof typeof PINNED_SLOT_KEYS];
 
 /**
- * Remove stale interstitial system messages that accumulate between tool
- * turns.  Keeps only the most recent N system messages outside of the
- * pinned prefix and the final block.
+ * Declared insertion order (low → high). When `setPinnedSlot` runs, the new
+ * slot is placed AFTER any existing slot with a lower-or-equal order, and
+ * BEFORE any with a higher order. This means a turn that sets WORKING_MEMORY
+ * before WORKSPACE_REFRESH ends up byte-identical to a turn that sets them
+ * in the other order — required for cache hit stability.
+ */
+const PINNED_SLOT_ORDER: ReadonlyArray<PinnedSlotKey> = [
+  PINNED_SLOT_KEYS.WORKSPACE_REFRESH,
+  PINNED_SLOT_KEYS.WORKING_MEMORY,
+];
+
+/** Back-compat re-export — original consumers may import these. */
+export const WORKING_MEMORY_NOTE_PREFIX = PINNED_SLOT_KEYS.WORKING_MEMORY;
+export const WORKSPACE_REFRESH_NOTE_PREFIX = PINNED_SLOT_KEYS.WORKSPACE_REFRESH;
+
+const PINNED_KEY_PREFIXES: ReadonlyArray<string> = Object.values(PINNED_SLOT_KEYS);
+
+function findExistingSlotKey(content: string): string | undefined {
+  return PINNED_KEY_PREFIXES.find((k) => content.startsWith(k));
+}
+
+/**
+ * Idempotently set a head-pinned system slot identified by its key prefix.
+ * Removes any existing message with the same prefix, then inserts the new
+ * content at the canonical position determined by PINNED_SLOT_ORDER. Empty
+ * content clears the slot.
+ */
+export function setPinnedSlot(
+  messages: LiteLLMMessage[],
+  key: PinnedSlotKey,
+  content: string,
+): void {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (m.role === "system" && typeof m.content === "string" && m.content.startsWith(key)) {
+      messages.splice(i, 1);
+    }
+  }
+
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return;
+  }
+
+  const myOrder = PINNED_SLOT_ORDER.indexOf(key);
+  const headEnd = initialSystemPrefixLength(messages);
+  let insertAt = headEnd;
+
+  // Walk the head system block; place the new slot before the first existing
+  // slot whose order is strictly higher than ours. Non-slot system messages
+  // (initial agent prompt, runtime context) are left at the very front.
+  for (let i = 0; i < headEnd; i += 1) {
+    const msg = messages[i];
+    const matchedKey = findExistingSlotKey(msg.content);
+    if (!matchedKey) continue;
+    const matchedOrder = PINNED_SLOT_ORDER.indexOf(matchedKey as PinnedSlotKey);
+    if (matchedOrder >= 0 && matchedOrder > myOrder) {
+      insertAt = i;
+      break;
+    }
+  }
+
+  messages.splice(insertAt, 0, { role: "system", content: trimmed });
+}
+
+/**
+ * Remove stale tail-appended system reminders (efficiency warnings, turn-count
+ * notes) that accumulate between tool turns. Keeps only the most recent N
+ * post-prefix system messages. Head-pinned slots are protected by
+ * `pinnedPrefixLen`; the working-memory slot is additionally whitelisted in
+ * case it has fallen out of the head prefix.
  */
 export function pruneStaleSystemMessages(
   messages: LiteLLMMessage[],
@@ -42,7 +122,7 @@ export function pruneStaleSystemMessages(
     const msg = messages[i];
     if (
       msg.role === "system" &&
-      !msg.content.startsWith(WORKING_MEMORY_NOTE_PREFIX)
+      !msg.content.startsWith(PINNED_SLOT_KEYS.WORKING_MEMORY)
     ) {
       interstitialIndices.push(i);
     }
@@ -57,47 +137,6 @@ export function pruneStaleSystemMessages(
   );
 
   return messages.filter((_, idx) => !toRemove.has(idx));
-}
-
-/**
- * Replace-or-insert a single system message identified by a prefix. All
- * older copies with the same prefix are removed first, then the new
- * content is inserted near the initial system-prefix block so the note
- * stays pinned to the top of the conversation.
- */
-export function upsertPinnedSystemMessage(params: {
-  messages: LiteLLMMessage[];
-  prefix: string;
-  content: string;
-  insertionIndex?: number;
-}): void {
-  for (let index = params.messages.length - 1; index >= 0; index -= 1) {
-    const message = params.messages[index];
-    if (
-      message.role === "system"
-      && typeof message.content === "string"
-      && message.content.startsWith(params.prefix)
-    ) {
-      params.messages.splice(index, 1);
-    }
-  }
-
-  const normalizedContent = params.content.trim();
-  if (!normalizedContent) {
-    return;
-  }
-
-  const currentPrefixLen = initialSystemPrefixLength(params.messages);
-  const requestedIndex =
-    typeof params.insertionIndex === "number" && Number.isFinite(params.insertionIndex)
-      ? Math.floor(params.insertionIndex)
-      : currentPrefixLen;
-  const insertAt = Math.max(0, Math.min(currentPrefixLen, requestedIndex));
-
-  params.messages.splice(insertAt, 0, {
-    role: "system",
-    content: normalizedContent,
-  });
 }
 
 export function upsertWorkingMemoryContextMessage(params: {
@@ -116,15 +155,12 @@ export function upsertWorkingMemoryContextMessage(params: {
     },
   );
 
-  if (!memoryContext.trim()) {
-    return;
-  }
-
-  upsertPinnedSystemMessage({
-    messages: params.messages,
-    prefix: WORKING_MEMORY_NOTE_PREFIX,
-    content: `${WORKING_MEMORY_NOTE_PREFIX}\n${memoryContext}`,
-  });
+  const trimmed = memoryContext.trim();
+  setPinnedSlot(
+    params.messages,
+    PINNED_SLOT_KEYS.WORKING_MEMORY,
+    trimmed ? `${PINNED_SLOT_KEYS.WORKING_MEMORY}\n${trimmed}` : "",
+  );
 }
 
 /**
@@ -139,8 +175,17 @@ export async function refreshWorkspaceContext(params: {
   normalizedPrompt: string;
   sessionFocusedPaths: string[];
   turnNumber: number;
+  contextLimitTokens: number;
 }): Promise<void> {
-  const { messages, workspacePath, projectConfig, normalizedPrompt, sessionFocusedPaths, turnNumber } = params;
+  const {
+    messages,
+    workspacePath,
+    projectConfig,
+    normalizedPrompt,
+    sessionFocusedPaths,
+    turnNumber,
+    contextLimitTokens,
+  } = params;
 
   let refreshNote = "";
 
@@ -166,10 +211,9 @@ export async function refreshWorkspaceContext(params: {
       // Force cache invalidation to get fresh data
       clearRepoMapCaches();
 
-      const contextLimit = 128000; // Use default context limit
       const repoMapBudget = Math.min(
         4000,
-        Math.max(500, Math.floor(contextLimit * 0.03)),
+        Math.max(500, Math.floor(contextLimitTokens * 0.03)),
       );
       const repoMap = await generateRepoMap(
         workspacePath,
@@ -195,12 +239,11 @@ export async function refreshWorkspaceContext(params: {
   }
 
   if (refreshNote) {
-    // Inject the refreshed context as a system message
-    upsertPinnedSystemMessage({
+    setPinnedSlot(
       messages,
-      prefix: WORKSPACE_REFRESH_NOTE_PREFIX,
-      content: `${WORKSPACE_REFRESH_NOTE_PREFIX}\n${refreshNote}`,
-    });
+      PINNED_SLOT_KEYS.WORKSPACE_REFRESH,
+      `${PINNED_SLOT_KEYS.WORKSPACE_REFRESH}\n${refreshNote}`,
+    );
     console.log(`[Workspace Refresh] Context refreshed at turn ${turnNumber}`);
   }
 }
