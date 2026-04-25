@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import oneDark from "react-syntax-highlighter/dist/esm/styles/prism/one-dark";
 import { DiffViewer } from "../../components/DiffViewer";
+import { FloatingMenu } from "../../components/FloatingMenu";
 import { ShellResultDisplay } from "../../components/ShellResultDisplay";
 import {
   actionStatusBadgeClass,
@@ -12,7 +13,6 @@ import {
   canRetryAction,
   canReviewAction,
 } from "../../utils/chatUtils";
-import { updateActionPayload } from "../../../orchestrator/hitlService";
 import {
   buildApprovalRuleOptions,
   type ApprovalRuleOption,
@@ -456,18 +456,9 @@ export function ToolTracePanel({
 
 function ActionPayloadFields({
   action,
-  messageId,
-  onPlanUpdate,
 }: {
   action: ActionProposal;
-  messageId: string;
-  onPlanUpdate: (
-    messageId: string,
-    updater: (p: OrchestrationPlan) => OrchestrationPlan,
-  ) => void;
 }) {
-  const disabled = action.status === "running";
-
   if (action.type === "apply_patch") {
     const stats = summarizePatchStats(action.payload.patch);
     return (
@@ -486,22 +477,6 @@ function ActionPayloadFields({
             <div className="patch-preview-body">
               <DiffViewer patch={action.payload.patch} />
             </div>
-          </details>
-        </div>
-
-        <div className="action-field action-wide">
-          <details className="patch-raw-details">
-            <summary>Raw Patch（高级）</summary>
-            <textarea
-              className="input action-textarea"
-              disabled={disabled}
-              value={action.payload.patch}
-              onChange={(e) =>
-                onPlanUpdate(messageId, (p) =>
-                  updateActionPayload(p, action.id, { patch: e.target.value }),
-                )
-              }
-            />
           </details>
         </div>
       </div>
@@ -647,7 +622,6 @@ function PlanActionCard({
   plan,
   messageId,
   executingActionId,
-  onPlanUpdate,
   onApprove,
   onRetry,
   onReject,
@@ -660,10 +634,6 @@ function PlanActionCard({
   messageId: string;
   executingActionId: string;
   activeShellActionIds: string[];
-  onPlanUpdate: (
-    messageId: string,
-    updater: (p: OrchestrationPlan) => OrchestrationPlan,
-  ) => void;
   onApprove: (
     messageId: string,
     actionId: string,
@@ -698,11 +668,7 @@ function PlanActionCard({
       </p>
       <ActionBatchMeta action={action} />
 
-      <ActionPayloadFields
-        action={action}
-        messageId={messageId}
-        onPlanUpdate={onPlanUpdate}
-      />
+      <ActionPayloadFields action={action} />
 
       <div className="action-footer">
         {canApproveAction(action) && (
@@ -715,49 +681,66 @@ function PlanActionCard({
             >
               {executingActionId === action.id ? "执行中…" : "✓ 批准"}
             </button>
-            <details className="action-approve-menu">
-              <summary
-                className={`btn btn-primary btn-sm action-approve-trigger${
-                  executingActionId ? " is-disabled" : ""
-                }`}
-                aria-label="更多操作"
-                title="更多操作"
-              >
-                <span aria-hidden>▾</span>
-              </summary>
-              <div className="action-approve-popover" role="menu">
-                {approvalOptions.map((option) => (
-                  <button
-                    key={option.key}
-                    className="action-approve-option-btn"
-                    onClick={() => void onApprove(messageId, action.id, plan, option)}
-                    type="button"
-                  >
-                    <span className="action-approve-option-main">批准并记住</span>
-                    <span className="action-approve-option-hint">{option.label}</span>
-                  </button>
-                ))}
-                {canReviewAction(action) && (
-                  <>
-                    {approvalOptions.length > 0 && <div className="action-approve-divider" />}
+            <FloatingMenu
+              className="action-approve-popover"
+              trigger={
+                <button
+                  type="button"
+                  className={`btn btn-primary btn-sm action-approve-trigger${
+                    executingActionId ? " is-disabled" : ""
+                  }`}
+                  disabled={Boolean(executingActionId)}
+                  aria-label="更多操作"
+                  title="更多操作"
+                >
+                  <span aria-hidden>▾</span>
+                </button>
+              }
+            >
+              {(close) => (
+                <>
+                  {approvalOptions.map((option) => (
                     <button
-                      className="action-approve-option-btn text-danger"
-                      onClick={() => onReject(messageId, action.id)}
-                      type="button"
-                    >
-                      ✕ 拒绝
-                    </button>
-                    <button
+                      key={option.key}
                       className="action-approve-option-btn"
-                      onClick={() => onComment(messageId, action.id)}
+                      onClick={() => {
+                        close();
+                        void onApprove(messageId, action.id, plan, option);
+                      }}
                       type="button"
                     >
-                      💬 备注
+                      <span className="action-approve-option-main">批准并记住</span>
+                      <span className="action-approve-option-hint">{option.label}</span>
                     </button>
-                  </>
-                )}
-              </div>
-            </details>
+                  ))}
+                  {canReviewAction(action) && (
+                    <>
+                      {approvalOptions.length > 0 && <div className="action-approve-divider" />}
+                      <button
+                        className="action-approve-option-btn text-danger"
+                        onClick={() => {
+                          close();
+                          onReject(messageId, action.id);
+                        }}
+                        type="button"
+                      >
+                        ✕ 拒绝
+                      </button>
+                      <button
+                        className="action-approve-option-btn"
+                        onClick={() => {
+                          close();
+                          onComment(messageId, action.id);
+                        }}
+                        type="button"
+                      >
+                        💬 备注
+                      </button>
+                    </>
+                  )}
+                </>
+              )}
+            </FloatingMenu>
           </div>
         )}
         {canRetryAction(action) && (
@@ -788,7 +771,6 @@ export function InlinePlan({
   plan,
   messageId,
   executingActionId,
-  onPlanUpdate,
   onApprove,
   onRetry,
   onReject,
@@ -802,10 +784,6 @@ export function InlinePlan({
   messageId: string;
   executingActionId: string;
   activeShellActionIds: string[];
-  onPlanUpdate: (
-    messageId: string,
-    updater: (p: OrchestrationPlan) => OrchestrationPlan,
-  ) => void;
   onApprove: (
     messageId: string,
     actionId: string,
@@ -856,7 +834,6 @@ export function InlinePlan({
           plan={safePlan}
           messageId={messageId}
           executingActionId={executingActionId}
-          onPlanUpdate={onPlanUpdate}
           onApprove={onApprove}
           onRetry={onRetry}
           onReject={onReject}
@@ -943,7 +920,6 @@ export function InlinePlan({
               plan={safePlan}
               messageId={messageId}
               executingActionId={executingActionId}
-              onPlanUpdate={onPlanUpdate}
               onApprove={onApprove}
               onRetry={onRetry}
               onReject={onReject}

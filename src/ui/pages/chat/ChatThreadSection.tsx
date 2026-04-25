@@ -43,10 +43,6 @@ interface ChatMessageRowProps {
   liveToolCalls: LiveToolCall[];
   executingActionId: string;
   getActiveShellActionIds: (messageId: string) => string[];
-  onPlanUpdate: (
-    messageId: string,
-    updater: (plan: OrchestrationPlan) => OrchestrationPlan,
-  ) => void;
   onApprove: (
     messageId: string,
     actionId: string,
@@ -73,7 +69,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
   liveToolCalls,
   executingActionId,
   getActiveShellActionIds,
-  onPlanUpdate,
   onApprove,
   onRetry,
   onReject,
@@ -173,7 +168,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
                 messageId={message.id}
                 executingActionId={executingActionId}
                 activeShellActionIds={activeShellActionIds}
-                onPlanUpdate={onPlanUpdate}
                 onApprove={onApprove}
                 onRetry={onRetry}
                 onReject={onReject}
@@ -218,10 +212,6 @@ export interface ChatThreadSectionProps {
   liveToolCalls: LiveToolCall[];
   executingActionId: string;
   getActiveShellActionIds: (messageId: string) => string[];
-  onPlanUpdate: (
-    messageId: string,
-    updater: (plan: OrchestrationPlan) => OrchestrationPlan,
-  ) => void;
   onApprove: (
     messageId: string,
     actionId: string,
@@ -252,7 +242,6 @@ export const ChatThreadSection = memo(function ChatThreadSection({
   liveToolCalls,
   executingActionId,
   getActiveShellActionIds,
-  onPlanUpdate,
   onApprove,
   onRetry,
   onReject,
@@ -301,7 +290,6 @@ export const ChatThreadSection = memo(function ChatThreadSection({
               liveToolCalls={showStreamingStatus ? liveToolCalls : EMPTY_LIVE_TOOL_CALLS}
               executingActionId={message.plan ? executingActionId : ""}
               getActiveShellActionIds={getActiveShellActionIds}
-              onPlanUpdate={onPlanUpdate}
               onApprove={onApprove}
               onRetry={onRetry}
               onReject={onReject}

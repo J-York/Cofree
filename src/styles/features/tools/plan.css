@@ -156,13 +156,7 @@
   margin-right: -1px;
 }
 
-.action-approve-menu {
-  position: relative;
-  display: inline-flex;
-}
-
 .action-approve-trigger {
-  list-style: none;
   cursor: pointer;
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
@@ -174,13 +168,7 @@
   user-select: none;
 }
 
-.action-approve-trigger::-webkit-details-marker { display: none; }
-.action-approve-trigger::marker { content: ""; }
-
 .action-approve-popover {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
   min-width: 240px;
   max-width: 320px;
   padding: 6px;
@@ -191,7 +179,6 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  z-index: 10;
 }
 
 .action-approve-option-btn {

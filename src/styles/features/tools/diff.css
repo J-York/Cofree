@@ -63,6 +63,19 @@
   color: var(--text-4);
 }
 
+.diff-truncation-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--bg-surface);
+  flex-wrap: wrap;
+}
+
 .patch-preview {
   max-height: 240px;
   overflow: auto;

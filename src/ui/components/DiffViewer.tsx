@@ -24,11 +24,12 @@ interface DiffData {
   deletions: number;
   hunks: number;
   truncated: boolean;
+  totalSourceLines: number;
 }
 
 type DiffViewMode = "inline" | "split";
 
-const MAX_DIFF_LINES = 300;
+const DEFAULT_DIFF_LINE_LIMIT = 2000;
 
 /* ── Parsing ──────────────────────────────────────────── */
 function classifyDiffLine(line: string): DiffLineKind {
@@ -65,7 +66,7 @@ function parseHunkHeader(line: string): { oldStart: number; newStart: number } {
   return { oldStart: parseInt(match[1], 10), newStart: parseInt(match[2], 10) };
 }
 
-function parsePatchForDiff(patch: string): DiffData {
+function parsePatchForDiff(patch: string, lineLimit: number): DiffData {
   const rows = patch ? patch.split("\n") : [];
   const files: DiffFile[] = [];
   let currentFile: DiffFile | null = null;
@@ -78,7 +79,7 @@ function parsePatchForDiff(patch: string): DiffData {
   let newLine = 0;
 
   for (const row of rows) {
-    if (totalLines >= MAX_DIFF_LINES && !row.startsWith("diff --git ")) continue;
+    if (totalLines >= lineLimit && !row.startsWith("diff --git ")) continue;
 
     const kind = classifyDiffLine(row);
 
@@ -125,7 +126,7 @@ function parsePatchForDiff(patch: string): DiffData {
       diffLine.newLineNo = newLine++;
     }
 
-    if (totalLines < MAX_DIFF_LINES) {
+    if (totalLines < lineLimit) {
       currentFile.lines.push(diffLine);
       totalLines += 1;
     }
@@ -136,7 +137,8 @@ function parsePatchForDiff(patch: string): DiffData {
     additions: totalAdditions,
     deletions: totalDeletions,
     hunks: totalHunks,
-    truncated: rows.length > MAX_DIFF_LINES,
+    truncated: rows.length > lineLimit,
+    totalSourceLines: rows.length,
   };
 }
 
@@ -257,8 +259,16 @@ interface DiffViewerProps {
 export function DiffViewer({ patch }: DiffViewerProps): ReactElement {
   const [viewMode, setViewMode] = useState<DiffViewMode>("inline");
   const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
+  const [expandedAll, setExpandedAll] = useState(false);
 
-  const diffData = useMemo(() => parsePatchForDiff(patch), [patch]);
+  const diffData = useMemo(
+    () =>
+      parsePatchForDiff(
+        patch,
+        expandedAll ? Number.POSITIVE_INFINITY : DEFAULT_DIFF_LINE_LIMIT,
+      ),
+    [patch, expandedAll],
+  );
 
   const toggleFile = (path: string) => {
     setCollapsedFiles((prev) => {
@@ -328,9 +338,18 @@ export function DiffViewer({ patch }: DiffViewerProps): ReactElement {
       })}
 
       {diffData.truncated && (
-        <p className="patch-preview-note">
-          预览已截断，仅显示前 {MAX_DIFF_LINES} 行。
-        </p>
+        <div className="diff-truncation-bar">
+          <span className="patch-preview-note">
+            预览已截断，仅显示前 {DEFAULT_DIFF_LINE_LIMIT} 行（共 {diffData.totalSourceLines} 行）。
+          </span>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setExpandedAll(true)}
+            type="button"
+          >
+            展开剩余 {diffData.totalSourceLines - DEFAULT_DIFF_LINE_LIMIT} 行
+          </button>
+        </div>
       )}
     </div>
   );

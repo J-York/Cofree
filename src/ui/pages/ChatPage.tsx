@@ -232,15 +232,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     !settings.allowCloudModels && !isActiveModelLocal(settings);
   const noWorkspaceSelected = !settings.workspacePath;
   const chatBlocked = localOnlyBlocked || noWorkspaceSelected;
-  const handlePlanUpdateForThread = useCallback(
-    (
-      messageId: string,
-      updater: (plan: OrchestrationPlan) => OrchestrationPlan,
-    ): void => {
-      handlePlanUpdateRef.current(messageId, updater);
-    },
-    [],
-  );
   const handleApproveActionForThread = useCallback(
     (
       messageId: string,
@@ -980,7 +971,6 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
             liveToolCalls={liveToolCalls}
             executingActionId={executingActionId}
             getActiveShellActionIds={getActiveShellActionIdsForThread}
-            onPlanUpdate={handlePlanUpdateForThread}
             onApprove={handleApproveActionForThread}
             onRetry={handleRetryActionForThread}
             onReject={handleRejectActionForThread}
