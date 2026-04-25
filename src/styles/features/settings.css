@@ -363,6 +363,126 @@
 
 .vendor-card-meta { font-size: 12px; color: var(--text-3); }
 
+.vendor-master-detail {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.vendor-master {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-panel);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  min-height: 0;
+}
+
+.vendor-master-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.vendor-master-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  max-height: 480px;
+  padding-right: 2px;
+  margin: 0 -2px;
+}
+
+.vendor-master-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-panel);
+  color: var(--text-1);
+  cursor: pointer;
+  transition: all var(--t-fast);
+  font-family: var(--font-sans);
+}
+
+.vendor-master-item:hover {
+  border-color: var(--border-focus);
+  background: var(--bg-surface);
+}
+
+.vendor-master-item.active {
+  border-color: var(--text-1);
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1px var(--text-1);
+}
+
+.vendor-master-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vendor-master-new {
+  align-self: stretch;
+  justify-content: center;
+}
+
+.vendor-master-new.active {
+  border-color: var(--text-1);
+  background: var(--bg-surface);
+  color: var(--text-1);
+}
+
+.vendor-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-panel);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  min-width: 0;
+  min-height: 320px;
+}
+
+.vendor-detail-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.vendor-detail-danger {
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border-default);
+}
+
+@media (max-width: 720px) {
+  .vendor-master-detail {
+    grid-template-columns: 1fr;
+  }
+  .vendor-master-list {
+    max-height: 240px;
+  }
+}
+
 .vendor-model-list { display: flex; flex-direction: column; gap: 8px; }
 
 .vendor-model-row {
