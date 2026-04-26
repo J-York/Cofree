@@ -183,6 +183,38 @@
   border: none;
   border-radius: var(--r-xl);
   padding: 10px 14px;
+  position: relative;
+}
+
+/* Edit button: hidden by default, revealed on row hover. */
+.chat-message-edit-btn {
+  position: absolute;
+  top: 4px;
+  right: -28px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.chat-row.user:hover .chat-message-edit-btn,
+.chat-message-edit-btn:focus-visible {
+  opacity: 1;
+}
+
+.chat-message-edit-btn:hover {
+  background: var(--bg-surface-active);
+  color: var(--text-1);
 }
 
 /* Assistant message: sits on the background — no container. */

@@ -100,3 +100,36 @@ describe("ChatComposer mention keyboard behavior", () => {
     expect(onMentionSync).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ChatComposer edit mode (M5)", () => {
+  it("renders the edit banner and switches submit label when editingMessageId is set", () => {
+    const view = renderComposer({
+      prompt: "edited body",
+      editingMessageId: "msg-42",
+    });
+
+    expect(view.container.querySelector(".chat-edit-banner")).not.toBeNull();
+    expect(view.container.querySelector(".chat-input-box-editing")).not.toBeNull();
+    expect(view.getByText("保存并重新生成")).toBeTruthy();
+  });
+
+  it("does not render the edit banner in normal mode", () => {
+    const view = renderComposer({ prompt: "hello" });
+    expect(view.container.querySelector(".chat-edit-banner")).toBeNull();
+    expect(view.getByText("发送")).toBeTruthy();
+  });
+
+  it("invokes onCancelEdit when the cancel button is clicked", () => {
+    const onCancelEdit = vi.fn();
+    const view = renderComposer({
+      prompt: "edited body",
+      editingMessageId: "msg-42",
+      onCancelEdit,
+    });
+
+    const cancelBtn = view.container.querySelector(".chat-edit-banner-cancel");
+    expect(cancelBtn).not.toBeNull();
+    fireEvent.click(cancelBtn!);
+    expect(onCancelEdit).toHaveBeenCalledTimes(1);
+  });
+});

@@ -237,6 +237,24 @@ export function saveChatHistory(messages: ChatMessageRecord[]): void {
   window.localStorage.setItem(CHAT_HISTORY_STORAGE_KEY, JSON.stringify(trimmedMessages));
 }
 
+/**
+ * Return a new array containing every message BEFORE `fromMessageId`. The
+ * target message itself and everything after it is dropped — used by the
+ * "edit user message" flow to discard the old turn (and any assistant /
+ * tool messages that followed) before replaying with new content.
+ *
+ * If the id is not found, returns the original array reference unchanged
+ * so callers can detect the no-op without comparing arrays element-wise.
+ */
+export function truncateMessagesFrom(
+  messages: ChatMessageRecord[],
+  fromMessageId: string,
+): ChatMessageRecord[] {
+  const idx = messages.findIndex((m) => m.id === fromMessageId);
+  if (idx < 0) return messages;
+  return messages.slice(0, idx);
+}
+
 export function clearChatHistory(): void {
   if (typeof window === "undefined") {
     return;

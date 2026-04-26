@@ -4,7 +4,10 @@ import {
   type SetStateAction,
 } from "react";
 import type { ChatAgentDefinition } from "../../../../agents/types";
-import type { ChatMessageRecord } from "../../../../lib/chatHistoryStore";
+import {
+  truncateMessagesFrom,
+  type ChatMessageRecord,
+} from "../../../../lib/chatHistoryStore";
 import {
   dedupeContextAttachments,
   type ChatContextAttachment,
@@ -19,7 +22,10 @@ import {
 import { classifyError, type CategorizedError } from "../../../../lib/errorClassifier";
 import type { AppSettings } from "../../../../lib/settingsStore";
 import type { AskUserRequest } from "../../../../orchestrator/askUserService";
-import { saveWorkflowCheckpoint } from "../../../../orchestrator/checkpointStore";
+import {
+  deleteWorkflowCheckpointsForConversation,
+  saveWorkflowCheckpoint,
+} from "../../../../orchestrator/checkpointStore";
 import {
   advanceAfterHitl,
   getHitlContinuationMemory,
@@ -897,11 +903,97 @@ export function useChatExecution(options: UseChatExecutionOptions) {
     }
   };
 
+  /**
+   * M5: edit a previous user message and replay from that point.
+   *
+   * Steps (in order):
+   *  1. Snapshot pre-edit messages so we can roll back if anything throws.
+   *  2. Truncate the in-memory + on-disk message list at `messageId` (drops
+   *     the target user message and every assistant/tool message after it).
+   *  3. Nuke every workflow checkpoint for this conversation. The latest
+   *     checkpoint references a now-deleted assistantMessageId; finer
+   *     surgery isn't worth the complexity since the new run will write
+   *     fresh checkpoints from scratch.
+   *  4. Drop cached working-memory snapshots for the affected sessions.
+   *  5. Clear composer + edit UI state.
+   *  6. Hand off to runChatCycle with the new prompt text.
+   *
+   * On any failure before runChatCycle, we restore the messages snapshot and
+   * propagate the error so the caller can surface it.
+   */
+  const handleEditSubmit = async (
+    messageId: string,
+    options: { explicitSkillIds?: string[] } = {},
+  ): Promise<void> => {
+    if (isStreaming) return;
+    const target = messagesRef.current.find((m) => m.id === messageId);
+    if (!target || target.role !== "user") return;
+
+    const attachments = dedupeContextAttachments(composerAttachments);
+    const text = buildSubmittedPrompt(
+      prompt,
+      attachments,
+      selectedSkills.length > 0,
+    );
+    if (
+      !text &&
+      attachments.length === 0 &&
+      selectedSkills.length === 0
+    ) {
+      return;
+    }
+
+    const previousMessages = messagesRef.current;
+    const truncated = truncateMessagesFrom(previousMessages, messageId);
+
+    try {
+      messagesRef.current = truncated;
+      setMessages(truncated);
+
+      flushConversationMessagesToDisk(currentConversation?.id ?? null);
+
+      if (currentConversation) {
+        await deleteWorkflowCheckpointsForConversation(currentConversation.id).catch(
+          (err) => {
+            console.warn("[Edit] Failed to clear checkpoints", err);
+          },
+        );
+      }
+
+      // Drop every cached working-memory snapshot whose session belongs to
+      // this conversation. Cheaper than threading conversationId through the
+      // session-id format: we just clear the whole map and let the next run
+      // rebuild what it needs.
+      workingMemoryBySessionRef.current.clear();
+
+      const explicitSkillIds =
+        options.explicitSkillIds ??
+        (selectedSkills.length > 0
+          ? selectedSkills.map((s) => s.id)
+          : undefined);
+
+      setPrompt("");
+      setComposerAttachments([]);
+      clearMentionUi();
+
+      await runChatCycle(text, {
+        contextAttachments: attachments,
+        explicitSkillIds,
+      });
+    } catch (error) {
+      messagesRef.current = previousMessages;
+      setMessages(previousMessages);
+      setCategorizedError(classifyError(error));
+      throw error;
+    }
+  };
+
   return {
     handleCancel,
     continueAfterHitlIfNeeded,
     runChatCycle,
     handleSubmit,
+    handleEditSubmit,
     handlePlanUpdate,
   };
 }

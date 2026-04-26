@@ -3,6 +3,7 @@ import {
   clearChatHistory,
   loadChatHistory,
   saveChatHistory,
+  truncateMessagesFrom,
   type ChatMessageRecord,
 } from "./chatHistoryStore";
 
@@ -146,3 +147,38 @@ describe("chatHistoryStore context attachments", () => {
     expect(loaded[0]!.explicitSkillIds).toBeUndefined();
   });
   });
+
+describe("truncateMessagesFrom", () => {
+  function msg(id: string, role: ChatMessageRecord["role"] = "user"): ChatMessageRecord {
+    return {
+      id,
+      role,
+      content: id,
+      createdAt: "2026-04-26T00:00:00Z",
+      plan: null,
+    };
+  }
+
+  it("drops the target message and everything after it", () => {
+    const messages = [msg("u1"), msg("a1", "assistant"), msg("u2"), msg("a2", "assistant")];
+    const result = truncateMessagesFrom(messages, "u2");
+    expect(result.map((m) => m.id)).toEqual(["u1", "a1"]);
+  });
+
+  it("returns the original reference when id is not found (no-op marker)", () => {
+    const messages = [msg("u1"), msg("a1", "assistant")];
+    const result = truncateMessagesFrom(messages, "missing");
+    expect(result).toBe(messages);
+  });
+
+  it("returns empty when truncating from the very first message", () => {
+    const messages = [msg("u1"), msg("a1", "assistant")];
+    const result = truncateMessagesFrom(messages, "u1");
+    expect(result).toEqual([]);
+  });
+
+  it("returns the input unchanged for an empty array", () => {
+    const messages: ChatMessageRecord[] = [];
+    expect(truncateMessagesFrom(messages, "anything")).toBe(messages);
+  });
+});

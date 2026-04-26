@@ -122,6 +122,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   } = useMentionSuggestions(wsPath);
   const availableSkills = useSkillDiscovery(wsPath, settings.skills);
   const [selectedSkills, setSelectedSkills] = useState<SkillEntry[]>([]);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [categorizedError, setCategorizedError] =
     useState<CategorizedError | null>(null);
   const setAndAuditError = useCallback(
@@ -496,6 +497,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     continueAfterHitlIfNeeded,
     runChatCycle,
     handleSubmit,
+    handleEditSubmit,
     handlePlanUpdate,
   } = useChatExecution({
     wsPath,
@@ -857,8 +859,58 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     textareaRef.current?.focus();
   };
 
+  const handleEditMessage = (messageId: string): void => {
+    if (isStreaming) return;
+    const target = messages.find((m) => m.id === messageId);
+    if (!target || target.role !== "user") return;
 
+    setEditingMessageId(messageId);
+    setPrompt(target.content);
 
+    const restoredAttachments = target.contextAttachments
+      ? dedupeContextAttachments(target.contextAttachments)
+      : [];
+    setComposerAttachments(restoredAttachments);
+
+    if (target.explicitSkillIds && target.explicitSkillIds.length > 0) {
+      const restoredSkills = target.explicitSkillIds
+        .map((id) => availableSkills.find((s) => s.id === id))
+        .filter((s): s is SkillEntry => Boolean(s));
+      setSelectedSkills(restoredSkills);
+    } else {
+      setSelectedSkills([]);
+    }
+
+    clearMentionUi();
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      const len = target.content.length;
+      textareaRef.current?.setSelectionRange(len, len);
+    });
+  };
+
+  const handleCancelEdit = (): void => {
+    setEditingMessageId(null);
+    setPrompt("");
+    setComposerAttachments([]);
+    clearMentionUi();
+  };
+
+  const handleComposerSubmit = async (): Promise<void> => {
+    if (editingMessageId) {
+      const idToEdit = editingMessageId;
+      setEditingMessageId(null);
+      try {
+        await handleEditSubmit(idToEdit);
+      } catch {
+        // Error already audited inside handleEditSubmit; restore the edit
+        // banner so the user can retry without losing their typed text.
+        setEditingMessageId(idToEdit);
+      }
+      return;
+    }
+    await handleSubmit();
+  };
 
 
   const handleSuggestionClick = (text: string) => {
@@ -979,6 +1031,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
             onApproveAll={handleApproveAllActionsForThread}
             onRejectAll={handleRejectAllActionsForThread}
             onSuggestionClick={handleSuggestionClickForThread}
+            onEditMessage={handleEditMessage}
+            editingMessageId={editingMessageId}
           />
 
           {/* ── Input ── */}
@@ -1032,7 +1086,9 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
               onSelectNextMention={handleSelectNextMention}
               onSelectPreviousMention={handleSelectPreviousMention}
               onClearMentionUi={clearMentionUi}
-              onSubmit={handleSubmit}
+              onSubmit={handleComposerSubmit}
+              editingMessageId={editingMessageId}
+              onCancelEdit={handleCancelEdit}
               liveContextTokens={liveContextTokens}
               maxContextTokens={resolveEffectiveContextTokenLimit(settings)}
               isStreaming={isStreaming}

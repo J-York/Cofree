@@ -42,6 +42,8 @@ interface ChatMessageRowProps {
   showStreamingStatus: boolean;
   liveToolCalls: LiveToolCall[];
   executingActionId: string;
+  editingMessageId: string | null;
+  canEdit: boolean;
   getActiveShellActionIds: (messageId: string) => string[];
   onApprove: (
     messageId: string,
@@ -59,6 +61,7 @@ interface ChatMessageRowProps {
   onCancel: (messageId: string, actionId: string) => Promise<void>;
   onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
   onRejectAll: (messageId: string) => void;
+  onEditMessage?: (messageId: string) => void;
 }
 
 const ChatMessageRow = memo(function ChatMessageRow({
@@ -68,6 +71,8 @@ const ChatMessageRow = memo(function ChatMessageRow({
   showStreamingStatus,
   liveToolCalls,
   executingActionId,
+  editingMessageId,
+  canEdit,
   getActiveShellActionIds,
   onApprove,
   onRetry,
@@ -76,6 +81,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   onCancel,
   onApproveAll,
   onRejectAll,
+  onEditMessage,
 }: ChatMessageRowProps): ReactElement {
   const activeShellActionIds = message.plan
     ? getActiveShellActionIds(message.id)
@@ -193,6 +199,20 @@ const ChatMessageRow = memo(function ChatMessageRow({
                 }
                 role={message.role}
               />
+              {message.role === "user" &&
+                canEdit &&
+                onEditMessage &&
+                editingMessageId !== message.id && (
+                  <button
+                    type="button"
+                    className="chat-message-edit-btn"
+                    aria-label="编辑此消息"
+                    title="编辑此消息（截断后续历史并重新生成）"
+                    onClick={() => onEditMessage(message.id)}
+                  >
+                    ✎
+                  </button>
+                )}
             </div>
           </>
         )}
@@ -229,6 +249,8 @@ export interface ChatThreadSectionProps {
   onApproveAll: (messageId: string, plan: OrchestrationPlan) => Promise<void>;
   onRejectAll: (messageId: string) => void;
   onSuggestionClick: (text: string) => void;
+  onEditMessage?: (messageId: string) => void;
+  editingMessageId?: string | null;
 }
 
 export const ChatThreadSection = memo(function ChatThreadSection({
@@ -250,6 +272,8 @@ export const ChatThreadSection = memo(function ChatThreadSection({
   onApproveAll,
   onRejectAll,
   onSuggestionClick,
+  onEditMessage,
+  editingMessageId,
 }: ChatThreadSectionProps): ReactElement {
   const visibleMessages = messages.filter((message) => message.role !== "tool");
   const lastMessage = messages[messages.length - 1];
@@ -289,6 +313,8 @@ export const ChatThreadSection = memo(function ChatThreadSection({
               showStreamingStatus={showStreamingStatus}
               liveToolCalls={showStreamingStatus ? liveToolCalls : EMPTY_LIVE_TOOL_CALLS}
               executingActionId={message.plan ? executingActionId : ""}
+              editingMessageId={editingMessageId ?? null}
+              canEdit={!isStreaming}
               getActiveShellActionIds={getActiveShellActionIds}
               onApprove={onApprove}
               onRetry={onRetry}
@@ -297,6 +323,7 @@ export const ChatThreadSection = memo(function ChatThreadSection({
               onCancel={onCancel}
               onApproveAll={onApproveAll}
               onRejectAll={onRejectAll}
+              onEditMessage={onEditMessage}
             />
           );
         })

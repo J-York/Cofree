@@ -21,6 +21,46 @@
   background: var(--bg-panel);
 }
 
+.chat-input-box.chat-input-box-editing {
+  border-color: var(--color-warning, var(--border-focus));
+}
+
+.chat-edit-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-surface-active);
+  color: var(--text-2);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.chat-edit-banner-icon {
+  color: var(--color-warning, var(--text-2));
+  font-weight: 700;
+}
+
+.chat-edit-banner-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-edit-banner-cancel {
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chat-edit-banner-cancel:hover {
+  background: var(--bg-panel);
+  color: var(--text-1);
+}
+
 .chat-context-pills {
   display: flex;
   flex-wrap: wrap;

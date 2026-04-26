@@ -82,7 +82,7 @@
 - **验收**：
   - [ ] 同样 4k 预算下，repo-map 包含的符号数比当前清单多 5×
 
-### [ ] M5. 消息编辑 / 会话分叉 UI
+### [x] M5. 消息编辑 / 会话分叉 UI
 
 - **优先级**：🟢 P3
 - **工作量**：中（前端为主）
@@ -90,8 +90,17 @@
 - **现状**：checkpoint 是 turn 级恢复，但 UI 似乎没暴露"编辑历史消息重新生成"
 - **建议**：暴露"编辑此条消息"按钮 → 截断后续历史 → 从该点重新生成。底层 checkpoint 机制已支持，主要是 UI 工作。
 - **验收**：
-  - [ ] 用户可以编辑任意一条 user 消息并重新生成
-  - [ ] 旧分支保留为可切换的"checkpoint 历史"（可选）
+  - [x] 用户可以编辑任意一条 user 消息并重新生成
+  - [~] 旧分支保留为可切换的"checkpoint 历史"（**未做**——doc 标可选；本次实现走"截断丢弃"路线，保留分支需要 V2 数据模型）
+
+**实现备注（2026-04-26）**：
+- `truncateMessagesFrom(messages, fromMessageId)` 工具放在 `chatHistoryStore`
+- 用户消息气泡 hover 显示 ✎ 编辑按钮（CSS 用 `:hover .chat-row.user` 触发，无 portal）
+- ChatComposer 加 `editingMessageId` 模式：顶部黄色 banner 提示 + 提交按钮文案改"保存并重新生成" + 取消按钮一键复位
+- handleEditSubmit 流程：snapshot 旧 messages → truncate → setMessages → 写盘 → `deleteWorkflowCheckpointsForConversation` 整段清 → 清 workingMemoryBySessionRef → runChatCycle。任一步抛错回滚 messages 并保留 editingMessageId 让用户重试
+- Checkpoint 清理用整段 prefix delete（`deleteWorkflowCheckpointsForConversation`），不做 per-messageId 精细化——精细化要 Rust 后端增 invoke，性价比低
+- WorkingMemory clear: `workingMemoryBySessionRef.current.clear()` 全清，比按 sessionId 找精确边界更稳
+- 已知 gap：编辑 background streaming 中的会话不会先 abort（需要先 cancel 再编辑）；当前 isStreaming 守卫拒绝在流式中触发编辑，但 background 流不一定走 isStreaming 标记
 
 ### [ ] M6. 语义检索 / Embedding（**建议不做**）
 
@@ -240,9 +249,11 @@
 - X6 完整版（统一 ContextEntity）需要 V2 snapshot + restore 兼容旧 checkpoint，留待下次 session
 
 ### 第四周以后（看反馈）
-- [ ] M4 Repo-map symbol 化
-- [ ] M5 消息编辑 UI
+- [ ] M4 Repo-map symbol 化（计划 C 路线 regex 补漏，等 M5 完成后启动）
+- [x] M5 消息编辑 UI
 - [ ] M6 语义检索 — **暂不做**
+
+**M5 实现备注（2026-04-26）**：见上文 §一·M5 实现备注。9 个新测试覆盖 truncateMessagesFrom（4）+ ChatComposer 编辑模式（3）+ ChatThreadSection 编辑按钮（6）。
 
 ---
 

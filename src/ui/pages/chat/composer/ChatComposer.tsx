@@ -34,6 +34,12 @@ export interface ChatComposerProps {
   hasDebugBundleTarget: boolean;
   onDownloadConversationDebugBundle: () => void;
   onCancel: () => void;
+  /** When set, the composer renders in "edit mode": shows a hint banner and a
+   * cancel-edit button, swaps the submit label, and routes submission through
+   * onSubmit just like new messages — the parent decides what onSubmit does
+   * based on whether editingMessageId is set. */
+  editingMessageId?: string | null;
+  onCancelEdit?: () => void;
 }
 
 export function ChatComposer({
@@ -65,7 +71,10 @@ export function ChatComposer({
   hasDebugBundleTarget,
   onDownloadConversationDebugBundle,
   onCancel,
+  editingMessageId,
+  onCancelEdit,
 }: ChatComposerProps): ReactElement {
+  const isEditing = Boolean(editingMessageId);
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -80,7 +89,25 @@ export function ChatComposer({
         void onSubmit();
       }}
     >
-      <div className="chat-input-box">
+      <div className={`chat-input-box${isEditing ? " chat-input-box-editing" : ""}`}>
+        {isEditing && (
+          <div className="chat-edit-banner" role="status">
+            <span className="chat-edit-banner-icon" aria-hidden>✎</span>
+            <span className="chat-edit-banner-label">
+              正在编辑历史消息 · 提交后将截断后续历史并重新生成
+            </span>
+            {onCancelEdit && (
+              <button
+                type="button"
+                className="chat-edit-banner-cancel"
+                onClick={onCancelEdit}
+                aria-label="取消编辑"
+              >
+                取消
+              </button>
+            )}
+          </div>
+        )}
         <ContextAttachmentPills
           attachments={composerAttachments}
           onRemove={onRemoveComposerAttachment}
@@ -258,7 +285,7 @@ export function ChatComposer({
               }
               type="submit"
             >
-              发送
+              {isEditing ? "保存并重新生成" : "发送"}
             </button>
           </div>
         </div>
