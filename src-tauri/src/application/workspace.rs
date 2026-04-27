@@ -1699,10 +1699,55 @@ fn detect_language(ext: &str) -> Option<&'static str> {
 fn build_symbol_patterns(language: &str) -> Vec<(&'static str, Regex)> {
     match language {
         "typescript" | "javascript" | "vue" | "svelte" => {
+            // Order matters: extract_symbols breaks on the first matching
+            // pattern, so list more-specific shapes first. Each pattern emits
+            // a kind label that the frontend maps to a single-char prefix
+            // (class→c, function→f, constant→v, etc.) — using "export" as the
+            // catch-all kind would lose that distinction.
             vec![
-                ("export", Regex::new(r"^export\s+(function|class|interface|type|const|enum|abstract\s+class)\s+(\w+)").unwrap()),
-                ("function", Regex::new(r"^(?:async\s+)?function\s+(\w+)").unwrap()),
-                ("class", Regex::new(r"^class\s+(\w+)").unwrap()),
+                // Class — top-level or any export form (default / abstract).
+                (
+                    "class",
+                    Regex::new(
+                        r"^(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\s+(\w+)",
+                    )
+                    .unwrap(),
+                ),
+                // Interface — top-level or exported.
+                (
+                    "interface",
+                    Regex::new(r"^(?:export\s+)?interface\s+(\w+)").unwrap(),
+                ),
+                // Enum — top-level or exported (covers `const enum`).
+                (
+                    "enum",
+                    Regex::new(r"^(?:export\s+)?(?:const\s+)?enum\s+(\w+)").unwrap(),
+                ),
+                // Type alias — only when exported. Internal type aliases are
+                // usually local helpers and add noise to the repo-map.
+                (
+                    "type",
+                    Regex::new(r"^export\s+type\s+(\w+)").unwrap(),
+                ),
+                // Function — top-level or any export form. Handles
+                // default / async / generator (`function*`).
+                (
+                    "function",
+                    Regex::new(
+                        r"^(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s*\*?\s+(\w+)",
+                    )
+                    .unwrap(),
+                ),
+                // Const / let / var — only when exported. Covers
+                // `export const Foo = () => ...` arrow-function components
+                // (very common in React / TS projects).
+                (
+                    "constant",
+                    Regex::new(
+                        r"^export\s+(?:default\s+)?(?:const|let|var)\s+(\w+)",
+                    )
+                    .unwrap(),
+                ),
             ]
         }
         "python" => {
@@ -1739,7 +1784,6 @@ fn build_symbol_patterns(language: &str) -> Vec<(&'static str, Regex)> {
         "java" | "kotlin" => {
             vec![
                 ("class", Regex::new(r"(?:public|private|protected)?\s*(?:static\s+)?(?:abstract\s+)?(?:class|interface|enum)\s+(\w+)").unwrap()),
-                ("method", Regex::new(r"^\s*(?:public|private|protected)\s+(?:static\s+)?(?:\w+\s+)(\w+)\s*\(").unwrap()),
             ]
         }
         "c" | "cpp" => {
@@ -1762,52 +1806,197 @@ fn build_symbol_patterns(language: &str) -> Vec<(&'static str, Regex)> {
     }
 }
 
+/// Method patterns matched only inside a class body (M4-2). The brace-depth
+/// state machine in `extract_symbols` tracks when we're at depth = class +1,
+/// so these regex run on member declarations and not at file top level.
+///
+/// Kept separate from `build_symbol_patterns` so non-brace languages
+/// (Python / Ruby) and free-floating-method languages (Go / Rust impl) don't
+/// accidentally pick up these patterns at top level.
+fn build_method_patterns(language: &str) -> Vec<(&'static str, Regex)> {
+    match language {
+        "typescript" | "javascript" | "vue" | "svelte" => {
+            vec![(
+                "method",
+                Regex::new(
+                    r"^(?:(?:public|private|protected|static|readonly|async|override|abstract|get|set)\s+)*(\w+)\s*[<(]",
+                )
+                .unwrap(),
+            )]
+        }
+        "java" | "kotlin" => {
+            vec![(
+                "method",
+                Regex::new(
+                    r"^(?:public|private|protected)\s+(?:static\s+)?(?:\w+\s+)(\w+)\s*\(",
+                )
+                .unwrap(),
+            )]
+        }
+        _ => vec![],
+    }
+}
+
+/// Names that look like method calls but are language keywords; used to
+/// suppress false positives inside class bodies (e.g. `if (cond) {` would
+/// otherwise extract a method called `if`).
+fn is_method_name_blacklisted(name: &str) -> bool {
+    matches!(
+        name,
+        "if" | "for"
+            | "while"
+            | "switch"
+            | "return"
+            | "else"
+            | "try"
+            | "catch"
+            | "do"
+            | "throw"
+            | "case"
+            | "with"
+            | "yield"
+            | "await"
+            | "new"
+            | "typeof"
+    )
+}
+
 fn extract_symbols(content: &str, language: &str) -> Vec<SymbolInfo> {
     let patterns = build_symbol_patterns(language);
     if patterns.is_empty() {
         return Vec::new();
     }
+    let method_patterns = build_method_patterns(language);
 
     let max_symbols = config::REPO_MAP_MAX_SYMBOLS_PER_FILE;
+    let max_methods_per_class: usize = 8;
     let sig_max_len = config::REPO_MAP_SIGNATURE_MAX_LEN;
     let mut symbols = Vec::new();
+
+    // M4-2 state machine: track brace depth across lines so member regex
+    // only fires inside a class body. `class_body_depth` is the depth that
+    // marks the line as a direct member of the most recently opened class.
+    // We don't try to handle nested classes — the inner class is treated as
+    // top-level once we exit the outer class (rare in real TS code anyway).
+    let mut brace_depth: i32 = 0;
+    let mut class_body_depth: Option<i32> = None;
+    let mut method_count_in_class: usize = 0;
+
+    let make_signature = |line: &str| -> String {
+        // M4-3: keep the declaration prefix and drop the body. We look for the
+        // first whitespace-followed-by-`{` (body / object-literal open) and
+        // cut there. This excludes the `${` inside template literals — `$`
+        // isn't whitespace — and the rare `class Foo{` (no space) just falls
+        // through to the length cap unchanged.
+        let bytes = line.as_bytes();
+        let mut cut: Option<usize> = None;
+        for i in 1..bytes.len() {
+            if bytes[i] == b'{' && (bytes[i - 1] == b' ' || bytes[i - 1] == b'\t') {
+                cut = Some(i);
+                break;
+            }
+        }
+        let head = match cut {
+            Some(i) => line[..i].trim_end(),
+            None => line.trim_end(),
+        };
+        if head.len() > sig_max_len {
+            format!("{}...", &head[..sig_max_len])
+        } else {
+            head.to_string()
+        }
+    };
 
     for (line_idx, line) in content.lines().enumerate() {
         if symbols.len() >= max_symbols {
             break;
         }
+
         let trimmed = line.trim_start();
-        if trimmed.is_empty()
+        let is_skip = trimmed.is_empty()
             || trimmed.starts_with("//")
             || trimmed.starts_with('#')
-            || trimmed.starts_with("/*")
-        {
-            continue;
-        }
-        for (kind, regex) in &patterns {
-            if let Some(captures) = regex.captures(trimmed) {
-                let name = captures
-                    .get(captures.len() - 1)
-                    .or_else(|| captures.get(1))
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-                if name.is_empty() {
-                    continue;
+            || trimmed.starts_with("/*");
+
+        let mut matched_class_this_line = false;
+
+        if !is_skip {
+            let in_class = class_body_depth
+                .map(|d| brace_depth >= d)
+                .unwrap_or(false);
+
+            if !in_class {
+                for (kind, regex) in &patterns {
+                    if let Some(captures) = regex.captures(trimmed) {
+                        let name = captures
+                            .get(captures.len() - 1)
+                            .or_else(|| captures.get(1))
+                            .map(|m| m.as_str().to_string())
+                            .unwrap_or_default();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        symbols.push(SymbolInfo {
+                            kind: kind.to_string(),
+                            name,
+                            line: line_idx + 1,
+                            signature: make_signature(trimmed),
+                        });
+                        if *kind == "class" {
+                            matched_class_this_line = true;
+                        }
+                        break;
+                    }
                 }
-                let signature = if trimmed.len() > sig_max_len {
-                    format!("{}...", &trimmed[..sig_max_len])
-                } else {
-                    trimmed.to_string()
-                };
-                symbols.push(SymbolInfo {
-                    kind: kind.to_string(),
-                    name,
-                    line: line_idx + 1,
-                    signature,
-                });
-                break;
+            } else if !method_patterns.is_empty()
+                && brace_depth == class_body_depth.unwrap()
+                && method_count_in_class < max_methods_per_class
+            {
+                for (kind, regex) in &method_patterns {
+                    if let Some(captures) = regex.captures(trimmed) {
+                        let name = captures
+                            .get(captures.len() - 1)
+                            .or_else(|| captures.get(1))
+                            .map(|m| m.as_str().to_string())
+                            .unwrap_or_default();
+                        if name.is_empty() || is_method_name_blacklisted(&name) {
+                            continue;
+                        }
+                        symbols.push(SymbolInfo {
+                            kind: kind.to_string(),
+                            name,
+                            line: line_idx + 1,
+                            signature: make_signature(trimmed),
+                        });
+                        method_count_in_class += 1;
+                        break;
+                    }
+                }
             }
         }
+
+        // Update brace depth from this line. Heuristic — we ignore braces
+        // inside strings / regex literals / comments; for repo-map purposes
+        // this is good enough since real-world code rarely has unbalanced
+        // braces in literals.
+        let opens = line.chars().filter(|c| *c == '{').count() as i32;
+        let closes = line.chars().filter(|c| *c == '}').count() as i32;
+        let new_depth = brace_depth + opens - closes;
+
+        // Class body opens after the `class X {` line increases depth.
+        if matched_class_this_line && new_depth > brace_depth {
+            class_body_depth = Some(new_depth);
+            method_count_in_class = 0;
+        }
+        // Class body closes when depth drops back below the body level.
+        if let Some(body_depth) = class_body_depth {
+            if new_depth < body_depth {
+                class_body_depth = None;
+                method_count_in_class = 0;
+            }
+        }
+
+        brace_depth = new_depth;
     }
 
     symbols
@@ -2115,7 +2304,137 @@ pub fn delete_skill_directory(file_path: String, workspace_path: String) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::{build_workspace_edit_patch, trim_string_to_tail};
+    use super::{build_workspace_edit_patch, extract_symbols, trim_string_to_tail};
+
+    fn names_kinds(content: &str, language: &str) -> Vec<(String, String)> {
+        extract_symbols(content, language)
+            .into_iter()
+            .map(|s| (s.kind, s.name))
+            .collect()
+    }
+
+    #[test]
+    fn ts_extracts_arrow_function_export_const() {
+        let src = "export const Greet = (name: string) => `hi ${name}`;\n";
+        let symbols = names_kinds(src, "typescript");
+        assert_eq!(symbols, vec![("constant".into(), "Greet".into())]);
+    }
+
+    #[test]
+    fn ts_extracts_default_function_export() {
+        let src = "export default function buildPiAiModel(vendor: VendorConfig) {}\n";
+        let symbols = names_kinds(src, "typescript");
+        assert_eq!(symbols, vec![("function".into(), "buildPiAiModel".into())]);
+    }
+
+    #[test]
+    fn ts_extracts_async_export_function() {
+        let src = "export async function gatewayComplete(): Promise<void> {}\n";
+        let symbols = names_kinds(src, "typescript");
+        assert_eq!(symbols, vec![("function".into(), "gatewayComplete".into())]);
+    }
+
+    #[test]
+    fn ts_extracts_default_class_export_with_kind_class() {
+        let src = "export default class MainAgent {\n}\n";
+        let symbols = names_kinds(src, "typescript");
+        assert_eq!(symbols, vec![("class".into(), "MainAgent".into())]);
+    }
+
+    #[test]
+    fn ts_extracts_top_level_interface() {
+        let src = "interface Foo { id: string }\n";
+        let symbols = names_kinds(src, "typescript");
+        assert_eq!(symbols, vec![("interface".into(), "Foo".into())]);
+    }
+
+    #[test]
+    fn ts_extracts_class_methods_inside_body() {
+        let src = "\
+export class Counter {\n\
+  count = 0;\n\
+  increment(): void { this.count++; }\n\
+  async snapshot(): Promise<number> { return this.count; }\n\
+  private reset() { this.count = 0; }\n\
+}\n";
+        let symbols = names_kinds(src, "typescript");
+        // Class first, then 3 methods (count is a field with no parens — not matched).
+        assert_eq!(
+            symbols,
+            vec![
+                ("class".into(), "Counter".into()),
+                ("method".into(), "increment".into()),
+                ("method".into(), "snapshot".into()),
+                ("method".into(), "reset".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ts_method_state_machine_skips_top_level_after_class_closes() {
+        // After the class body closes, the next top-level function MUST be
+        // matched as a top-level function, not as a method.
+        let src = "\
+class Foo {\n\
+  bar() {}\n\
+}\n\
+export function baz() {}\n";
+        let symbols = names_kinds(src, "typescript");
+        assert_eq!(
+            symbols,
+            vec![
+                ("class".into(), "Foo".into()),
+                ("method".into(), "bar".into()),
+                ("function".into(), "baz".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ts_signature_drops_body_brace() {
+        let src = "export function gatewayComplete(opts: Options): Promise<Result> { return doIt(); }\n";
+        let symbols = extract_symbols(src, "typescript");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(
+            symbols[0].signature,
+            "export function gatewayComplete(opts: Options): Promise<Result>"
+        );
+    }
+
+    #[test]
+    fn ts_signature_keeps_template_literal_dollar_brace() {
+        // `${name}` contains `{` but it's preceded by `$`, not whitespace —
+        // the signature heuristic must NOT cut there.
+        let src = "export const Greet = (name: string) => `hi ${name}`;\n";
+        let symbols = extract_symbols(src, "typescript");
+        assert_eq!(symbols.len(), 1);
+        assert!(
+            symbols[0].signature.contains("${name}"),
+            "expected template literal preserved, got {:?}",
+            symbols[0].signature
+        );
+    }
+
+    #[test]
+    fn ts_method_blacklist_filters_keywords_used_as_calls() {
+        // `if (cond) {` would otherwise look like a method named "if".
+        let src = "\
+class Guarded {\n\
+  run() {\n\
+    if (this.ready) { this.go(); }\n\
+  }\n\
+}\n";
+        let symbols = names_kinds(src, "typescript");
+        // Only "run" is emitted; the indented `if` and `this.ready` are
+        // discarded by the depth gate (depth > class body) plus blacklist.
+        assert_eq!(
+            symbols,
+            vec![
+                ("class".into(), "Guarded".into()),
+                ("method".into(), "run".into()),
+            ]
+        );
+    }
 
     #[test]
     fn build_workspace_edit_patch_generates_minimal_hunk() {

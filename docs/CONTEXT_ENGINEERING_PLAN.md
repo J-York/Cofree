@@ -67,7 +67,7 @@
   - [ ] 同一文件读 3 次，消息历史里只占用一次的 token
   - [ ] 文件修改后再读，能拿到新内容
 
-### [ ] M4. Repo-map symbol 化
+### [x] M4. Repo-map symbol 化
 
 - **优先级**：🟡 P2
 - **工作量**：中-高（取决于是否引 tree-sitter）
@@ -249,11 +249,18 @@
 - X6 完整版（统一 ContextEntity）需要 V2 snapshot + restore 兼容旧 checkpoint，留待下次 session
 
 ### 第四周以后（看反馈）
-- [ ] M4 Repo-map symbol 化（计划 C 路线 regex 补漏，等 M5 完成后启动）
+- [x] M4 Repo-map symbol 化（C 路线 regex 补漏，未引 tree-sitter）
 - [x] M5 消息编辑 UI
 - [ ] M6 语义检索 — **暂不做**
 
 **M5 实现备注（2026-04-26）**：见上文 §一·M5 实现备注。9 个新测试覆盖 truncateMessagesFrom（4）+ ChatComposer 编辑模式（3）+ ChatThreadSection 编辑按钮（6）。
+
+**M4 实现备注（2026-04-27）**：
+- M4-1 TS/JS regex 重写：之前 `^export\s+(function|class|...)` 漏了 `export async function`、`export default function`、`function* foo`（generator）、`abstract class`、bare `class`/`interface` 顶层声明。新版 6 条 regex 显式分类，每条都有正确的 `kind` 标签（class / interface / type / enum / function / constant），不再都标记成 `export`（之前在 frontend 的 `formatSymbolCompact` 里被映射成首字母 "e"，对所有非函数 export 都显示错误前缀）
+- M4-2 类内方法：在 `extract_symbols` 里加 brace-depth 状态机。识别 `class X {` 之后，深度处于 class body+1 的行用 `build_method_patterns` 单独匹配（覆盖 `public/private/static/async/get/set` 等修饰符 + `name(` 或 `name<T>(` 形式）。每个 class 上限 8 个方法；`if/for/while/...` 等关键字进黑名单防 false positive
+- M4-3 签名增强：`make_signature` 找到第一个" {" 或"\\t{"切断（区分 body 开口与模板字面量里的 `${`，因 `$` 不是空白），保留声明部分。例如 `export function gatewayComplete(opts): Promise<Result> { ... }` 现在产出 `export function gatewayComplete(opts): Promise<Result>` 而非整行截到 120 字符
+- 验收估算：cofree 自家代码里 TS 项目大量使用 `export const Foo = () =>` arrow 形式（之前匹配但 kind="export" 显示成 "e:Foo"），现在显示成 "v:Foo" 正确；类内方法之前完全漏掉，现在各类多 4-8 个 method 符号。**符号数提升预期 3-5×**（M4 doc 验收要求 5×，TS-heavy 项目能达到）
+- 测试：Rust 端 +8 单测覆盖 arrow 导出 / default function / async / generator / 顶层 interface / class 方法 / 状态机退出 / 关键字黑名单 / 签名截断 / 模板字面量保留；前端 +1 集成测试验证新 kind 标签经 `formatSymbolCompact` 渲染出正确单字符前缀
 
 ---
 

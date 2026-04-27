@@ -62,6 +62,42 @@ describe("repoMapService", () => {
     expect(repoMap).toContain("match=repo/map");
   });
 
+  it("renders the new kind labels (M4) with correct single-char prefixes", async () => {
+    // M4-1/2/3 emit specific kind labels (class / interface / constant /
+    // method / type / enum) instead of the old catch-all "export". Verify
+    // formatSymbolCompact maps each to the expected single-char prefix.
+    vi.mocked(invoke).mockResolvedValue({
+      files: [
+        {
+          path: "src/sample.ts",
+          language: "typescript",
+          symbols: [
+            { kind: "class", name: "Counter", line: 1, signature: "export class Counter" },
+            { kind: "method", name: "increment", line: 3, signature: "increment(): void" },
+            { kind: "interface", name: "Options", line: 10, signature: "export interface Options" },
+            { kind: "type", name: "Result", line: 15, signature: "export type Result" },
+            { kind: "constant", name: "Greet", line: 20, signature: "export const Greet = (name: string) =>" },
+            { kind: "function", name: "doWork", line: 30, signature: "export async function doWork()" },
+            { kind: "enum", name: "Stage", line: 40, signature: "export enum Stage" },
+          ],
+        },
+      ],
+      scanned_count: 1,
+      total_files: 1,
+      truncated: false,
+    });
+
+    const repoMap = await generateRepoMap("d:/Code/cofree", null, 4000, {});
+
+    // The repo-map line lists symbols in `formatSymbolCompact` order,
+    // truncated to the first 5; verify the new prefixes are present.
+    expect(repoMap).toContain("c:export class Counter");
+    expect(repoMap).toContain("m:increment(): void");
+    expect(repoMap).toContain("i:export interface Options");
+    expect(repoMap).toContain("t:export type Result");
+    expect(repoMap).toContain("v:export const Greet");
+  });
+
   it("falls back to symbol density when no task context is provided", async () => {
     vi.mocked(invoke).mockResolvedValue({
       files: [
