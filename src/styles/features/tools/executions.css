@@ -96,9 +96,16 @@
 }
 
 .tool-rail-tail {
-  flex-shrink: 0;
+  /* Tail carries error messages / status notes that can be arbitrarily long
+     (e.g. validation failures with file paths). Must shrink and wrap so it
+     never forces the row past .chat-thread, which would surface a horizontal
+     scrollbar on the whole chat. */
+  min-width: 0;
+  flex: 1 1 auto;
   color: var(--text-4);
   font-size: 10px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .tool-rail-row-failed .tool-rail-tail { color: var(--color-error); }

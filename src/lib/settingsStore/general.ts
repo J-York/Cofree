@@ -274,7 +274,7 @@ function createInitialSettings(): AppSettings {
     debugMode: false,
     allowCloudModels: true,
     maxSnippetLines: 500,
-    sendRelativePathOnly: true,
+    sendRelativePathOnly: false,
     lastSavedAt: null,
     workspacePath: "",
     recentWorkspaces: [],

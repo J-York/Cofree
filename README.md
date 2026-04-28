@@ -176,9 +176,9 @@ pnpm tauri:build:win
 
 - 文件操作、patch 应用、命令执行均在本地完成，不经过 Cofree 服务端。
 - 模型请求会把必要上下文通过 HTTP 发往用户配置的模型端点，**不是完全离线**。
-- 路径边界：后端对所有文件操作做 canonicalize 校验，禁止绝对路径与路径穿越。
+- 路径边界：后端允许绝对路径和相对路径（含 `..`），文件操作无工作区边界限制。
 - 命令黑名单：Rust 后端硬性拦截一组灾难性命令模式。
-- `sendRelativePathOnly` 默认只向模型发送相对路径；`maxSnippetLines` 和 `maxContextTokens` 可限制上下文体量。
+- `sendRelativePathOnly` 默认关闭（`false`），允许模型发送绝对路径；`maxSnippetLines` 和 `maxContextTokens` 可限制上下文体量。
 
 详见 [docs/BUILD.md](docs/BUILD.md) 和 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 

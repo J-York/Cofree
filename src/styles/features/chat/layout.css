@@ -41,7 +41,14 @@
 /* ── Chat Thread ────────────────────────────────────────── */
 .chat-thread {
   flex: 1;
+  /* Explicit overflow-x: hidden — when only overflow-y is set, overflow-x
+     computes to `auto` (CSS Overflow §3), which means any too-wide child
+     surfaces a horizontal scrollbar across the whole thread. Code blocks,
+     diff viewers etc. already manage their own horizontal scroll, so we
+     never want it at the thread level. */
+  overflow-x: hidden;
   overflow-y: auto;
+  min-width: 0;
   padding: 12px 0 24px;
   display: flex;
   flex-direction: column;
