@@ -17,12 +17,6 @@ const initial = (): LiteLLMMessage[] => [
   { role: "user", content: "hello" },
 ];
 
-const slotContents = (messages: LiteLLMMessage[]): string =>
-  messages
-    .filter((m) => m.role === "system")
-    .map((m) => m.content)
-    .join("|");
-
 describe("setPinnedSlot", () => {
   it("appends a new slot at the tail, leaving the head prefix and user message untouched", () => {
     const messages = initial();
@@ -91,31 +85,19 @@ describe("setPinnedSlot", () => {
     ).toBe(false);
   });
 
-  it("produces the same byte layout regardless of which slot was set first (cache-stability invariant)", () => {
+  it("places the slot after conversation history (cache-stability invariant)", () => {
     const wmContent = `${PINNED_SLOT_KEYS.WORKING_MEMORY}\nworking memory body`;
-    const wsContent = `${PINNED_SLOT_KEYS.WORKSPACE_REFRESH}\nworkspace body`;
 
-    const a = initial();
-    setPinnedSlot(a, PINNED_SLOT_KEYS.WORKING_MEMORY, wmContent);
-    setPinnedSlot(a, PINNED_SLOT_KEYS.WORKSPACE_REFRESH, wsContent);
+    const messages = initial();
+    setPinnedSlot(messages, PINNED_SLOT_KEYS.WORKING_MEMORY, wmContent);
 
-    const b = initial();
-    setPinnedSlot(b, PINNED_SLOT_KEYS.WORKSPACE_REFRESH, wsContent);
-    setPinnedSlot(b, PINNED_SLOT_KEYS.WORKING_MEMORY, wmContent);
-
-    expect(slotContents(a)).toBe(slotContents(b));
-    // Workspace must precede working-memory per declared PINNED_SLOT_ORDER.
-    const workspaceIdx = a.findIndex((m) =>
-      m.content.startsWith(PINNED_SLOT_KEYS.WORKSPACE_REFRESH),
-    );
-    const memoryIdx = a.findIndex((m) =>
+    const memoryIdx = messages.findIndex((m) =>
       m.content.startsWith(PINNED_SLOT_KEYS.WORKING_MEMORY),
     );
-    expect(workspaceIdx).toBeLessThan(memoryIdx);
-    // Both slots must sit AFTER the user message so the cacheable prefix
+    // Slot must sit AFTER the user message so the cacheable prefix
     // (system block + first user turn) stays byte-stable.
-    const firstUserIdx = a.findIndex((m) => m.role === "user");
-    expect(firstUserIdx).toBeLessThan(workspaceIdx);
+    const firstUserIdx = messages.findIndex((m) => m.role === "user");
+    expect(firstUserIdx).toBeLessThan(memoryIdx);
   });
 
   it("steady-state: setting an unchanged slot is idempotent", () => {

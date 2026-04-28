@@ -1,8 +1,8 @@
 /**
  * Tool-loop prompt scaffolding: tail-pinned system-slot maintenance for the
- * dynamic context (working-memory, workspace-refresh) plus pruning of
- * tail-appended transient reminders, plus the async workspace-context
- * refresher.
+ * dynamic context (working-memory) plus pruning of tail-appended transient
+ * reminders.
+ *
  *
  * Tail-pinned slots are placed AFTER the conversation history. pi-ai's
  * adapter (see `toPiAiContext` in piAiBridge.ts) converts any system message
@@ -27,17 +27,8 @@ import {
   serializeWorkingMemory,
   type WorkingMemory,
 } from "./workingMemory";
-import {
-  type CofreeRcConfig,
-} from "../lib/cofreerc";
-import {
-  summarizeWorkspaceFiles,
-  type WorkspaceOverviewBudget,
-} from "./readOnlyWorkspaceService";
-import { clearRepoMapCaches, generateRepoMap } from "./repoMapService";
 
 export const PINNED_SLOT_KEYS = {
-  WORKSPACE_REFRESH: "[工作区上下文更新]",
   WORKING_MEMORY: "[工作记忆刷新]",
 } as const;
 
@@ -48,17 +39,15 @@ export type PinnedSlotKey =
  * Declared insertion order (low → high). When `setPinnedSlot` runs, the new
  * slot is placed AFTER any existing slot with a lower-or-equal order, and
  * BEFORE any with a higher order. This means a turn that sets WORKING_MEMORY
- * before WORKSPACE_REFRESH ends up byte-identical to a turn that sets them
+ * ends up byte-identical to a turn that sets them
  * in the other order — required for cache hit stability.
  */
 const PINNED_SLOT_ORDER: ReadonlyArray<PinnedSlotKey> = [
-  PINNED_SLOT_KEYS.WORKSPACE_REFRESH,
   PINNED_SLOT_KEYS.WORKING_MEMORY,
 ];
 
 /** Back-compat re-export — original consumers may import these. */
 export const WORKING_MEMORY_NOTE_PREFIX = PINNED_SLOT_KEYS.WORKING_MEMORY;
-export const WORKSPACE_REFRESH_NOTE_PREFIX = PINNED_SLOT_KEYS.WORKSPACE_REFRESH;
 
 const PINNED_KEY_PREFIXES: ReadonlyArray<string> = Object.values(PINNED_SLOT_KEYS);
 
@@ -222,8 +211,7 @@ export function pruneStaleSystemMessages(
     const msg = messages[i];
     if (
       msg.role === "system" &&
-      !msg.content.startsWith(PINNED_SLOT_KEYS.WORKING_MEMORY) &&
-      !msg.content.startsWith(PINNED_SLOT_KEYS.WORKSPACE_REFRESH)
+      !msg.content.startsWith(PINNED_SLOT_KEYS.WORKING_MEMORY)
     ) {
       interstitialIndices.push(i);
     }
@@ -286,159 +274,3 @@ export function buildWorkingMemoryContent(params: {
   return trimmed ? `${PINNED_SLOT_KEYS.WORKING_MEMORY}\n${trimmed}` : "";
 }
 
-/**
- * Build workspace refresh content string (returns instead of injecting).
- * Async — fetches overview and repo-map. Used by context note buffer.
- */
-export async function buildWorkspaceRefreshContent(params: {
-  workspacePath: string;
-  projectConfig: CofreeRcConfig;
-  normalizedPrompt: string;
-  sessionFocusedPaths: string[];
-  turnNumber: number;
-  contextLimitTokens: number;
-}): Promise<string> {
-  const {
-    workspacePath,
-    projectConfig,
-    normalizedPrompt,
-    sessionFocusedPaths,
-    turnNumber,
-    contextLimitTokens,
-  } = params;
-
-  let refreshNote = "";
-
-  try {
-    const overviewBudget: WorkspaceOverviewBudget | undefined = projectConfig.overviewBudget;
-    const overview = await summarizeWorkspaceFiles(
-      workspacePath,
-      projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
-        ? projectConfig.ignorePatterns
-        : null,
-      overviewBudget
-    );
-    refreshNote = `项目概览（已更新）：\n${overview}`;
-  } catch (e) {
-    console.warn("[Workspace Refresh] Failed to regenerate workspace overview", e);
-  }
-
-  if (projectConfig.repoMap?.enabled !== false) {
-    try {
-      clearRepoMapCaches();
-      const repoMapBudget = Math.min(
-        4000,
-        Math.max(500, Math.floor(contextLimitTokens * 0.03)),
-      );
-      const repoMap = await generateRepoMap(
-        workspacePath,
-        projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
-          ? projectConfig.ignorePatterns
-          : null,
-        projectConfig.repoMap?.tokenBudget ?? repoMapBudget,
-        {
-          taskDescription: normalizedPrompt,
-          prioritizedPaths: sessionFocusedPaths,
-          maxFiles: projectConfig.repoMap?.maxFiles,
-        },
-      );
-      if (repoMap) {
-        refreshNote = refreshNote ? `${refreshNote}\n\n${repoMap}` : repoMap;
-        console.log(
-          `[Workspace Refresh] Repo-map regenerated at turn ${turnNumber} (~${repoMap.length} chars)`,
-        );
-      }
-    } catch (e) {
-      console.warn("[Workspace Refresh] Failed to regenerate repo-map", e);
-    }
-  }
-
-  if (!refreshNote) return "";
-  console.log(`[Workspace Refresh] Context refreshed at turn ${turnNumber}`);
-  return `${PINNED_SLOT_KEYS.WORKSPACE_REFRESH}\n${refreshNote}`;
-}
-
-/**
- * Refresh workspace context (overview + repo-map) and inject as a system
- * message. This allows the LLM to see updated workspace state after file
- * modifications.
- */
-export async function refreshWorkspaceContext(params: {
-  messages: LiteLLMMessage[];
-  workspacePath: string;
-  projectConfig: CofreeRcConfig;
-  normalizedPrompt: string;
-  sessionFocusedPaths: string[];
-  turnNumber: number;
-  contextLimitTokens: number;
-}): Promise<void> {
-  const {
-    messages,
-    workspacePath,
-    projectConfig,
-    normalizedPrompt,
-    sessionFocusedPaths,
-    turnNumber,
-    contextLimitTokens,
-  } = params;
-
-  let refreshNote = "";
-
-  // Refresh workspace overview
-  try {
-    const overviewBudget: WorkspaceOverviewBudget | undefined = projectConfig.overviewBudget;
-    const overview = await summarizeWorkspaceFiles(
-      workspacePath,
-      projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
-        ? projectConfig.ignorePatterns
-        : null,
-      overviewBudget
-    );
-    const overviewPrompt = `项目概览（已更新）：\n${overview}`;
-    refreshNote = overviewPrompt;
-  } catch (e) {
-    console.warn("[Workspace Refresh] Failed to regenerate workspace overview", e);
-  }
-
-  // Clear repo-map cache and regenerate
-  if (projectConfig.repoMap?.enabled !== false) {
-    try {
-      // Force cache invalidation to get fresh data
-      clearRepoMapCaches();
-
-      const repoMapBudget = Math.min(
-        4000,
-        Math.max(500, Math.floor(contextLimitTokens * 0.03)),
-      );
-      const repoMap = await generateRepoMap(
-        workspacePath,
-        projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
-          ? projectConfig.ignorePatterns
-          : null,
-        projectConfig.repoMap?.tokenBudget ?? repoMapBudget,
-        {
-          taskDescription: normalizedPrompt,
-          prioritizedPaths: sessionFocusedPaths,
-          maxFiles: projectConfig.repoMap?.maxFiles,
-        },
-      );
-      if (repoMap) {
-        refreshNote = refreshNote ? `${refreshNote}\n\n${repoMap}` : repoMap;
-        console.log(
-          `[Workspace Refresh] Repo-map regenerated at turn ${turnNumber} (~${repoMap.length} chars)`,
-        );
-      }
-    } catch (e) {
-      console.warn("[Workspace Refresh] Failed to regenerate repo-map", e);
-    }
-  }
-
-  if (refreshNote) {
-    setPinnedSlot(
-      messages,
-      PINNED_SLOT_KEYS.WORKSPACE_REFRESH,
-      `${PINNED_SLOT_KEYS.WORKSPACE_REFRESH}\n${refreshNote}`,
-    );
-    console.log(`[Workspace Refresh] Context refreshed at turn ${turnNumber}`);
-  }
-}

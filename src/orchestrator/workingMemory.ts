@@ -310,6 +310,9 @@ export function extractFileKnowledge(
   agentId: string,
   turnNumber?: number,
 ): FileKnowledge | null {
+  if (typeof toolResult !== "string") {
+    return null;
+  }
   if (toolName === "read_file") {
     const relativePath = String(toolArgs.relative_path ?? toolArgs.path ?? "").trim();
     if (!relativePath) return null;

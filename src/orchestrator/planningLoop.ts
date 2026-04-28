@@ -68,7 +68,6 @@ import {
 import { initWorkingMemoryForLoop, maybeEmitIncrementalCheckpoint } from "./checkpointBridge";
 import {
   buildWorkingMemoryContent,
-  buildWorkspaceRefreshContent,
   dedupeStaleFileReads,
 } from "./loopPromptScaffolding";
 import { requestSummary } from "./summarization";
@@ -201,6 +200,9 @@ function truncateAtLineEnd(content: string, maxIndex: number): number {
  * and head/tail concatenation rarely matches anything sensible.
  */
 function smartTruncate(content: string, maxLength: number): string {
+  if (typeof content !== "string") {
+    content = String(content);
+  }
   if (content.length <= maxLength) return content;
 
   const droppedChars = content.length - maxLength;
@@ -441,6 +443,7 @@ export async function runNativeToolCallingLoop(
         ]
       : [{ role: "user" as const, content: prompt }]),
   ];
+
   console.log(
     `[Loop] 会话开始 | phase=${phase} | continuation=${isContinuation ? "yes" : "no"}`,
   );
@@ -460,8 +463,6 @@ export async function runNativeToolCallingLoop(
   let consecutiveReadOnlyTurns = 0;
   let toolChoiceOverride: "auto" | "none" | undefined;
   let lastWorkingMemoryFingerprint = "";
-  let hasModifiedFiles = false;
-  let lastWorkspaceRefreshTurn = -1;
   const contextNotes = new ContextNoteBuffer();
 
   const limitTokens = resolveEffectiveContextTokenLimit(settings);
@@ -514,6 +515,8 @@ export async function runNativeToolCallingLoop(
   };
 
   for (let turn = 0; ; turn += 1) {
+
+
     if (turn >= MAX_ABSOLUTE_TURNS) {
       console.warn(`[Loop] 达到绝对轮次上限 (${MAX_ABSOLUTE_TURNS})，强制终止`);
       return {
@@ -567,34 +570,6 @@ export async function runNativeToolCallingLoop(
         lastWorkingMemoryFingerprint = currentFingerprint;
       }
 
-      if (settings.workspacePath && projectConfig) {
-        const refreshConfig = projectConfig.workspaceRefresh;
-        const refreshEnabled = refreshConfig?.enabled !== false;
-        const refreshInterval = refreshConfig?.turnInterval ?? 20;
-        const refreshOnFileChange = refreshConfig?.onFileChange !== false;
-        const shouldRefreshByTurn = refreshEnabled && refreshInterval > 0 &&
-          (turn - lastWorkspaceRefreshTurn) >= refreshInterval;
-        const shouldRefreshByFileChange = refreshEnabled && refreshOnFileChange &&
-          hasModifiedFiles && (turn - lastWorkspaceRefreshTurn) >= 5;
-
-        if (shouldRefreshByTurn || shouldRefreshByFileChange) {
-          try {
-            const wsContent = await buildWorkspaceRefreshContent({
-              workspacePath: settings.workspacePath,
-              projectConfig,
-              normalizedPrompt: prompt,
-              sessionFocusedPaths: focusedPaths,
-              turnNumber: turn,
-              contextLimitTokens: limitTokens,
-            });
-            if (wsContent) contextNotes.push(wsContent);
-            lastWorkspaceRefreshTurn = turn;
-            hasModifiedFiles = false;
-          } catch (e) {
-            console.warn("[Loop] Failed to refresh workspace context", e);
-          }
-        }
-      }
     }
 
     const pinnedPrefixLen = initialSystemPrefixLength(messages);
@@ -913,9 +888,6 @@ export async function runNativeToolCallingLoop(
         }
       } else {
         turnSuccessCount += 1;
-        if (toolCall.function.name === "propose_file_edit") {
-          hasModifiedFiles = true;
-        }
         try {
           const parsedContent = JSON.parse(toolResult.content);
           if (parsedContent.status === "cached") {
