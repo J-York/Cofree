@@ -57,24 +57,25 @@ pub fn now_timestamp() -> String {
     }
 }
 
-/// 校验相对路径在工作区内，返回规范化的绝对路径。
-pub fn validate_workspace_path(
+/// 解析路径：相对路径从工作区根目录解析，绝对路径直接使用。
+/// 返回规范化的绝对路径。
+pub fn resolve_workspace_or_absolute_path(
     workspace_path: &str,
-    relative_path: &str,
+    raw_path: &str,
 ) -> Result<PathBuf, AppError> {
-    if Path::new(relative_path).is_absolute() {
-        return Err(AppError::validation("Absolute paths not allowed"));
+    let candidate = Path::new(raw_path.trim());
+    if candidate.as_os_str().is_empty() {
+        return Err(AppError::validation("Path cannot be empty"));
     }
-    if relative_path.contains("..") {
-        return Err(AppError::validation("Path traversal (..) not allowed"));
-    }
-    let workspace = canonicalize_workspace_root(workspace_path)?;
-    let target = workspace.join(relative_path);
-    let target_canonical = target
+
+    let target = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        let workspace = canonicalize_workspace_root(workspace_path)?;
+        workspace.join(candidate)
+    };
+
+    target
         .canonicalize()
-        .map_err(|e| AppError::file(format!("Invalid target path: {}", e)))?;
-    if !target_canonical.starts_with(&workspace) {
-        return Err(AppError::validation("Path escapes workspace boundary"));
-    }
-    Ok(target_canonical)
+        .map_err(|e| AppError::file(format!("Invalid path: {}", e)))
 }

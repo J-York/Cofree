@@ -5,7 +5,7 @@ use crate::domain::{
     SnapshotFileRecord, SnapshotManifest, SnapshotResult, SymbolInfo, WorkspaceStructureResult,
 };
 use crate::infrastructure::{
-    canonicalize_workspace_root, generate_id, snapshots_root_dir, validate_workspace_path,
+    canonicalize_workspace_root, generate_id, snapshots_root_dir, resolve_workspace_or_absolute_path,
 };
 use glob::glob as glob_match;
 use regex::Regex;
@@ -194,13 +194,18 @@ fn git_has_head(workspace: &Path) -> bool {
 
 fn sanitize_relative_path(relative_path: &str) -> Option<PathBuf> {
     let candidate = PathBuf::from(relative_path.trim());
-    if candidate.as_os_str().is_empty() || candidate.is_absolute() {
+    if candidate.as_os_str().is_empty() {
         return None;
+    }
+    // Accept absolute paths and paths with .. traversal.
+    if candidate.is_absolute() {
+        return Some(candidate);
     }
     let mut sanitized = PathBuf::new();
     for component in candidate.components() {
         match component {
             Component::Normal(value) => sanitized.push(value),
+            Component::ParentDir => { sanitized.push(".."); }
             Component::CurDir => {}
             _ => return None,
         }
@@ -517,7 +522,7 @@ pub fn read_workspace_file(
     end_line: Option<usize>,
     ignore_patterns: Option<Vec<String>>,
 ) -> Result<ReadFileResult, AppError> {
-    let file_path = validate_workspace_path(&workspace_path, &relative_path)?;
+    let file_path = resolve_workspace_or_absolute_path(&workspace_path, &relative_path)?;
     let rel = normalize_rel_path_for_match(&relative_path);
     if should_ignore_rel_path(&rel, &ignore_patterns) {
         return Err(AppError::file("Path is ignored by project config"));
@@ -579,7 +584,7 @@ pub fn list_workspace_files(
     relative_path: String,
     ignore_patterns: Option<Vec<String>>,
 ) -> Result<Vec<FileEntry>, AppError> {
-    let dir_path = validate_workspace_path(&workspace_path, &relative_path)?;
+    let dir_path = resolve_workspace_or_absolute_path(&workspace_path, &relative_path)?;
     if !dir_path.is_dir() {
         return Err(AppError::file("Path is not a directory"));
     }
