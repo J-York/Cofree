@@ -38,11 +38,17 @@ jobs:
     outputs:
       release_id: ${{ steps.ensure_release.outputs.release_id }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Ensure single published release exists
         id: ensure_release
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            const path = require('path');
+
             const tag = context.ref.replace("refs/tags/", "");
             if (!tag || !tag.startsWith("v")) {
               core.setFailed(`This workflow requires a tag ref, got: ${context.ref}`);
@@ -52,33 +58,42 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const releaseName = `Cofree ${tag}`;
-            const releaseBody = [
-              '## Cofree ' + tag,
-              '',
-              '**本地优先的 AI 编程助手**——你提需求、看审批、做验收，AI 负责读代码、生成 patch、执行命令。',
-              '',
-              '### 本版说明',
-              '',
-              '- **对话与编排**：流式回复、通用 Agent（用户可自定义 system prompt / 工具权限 / 模型绑定派生更多 Agent）、工具调用状态展示与长对话压缩。',
-              '- **代码理解**：工作区文件读取、grep/glob、Git 状态与 diff、动态工作区刷新，支持 `.cofreerc` 配置。',
-              '- **审批驱动**：代码修改（`propose_file_edit` / `propose_apply_patch`）与命令执行（`propose_shell`）均需用户确认，Rust 端拦截危险命令。',
-              '- **可观察与恢复**：本地审计日志、SQLite checkpoint、patch 失败自动回滚至 `~/.cofree/snapshots/`。',
-              '- **模型与密钥**：多供应商/多模型、API Key 加密存于 `~/.cofree/`，支持代理与「允许云模型」开关。',
-              '',
-              '### 下载',
-              '',
-              '| 平台 | 文件 |',
-              '|------|------|',
-              '| macOS (Apple Silicon) | `*_aarch64.dmg` |',
-              '| macOS (Intel) | `*_x64.dmg` |',
-              '| Windows | `.msi` 或 `-setup.exe` |',
-              '',
-              '已安装用户可在应用内收到自动更新提示。',
-              '',
-              '### 安装与构建',
-              '',
-              '详见 [BUILD.md](https://github.com/J-York/Cofree/blob/main/docs/BUILD.md)。',
-            ].join('\n');
+
+            const notesPath = path.join('docs', 'release-notes', `${tag}.md`);
+            let releaseBody;
+            if (fs.existsSync(notesPath)) {
+              releaseBody = fs.readFileSync(notesPath, 'utf8').trimEnd();
+              core.info(`Using release notes from ${notesPath}`);
+            } else {
+              core.info(`No notes file at ${notesPath}, falling back to default template`);
+              releaseBody = [
+                '## Cofree ' + tag,
+                '',
+                '**本地优先的 AI 编程助手**——你提需求、看审批、做验收，AI 负责读代码、生成 patch、执行命令。',
+                '',
+                '### 本版说明',
+                '',
+                '- **对话与编排**：流式回复、通用 Agent（用户可自定义 system prompt / 工具权限 / 模型绑定派生更多 Agent）、工具调用状态展示与长对话压缩。',
+                '- **代码理解**：工作区文件读取、grep/glob、Git 状态与 diff、动态工作区刷新，支持 `.cofreerc` 配置。',
+                '- **审批驱动**：代码修改（`propose_file_edit` / `propose_apply_patch`）与命令执行（`propose_shell`）均需用户确认，Rust 端拦截危险命令。',
+                '- **可观察与恢复**：本地审计日志、SQLite checkpoint、patch 失败自动回滚至 `~/.cofree/snapshots/`。',
+                '- **模型与密钥**：多供应商/多模型、API Key 加密存于 `~/.cofree/`，支持代理与「允许云模型」开关。',
+                '',
+                '### 下载',
+                '',
+                '| 平台 | 文件 |',
+                '|------|------|',
+                '| macOS (Apple Silicon) | `*_aarch64.dmg` |',
+                '| macOS (Intel) | `*_x64.dmg` |',
+                '| Windows | `.msi` 或 `-setup.exe` |',
+                '',
+                '已安装用户可在应用内收到自动更新提示。',
+                '',
+                '### 安装与构建',
+                '',
+                '详见 [BUILD.md](https://github.com/J-York/Cofree/blob/main/docs/BUILD.md)。',
+              ].join('\n');
+            }
 
             let release;
             try {
