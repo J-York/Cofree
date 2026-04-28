@@ -810,46 +810,103 @@ function resolveEffectiveMaxTokens(
   return maxTokens > 0 ? maxTokens : undefined;
 }
 
-/**
- * Inject Anthropic prompt-cache control on the system prompt. This is the
- * single cache anchor strategy (M1): mark the entire system prompt as the
- * cached prefix. Subsequent turns with byte-identical system prompts will
- * be served from cache (cache_read_input_tokens > 0).
- *
- * Anthropic accepts `system` as either a string or an array of content
- * blocks. We rewrite the string form into an array of one text block carrying
- * `cache_control: { type: "ephemeral" }`. If the field is already an array
- * (caller-supplied), we attach cache_control to the last block.
- *
- * The `messages` field is left untouched: tail-appended system reminders
- * become "[System] ..." user messages downstream which appear AFTER the
- * cache anchor, so they neither hit nor invalidate the cache.
- *
- * OpenAI uses automatic prefix caching (no explicit markers required); the
- * X8 byte-stable head prefix is the only thing it needs.
- */
-export function applyAnthropicCacheAnchor(payload: Record<string, unknown>): void {
+const EPHEMERAL_CACHE: Readonly<{ type: "ephemeral" }> = Object.freeze({ type: "ephemeral" });
+
+function setEphemeralCacheControl(target: Record<string, unknown>): void {
+  target.cache_control = { type: "ephemeral" };
+}
+
+function markLastTool(tools: unknown): boolean {
+  if (!Array.isArray(tools) || tools.length === 0) return false;
+  const last = tools[tools.length - 1];
+  if (typeof last !== "object" || last === null) return false;
+  setEphemeralCacheControl(last as Record<string, unknown>);
+  return true;
+}
+
+function markSystem(payload: Record<string, unknown>): boolean {
   const system = payload.system;
-  if (system == null || system === "") {
-    return;
-  }
+  if (system == null || system === "") return false;
   if (typeof system === "string") {
-    payload.system = [
-      {
-        type: "text",
-        text: system,
-        cache_control: { type: "ephemeral" },
-      },
-    ];
-    return;
+    payload.system = [{ type: "text", text: system, cache_control: { ...EPHEMERAL_CACHE } }];
+    return true;
   }
   if (Array.isArray(system) && system.length > 0) {
     const last = system[system.length - 1];
-    if (last && typeof last === "object") {
-      (last as Record<string, unknown>).cache_control = { type: "ephemeral" };
+    if (typeof last === "object" && last !== null) {
+      setEphemeralCacheControl(last as Record<string, unknown>);
+      return true;
     }
   }
+  return false;
 }
+
+function markMessage(message: unknown): boolean {
+  if (typeof message !== "object" || message === null) return false;
+  const m = message as Record<string, unknown>;
+  const content = m.content;
+  if (typeof content === "string") {
+    if (content.length === 0) return false;
+    m.content = [{ type: "text", text: content, cache_control: { ...EPHEMERAL_CACHE } }];
+    return true;
+  }
+  if (Array.isArray(content) && content.length > 0) {
+    const last = content[content.length - 1];
+    if (typeof last !== "object" || last === null) return false;
+    setEphemeralCacheControl(last as Record<string, unknown>);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Inject Anthropic prompt-cache breakpoints (M2 — multi-breakpoint).
+ *
+ * Anthropic supports up to 4 `cache_control` breakpoints per request; each
+ * one marks "cache the prefix up to and including this point". A future
+ * request whose prefix matches up to that point reads cached input tokens
+ * (90% discount). This function spends the budget as:
+ *
+ *   1. tools (last entry)         — tool schemas are large and rarely change
+ *   2. system (last text block)   — system prompt rarely changes
+ *   3. messages[len-2] (penult)   — rolling anchor: survives tail-edit churn
+ *   4. messages[len-1] (last)     — rolling anchor: hit by next iteration
+ *
+ * pi-ai's anthropic adapter already injects cache_control on (2) and (4)
+ * automatically when `cacheRetention !== "none"` (default "short"). Our
+ * markers there are idempotent — same `{type:"ephemeral"}` value — and
+ * provide defense-in-depth if pi-ai's defaults change. (1) and (3) are the
+ * net-new breakpoints introduced here:
+ *   - (1) tools: previously every request paid full input-token cost for the
+ *     entire tool schema (often 4–8KB).
+ *   - (3) penult: hedges against the M5 "edit prior user message and replay"
+ *     feature, where the tail of `messages` can change while the prefix
+ *     remains identical.
+ *
+ * Tail-appended system reminders downstream become "[System] ..." user
+ * messages and appear AFTER any cache anchor, so they neither hit nor
+ * invalidate the cache.
+ *
+ * OpenAI uses automatic prefix caching (no explicit markers required); the
+ * byte-stable head prefix is all it needs.
+ */
+export function applyAnthropicCacheBreakpoints(payload: Record<string, unknown>): void {
+  const MAX_BREAKPOINTS = 4;
+  let used = 0;
+
+  if (used < MAX_BREAKPOINTS && markLastTool(payload.tools)) used++;
+  if (used < MAX_BREAKPOINTS && markSystem(payload)) used++;
+
+  const messages = payload.messages;
+  if (Array.isArray(messages) && messages.length > 0) {
+    const len = messages.length;
+    if (used < MAX_BREAKPOINTS && len >= 2 && markMessage(messages[len - 2])) used++;
+    if (used < MAX_BREAKPOINTS && markMessage(messages[len - 1])) used++;
+  }
+}
+
+/** @deprecated Use {@link applyAnthropicCacheBreakpoints}. Kept for callers that imported the M1 name. */
+export const applyAnthropicCacheAnchor = applyAnthropicCacheBreakpoints;
 
 function normalizeToolChoiceForProtocol(
   protocol: VendorProtocol,
@@ -916,7 +973,7 @@ export async function gatewayComplete(
             p.tool_choice = normalizedToolChoice;
           }
           if (protocol === "anthropic-messages") {
-            applyAnthropicCacheAnchor(p);
+            applyAnthropicCacheBreakpoints(p);
           }
         }
         return undefined;
@@ -975,7 +1032,7 @@ export async function gatewayStream(
               p.tool_choice = normalizedToolChoice;
             }
             if (protocol === "anthropic-messages") {
-              applyAnthropicCacheAnchor(p);
+              applyAnthropicCacheBreakpoints(p);
             }
           }
           return undefined;

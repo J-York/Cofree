@@ -30,6 +30,7 @@ vi.mock("./tauriBridge", async (importOriginal) => {
 
 import {
   applyAnthropicCacheAnchor,
+  applyAnthropicCacheBreakpoints,
   gatewayComplete,
   gatewayStream,
   piAiChatStream,
@@ -200,14 +201,14 @@ describe("piAiBridge tauri runtime regressions", () => {
   });
 });
 
-describe("applyAnthropicCacheAnchor (M1 prompt-cache injection)", () => {
+describe("applyAnthropicCacheBreakpoints (M2 multi-breakpoint injection)", () => {
   it("converts a string system prompt into a single text block with cache_control", () => {
     const payload: Record<string, unknown> = {
       model: "claude-sonnet-4",
       system: "You are a helpful assistant.",
       messages: [],
     };
-    applyAnthropicCacheAnchor(payload);
+    applyAnthropicCacheBreakpoints(payload);
 
     expect(payload.system).toEqual([
       {
@@ -225,7 +226,7 @@ describe("applyAnthropicCacheAnchor (M1 prompt-cache injection)", () => {
         { type: "text", text: "Block two" },
       ],
     };
-    applyAnthropicCacheAnchor(payload);
+    applyAnthropicCacheBreakpoints(payload);
 
     const blocks = payload.system as Array<Record<string, unknown>>;
     expect(blocks[0].cache_control).toBeUndefined();
@@ -234,19 +235,149 @@ describe("applyAnthropicCacheAnchor (M1 prompt-cache injection)", () => {
 
   it("is a no-op when system is missing or empty", () => {
     const a: Record<string, unknown> = { messages: [] };
-    applyAnthropicCacheAnchor(a);
+    applyAnthropicCacheBreakpoints(a);
     expect(a.system).toBeUndefined();
 
     const b: Record<string, unknown> = { system: "" };
-    applyAnthropicCacheAnchor(b);
+    applyAnthropicCacheBreakpoints(b);
     expect(b.system).toBe("");
   });
 
-  it("produces byte-identical output for identical system prompts (cache stability invariant)", () => {
-    const a: Record<string, unknown> = { system: "stable prefix" };
-    const b: Record<string, unknown> = { system: "stable prefix" };
-    applyAnthropicCacheAnchor(a);
-    applyAnthropicCacheAnchor(b);
+  it("produces byte-identical output for identical payloads (cache stability invariant)", () => {
+    const build = (): Record<string, unknown> => ({
+      system: "stable prefix",
+      tools: [
+        { name: "read_file", description: "", input_schema: {} },
+        { name: "grep", description: "", input_schema: {} },
+      ],
+      messages: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        { role: "user", content: "second" },
+      ],
+    });
+    const a = build();
+    const b = build();
+    applyAnthropicCacheBreakpoints(a);
+    applyAnthropicCacheBreakpoints(b);
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it("attaches cache_control to the LAST tool entry only", () => {
+    const payload: Record<string, unknown> = {
+      tools: [
+        { name: "read_file", description: "", input_schema: {} },
+        { name: "grep", description: "", input_schema: {} },
+        { name: "list_files", description: "", input_schema: {} },
+      ],
+    };
+    applyAnthropicCacheBreakpoints(payload);
+
+    const tools = payload.tools as Array<Record<string, unknown>>;
+    expect(tools[0].cache_control).toBeUndefined();
+    expect(tools[1].cache_control).toBeUndefined();
+    expect(tools[2].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("does not touch tools when the array is missing or empty", () => {
+    const a: Record<string, unknown> = {};
+    applyAnthropicCacheBreakpoints(a);
+    expect(a.tools).toBeUndefined();
+
+    const b: Record<string, unknown> = { tools: [] };
+    applyAnthropicCacheBreakpoints(b);
+    expect(b.tools).toEqual([]);
+  });
+
+  it("marks the last two messages as rolling cache anchors", () => {
+    const payload: Record<string, unknown> = {
+      messages: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: [{ type: "text", text: "second" }] },
+        { role: "user", content: "third" },
+        { role: "assistant", content: [{ type: "text", text: "fourth" }] },
+      ],
+    };
+    applyAnthropicCacheBreakpoints(payload);
+
+    const msgs = payload.messages as Array<Record<string, unknown>>;
+    // First two messages untouched.
+    expect(msgs[0].content).toBe("first");
+    expect((msgs[1].content as Array<Record<string, unknown>>)[0].cache_control).toBeUndefined();
+
+    // Penultimate (msgs[2]): string-content user message gets converted to array form.
+    expect(msgs[2].content).toEqual([
+      { type: "text", text: "third", cache_control: { type: "ephemeral" } },
+    ]);
+
+    // Last (msgs[3]): assistant message — cache_control attached to the final block in place.
+    const lastBlocks = msgs[3].content as Array<Record<string, unknown>>;
+    expect(lastBlocks[lastBlocks.length - 1].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("falls back to a single message anchor when only one message exists", () => {
+    const payload: Record<string, unknown> = {
+      messages: [{ role: "user", content: "only message" }],
+    };
+    applyAnthropicCacheBreakpoints(payload);
+
+    const msgs = payload.messages as Array<Record<string, unknown>>;
+    expect(msgs[0].content).toEqual([
+      { type: "text", text: "only message", cache_control: { type: "ephemeral" } },
+    ]);
+  });
+
+  it("attaches cache_control to the last block of an array-content message (e.g. tool_result)", () => {
+    const payload: Record<string, unknown> = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "tc_a", content: "first result" },
+            { type: "tool_result", tool_use_id: "tc_b", content: "second result" },
+          ],
+        },
+      ],
+    };
+    applyAnthropicCacheBreakpoints(payload);
+
+    const blocks = (payload.messages as Array<Record<string, unknown>>)[0].content as Array<
+      Record<string, unknown>
+    >;
+    expect(blocks[0].cache_control).toBeUndefined();
+    expect(blocks[1].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("respects the 4-breakpoint cap (tools + system + 2 messages = 4)", () => {
+    const payload: Record<string, unknown> = {
+      system: "sys",
+      tools: [{ name: "t1", description: "", input_schema: {} }],
+      messages: [
+        { role: "user", content: "u1" },
+        { role: "assistant", content: [{ type: "text", text: "a1" }] },
+        { role: "user", content: "u2" },
+      ],
+    };
+    applyAnthropicCacheBreakpoints(payload);
+
+    let count = 0;
+    const walk = (v: unknown): void => {
+      if (Array.isArray(v)) {
+        for (const item of v) walk(item);
+      } else if (v && typeof v === "object") {
+        const obj = v as Record<string, unknown>;
+        if (obj.cache_control && (obj.cache_control as Record<string, unknown>).type === "ephemeral") {
+          count++;
+        }
+        for (const val of Object.values(obj)) walk(val);
+      }
+    };
+    walk(payload);
+
+    expect(count).toBe(4);
+  });
+
+  it("keeps the legacy applyAnthropicCacheAnchor export pointing at the new implementation", () => {
+    expect(applyAnthropicCacheAnchor).toBe(applyAnthropicCacheBreakpoints);
   });
 });
