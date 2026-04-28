@@ -14,6 +14,9 @@
   flex-direction: row-reverse;
   /* User rows have no avatar — cancel the row gap so the bubble sits flush right. */
   gap: 0;
+  /* Reserve space for the absolute-positioned edit button (right: -28px, width: 22px),
+     otherwise it overflows .chat-thread and triggers a horizontal scrollbar. */
+  padding-right: 32px;
 }
 
 /* Expert-panel stage summary rows (assistantSpeaker) */
