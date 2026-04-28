@@ -67,10 +67,9 @@ import {
 } from "./workingMemory";
 import { initWorkingMemoryForLoop, maybeEmitIncrementalCheckpoint } from "./checkpointBridge";
 import {
+  buildWorkingMemoryContent,
+  buildWorkspaceRefreshContent,
   dedupeStaleFileReads,
-  pruneStaleSystemMessages,
-  refreshWorkspaceContext,
-  upsertWorkingMemoryContextMessage,
 } from "./loopPromptScaffolding";
 import { requestSummary } from "./summarization";
 import type { AskUserRequest } from "./askUserService";
@@ -109,6 +108,66 @@ const PARALLEL_SAFE_TOOL_NAMES = new Set([
   "check_shell_job",
 ]);
 const MAX_PARALLEL_READ_TOOLS = 15;
+
+
+// ---------------------------------------------------------------------------
+// Context note buffer: collects "notes" for the model during a turn and
+// injects them into the message stream in a cache-friendly way.
+//
+// Instead of pushing `role: "system"` messages (which become `[System]`
+// user messages and break prefix cache), we collect notes and embed them
+// into the last tool result message before the next LLM call.
+// ---------------------------------------------------------------------------
+
+class ContextNoteBuffer {
+  private notes: string[] = [];
+
+  push(note: string): void {
+    const trimmed = note.trim();
+    if (trimmed) {
+      this.notes.push(trimmed);
+    }
+  }
+
+  get hasNotes(): boolean {
+    return this.notes.length > 0;
+  }
+
+  /**
+   * Flush notes into the message stream. Appends to the last tool result's
+   * content (as a JSON field), or falls back to a user message.
+   */
+  flush(messages: LiteLLMMessage[]): void {
+    if (this.notes.length === 0) return;
+
+    const combined = this.notes.join("\n\n");
+    this.notes = [];
+
+    // Try to append to the last tool result message.
+    // This keeps the message count and sequence stable for prefix cache.
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role === "tool") {
+        // Attempt to inject as a JSON field in the tool result.
+        try {
+          const parsed = JSON.parse(msg.content);
+          if (parsed && typeof parsed === "object") {
+            parsed._context_note = combined;
+            msg.content = JSON.stringify(parsed);
+            return;
+          }
+        } catch {
+          // Not JSON — fall through to text append.
+        }
+        // Plain-text tool result: append note.
+        msg.content = msg.content + "\n\n" + combined;
+        return;
+      }
+      // Non-tool message at tail — keep scanning backwards past pinned slots etc.
+    }
+    messages.push({ role: "user", content: `[Context] ${combined}` });
+  }
+}
 
 export interface NativeToolLoopResult {
   assistantReply: string;
@@ -403,6 +462,7 @@ export async function runNativeToolCallingLoop(
   let lastWorkingMemoryFingerprint = "";
   let hasModifiedFiles = false;
   let lastWorkspaceRefreshTurn = -1;
+  const contextNotes = new ContextNoteBuffer();
 
   const limitTokens = resolveEffectiveContextTokenLimit(settings);
   const workingMemory = initWorkingMemoryForLoop({
@@ -497,13 +557,13 @@ export async function runNativeToolCallingLoop(
       const isRefreshTurn = turn % WORKING_MEMORY_REFRESH_INTERVAL === 0;
 
       if (hasMemoryContent && (memoryChanged || isRefreshTurn)) {
-        upsertWorkingMemoryContextMessage({
-          messages,
+        const wmContent = buildWorkingMemoryContent({
           workingMemory,
           tokenBudget: Math.floor(promptBudgetTarget * 0.12),
           query: prompt,
           focusedPaths,
         });
+        if (wmContent) contextNotes.push(wmContent);
         lastWorkingMemoryFingerprint = currentFingerprint;
       }
 
@@ -519,8 +579,7 @@ export async function runNativeToolCallingLoop(
 
         if (shouldRefreshByTurn || shouldRefreshByFileChange) {
           try {
-            await refreshWorkspaceContext({
-              messages,
+            const wsContent = await buildWorkspaceRefreshContent({
               workspacePath: settings.workspacePath,
               projectConfig,
               normalizedPrompt: prompt,
@@ -528,11 +587,9 @@ export async function runNativeToolCallingLoop(
               turnNumber: turn,
               contextLimitTokens: limitTokens,
             });
+            if (wsContent) contextNotes.push(wsContent);
             lastWorkspaceRefreshTurn = turn;
             hasModifiedFiles = false;
-            console.log(
-              `[Loop] Workspace context refreshed (trigger: ${shouldRefreshByTurn ? "turn-interval" : "file-change"})`,
-            );
           } catch (e) {
             console.warn("[Loop] Failed to refresh workspace context", e);
           }
@@ -545,14 +602,11 @@ export async function runNativeToolCallingLoop(
     console.log(`[Loop] ── Turn ${turn + 1} ── messages=${messages.length} | ~${estTokensAtTurnStart} tokens`);
 
     if (turn === TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD) {
-      messages.push({
-        role: "system",
-        content: [
-          `系统提示：你已经使用了 ${turn} 轮工具调用。`,
-          "请注意效率，优先使用 grep/glob 批量搜索而非逐个文件阅读。",
-          "如果任务已基本完成，请尽快给出最终总结；如果确实需要继续，请集中处理剩余关键步骤。",
-        ].join("\n"),
-      });
+      contextNotes.push([
+        `系统提示：你已经使用了 ${turn} 轮工具调用。`,
+        "请注意效率，优先使用 grep/glob 批量搜索而非逐个文件阅读。",
+        "如果任务已基本完成，请尽快给出最终总结；如果确实需要继续，请集中处理剩余关键步骤。"
+      ].join("\n"));
     }
 
     if (
@@ -560,36 +614,33 @@ export async function runNativeToolCallingLoop(
       turn % TOOL_CALLING_REINFORCEMENT_INTERVAL === 0 &&
       toolChoiceOverride !== "none"
     ) {
+      // Remove any old reinforcement message from a previous turn.
       const existingReinforcement = messages.findIndex(
         (message) => message.role === "system" && message.content.startsWith(TOOL_CALLING_REINFORCEMENT_NOTE_PREFIX),
       );
       if (existingReinforcement >= pinnedPrefixLen) {
         messages.splice(existingReinforcement, 1);
       }
-      messages.push({
-        role: "system",
-        content: [
-          TOOL_CALLING_REINFORCEMENT_NOTE_PREFIX,
-          "重要：你必须通过原生工具调用（function calling / tool_calls）来使用工具。",
-          "不要在回复文本中描述、转录或模拟工具调用。直接发送 tool_calls 即可。",
-          `可用工具: [${enabledToolNames.join(", ")}]`,
-        ].join("\n"),
-      });
+      contextNotes.push([
+        TOOL_CALLING_REINFORCEMENT_NOTE_PREFIX,
+        "重要：你必须通过原生工具调用（function calling / tool_calls）来使用工具。",
+        "不要在回复文本中描述、转录或模拟工具调用。直接发送 tool_calls 即可。",
+        `可用工具: [${enabledToolNames.join(", ")}]`,
+      ].join("\n"));
     }
 
-    const maxInterstitialSysMsgs = Math.max(6, Math.ceil(turn * 0.3));
-    const prunedMessages = pruneStaleSystemMessages(messages, pinnedPrefixLen, maxInterstitialSysMsgs);
-    if (prunedMessages.length < messages.length) {
-      const removed = messages.length - prunedMessages.length;
-      replaceMessages(prunedMessages);
-      console.log(`[Loop] 清理陈旧系统消息: 移除 ${removed} 条`);
-    }
 
     // M3: scrub older read_file results once their content is cached in WM.
-    const dedupedReads = dedupeStaleFileReads(messages, workingMemory);
-    if (dedupedReads > 0) {
-      console.log(`[Loop] 去重历史 read_file: 重写 ${dedupedReads} 条`);
+    // Only fires under context pressure (est > 70% budget) to avoid
+    // invalidating prefix cache when space isn't actually needed.
+    const estTokensBeforeDedup = estimateCurrentTokens();
+    if (estTokensBeforeDedup > promptBudgetTarget * 0.7) {
+      const dedupedReads = dedupeStaleFileReads(messages, workingMemory);
+      if (dedupedReads > 0) {
+        console.log(`[Loop] 去重历史 read_file: 重写 ${dedupedReads} 条`);
+      }
     }
+
 
     // Single-threshold compression: hand off to compressMessagesToFitBudget on
     // every turn — its internal "tokens already fit" check is the no-op fast
@@ -631,6 +682,11 @@ export async function runNativeToolCallingLoop(
       );
     }
 
+    // Flush context notes into the message stream before the LLM call.
+    // This embeds notes into the last tool result (cache-friendly) instead of
+    // injecting system messages that break prefix cache.
+    contextNotes.flush(messages);
+
     let completion;
     {
       let lastLLMError: unknown;
@@ -647,6 +703,7 @@ export async function runNativeToolCallingLoop(
             onAssistantChunk,
             onToolCallEvent,
             toolChoiceOverride,
+            sessionId,
           );
           toolChoiceOverride = undefined;
           completion = turnRequest.completion;
@@ -708,14 +765,11 @@ export async function runNativeToolCallingLoop(
     ) {
       console.warn(`[Loop] Turn ${turn + 1}: 响应被 max_tokens 截断且无有效内容，请求模型缩短输出后重试`);
       messages.pop();
-      messages.push({
-        role: "system",
-        content: [
-          "系统提示：你的上一次回复因为超出最大 token 限制而被截断，系统没有收到完整的回复或工具调用。",
-          "请用更简洁的方式回复。如果需要使用工具，直接发送工具调用，不要输出冗长的分析文本。",
-          "如果要修改文件，每次只修改一个文件的一小段，避免在单次回复中生成过多内容。",
-        ].join("\n"),
-      });
+      contextNotes.push([
+        "系统提示：你的上一次回复因为超出最大 token 限制而被截断，系统没有收到完整的回复或工具调用。",
+        "请用更简洁的方式回复。如果需要使用工具，直接发送工具调用，不要输出冗长的分析文本。",
+        "如果要修改文件，每次只修改一个文件的一小段，避免在单次回复中生成过多内容。"
+      ].join("\n"));
       continue;
     }
 
@@ -727,14 +781,11 @@ export async function runNativeToolCallingLoop(
       if (completion.droppedToolCalls > 0) {
         console.warn(`[Loop] Turn ${turn + 1}: ${completion.droppedToolCalls} 个工具调用因格式畸形被丢弃，要求模型重试`);
         messages.pop();
-        messages.push({
-          role: "system",
-          content: [
-            `系统提示：模型尝试了 ${completion.droppedToolCalls} 个工具调用，但全部因格式畸形被丢弃（缺少 function.name 或 arguments 不是字符串）。`,
-            `可用工具: [${enabledToolNames.join(", ")}]`,
-            "请使用正确的工具调用格式重试。",
-          ].join("\n"),
-        });
+        contextNotes.push([
+          `系统提示：模型尝试了 ${completion.droppedToolCalls} 个工具调用，但全部因格式畸形被丢弃（缺少 function.name 或 arguments 不是字符串）。`,
+          `可用工具: [${enabledToolNames.join(", ")}]`,
+          "请使用正确的工具调用格式重试。"
+        ].join("\n"));
         continue;
       }
 
@@ -752,10 +803,7 @@ export async function runNativeToolCallingLoop(
         console.warn(
           `[Loop] Turn ${turn + 1}: detected pseudo tool-call narration without native tool_calls (${pseudoToolCallReason}), requesting retry`,
         );
-        messages.push({
-          role: "system",
-          content: buildPseudoToolCallRepairMessage(enabledToolNames),
-        });
+        contextNotes.push(buildPseudoToolCallRepairMessage(enabledToolNames));
         continue;
       }
 
@@ -1086,15 +1134,12 @@ export async function runNativeToolCallingLoop(
         .map(([path, knowledge]) => `- ${path} (${knowledge.totalLines}行, ${knowledge.language ?? "?"}): ${knowledge.summary}`)
         .join("\n");
       console.log(`[Loop] Turn ${turn + 1}: ${turnDedupHitCount}/${turnSuccessCount} 个工具调用命中去重缓存`);
-      messages.push({
-        role: "system",
-        content: [
-          `系统提示：本轮 ${turnDedupHitCount} 个文件读取命中了去重缓存，说明你正在重复读取已知文件。`,
-          "以下是你已经读取过的文件及其摘要，请直接利用这些信息，不要再次读取：",
-          knownFilesList,
-          "请基于已有信息继续推进任务，而非重复读取。如需特定代码片段，请用 start_line/end_line 精确读取。",
-        ].join("\n"),
-      });
+      contextNotes.push([
+        `系统提示：本轮 ${turnDedupHitCount} 个文件读取命中了去重缓存，说明你正在重复读取已知文件。`,
+        "以下是你已经读取过的文件及其摘要，请直接利用这些信息，不要再次读取：",
+        knownFilesList,
+        "请基于已有信息继续推进任务，而非重复读取。如需特定代码片段，请用 start_line/end_line 精确读取。",
+      ].join("\n"));
     }
 
     const turnHasPropose = completion.toolCalls.some((toolCall) => toolCall.function.name.startsWith("propose_"));
@@ -1106,10 +1151,7 @@ export async function runNativeToolCallingLoop(
 
     if (shouldForceReadOnlySummary(consecutiveReadOnlyTurns)) {
       console.log(`[Loop] 连续 ${consecutiveReadOnlyTurns} 轮纯读取，强制要求总结`);
-      messages.push({
-        role: "system",
-        content: buildReadOnlyTurnsWarningMessage(consecutiveReadOnlyTurns),
-      });
+      contextNotes.push(buildReadOnlyTurnsWarningMessage(consecutiveReadOnlyTurns));
       toolChoiceOverride = "none";
       consecutiveReadOnlyTurns = 0;
     }
@@ -1132,10 +1174,7 @@ export async function runNativeToolCallingLoop(
       };
     }
     if (shouldWarnForToolNotFound(toolNotFoundStrikes)) {
-      messages.push({
-        role: "system",
-        content: buildToolNotFoundWarningMessage(toolNotFoundStrikes, enabledToolNames),
-      });
+      contextNotes.push(buildToolNotFoundWarningMessage(toolNotFoundStrikes, enabledToolNames));
     }
 
     if (turnSuccessCount === 0 && turnFailureCount > 0) {
@@ -1159,10 +1198,7 @@ export async function runNativeToolCallingLoop(
     for (const [filePath, failCount] of fileEditFailureTracker) {
       if (failCount >= MAX_SAME_FILE_EDIT_FAILURES) {
         console.warn(`[Loop] 熔断: 文件 ${filePath} 连续编辑失败 ${failCount} 次`);
-        messages.push({
-          role: "system",
-          content: buildSameFileEditFailureMessage(filePath, failCount),
-        });
+        contextNotes.push(buildSameFileEditFailureMessage(filePath, failCount));
         fileEditFailureTracker.delete(filePath);
         break;
       }
@@ -1176,10 +1212,7 @@ export async function runNativeToolCallingLoop(
       patchRepairRounds < MAX_PATCH_REPAIR_ROUNDS
     ) {
       patchRepairRounds += 1;
-      messages.push({
-        role: "system",
-        content: buildPatchPreflightRepairMessage(patchPreflightFailure),
-      });
+      contextNotes.push(buildPatchPreflightRepairMessage(patchPreflightFailure));
       continue;
     }
 
@@ -1189,10 +1222,7 @@ export async function runNativeToolCallingLoop(
       createHintRepairRounds < MAX_CREATE_HINT_REPAIR_ROUNDS
     ) {
       createHintRepairRounds += 1;
-      messages.push({
-        role: "system",
-        content: buildCreatePathRepairMessage(createPathUsageFailure),
-      });
+      contextNotes.push(buildCreatePathRepairMessage(createPathUsageFailure));
       continue;
     }
 
@@ -1202,10 +1232,7 @@ export async function runNativeToolCallingLoop(
       searchNotFoundRepairRounds < MAX_SEARCH_NOT_FOUND_REPAIR_ROUNDS
     ) {
       searchNotFoundRepairRounds += 1;
-      messages.push({
-        role: "system",
-        content: buildSearchNotFoundRepairMessage(searchNotFoundFailure),
-      });
+      contextNotes.push(buildSearchNotFoundRepairMessage(searchNotFoundFailure));
       continue;
     }
 
@@ -1215,10 +1242,7 @@ export async function runNativeToolCallingLoop(
       shellDialectRepairRounds < MAX_SHELL_DIALECT_REPAIR_ROUNDS
     ) {
       shellDialectRepairRounds += 1;
-      messages.push({
-        role: "system",
-        content: shellDialectRepairInstruction,
-      });
+      contextNotes.push(shellDialectRepairInstruction);
       continue;
     }
 
@@ -1231,15 +1255,12 @@ export async function runNativeToolCallingLoop(
         proposedActions.length < MAX_PROPOSED_ACTIONS_PER_BATCH
       ) {
         multiArtifactReminderRounds += 1;
-        messages.push({
-          role: "system",
-          content: [
-            "系统提示：用户请求包含多个交付物。",
-            `当前已提出 ${plannedArtifacts} 个交付物相关动作，目标至少 ${requestedArtifactCount} 个。`,
-            "请继续提出剩余缺失交付物的审批动作；不要重复已有动作。",
-            "仅在所有请求交付物都已覆盖，或确实无法继续时，才停止工具调用。",
-          ].join("\n"),
-        });
+        contextNotes.push([
+          "系统提示：用户请求包含多个交付物。",
+          `当前已提出 ${plannedArtifacts} 个交付物相关动作，目标至少 ${requestedArtifactCount} 个。`,
+          "请继续提出剩余缺失交付物的审批动作；不要重复已有动作。",
+          "仅在所有请求交付物都已覆盖，或确实无法继续时，才停止工具调用。",
+        ].join("\n"));
         continue;
       }
     }
@@ -1257,11 +1278,9 @@ export async function runNativeToolCallingLoop(
         multiArtifactReminderRounds >= MAX_MULTI_ARTIFACT_REMINDER_ROUNDS;
 
       if (!shouldReturnNow) {
-        messages.push({
-          role: "system",
-          content:
-            "系统提示：你已经提出了部分待审批动作。请继续补齐剩余缺失交付物，直到达到交付覆盖目标或达到单批动作上限。",
-        });
+        contextNotes.push(
+          "系统提示：你已经提出了部分待审批动作。请继续补齐剩余缺失交付物，直到达到交付覆盖目标或达到单批动作上限。",
+        );
         continue;
       }
 

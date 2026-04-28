@@ -1649,13 +1649,19 @@ describe("planningService approval-flow repair", () => {
         });
 
         const secondMessages2 = (vi.mocked(gatewayComplete).mock.calls[1]?.[0] ?? []) as Array<{ role: string; content: string }>;
-        const repairMessage = [...secondMessages2]
+        // Search tool results for the repair hint in _context_note field.
+        const repairContent = [...secondMessages2]
             .reverse()
-            .find(
-                (message) =>
-                    message.role === "system" &&
-                    message.content.includes("shell 方言不匹配"),
-            );
+            .filter((m) => m.role === "tool")
+            .map((m) => {
+              try {
+                const p = JSON.parse(m.content);
+                return typeof p._context_note === "string" ? p._context_note : "";
+              } catch {
+                return "";
+              }
+            })
+            .find((c) => c && c.includes("PowerShell")) ?? "";
         const shellCalls = vi.mocked(awaitShellCommandWithDeadline).mock.calls;
 
         expect(shellCalls).toHaveLength(2);
@@ -1665,10 +1671,10 @@ describe("planningService approval-flow repair", () => {
         expect(shellCalls[1]?.[0]).toMatchObject({
             shell: "New-Item -ItemType Directory -Force logs; npm test",
         });
-        expect(repairMessage?.content).toContain(
+        expect(repairContent).toContain(
             "当前执行器是 PowerShell",
         );
-        expect(repairMessage?.content).toContain(
+        expect(repairContent).toContain(
             "PowerShell 语法",
         );
         expect(result.assistantReply).toBe("done");

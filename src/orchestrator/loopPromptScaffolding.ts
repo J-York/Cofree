@@ -1,14 +1,21 @@
 /**
- * Tool-loop prompt scaffolding: pinned system-slot maintenance for the head
- * prefix block (working-memory, workspace-refresh) plus pruning of
+ * Tool-loop prompt scaffolding: tail-pinned system-slot maintenance for the
+ * dynamic context (working-memory, workspace-refresh) plus pruning of
  * tail-appended transient reminders, plus the async workspace-context
  * refresher.
  *
- * Head pinned slots have a deterministic order (PINNED_SLOT_ORDER): identical
- * slot content always lands at the same byte offset regardless of which slot
- * was set first this turn. This byte-stability is the prerequisite for prompt
- * caching (M1) — Anthropic / OpenAI cache hits depend on the cached prefix
- * being unchanged across turns.
+ * Tail-pinned slots are placed AFTER the conversation history. pi-ai's
+ * adapter (see `toPiAiContext` in piAiBridge.ts) converts any system message
+ * that follows a non-system message into a `[System] ...` user message. As a
+ * result, tail-pinned slots never enter the cacheable system-prompt prefix —
+ * keeping working-memory churn from invalidating the prefix cache. This was
+ * a deliberate trade-off (vs head-pinned slots) made to recover OpenAI
+ * prompt-cache hit rate, which collapsed to ~20% under head-pinned churn.
+ *
+ * Pinned slots maintain a deterministic relative order (PINNED_SLOT_ORDER):
+ * identical content always lands in the same relative position regardless
+ * of which slot was set first this turn. This byte-stability is what lets
+ * the cache survive when neither slot's content changed.
  *
  * Kept separate from `src/agents/promptAssembly.ts` (which builds the
  * initial static agent prompt) — this module mutates the live `messages`
@@ -16,7 +23,6 @@
  */
 
 import type { LiteLLMMessage } from "../lib/piAiBridge";
-import { initialSystemPrefixLength } from "./contextBudget";
 import {
   serializeWorkingMemory,
   type WorkingMemory,
@@ -61,10 +67,16 @@ function findExistingSlotKey(content: string): string | undefined {
 }
 
 /**
- * Idempotently set a head-pinned system slot identified by its key prefix.
- * Removes any existing message with the same prefix, then inserts the new
- * content at the canonical position determined by PINNED_SLOT_ORDER. Empty
- * content clears the slot.
+ * Idempotently set a tail-pinned system slot identified by its key prefix.
+ * Removes any existing message with the same prefix, then appends the new
+ * content at the tail of the message list, preserving PINNED_SLOT_ORDER
+ * across multiple slots. Empty content clears the slot.
+ *
+ * The slot lives at the tail so it does not enter the cacheable system-prompt
+ * prefix (pi-ai re-tags trailing system messages as `[System] ...` user
+ * messages). As long as the conversation history before the slot is
+ * unchanged, OpenAI / Anthropic prefix caches remain warm even when this
+ * slot's content churns.
  */
 export function setPinnedSlot(
   messages: LiteLLMMessage[],
@@ -84,19 +96,21 @@ export function setPinnedSlot(
   }
 
   const myOrder = PINNED_SLOT_ORDER.indexOf(key);
-  const headEnd = initialSystemPrefixLength(messages);
-  let insertAt = headEnd;
+  let insertAt = messages.length;
 
-  // Walk the head system block; place the new slot before the first existing
-  // slot whose order is strictly higher than ours. Non-slot system messages
-  // (initial agent prompt, runtime context) are left at the very front.
-  for (let i = 0; i < headEnd; i += 1) {
+  // Walk back from the tail through the contiguous run of pinned slots.
+  // Insert just before any higher-order slot we find (so they remain in
+  // PINNED_SLOT_ORDER); stop once we hit a slot of equal-or-lower order
+  // or any non-slot message (conversation history).
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
     const msg = messages[i];
+    if (msg.role !== "system" || typeof msg.content !== "string") break;
     const matchedKey = findExistingSlotKey(msg.content);
-    if (!matchedKey) continue;
+    if (!matchedKey) break;
     const matchedOrder = PINNED_SLOT_ORDER.indexOf(matchedKey as PinnedSlotKey);
-    if (matchedOrder >= 0 && matchedOrder > myOrder) {
+    if (matchedOrder > myOrder) {
       insertAt = i;
+    } else {
       break;
     }
   }
@@ -208,7 +222,8 @@ export function pruneStaleSystemMessages(
     const msg = messages[i];
     if (
       msg.role === "system" &&
-      !msg.content.startsWith(PINNED_SLOT_KEYS.WORKING_MEMORY)
+      !msg.content.startsWith(PINNED_SLOT_KEYS.WORKING_MEMORY) &&
+      !msg.content.startsWith(PINNED_SLOT_KEYS.WORKSPACE_REFRESH)
     ) {
       interstitialIndices.push(i);
     }
@@ -247,6 +262,100 @@ export function upsertWorkingMemoryContextMessage(params: {
     PINNED_SLOT_KEYS.WORKING_MEMORY,
     trimmed ? `${PINNED_SLOT_KEYS.WORKING_MEMORY}\n${trimmed}` : "",
   );
+}
+
+/**
+ * Build working memory content string (returns instead of injecting).
+ * Used by the context note buffer for cache-friendly delivery.
+ */
+export function buildWorkingMemoryContent(params: {
+  workingMemory: WorkingMemory;
+  tokenBudget: number;
+  query: string;
+  focusedPaths?: string[];
+}): string {
+  const memoryContext = serializeWorkingMemory(
+    params.workingMemory,
+    params.tokenBudget,
+    {
+      query: params.query,
+      focusedPaths: params.focusedPaths,
+    },
+  );
+  const trimmed = memoryContext.trim();
+  return trimmed ? `${PINNED_SLOT_KEYS.WORKING_MEMORY}\n${trimmed}` : "";
+}
+
+/**
+ * Build workspace refresh content string (returns instead of injecting).
+ * Async — fetches overview and repo-map. Used by context note buffer.
+ */
+export async function buildWorkspaceRefreshContent(params: {
+  workspacePath: string;
+  projectConfig: CofreeRcConfig;
+  normalizedPrompt: string;
+  sessionFocusedPaths: string[];
+  turnNumber: number;
+  contextLimitTokens: number;
+}): Promise<string> {
+  const {
+    workspacePath,
+    projectConfig,
+    normalizedPrompt,
+    sessionFocusedPaths,
+    turnNumber,
+    contextLimitTokens,
+  } = params;
+
+  let refreshNote = "";
+
+  try {
+    const overviewBudget: WorkspaceOverviewBudget | undefined = projectConfig.overviewBudget;
+    const overview = await summarizeWorkspaceFiles(
+      workspacePath,
+      projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+        ? projectConfig.ignorePatterns
+        : null,
+      overviewBudget
+    );
+    refreshNote = `项目概览（已更新）：\n${overview}`;
+  } catch (e) {
+    console.warn("[Workspace Refresh] Failed to regenerate workspace overview", e);
+  }
+
+  if (projectConfig.repoMap?.enabled !== false) {
+    try {
+      clearRepoMapCaches();
+      const repoMapBudget = Math.min(
+        4000,
+        Math.max(500, Math.floor(contextLimitTokens * 0.03)),
+      );
+      const repoMap = await generateRepoMap(
+        workspacePath,
+        projectConfig.ignorePatterns && projectConfig.ignorePatterns.length > 0
+          ? projectConfig.ignorePatterns
+          : null,
+        projectConfig.repoMap?.tokenBudget ?? repoMapBudget,
+        {
+          taskDescription: normalizedPrompt,
+          prioritizedPaths: sessionFocusedPaths,
+          maxFiles: projectConfig.repoMap?.maxFiles,
+        },
+      );
+      if (repoMap) {
+        refreshNote = refreshNote ? `${refreshNote}\n\n${repoMap}` : repoMap;
+        console.log(
+          `[Workspace Refresh] Repo-map regenerated at turn ${turnNumber} (~${repoMap.length} chars)`,
+        );
+      }
+    } catch (e) {
+      console.warn("[Workspace Refresh] Failed to regenerate repo-map", e);
+    }
+  }
+
+  if (!refreshNote) return "";
+  console.log(`[Workspace Refresh] Context refreshed at turn ${turnNumber}`);
+  return `${PINNED_SLOT_KEYS.WORKSPACE_REFRESH}\n${refreshNote}`;
 }
 
 /**

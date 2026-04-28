@@ -841,51 +841,27 @@ function markSystem(payload: Record<string, unknown>): boolean {
   return false;
 }
 
-function markMessage(message: unknown): boolean {
-  if (typeof message !== "object" || message === null) return false;
-  const m = message as Record<string, unknown>;
-  const content = m.content;
-  if (typeof content === "string") {
-    if (content.length === 0) return false;
-    m.content = [{ type: "text", text: content, cache_control: { ...EPHEMERAL_CACHE } }];
-    return true;
-  }
-  if (Array.isArray(content) && content.length > 0) {
-    const last = content[content.length - 1];
-    if (typeof last !== "object" || last === null) return false;
-    setEphemeralCacheControl(last as Record<string, unknown>);
-    return true;
-  }
-  return false;
-}
 
 /**
- * Inject Anthropic prompt-cache breakpoints (M2 — multi-breakpoint).
+ * Inject Anthropic prompt-cache breakpoints.
  *
  * Anthropic supports up to 4 `cache_control` breakpoints per request; each
  * one marks "cache the prefix up to and including this point". A future
  * request whose prefix matches up to that point reads cached input tokens
- * (90% discount). This function spends the budget as:
+ * (90% discount). This function spends the budget on STABLE positions only:
  *
  *   1. tools (last entry)         — tool schemas are large and rarely change
  *   2. system (last text block)   — system prompt rarely changes
- *   3. messages[len-2] (penult)   — rolling anchor: survives tail-edit churn
- *   4. messages[len-1] (last)     — rolling anchor: hit by next iteration
  *
- * pi-ai's anthropic adapter already injects cache_control on (2) and (4)
+ * Tail message breakpoints (messages[len-1], messages[len-2]) were REMOVED
+ * because intermediate context notes and tool results make the message tail
+ * unstable across turns — those breakpoints never hit cache. Only the
+ * prefix (system + tools) is byte-stable enough to benefit from caching.
+ *
+ * pi-ai's anthropic adapter may inject additional cache_control markers
  * automatically when `cacheRetention !== "none"` (default "short"). Our
- * markers there are idempotent — same `{type:"ephemeral"}` value — and
- * provide defense-in-depth if pi-ai's defaults change. (1) and (3) are the
- * net-new breakpoints introduced here:
- *   - (1) tools: previously every request paid full input-token cost for the
- *     entire tool schema (often 4–8KB).
- *   - (3) penult: hedges against the M5 "edit prior user message and replay"
- *     feature, where the tail of `messages` can change while the prefix
- *     remains identical.
- *
- * Tail-appended system reminders downstream become "[System] ..." user
- * messages and appear AFTER any cache anchor, so they neither hit nor
- * invalidate the cache.
+ * markers are idempotent — same `{type:"ephemeral"}` value — and provide
+ * defense-in-depth.
  *
  * OpenAI uses automatic prefix caching (no explicit markers required); the
  * byte-stable head prefix is all it needs.
@@ -894,15 +870,10 @@ export function applyAnthropicCacheBreakpoints(payload: Record<string, unknown>)
   const MAX_BREAKPOINTS = 4;
   let used = 0;
 
+  // Only mark stable prefix positions: tools and system.
+  // Message-tail breakpoints removed — they change every turn and never hit cache.
   if (used < MAX_BREAKPOINTS && markLastTool(payload.tools)) used++;
   if (used < MAX_BREAKPOINTS && markSystem(payload)) used++;
-
-  const messages = payload.messages;
-  if (Array.isArray(messages) && messages.length > 0) {
-    const len = messages.length;
-    if (used < MAX_BREAKPOINTS && len >= 2 && markMessage(messages[len - 2])) used++;
-    if (used < MAX_BREAKPOINTS && markMessage(messages[len - 1])) used++;
-  }
 }
 
 /** @deprecated Use {@link applyAnthropicCacheBreakpoints}. Kept for callers that imported the M1 name. */
@@ -935,6 +906,16 @@ export interface GatewayRequestOptions {
   tools?: LiteLLMToolDefinition[];
   toolChoice?: "auto" | "none" | { type: "function"; function: { name: string } };
   signal?: AbortSignal;
+  /**
+   * Stable session identifier forwarded to providers as `prompt_cache_key`.
+   * For OpenAI Responses API (`openai-responses`), pi-ai turns this into the
+   * `prompt_cache_key` request field, which pins the request to a specific
+   * cache shard so identical prefixes hit the same cache. Without it, OpenAI
+   * routes via default hashing and same-prefix requests can land on different
+   * shards — the dominant cause of low hit rates in multi-instance gateways.
+   * Chat-Completions API ignores this (no API support).
+   */
+  sessionId?: string;
 }
 
 /**
@@ -965,6 +946,7 @@ export async function gatewayComplete(
       temperature: effectiveTemp,
       maxTokens: effectiveMaxTokens,
       signal: options?.signal,
+      sessionId: options?.sessionId,
       reasoning: thinking as Parameters<typeof piComplete>[2] extends { reasoning?: infer R } ? R : never,
       onPayload: (payload: unknown) => {
         if (payload && typeof payload === "object") {
@@ -1024,6 +1006,7 @@ export async function gatewayStream(
         temperature: effectiveTemp,
         maxTokens: effectiveMaxTokens,
         signal: options?.signal,
+        sessionId: options?.sessionId,
         reasoning: thinking as Parameters<typeof piStream>[2] extends { reasoning?: infer R } ? R : never,
         onPayload: (payload: unknown) => {
           if (payload && typeof payload === "object") {

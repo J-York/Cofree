@@ -289,7 +289,7 @@ describe("applyAnthropicCacheBreakpoints (M2 multi-breakpoint injection)", () =>
     expect(b.tools).toEqual([]);
   });
 
-  it("marks the last two messages as rolling cache anchors", () => {
+  it("does NOT mark messages as cache anchors (message-level breakpoints removed for cache stability)", () => {
     const payload: Record<string, unknown> = {
       messages: [
         { role: "user", content: "first" },
@@ -301,33 +301,23 @@ describe("applyAnthropicCacheBreakpoints (M2 multi-breakpoint injection)", () =>
     applyAnthropicCacheBreakpoints(payload);
 
     const msgs = payload.messages as Array<Record<string, unknown>>;
-    // First two messages untouched.
+    // All messages remain unmodified — breakpoints only on tools + system.
     expect(msgs[0].content).toBe("first");
+    expect(msgs[2].content).toBe("third");
     expect((msgs[1].content as Array<Record<string, unknown>>)[0].cache_control).toBeUndefined();
-
-    // Penultimate (msgs[2]): string-content user message gets converted to array form.
-    expect(msgs[2].content).toEqual([
-      { type: "text", text: "third", cache_control: { type: "ephemeral" } },
-    ]);
-
-    // Last (msgs[3]): assistant message — cache_control attached to the final block in place.
-    const lastBlocks = msgs[3].content as Array<Record<string, unknown>>;
-    expect(lastBlocks[lastBlocks.length - 1].cache_control).toEqual({ type: "ephemeral" });
   });
 
-  it("falls back to a single message anchor when only one message exists", () => {
+  it("does NOT touch messages when no tools or system exist (no breakpoints to place)", () => {
     const payload: Record<string, unknown> = {
       messages: [{ role: "user", content: "only message" }],
     };
     applyAnthropicCacheBreakpoints(payload);
 
     const msgs = payload.messages as Array<Record<string, unknown>>;
-    expect(msgs[0].content).toEqual([
-      { type: "text", text: "only message", cache_control: { type: "ephemeral" } },
-    ]);
+    expect(msgs[0].content).toBe("only message");
   });
 
-  it("attaches cache_control to the last block of an array-content message (e.g. tool_result)", () => {
+  it("does NOT attach cache_control to message content blocks (only tools + system)", () => {
     const payload: Record<string, unknown> = {
       messages: [
         {
@@ -345,10 +335,10 @@ describe("applyAnthropicCacheBreakpoints (M2 multi-breakpoint injection)", () =>
       Record<string, unknown>
     >;
     expect(blocks[0].cache_control).toBeUndefined();
-    expect(blocks[1].cache_control).toEqual({ type: "ephemeral" });
+    expect(blocks[1].cache_control).toBeUndefined();
   });
 
-  it("respects the 4-breakpoint cap (tools + system + 2 messages = 4)", () => {
+  it("uses at most 2 breakpoints (tools + system only)", () => {
     const payload: Record<string, unknown> = {
       system: "sys",
       tools: [{ name: "t1", description: "", input_schema: {} }],
@@ -374,7 +364,7 @@ describe("applyAnthropicCacheBreakpoints (M2 multi-breakpoint injection)", () =>
     };
     walk(payload);
 
-    expect(count).toBe(4);
+    expect(count).toBe(2);
   });
 
   it("keeps the legacy applyAnthropicCacheAnchor export pointing at the new implementation", () => {

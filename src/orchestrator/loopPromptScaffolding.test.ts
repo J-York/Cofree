@@ -24,7 +24,7 @@ const slotContents = (messages: LiteLLMMessage[]): string =>
     .join("|");
 
 describe("setPinnedSlot", () => {
-  it("inserts a new slot after the initial system prefix and before user", () => {
+  it("appends a new slot at the tail, leaving the head prefix and user message untouched", () => {
     const messages = initial();
     setPinnedSlot(
       messages,
@@ -34,8 +34,26 @@ describe("setPinnedSlot", () => {
 
     expect(messages[0].content).toBe("Agent prompt");
     expect(messages[1].content).toBe("Runtime context");
-    expect(messages[2].content.startsWith(PINNED_SLOT_KEYS.WORKING_MEMORY)).toBe(true);
-    expect(messages[3].role).toBe("user");
+    expect(messages[2].role).toBe("user");
+    expect(messages[3].role).toBe("system");
+    expect(messages[3].content.startsWith(PINNED_SLOT_KEYS.WORKING_MEMORY)).toBe(true);
+  });
+
+  it("preserves cacheable head prefix when slot content churns", () => {
+    const messages = initial();
+    setPinnedSlot(
+      messages,
+      PINNED_SLOT_KEYS.WORKING_MEMORY,
+      `${PINNED_SLOT_KEYS.WORKING_MEMORY}\nv1`,
+    );
+    const headBefore = messages.slice(0, 3).map((m) => `${m.role}:${m.content}`).join("|");
+    setPinnedSlot(
+      messages,
+      PINNED_SLOT_KEYS.WORKING_MEMORY,
+      `${PINNED_SLOT_KEYS.WORKING_MEMORY}\nv2-different-bytes`,
+    );
+    const headAfter = messages.slice(0, 3).map((m) => `${m.role}:${m.content}`).join("|");
+    expect(headAfter).toBe(headBefore);
   });
 
   it("replaces an existing slot in place rather than duplicating", () => {
@@ -94,6 +112,10 @@ describe("setPinnedSlot", () => {
       m.content.startsWith(PINNED_SLOT_KEYS.WORKING_MEMORY),
     );
     expect(workspaceIdx).toBeLessThan(memoryIdx);
+    // Both slots must sit AFTER the user message so the cacheable prefix
+    // (system block + first user turn) stays byte-stable.
+    const firstUserIdx = a.findIndex((m) => m.role === "user");
+    expect(firstUserIdx).toBeLessThan(workspaceIdx);
   });
 
   it("steady-state: setting an unchanged slot is idempotent", () => {

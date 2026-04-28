@@ -79,8 +79,19 @@ function consolidateSystemMessages(
  * models "forgetting" to use native tool calling after many turns.
  *
  * It also consolidates consecutive system messages to reduce noise.
+ *
+ * For Anthropic protocol this is a no-op: Anthropic handles interleaved system
+ * messages natively, and rearranging the message order breaks prefix cache.
  */
-export function sanitizeMessagesForToolCalling(messages: LiteLLMMessage[]): LiteLLMMessage[] {
+export function sanitizeMessagesForToolCalling(
+  messages: LiteLLMMessage[],
+  protocol?: string,
+): LiteLLMMessage[] {
+  // Anthropic handles system messages natively; rearranging breaks prefix cache.
+  if (protocol === "anthropic-messages") {
+    return messages;
+  }
+
   const result: LiteLLMMessage[] = [];
   let i = 0;
 
@@ -404,6 +415,7 @@ export async function requestToolCompletion(
   signal?: AbortSignal,
   toolChoiceOverride?: "auto" | "none",
   runtime?: ResolvedAgentRuntime | null,
+  sessionId?: string,
 ): Promise<{
   assistantMessage: LiteLLMMessage;
   toolCalls: ToolCallRecord[];
@@ -415,7 +427,7 @@ export async function requestToolCompletion(
     throw new DOMException("The operation was aborted.", "AbortError");
   }
 
-  const sanitizedMessages = sanitizeMessagesForToolCalling(messages);
+  const sanitizedMessages = sanitizeMessagesForToolCalling(messages, runtime?.vendorProtocol);
   const effectiveToolChoice = toolChoiceOverride ?? "model-adapted";
   const requestModel = runtime?.modelRef || settings.model;
 
@@ -433,6 +445,7 @@ export async function requestToolCompletion(
         ? undefined
         : toolChoiceOverride,
     signal,
+    sessionId,
   });
   const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
 
@@ -513,6 +526,7 @@ async function requestToolCompletionWithStream(
   onToolCallEvent?: (event: ToolCallEvent) => void,
   toolChoiceOverride?: "auto" | "none",
   runtime?: ResolvedAgentRuntime | null,
+  sessionId?: string,
 ): Promise<{
   assistantMessage: LiteLLMMessage;
   toolCalls: ToolCallRecord[];
@@ -524,7 +538,7 @@ async function requestToolCompletionWithStream(
     throw new DOMException("The operation was aborted.", "AbortError");
   }
 
-  const sanitizedMessages = sanitizeMessagesForToolCalling(messages);
+  const sanitizedMessages = sanitizeMessagesForToolCalling(messages, runtime?.vendorProtocol);
   const effectiveToolChoice = toolChoiceOverride ?? "model-adapted";
   const requestModel = runtime?.modelRef || settings.model;
 
@@ -546,6 +560,7 @@ async function requestToolCompletionWithStream(
           ? undefined
           : toolChoiceOverride,
       signal,
+      sessionId,
     },
     (content) => {
       onChunk?.(content);
@@ -717,6 +732,7 @@ export async function executeToolCompletionForTurn(
   onChunk?: (content: string) => void,
   onToolCallEvent?: (event: ToolCallEvent) => void,
   toolChoiceOverride?: "auto" | "none",
+  sessionId?: string,
 ): Promise<{
   completion: {
     assistantMessage: LiteLLMMessage;
@@ -744,6 +760,7 @@ export async function executeToolCompletionForTurn(
       onToolCallEvent,
       toolChoiceOverride,
       runtime,
+      sessionId,
     );
     return {
       completion,
@@ -764,6 +781,7 @@ export async function executeToolCompletionForTurn(
       signal,
       toolChoiceOverride,
       runtime,
+      sessionId,
     );
     return {
       completion,
