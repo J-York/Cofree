@@ -527,6 +527,7 @@ async function requestToolCompletionWithStream(
   toolChoiceOverride?: "auto" | "none",
   runtime?: ResolvedAgentRuntime | null,
   sessionId?: string,
+  onThinkingChunk?: (delta: string) => void,
 ): Promise<{
   assistantMessage: LiteLLMMessage;
   toolCalls: ToolCallRecord[];
@@ -573,6 +574,7 @@ async function requestToolCompletionWithStream(
         argsPreview: summarizeToolArgs(toolCall.toolName, toolCall.arguments),
       });
     },
+    onThinkingChunk,
   );
 
   const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
@@ -733,6 +735,7 @@ export async function executeToolCompletionForTurn(
   onToolCallEvent?: (event: ToolCallEvent) => void,
   toolChoiceOverride?: "auto" | "none",
   sessionId?: string,
+  onThinkingChunk?: (delta: string) => void,
 ): Promise<{
   completion: {
     assistantMessage: LiteLLMMessage;
@@ -761,6 +764,7 @@ export async function executeToolCompletionForTurn(
       toolChoiceOverride,
       runtime,
       sessionId,
+      onThinkingChunk,
     );
     return {
       completion,

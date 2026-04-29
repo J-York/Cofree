@@ -539,8 +539,11 @@
 .vendor-model-thinking-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .vendor-model-thinking-toggle { flex-shrink: 0; }
 .vendor-model-thinking-level { display: flex; align-items: center; gap: 8px; }
+.vendor-model-thinking-budget { display: flex; align-items: center; gap: 8px; }
 .vendor-model-thinking-label { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.vendor-model-thinking-hint { margin-left: 4px; color: var(--text-3); font-size: 10px; }
 .vendor-model-thinking-select { min-width: 112px; padding-top: 6px; padding-bottom: 6px; }
+.vendor-model-thinking-budget-input { width: 96px; padding-top: 6px; padding-bottom: 6px; }
 
 .settings-inline-feedback {
   font-size: 12px;

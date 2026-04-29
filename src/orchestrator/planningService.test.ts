@@ -2074,3 +2074,201 @@ describe("detectPseudoToolCallNarration (enhanced patterns)", () => {
         expect(result).toBeNull();
     });
 });
+
+describe("planningService loop message persistence", () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.mocked(gatewayStream).mockImplementation(
+            async (messages: any, settings: any, runtime: any, options: any, onChunk?: (content: string) => void) => {
+                const response = await vi.mocked(gatewayComplete)(
+                    messages,
+                    settings,
+                    runtime,
+                    options,
+                );
+                if (onChunk && response.body) {
+                    try {
+                        const parsed = JSON.parse(response.body);
+                        const content = parsed?.choices?.[0]?.message?.content ?? "";
+                        if (content) onChunk(content);
+                    } catch {
+                        /* noop */
+                    }
+                }
+                return response;
+            },
+        );
+        if (typeof globalThis.localStorage === "undefined") {
+            (globalThis as any).localStorage = new MemoryStorage();
+        }
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("returns loopMessages with the intermediate assistant tool_call + tool result pair, dropping the trailing final assistant text", async () => {
+        // Allow list_files (auto, read-only) so the loop runs a real intermediate
+        // turn instead of stopping at HITL gate.
+        vi.mocked(resolveAgentRuntime).mockReturnValue({
+            agentId: "agent-default",
+            enabledTools: ["list_files"],
+            toolPermissions: {
+                ...DEFAULT_SETTINGS.toolPermissions,
+                list_files: "auto",
+            },
+        } as any);
+
+        vi.mocked(gatewayComplete)
+            .mockResolvedValueOnce({
+                status: 200,
+                endpoint: "http://localhost:4000/chat/completions",
+                body: JSON.stringify({
+                    id: "chatcmpl-loopmsg-1",
+                    choices: [
+                        {
+                            message: {
+                                role: "assistant",
+                                content: "",
+                                tool_calls: [
+                                    {
+                                        id: "call-list-1",
+                                        type: "function",
+                                        function: {
+                                            name: "list_files",
+                                            arguments: JSON.stringify({ relative_path: "." }),
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                    usage: { prompt_tokens: 10, completion_tokens: 5 },
+                }),
+            })
+            .mockResolvedValueOnce({
+                status: 200,
+                endpoint: "http://localhost:4000/chat/completions",
+                body: JSON.stringify({
+                    id: "chatcmpl-loopmsg-2",
+                    choices: [
+                        {
+                            message: {
+                                role: "assistant",
+                                content: "Here are the files in the workspace.",
+                            },
+                        },
+                    ],
+                    usage: { prompt_tokens: 14, completion_tokens: 7 },
+                }),
+            });
+
+        vi.mocked(invoke).mockImplementation(async (command: string) => {
+            if (command === "list_files") {
+                return [
+                    { name: "src", path: "src", is_dir: true },
+                    { name: "package.json", path: "package.json", is_dir: false },
+                ];
+            }
+            throw new Error(`Unexpected invoke: ${command}`);
+        });
+
+        const result = await runPlanningSession({
+            prompt: "List files in the workspace",
+            settings: createSettings(),
+            conversationHistory: [],
+        });
+
+        expect(result.assistantReply).toContain("files in the workspace");
+        expect(result.loopMessages).toBeDefined();
+
+        // Expected sequence: assistant(tool_call) → tool(result). The trailing
+        // final assistant text is captured via assistantReply and stripped from
+        // loopMessages so the UI doesn't double-render it.
+        expect(result.loopMessages.length).toBe(2);
+
+        const [intermediateAssistant, toolResult] = result.loopMessages;
+        expect(intermediateAssistant.role).toBe("assistant");
+        expect(intermediateAssistant.tool_calls?.[0]?.id).toBe("call-list-1");
+        expect(intermediateAssistant.tool_calls?.[0]?.function.name).toBe(
+            "list_files",
+        );
+
+        expect(toolResult.role).toBe("tool");
+        expect(toolResult.tool_call_id).toBe("call-list-1");
+        expect(toolResult.name).toBe("list_files");
+        // The tool result content should NOT be empty — this is exactly the
+        // payload that previously got lost between turns.
+        expect(toolResult.content.length).toBeGreaterThan(0);
+
+        // No trailing final assistant text in loopMessages — assistantReply
+        // is the canonical carrier for it.
+        const tail = result.loopMessages[result.loopMessages.length - 1];
+        expect(tail.role).toBe("tool");
+    });
+
+    it("normalizeConversationHistory warns when an assistant has tool_calls without matching tool results", () => {
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        try {
+            const normalized = planningServiceTestUtils.normalizeConversationHistory([
+                { role: "user", content: "do something" },
+                {
+                    role: "assistant",
+                    content: "calling tool",
+                    tool_calls: [
+                        {
+                            id: "call-orphan",
+                            type: "function",
+                            function: { name: "list_files", arguments: "{}" },
+                        },
+                    ],
+                },
+                // Note: NO matching role:"tool" entry for call-orphan — this is
+                // the exact data-loss shape produced before the fix.
+            ]);
+
+            // Orphan tool_calls dropped from normalized message (existing behavior),
+            // and a warning emitted so the bug stops being silent.
+            const assistantOut = normalized.find((m) => m.role === "assistant");
+            expect(assistantOut?.tool_calls).toBeUndefined();
+            expect(warnSpy).toHaveBeenCalledTimes(1);
+            const warningArg = warnSpy.mock.calls[0]?.[0] as string;
+            expect(warningArg).toContain("orphan tool_calls");
+            expect(warningArg).toContain("call-orphan");
+        } finally {
+            warnSpy.mockRestore();
+        }
+    });
+
+    it("normalizeConversationHistory does not warn when every tool_call has a matching tool result", () => {
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        try {
+            const normalized = planningServiceTestUtils.normalizeConversationHistory([
+                { role: "user", content: "list files" },
+                {
+                    role: "assistant",
+                    content: "",
+                    tool_calls: [
+                        {
+                            id: "call-ok",
+                            type: "function",
+                            function: { name: "list_files", arguments: "{}" },
+                        },
+                    ],
+                },
+                {
+                    role: "tool",
+                    content: '{"ok":true,"entries":[]}',
+                    tool_call_id: "call-ok",
+                    name: "list_files",
+                },
+            ]);
+
+            const assistantOut = normalized.find((m) => m.role === "assistant");
+            expect(assistantOut?.tool_calls).toHaveLength(1);
+            expect(warnSpy).not.toHaveBeenCalled();
+        } finally {
+            warnSpy.mockRestore();
+        }
+    });
+});

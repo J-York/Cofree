@@ -159,3 +159,15 @@ details[open] .think-summary::before { transform: rotate(90deg); }
   color: var(--text-2);
   line-height: 1.6;
 }
+
+/* Live reasoning summary streaming in from the model (out-of-band thinking
+ * channel, e.g. OpenAI Responses API). Distinguished from inline `<think>`
+ * blocks via a soft pulsing summary so it's clear something is in flight. */
+.think-block.is-live .think-summary {
+  color: var(--text-2);
+  animation: think-live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes think-live-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}

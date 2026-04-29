@@ -114,6 +114,21 @@ function normalizeConversationHistory(
     };
     if (message.tool_calls) {
       const validCalls = message.tool_calls.filter((toolCall) => answeredToolCallIds.has(toolCall.id));
+      const droppedCallIds = message.tool_calls
+        .filter((toolCall) => !answeredToolCallIds.has(toolCall.id))
+        .map((toolCall) => toolCall.id);
+      if (droppedCallIds.length > 0) {
+        // Surface a long-standing data-loss bug: an assistant message claimed
+        // tool_calls but no matching tool_result rows survived in history. The
+        // model will be unable to "see" what those tool calls returned and
+        // typically re-runs the same searches in the next turn. If you hit this,
+        // check that planningSession.loopMessages is being persisted into chat
+        // history (see useChatExecution.ts).
+        console.warn(
+          `[Planning][NormalizeHistory] Dropping orphan tool_calls (no matching tool_result):` +
+            ` ids=[${droppedCallIds.join(", ")}] | content_preview="${message.content.slice(0, 80)}"`,
+        );
+      }
       if (validCalls.length > 0) {
         normalized.tool_calls = validCalls;
       }
@@ -390,6 +405,7 @@ export const planningServiceTestUtils = {
   pruneStaleSystemMessages,
   detectPseudoToolCallNarration,
   detectPseudoToolJsonTranscript,
+  normalizeConversationHistory,
 };
 
 function assertLocalOnlyPolicy(settings: AppSettings): void {
@@ -613,6 +629,7 @@ export async function runPlanningSession(
       input.onAskUserRequest,
       input.restoredWorkingMemory,
       input.explicitSkillIds,
+      input.onThinkingChunk,
     );
 
     for (const record of loopResult.requestRecords) {
@@ -690,11 +707,28 @@ export async function runPlanningSession(
       assistantToolCallsFromFinalTurn: loopResult.assistantToolCallsFromFinalTurn,
     });
 
+    // Loop already includes the FINAL assistant message at the tail when the
+    // loop completed naturally (text reply or HITL gate). The placeholder
+    // ChatMessageRecord on the UI side already represents that final message
+    // via `assistantReply` + `assistantToolCalls`, so we drop the duplicate.
+    // Early-termination paths (max-turn cap, tool-not-found burst) end with a
+    // tool result instead of an assistant message — keep the slice intact so
+    // the synthetic `assistantReply` becomes the only "final" entry.
+    const rawLoop = loopResult.loopMessages ?? [];
+    const tail = rawLoop.length > 0 ? rawLoop[rawLoop.length - 1] : undefined;
+    const trailingIsFinalAssistant =
+      tail?.role === "assistant" &&
+      ((tail.content ?? "").trim() === loopResult.assistantReply.trim() ||
+        // Final assistant may carry only tool_calls (HITL gate) — still drop.
+        ((tail.tool_calls?.length ?? 0) > 0 && !(tail.content ?? "").trim()));
+    const loopMessages = trailingIsFinalAssistant ? rawLoop.slice(0, -1) : rawLoop;
+
     return {
       assistantReply,
       plan,
       toolTrace: loopResult.toolTrace,
       assistantToolCalls,
+      loopMessages,
       workingMemorySnapshot: loopResult.workingMemorySnapshot,
       tokenUsage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
     };

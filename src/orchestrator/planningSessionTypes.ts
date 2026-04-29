@@ -38,6 +38,7 @@ export interface RunPlanningSessionInput {
   blockedActionFingerprints?: string[];
   signal?: AbortSignal;
   onAssistantChunk?: (chunk: string) => void;
+  onThinkingChunk?: (delta: string) => void;
   onToolCallEvent?: (event: ToolCallEvent) => void;
   onContextUpdate?: (estimatedTokens: number) => void;
   onLoopCheckpoint?: (checkpoint: {
@@ -63,6 +64,18 @@ export interface PlanningSessionResult {
   plan: OrchestrationPlan;
   toolTrace: ToolExecutionTrace[];
   assistantToolCalls?: LiteLLMMessage["tool_calls"];
+  /**
+   * Intermediate (assistant tool_call → tool result) message pairs produced
+   * during the loop, ordered, EXCLUDING the final assistant message (which is
+   * captured via `assistantReply` + `assistantToolCalls`).
+   *
+   * The UI splices these as ChatMessageRecord entries before the placeholder
+   * assistant so that subsequent turns can replay the full tool-use history
+   * back to the model. Without this field, multi-step tool runs collapse into
+   * a single assistant text bubble and the model loses everything it learned
+   * along the way.
+   */
+  loopMessages: LiteLLMMessage[];
   workingMemorySnapshot?: WorkingMemorySnapshot;
   tokenUsage: {
     inputTokens: number;

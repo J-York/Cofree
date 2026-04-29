@@ -52,6 +52,7 @@ function renderRow(model: ManagedModel, overrides?: Partial<Parameters<typeof Ve
     onCancelDelete: vi.fn(),
     onThinkingSupportChange: vi.fn(),
     onThinkingLevelChange: vi.fn(),
+    onThinkingBudgetTokensChange: vi.fn(),
     onOpenMetaSettings: vi.fn(),
     ...overrides,
   });

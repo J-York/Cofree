@@ -2,9 +2,11 @@ import type { ReactElement } from "react";
 import type { VendorModelRowProps } from "./settingsTypes";
 
 const THINKING_LEVEL_LABELS = {
+  minimal: "极低",
   low: "低",
   medium: "中",
   high: "高",
+  xhigh: "极高",
 } as const;
 
 export function VendorModelRow({
@@ -22,6 +24,7 @@ export function VendorModelRow({
   onCancelDelete,
   onThinkingSupportChange,
   onThinkingLevelChange,
+  onThinkingBudgetTokensChange,
   onOpenMetaSettings,
 }: VendorModelRowProps): ReactElement {
   return (
@@ -94,10 +97,49 @@ export function VendorModelRow({
                   }
                   value={model.thinkingLevel}
                 >
+                  <option value="minimal">极低 (minimal)</option>
                   <option value="low">低</option>
                   <option value="medium">中</option>
                   <option value="high">高</option>
+                  <option value="xhigh">极高 (xhigh / max)</option>
                 </select>
+              </div>
+              <div className="vendor-model-thinking-budget">
+                <span className="vendor-model-thinking-label">
+                  思考预算
+                  <span className="vendor-model-thinking-hint">
+                    （Claude / Gemini 可选，留空使用默认）
+                  </span>
+                </span>
+                <input
+                  className="input vendor-model-thinking-budget-input"
+                  disabled={
+                    !model.supportsThinking || model.thinkingLevel === "xhigh"
+                  }
+                  inputMode="numeric"
+                  min={0}
+                  onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    if (raw === "") {
+                      onThinkingBudgetTokensChange(null);
+                      return;
+                    }
+                    const parsed = Number(raw);
+                    if (!Number.isFinite(parsed) || parsed <= 0) {
+                      onThinkingBudgetTokensChange(null);
+                      return;
+                    }
+                    onThinkingBudgetTokensChange(Math.floor(parsed));
+                  }}
+                  placeholder="tokens"
+                  type="number"
+                  value={
+                    typeof model.thinkingBudgetTokens === "number" &&
+                    model.thinkingBudgetTokens > 0
+                      ? String(model.thinkingBudgetTokens)
+                      : ""
+                  }
+                />
               </div>
             </div>
           </div>

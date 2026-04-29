@@ -653,6 +653,7 @@ export async function piAiChatStream(
     toolChoice?: "auto" | "none" | { type: "function"; function: { name: string } };
     temperature?: number;
     signal?: AbortSignal;
+    onThinkingChunk?: (delta: string) => void;
   },
 ): Promise<LiteLLMHttpResponse> {
   const context = toPiAiContext(messages, options?.tools);
@@ -668,6 +669,20 @@ export async function piAiChatStream(
         case "text_delta":
           onChunk(event.delta);
           break;
+        case "thinking_delta":
+          options?.onThinkingChunk?.(event.delta);
+          break;
+        case "toolcall_start":
+        case "toolcall_delta": {
+          const block = event.partial.content[event.contentIndex];
+          if (!block || block.type !== "toolCall" || !block.id) break;
+          onToolCall?.({
+            callId: block.id,
+            toolName: block.name,
+            arguments: JSON.stringify(block.arguments ?? {}),
+          });
+          break;
+        }
         case "toolcall_end": {
           const tc = event.toolCall;
           onToolCall?.({
@@ -844,9 +859,11 @@ function resolveModelFromSettings(
 }
 
 const THINKING_LEVEL_MAP: Record<ManagedModelThinkingLevel, string> = {
+  minimal: "minimal",
   low: "low",
   medium: "medium",
   high: "high",
+  xhigh: "xhigh",
 };
 
 function resolveManagedModelForRuntime(
@@ -868,6 +885,29 @@ function resolveThinkingLevel(
   const managedModel = resolveManagedModelForRuntime(settings, runtime);
   if (!managedModel?.supportsThinking) return undefined;
   return THINKING_LEVEL_MAP[managedModel.thinkingLevel] ?? undefined;
+}
+
+/**
+ * Build a `thinkingBudgets` map for token-based providers (Anthropic, Gemini)
+ * when the user has explicitly overridden the budget for the active model.
+ * Returns undefined when no override is set (provider defaults apply).
+ *
+ * Note: pi-ai's `ThinkingBudgets` only accepts minimal/low/medium/high — `xhigh`
+ * cannot carry an explicit budget and falls back to provider defaults.
+ */
+function resolveThinkingBudgets(
+  settings: AppSettings,
+  runtime: ResolvedAgentRuntime | null,
+): { minimal?: number; low?: number; medium?: number; high?: number } | undefined {
+  const managedModel = resolveManagedModelForRuntime(settings, runtime);
+  if (!managedModel?.supportsThinking) return undefined;
+  const budget = managedModel.thinkingBudgetTokens;
+  if (typeof budget !== "number" || !Number.isFinite(budget) || budget <= 0) {
+    return undefined;
+  }
+  const level = managedModel.thinkingLevel;
+  if (level === "xhigh") return undefined;
+  return { [level]: Math.floor(budget) };
 }
 
 function resolveEffectiveTemperature(
@@ -1018,6 +1058,7 @@ export async function gatewayComplete(
     ? normalizeToolChoiceForProtocol(protocol, effectiveToolChoice)
     : undefined;
   const thinking = resolveThinkingLevel(settings, runtime);
+  const thinkingBudgets = resolveThinkingBudgets(settings, runtime);
 
   const context = toPiAiContext(messages, hasTools ? options?.tools : undefined);
 
@@ -1029,6 +1070,7 @@ export async function gatewayComplete(
       signal: options?.signal,
       sessionId: options?.sessionId,
       reasoning: thinking as Parameters<typeof piComplete>[2] extends { reasoning?: infer R } ? R : never,
+      thinkingBudgets: thinkingBudgets as Parameters<typeof piComplete>[2] extends { thinkingBudgets?: infer B } ? B : never,
       onPayload: (payload: unknown) => {
         if (payload && typeof payload === "object") {
           const p = payload as Record<string, unknown>;
@@ -1067,6 +1109,7 @@ export async function gatewayStream(
   options: GatewayRequestOptions | undefined,
   onChunk: (content: string) => void,
   onToolCall?: (event: StreamToolCallEvent) => void,
+  onThinkingChunk?: (delta: string) => void,
 ): Promise<LiteLLMHttpResponse> {
   const { model, apiKey, protocol } = resolveModelFromSettings(settings, runtime);
   const hasTools = (options?.tools?.length ?? 0) > 0;
@@ -1077,6 +1120,7 @@ export async function gatewayStream(
     ? normalizeToolChoiceForProtocol(protocol, effectiveToolChoice)
     : undefined;
   const thinking = resolveThinkingLevel(settings, runtime);
+  const thinkingBudgets = resolveThinkingBudgets(settings, runtime);
 
   const context = toPiAiContext(messages, hasTools ? options?.tools : undefined);
 
@@ -1089,6 +1133,7 @@ export async function gatewayStream(
         signal: options?.signal,
         sessionId: options?.sessionId,
         reasoning: thinking as Parameters<typeof piStream>[2] extends { reasoning?: infer R } ? R : never,
+        thinkingBudgets: thinkingBudgets as Parameters<typeof piStream>[2] extends { thinkingBudgets?: infer B } ? B : never,
         onPayload: (payload: unknown) => {
           if (payload && typeof payload === "object") {
             const p = payload as Record<string, unknown>;
@@ -1106,12 +1151,22 @@ export async function gatewayStream(
       for await (const event of s) {
         if (event.type === "text_delta") {
           onChunk(event.delta);
-        } else if (event.type === "toolcall_end") {
-          const tc = event as { type: "toolcall_end"; toolCall: { id: string; name: string; arguments: Record<string, unknown> }; [k: string]: unknown };
+        } else if (event.type === "thinking_delta") {
+          onThinkingChunk?.(event.delta);
+        } else if (event.type === "toolcall_start" || event.type === "toolcall_delta") {
+          const block = event.partial.content[event.contentIndex];
+          if (!block || block.type !== "toolCall" || !block.id) continue;
           onToolCall?.({
-            callId: tc.toolCall.id,
-            toolName: tc.toolCall.name,
-            arguments: JSON.stringify(tc.toolCall.arguments),
+            callId: block.id,
+            toolName: block.name,
+            arguments: JSON.stringify(block.arguments ?? {}),
+          });
+        } else if (event.type === "toolcall_end") {
+          const tc = event.toolCall;
+          onToolCall?.({
+            callId: tc.id,
+            toolName: tc.name,
+            arguments: JSON.stringify(tc.arguments),
           });
         }
       }

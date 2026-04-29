@@ -93,6 +93,7 @@ interface UseChatExecutionOptions {
   setCategorizedError: Dispatch<SetStateAction<CategorizedError | null>>;
   setLiveContextTokens: Dispatch<SetStateAction<number | null>>;
   setLiveToolCalls: Dispatch<SetStateAction<LiveToolCall[]>>;
+  setLiveThinking: Dispatch<SetStateAction<string>>;
   setPrompt: Dispatch<SetStateAction<string>>;
   setComposerAttachments: Dispatch<SetStateAction<ChatContextAttachment[]>>;
   setFailedLlmRequestLog: Dispatch<SetStateAction<string | null>>;
@@ -155,6 +156,7 @@ export function useChatExecution(options: UseChatExecutionOptions) {
     setCategorizedError,
     setLiveContextTokens,
     setLiveToolCalls,
+    setLiveThinking,
     setPrompt,
     setComposerAttachments,
     setFailedLlmRequestLog,
@@ -347,6 +349,8 @@ export function useChatExecution(options: UseChatExecutionOptions) {
 
     let localStreamBuffer = "";
     let localRafId: number | null = null;
+    let thinkingBuffer = "";
+    let thinkingRafId: number | null = null;
     const isActive = () => activeConversationIdRef.current === streamConvId;
 
     if (visibleUserMessage && isActive()) {
@@ -437,6 +441,7 @@ export function useChatExecution(options: UseChatExecutionOptions) {
     setFailedLlmRequestLog(null);
     setSessionNote("正在回复…");
     setLiveToolCalls([]);
+    setLiveThinking("");
     setLiveContextTokens(null);
 
     session.setWorkflowPhase("planning");
@@ -508,6 +513,18 @@ export function useChatExecution(options: UseChatExecutionOptions) {
                     : m,
                 ),
               );
+            });
+          }
+        },
+        onThinkingChunk: (delta) => {
+          if (!isActive()) return;
+          thinkingBuffer += delta;
+          if (thinkingRafId === null) {
+            thinkingRafId = requestAnimationFrame(() => {
+              const buffered = thinkingBuffer;
+              thinkingBuffer = "";
+              thinkingRafId = null;
+              setLiveThinking((prev) => prev + buffered);
             });
           }
         },
@@ -627,21 +644,94 @@ export function useChatExecution(options: UseChatExecutionOptions) {
           result.workingMemorySnapshot,
         );
       }
-      guardedSetMessages((prev) =>
-        prev.map((m) => {
-          if (m.id === assistantMessageId) {
-            return {
-              ...m,
-              content: result.assistantReply,
-              plan: result.plan,
-              toolTrace: result.toolTrace,
-              tool_calls:
-                result.assistantToolCalls ?? buildToolCallsFromPlan(result.plan),
-            };
-          }
-          return m;
-        }),
-      );
+
+      // Splice the loop's intermediate (assistant tool_call → tool result)
+      // pairs into the chat record BEFORE the placeholder assistant message.
+      // Without this, multi-turn tool histories collapse into a single text
+      // bubble and the next user prompt's `conversationHistory` is missing
+      // every tool result the loop produced — forcing the model to re-discover
+      // the same paths/files it just looked up.
+      const intermediateRecords: ChatMessageRecord[] = [];
+      const replyAgentId = convBinding?.agentId ?? activeAgent.id;
+      const intermediateBaseTime = Date.now();
+      for (let i = 0; i < (result.loopMessages?.length ?? 0); i += 1) {
+        const msg = result.loopMessages![i];
+        if (msg.role !== "assistant" && msg.role !== "tool") continue;
+        const trimmedContent =
+          typeof msg.content === "string" ? msg.content : "";
+        const hasToolCalls =
+          msg.role === "assistant" &&
+          Array.isArray(msg.tool_calls) &&
+          msg.tool_calls.length > 0;
+        // Drop empty assistant frames with no tool_calls (e.g., interim
+        // streaming nulls). Tool messages are kept even if content is empty
+        // so tool_call_id pairing stays intact.
+        if (msg.role === "assistant" && !trimmedContent.trim() && !hasToolCalls) {
+          continue;
+        }
+        const record: ChatMessageRecord = {
+          id: createMessageId(msg.role),
+          role: msg.role,
+          content: trimmedContent,
+          createdAt: new Date(intermediateBaseTime + i).toISOString(),
+          plan: null,
+          agentId: msg.role === "assistant" ? replyAgentId : undefined,
+        };
+        if (hasToolCalls) {
+          record.tool_calls = msg.tool_calls!.map((tc) => ({
+            id: tc.id,
+            type: "function" as const,
+            function: {
+              name: tc.function.name,
+              arguments: tc.function.arguments,
+            },
+          }));
+        }
+        if (msg.role === "tool") {
+          if (msg.tool_call_id) record.tool_call_id = msg.tool_call_id;
+          if (msg.name) record.name = msg.name;
+        }
+        intermediateRecords.push(record);
+      }
+
+      guardedSetMessages((prev) => {
+        const placeholderIdx = prev.findIndex((m) => m.id === assistantMessageId);
+        const updatedPlaceholder =
+          placeholderIdx >= 0
+            ? {
+                ...prev[placeholderIdx],
+                content: result.assistantReply,
+                plan: result.plan,
+                toolTrace: result.toolTrace,
+                tool_calls:
+                  result.assistantToolCalls ??
+                  buildToolCallsFromPlan(result.plan),
+              }
+            : null;
+        if (placeholderIdx < 0 || !updatedPlaceholder) {
+          // Defensive: placeholder somehow gone (e.g., conversation switched).
+          // Fall back to the previous behavior: just map.
+          return prev.map((m) =>
+            m.id === assistantMessageId
+              ? {
+                  ...m,
+                  content: result.assistantReply,
+                  plan: result.plan,
+                  toolTrace: result.toolTrace,
+                  tool_calls:
+                    result.assistantToolCalls ??
+                    buildToolCallsFromPlan(result.plan),
+                }
+              : m,
+          );
+        }
+        return [
+          ...prev.slice(0, placeholderIdx),
+          ...intermediateRecords,
+          updatedPlaceholder,
+          ...prev.slice(placeholderIdx + 1),
+        ];
+      });
 
       session.updatePlan(result.assistantReply);
       session.appendToolTraces(result.toolTrace ?? []);
@@ -794,8 +884,12 @@ export function useChatExecution(options: UseChatExecutionOptions) {
       if (localRafId !== null) {
         cancelAnimationFrame(localRafId);
       }
+      if (thinkingRafId !== null) {
+        cancelAnimationFrame(thinkingRafId);
+      }
       guardedSetIsStreaming(false);
       guardedSetToolCalls([]);
+      if (isActive()) setLiveThinking("");
       abortControllersRef.current.delete(streamConvId);
       if (abortControllerRef.current === controller)
         abortControllerRef.current = null;

@@ -176,6 +176,13 @@ export interface NativeToolLoopResult {
   toolTrace: ToolExecutionTrace[];
   assistantToolCalls?: LiteLLMMessage["tool_calls"];
   assistantToolCallsFromFinalTurn?: boolean;
+  /**
+   * Slice of the internal `messages` array containing every entry appended
+   * during the loop body (intermediate assistant tool_calls, tool results, and
+   * the final assistant message if one was produced). The caller is expected
+   * to drop the trailing assistant when it duplicates `assistantReply`.
+   */
+  loopMessages: LiteLLMMessage[];
   workingMemorySnapshot?: WorkingMemorySnapshot;
 }
 
@@ -389,6 +396,7 @@ export async function runNativeToolCallingLoop(
   onAskUserRequest?: (request: AskUserRequest) => void,
   restoredWorkingMemory?: WorkingMemorySnapshot,
   explicitSkillIds?: string[],
+  onThinkingChunk?: (delta: string) => void,
 ): Promise<NativeToolLoopResult> {
   const activeTools = buildAgentToolDefs(runtime);
   const enabledToolNames = [...runtime.enabledTools, ...INTERNAL_TOOL_NAMES];
@@ -447,6 +455,12 @@ export async function runNativeToolCallingLoop(
   console.log(
     `[Loop] 会话开始 | phase=${phase} | continuation=${isContinuation ? "yes" : "no"}`,
   );
+  // Snapshot the message count BEFORE the loop body runs. Anything appended
+  // beyond this index is "loop-produced" and must be exposed back to the UI so
+  // multi-turn tool histories survive into the next conversation turn.
+  const inputMessageCount = messages.length;
+  const captureLoopMessages = (): LiteLLMMessage[] => messages.slice(inputMessageCount);
+
   const requestRecords: RequestRecord[] = [];
   const proposedActions: ActionProposal[] = [];
   const toolTrace: ToolExecutionTrace[] = [];
@@ -526,6 +540,7 @@ export async function runNativeToolCallingLoop(
         planState,
         toolTrace,
         assistantToolCalls: lastAssistantToolCalls,
+        loopMessages: captureLoopMessages(),
         workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
@@ -539,6 +554,7 @@ export async function runNativeToolCallingLoop(
         planState,
         toolTrace,
         assistantToolCalls: lastAssistantToolCalls,
+        loopMessages: captureLoopMessages(),
         workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
@@ -679,6 +695,7 @@ export async function runNativeToolCallingLoop(
             onToolCallEvent,
             toolChoiceOverride,
             sessionId,
+            onThinkingChunk,
           );
           toolChoiceOverride = undefined;
           completion = turnRequest.completion;
@@ -798,6 +815,7 @@ export async function runNativeToolCallingLoop(
             completion.assistantMessage.tool_calls ?? lastAssistantToolCalls,
           assistantToolCallsFromFinalTurn:
             (completion.assistantMessage.tool_calls?.length ?? 0) > 0,
+          loopMessages: captureLoopMessages(),
           workingMemorySnapshot: currentWorkingMemorySnapshot(),
         };
       }
@@ -814,6 +832,7 @@ export async function runNativeToolCallingLoop(
           completion.assistantMessage.tool_calls ?? lastAssistantToolCalls,
         assistantToolCallsFromFinalTurn:
           (completion.assistantMessage.tool_calls?.length ?? 0) > 0,
+        loopMessages: captureLoopMessages(),
         workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
@@ -1142,6 +1161,7 @@ export async function runNativeToolCallingLoop(
         proposedActions,
         planState,
         toolTrace,
+        loopMessages: captureLoopMessages(),
         workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
@@ -1163,6 +1183,7 @@ export async function runNativeToolCallingLoop(
         proposedActions,
         planState,
         toolTrace,
+        loopMessages: captureLoopMessages(),
         workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }
@@ -1262,6 +1283,7 @@ export async function runNativeToolCallingLoop(
         proposedActions,
         planState,
         toolTrace,
+        loopMessages: captureLoopMessages(),
         workingMemorySnapshot: currentWorkingMemorySnapshot(),
       };
     }

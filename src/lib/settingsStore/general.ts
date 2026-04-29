@@ -20,8 +20,20 @@ export type VendorProtocol =
   | "anthropic-messages";
 export type ProxyMode = "off" | "http" | "https" | "socks5";
 export type ManagedModelSource = "manual" | "fetched";
-export type ManagedModelThinkingLevel = "low" | "medium" | "high";
+export type ManagedModelThinkingLevel =
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
 
+const MANAGED_MODEL_THINKING_LEVELS: readonly ManagedModelThinkingLevel[] = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+];
 const DEFAULT_MANAGED_MODEL_THINKING_LEVEL: ManagedModelThinkingLevel = "medium";
 
 export interface ToolPermissions {
@@ -76,6 +88,12 @@ export interface ManagedModel {
   source: ManagedModelSource;
   supportsThinking: boolean;
   thinkingLevel: ManagedModelThinkingLevel;
+  /**
+   * Optional override of the thinking token budget for token-based providers
+   * (Anthropic Claude, Google Gemini). When set, applied to the currently
+   * selected `thinkingLevel`. Null/undefined falls back to provider defaults.
+   */
+  thinkingBudgetTokens?: number | null;
   metaSettings: ManagedModelMetaSettings;
   createdAt: string;
   updatedAt: string;
@@ -180,9 +198,23 @@ function normalizeRecentWorkspaces(raw: unknown, activeWorkspacePath = ""): stri
 function normalizeManagedModelThinkingLevel(
   value: unknown,
 ): ManagedModelThinkingLevel {
-  return value === "low" || value === "medium" || value === "high"
-    ? value
+  return typeof value === "string" &&
+    (MANAGED_MODEL_THINKING_LEVELS as readonly string[]).includes(value)
+    ? (value as ManagedModelThinkingLevel)
     : DEFAULT_MANAGED_MODEL_THINKING_LEVEL;
+}
+
+function normalizeManagedModelThinkingBudgetTokens(
+  value: unknown,
+): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.floor(parsed);
 }
 
 function createDefaultManagedModelMetaSettings(): ManagedModelMetaSettings {
@@ -257,6 +289,7 @@ function createFixedDefaultEntities(): { vendor: VendorConfig; model: ManagedMod
     source: "manual",
     supportsThinking: false,
     thinkingLevel: DEFAULT_MANAGED_MODEL_THINKING_LEVEL,
+    thinkingBudgetTokens: null,
     metaSettings: createDefaultManagedModelMetaSettings(),
     createdAt: FIXED_TIMESTAMP,
     updatedAt: FIXED_TIMESTAMP,
@@ -336,6 +369,7 @@ export function createManagedModel(
     source,
     supportsThinking: false,
     thinkingLevel: DEFAULT_MANAGED_MODEL_THINKING_LEVEL,
+    thinkingBudgetTokens: null,
     metaSettings: createDefaultManagedModelMetaSettings(),
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -377,6 +411,9 @@ function normalizeManagedModel(raw: unknown): ManagedModel | null {
     source: raw.source === "fetched" ? "fetched" : "manual",
     supportsThinking: raw.supportsThinking === true,
     thinkingLevel: normalizeManagedModelThinkingLevel(raw.thinkingLevel),
+    thinkingBudgetTokens: normalizeManagedModelThinkingBudgetTokens(
+      raw.thinkingBudgetTokens,
+    ),
     metaSettings: normalizeManagedModelMetaSettings(raw.metaSettings),
     createdAt,
     updatedAt,
@@ -704,6 +741,7 @@ function migrateLegacyProfilesToManagedResources(parsed: Partial<PersistedSettin
       source: "manual",
       supportsThinking: false,
       thinkingLevel: DEFAULT_MANAGED_MODEL_THINKING_LEVEL,
+      thinkingBudgetTokens: null,
       metaSettings: createDefaultManagedModelMetaSettings(),
       createdAt: sourceProfile.createdAt || timestamp,
       updatedAt: timestamp,

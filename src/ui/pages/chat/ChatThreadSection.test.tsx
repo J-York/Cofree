@@ -35,6 +35,7 @@ function renderThread(overrides: Partial<ChatThreadSectionProps> = {}) {
     debugMode: false,
     isStreaming: false,
     liveToolCalls: [],
+    liveThinking: "",
     executingActionId: "",
     getActiveShellActionIds: () => [],
     onApprove: vi.fn().mockResolvedValue(undefined),

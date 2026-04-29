@@ -52,6 +52,7 @@ export interface VendorModelRowProps {
   onCancelDelete: () => void;
   onThinkingSupportChange: (value: boolean) => void;
   onThinkingLevelChange: (value: ManagedModel["thinkingLevel"]) => void;
+  onThinkingBudgetTokensChange: (value: number | null) => void;
   onOpenMetaSettings: () => void;
 }
 
@@ -118,7 +119,12 @@ export interface ModelTabProps {
   onDeleteModel: (modelId: string) => void;
   onUpdateModelThinking: (
     modelId: string,
-    updates: Partial<Pick<ManagedModel, "supportsThinking" | "thinkingLevel">>,
+    updates: Partial<
+      Pick<
+        ManagedModel,
+        "supportsThinking" | "thinkingLevel" | "thinkingBudgetTokens"
+      >
+    >,
   ) => void;
   onUpdateModelMetaSettings: (
     modelId: string,

@@ -3,6 +3,7 @@ import type {
   ManagedModel,
   ManagedModelMetaSettings,
   ManagedModelSource,
+  ManagedModelThinkingLevel,
   VendorConfig,
   VendorProtocol,
 } from "./general";
@@ -16,7 +17,14 @@ import {
   syncRuntimeSettings,
 } from "./general";
 
-const DEFAULT_MANAGED_MODEL_THINKING_LEVEL = "medium" as const;
+const DEFAULT_MANAGED_MODEL_THINKING_LEVEL: ManagedModelThinkingLevel = "medium";
+const MANAGED_MODEL_THINKING_LEVELS: readonly ManagedModelThinkingLevel[] = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+];
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -28,10 +36,24 @@ function normalizeBaseUrl(baseUrl: string): string {
 
 function normalizeManagedModelThinkingLevel(
   value: unknown,
-): "low" | "medium" | "high" {
-  return value === "low" || value === "medium" || value === "high"
-    ? value
+): ManagedModelThinkingLevel {
+  return typeof value === "string" &&
+    (MANAGED_MODEL_THINKING_LEVELS as readonly string[]).includes(value)
+    ? (value as ManagedModelThinkingLevel)
     : DEFAULT_MANAGED_MODEL_THINKING_LEVEL;
+}
+
+function normalizeManagedModelThinkingBudgetTokens(
+  value: unknown,
+): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Math.floor(parsed);
 }
 
 function normalizeNumberInRangeOrNull(
@@ -275,6 +297,12 @@ export function updateManagedModel(
             updates.thinkingLevel !== undefined
               ? normalizeManagedModelThinkingLevel(updates.thinkingLevel)
               : model.thinkingLevel,
+          thinkingBudgetTokens:
+            updates.thinkingBudgetTokens !== undefined
+              ? normalizeManagedModelThinkingBudgetTokens(
+                  updates.thinkingBudgetTokens,
+                )
+              : model.thinkingBudgetTokens ?? null,
           metaSettings:
             updates.metaSettings !== undefined
               ? normalizeManagedModelMetaSettings(updates.metaSettings)

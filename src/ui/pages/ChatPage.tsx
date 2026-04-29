@@ -154,6 +154,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     useApprovalQueue();
   const [_sidebarOpenLegacy] = useState<boolean>(false);
   const [liveToolCalls, setLiveToolCalls] = useState<LiveToolCall[]>([]);
+  const [liveThinking, setLiveThinking] = useState<string>("");
   const [inputDialog, setInputDialog] = useState<{
     open: boolean;
     title: string;
@@ -528,6 +529,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     setCategorizedError: setAndAuditError,
     setLiveContextTokens,
     setLiveToolCalls,
+    setLiveThinking,
     setPrompt,
     setComposerAttachments,
     setFailedLlmRequestLog,
@@ -545,7 +547,22 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   handlePlanUpdateRef.current = handlePlanUpdate;
   continueAfterHitlIfNeededRef.current = continueAfterHitlIfNeeded;
 
-  const visibleMessages = messages.filter((message) => message.role !== "tool");
+  const visibleMessages = messages.filter((message) => {
+    if (message.role === "tool") return false;
+    // Hide intermediate assistant frames that exist only to carry tool_calls
+    // (no text content). They are part of the LLM's protocol-level history but
+    // should not render as empty chat bubbles. The placeholder assistant for
+    // the current turn always has either streaming content or a final reply.
+    if (
+      message.role === "assistant" &&
+      !message.content.trim() &&
+      Array.isArray(message.tool_calls) &&
+      message.tool_calls.length > 0
+    ) {
+      return false;
+    }
+    return true;
+  });
   const lastVisibleMessage = visibleMessages[visibleMessages.length - 1];
   const lastVisiblePlanState = lastVisibleMessage?.plan?.state ?? "";
   const lastVisibleActionStatuses =
@@ -1021,6 +1038,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
             debugMode={settings.debugMode}
             isStreaming={isStreaming}
             liveToolCalls={liveToolCalls}
+            liveThinking={liveThinking}
             executingActionId={executingActionId}
             getActiveShellActionIds={getActiveShellActionIdsForThread}
             onApprove={handleApproveActionForThread}

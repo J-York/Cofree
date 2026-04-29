@@ -423,6 +423,11 @@ export function ModelTab({
                             onThinkingLevelChange={(value) =>
                               onUpdateModelThinking(model.id, { thinkingLevel: value })
                             }
+                            onThinkingBudgetTokensChange={(value) =>
+                              onUpdateModelThinking(model.id, {
+                                thinkingBudgetTokens: value,
+                              })
+                            }
                             onOpenMetaSettings={() => openMetaEditor(model.id)}
                           />
                         ))}

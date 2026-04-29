@@ -264,6 +264,29 @@ export const MessageContent = memo(function MessageContent({
   );
 });
 
+/**
+ * Renders out-of-band reasoning summary deltas (e.g. from OpenAI Responses API
+ * with reasoning models). The panel is collapsed by default — readers usually
+ * only want to peek when something looks off — and reuses the existing
+ * `.think-block` styles so it sits visually next to inline `<think>` blocks.
+ */
+export function LiveThinkingPanel({ content }: { content: string }) {
+  if (!content) return null;
+  return (
+    <details className="think-block is-live">
+      <summary className="think-summary">思考中…</summary>
+      <div className="think-content">
+        <Markdown
+          remarkPlugins={[remarkGfm]}
+          components={markdownCodeBlockComponents}
+        >
+          {content}
+        </Markdown>
+      </div>
+    </details>
+  );
+}
+
 export function AssistantToolCalls({
   toolCalls,
 }: {

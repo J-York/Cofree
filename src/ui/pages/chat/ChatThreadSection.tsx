@@ -8,6 +8,7 @@ import {
   AssistantToolCalls,
   ContextAttachmentPills,
   InlinePlan,
+  LiveThinkingPanel,
   MessageContent,
   MessageMeta,
   ToolTracePanel,
@@ -41,6 +42,7 @@ interface ChatMessageRowProps {
   debugMode: boolean;
   showStreamingStatus: boolean;
   liveToolCalls: LiveToolCall[];
+  liveThinking: string;
   executingActionId: string;
   editingMessageId: string | null;
   canEdit: boolean;
@@ -70,6 +72,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   debugMode,
   showStreamingStatus,
   liveToolCalls,
+  liveThinking,
   executingActionId,
   editingMessageId,
   canEdit,
@@ -159,6 +162,11 @@ const ChatMessageRow = memo(function ChatMessageRow({
               <AssistantToolCalls toolCalls={message.tool_calls} />
             )}
             {message.role === "assistant" &&
+              showStreamingStatus &&
+              liveThinking.length > 0 && (
+                <LiveThinkingPanel content={liveThinking} />
+              )}
+            {message.role === "assistant" &&
               ((message.toolTrace?.length ?? 0) > 0 ||
                 (showStreamingStatus && liveToolCalls.length > 0)) && (
                 <ToolTracePanel
@@ -230,6 +238,7 @@ export interface ChatThreadSectionProps {
   debugMode: boolean;
   isStreaming: boolean;
   liveToolCalls: LiveToolCall[];
+  liveThinking: string;
   executingActionId: string;
   getActiveShellActionIds: (messageId: string) => string[];
   onApprove: (
@@ -262,6 +271,7 @@ export const ChatThreadSection = memo(function ChatThreadSection({
   debugMode,
   isStreaming,
   liveToolCalls,
+  liveThinking,
   executingActionId,
   getActiveShellActionIds,
   onApprove,
@@ -275,7 +285,18 @@ export const ChatThreadSection = memo(function ChatThreadSection({
   onEditMessage,
   editingMessageId,
 }: ChatThreadSectionProps): ReactElement {
-  const visibleMessages = messages.filter((message) => message.role !== "tool");
+  const visibleMessages = messages.filter((message) => {
+    if (message.role === "tool") return false;
+    if (
+      message.role === "assistant" &&
+      !message.content.trim() &&
+      Array.isArray(message.tool_calls) &&
+      message.tool_calls.length > 0
+    ) {
+      return false;
+    }
+    return true;
+  });
   const lastMessage = messages[messages.length - 1];
 
   return (
@@ -312,6 +333,7 @@ export const ChatThreadSection = memo(function ChatThreadSection({
               debugMode={debugMode}
               showStreamingStatus={showStreamingStatus}
               liveToolCalls={showStreamingStatus ? liveToolCalls : EMPTY_LIVE_TOOL_CALLS}
+              liveThinking={showStreamingStatus ? liveThinking : ""}
               executingActionId={message.plan ? executingActionId : ""}
               editingMessageId={editingMessageId ?? null}
               canEdit={!isStreaming}

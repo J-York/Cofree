@@ -276,7 +276,10 @@ export function SettingsPage({
   const handleUpdateModelThinking = (
     modelId: string,
     updates: Partial<
-      Pick<AppSettings["managedModels"][number], "supportsThinking" | "thinkingLevel">
+      Pick<
+        AppSettings["managedModels"][number],
+        "supportsThinking" | "thinkingLevel" | "thinkingBudgetTokens"
+      >
     >,
   ) => {
     setDraft((current) => updateManagedModel(current, modelId, updates));
