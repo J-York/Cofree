@@ -32,7 +32,7 @@ import {
   type AppSettings,
   type ManagedModelThinkingLevel,
 } from "./settingsStore";
-import { cancelHttpRequest, performHttpRequest } from "./tauriBridge";
+import { cancelHttpRequest, performHttpRequestStream } from "./tauriBridge";
 
 function resolveFetchUrl(input: RequestInfo | URL): string {
   if (typeof input === "string") {
@@ -114,9 +114,7 @@ async function performRustBackedFetch(
 
   let cancelIssued = false;
   const issueCancel = () => {
-    if (cancelIssued) {
-      return;
-    }
+    if (cancelIssued) return;
     cancelIssued = true;
     void cancelHttpRequest(requestId).catch(() => {});
   };
@@ -126,54 +124,137 @@ async function performRustBackedFetch(
     throw createAbortError();
   }
 
-  const abortHandler = () => {
-    issueCancel();
-  };
-  req.signal.addEventListener("abort", abortHandler, { once: true });
+  const buffer = await req.arrayBuffer();
+  const body =
+    buffer.byteLength !== 0 ? new TextDecoder().decode(new Uint8Array(buffer)) : null;
 
-  try {
-    const buffer = await req.arrayBuffer();
-    const body =
-      buffer.byteLength !== 0 ? new TextDecoder().decode(new Uint8Array(buffer)) : null;
-
-    // Preserve browser-normalized headers like content-type when Request adds them.
-    for (const [key, value] of req.headers) {
-      if (!headers.get(key)) {
-        headers.set(key, value);
-      }
-    }
-
-    const sanitizedHeaders = sanitizeSdkFingerprintHeaders(headers);
-    const response = await performHttpRequest({
-      requestId,
-      method: req.method,
-      url: req.url,
-      headers: Array.from(sanitizedHeaders.entries()),
-      body,
-      proxy,
-    });
-
-    if (req.signal.aborted) {
-      throw createAbortError();
-    }
-
-    const res = new Response(response.body, {
-      status: response.status,
-      statusText: response.status_text,
-    });
-    Object.defineProperty(res, "url", { value: response.url });
-    Object.defineProperty(res, "headers", {
-      value: new Headers(response.headers),
-    });
-    return res;
-  } catch (error) {
-    if (req.signal.aborted || isRustHttpCancellationError(error)) {
-      throw createAbortError();
-    }
-    throw error;
-  } finally {
-    req.signal.removeEventListener("abort", abortHandler);
+  for (const [key, value] of req.headers) {
+    if (!headers.get(key)) headers.set(key, value);
   }
+  const sanitizedHeaders = sanitizeSdkFingerprintHeaders(headers);
+
+  return new Promise<Response>((resolveResponse, rejectResponse) => {
+    let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let responseResolved = false;
+    let streamClosed = false;
+    const encoder = new TextEncoder();
+
+    const closeStream = () => {
+      if (streamClosed) return;
+      streamClosed = true;
+      try {
+        controller?.close();
+      } catch {
+        // ignore double-close
+      }
+    };
+
+    const failStream = (err: unknown) => {
+      if (streamClosed) return;
+      streamClosed = true;
+      try {
+        controller?.error(err);
+      } catch {
+        // ignore
+      }
+    };
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+      },
+      cancel() {
+        // Reader hung up — tell Rust to drop the in-flight request.
+        issueCancel();
+      },
+    });
+
+    const onAbort = () => {
+      issueCancel();
+      const abortErr = createAbortError();
+      if (!responseResolved) {
+        rejectResponse(abortErr);
+      } else {
+        failStream(abortErr);
+      }
+    };
+    req.signal.addEventListener("abort", onAbort, { once: true });
+
+    void performHttpRequestStream(
+      {
+        requestId,
+        method: req.method,
+        url: req.url,
+        headers: Array.from(sanitizedHeaders.entries()),
+        body,
+        proxy,
+      },
+      (event) => {
+        switch (event.type) {
+          case "head": {
+            if (responseResolved) return;
+            const res = new Response(stream, {
+              status: event.status,
+              statusText: event.statusText,
+            });
+            Object.defineProperty(res, "url", { value: event.url });
+            Object.defineProperty(res, "headers", {
+              value: new Headers(event.headers),
+            });
+            responseResolved = true;
+            resolveResponse(res);
+            return;
+          }
+          case "chunk": {
+            if (streamClosed || !event.data) return;
+            try {
+              controller?.enqueue(encoder.encode(event.data));
+            } catch {
+              // Stream closed underneath us; nothing to do.
+            }
+            return;
+          }
+          case "end": {
+            closeStream();
+            return;
+          }
+          case "error": {
+            const err =
+              req.signal.aborted || isRustHttpCancellationError(event.message)
+                ? createAbortError()
+                : new Error(event.message);
+            if (!responseResolved) {
+              rejectResponse(err);
+            } else {
+              failStream(err);
+            }
+            return;
+          }
+        }
+      },
+    )
+      .catch((err) => {
+        const finalErr =
+          req.signal.aborted || isRustHttpCancellationError(err)
+            ? createAbortError()
+            : err instanceof Error
+              ? err
+              : new Error(String(err));
+        if (!responseResolved) {
+          rejectResponse(finalErr);
+        } else {
+          failStream(finalErr);
+        }
+      })
+      .finally(() => {
+        req.signal.removeEventListener("abort", onAbort);
+        // Defensive: if Rust returned without sending `end`/`error` (shouldn't
+        // happen), don't leave the stream hanging forever.
+        if (responseResolved && !streamClosed) {
+          closeStream();
+        }
+      });
+  });
 }
 
 // ── Re-exported Cofree internal types ────────────────────────────────────────

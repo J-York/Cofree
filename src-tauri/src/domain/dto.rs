@@ -204,11 +204,3 @@ pub struct ProxySettings {
     pub no_proxy: Option<String>,
 }
 
-#[derive(Clone, Serialize)]
-pub struct HttpResponsePayload {
-    pub status: u16,
-    pub status_text: String,
-    pub url: String,
-    pub headers: Vec<(String, String)>,
-    pub body: String,
-}

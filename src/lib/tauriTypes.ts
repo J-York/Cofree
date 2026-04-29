@@ -167,11 +167,3 @@ export interface FetchResult {
   truncated: boolean;
   error: string | null;
 }
-
-export interface HttpResponsePayload {
-  status: number;
-  status_text: string;
-  url: string;
-  headers: Array<[string, string]>;
-  body: string;
-}

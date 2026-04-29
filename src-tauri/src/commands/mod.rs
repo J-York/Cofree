@@ -21,7 +21,7 @@ pub use fs::{
 };
 pub use git::{git_diff_workspace, git_status_workspace};
 pub use grep::{glob_workspace_files, grep_workspace_files};
-pub use http::{cancel_http_request, fetch_url, perform_http_request};
+pub use http::{cancel_http_request, fetch_url, perform_http_request_stream};
 pub use litellm::fetch_litellm_models;
 pub use patch::{apply_workspace_patch, build_workspace_edit_patch, check_workspace_patch};
 pub use secure_store::{delete_secure_api_key, load_secure_api_key, save_secure_api_key};

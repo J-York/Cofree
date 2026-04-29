@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const {
   completeMock,
   streamMock,
-  performHttpRequestMock,
+  performHttpRequestStreamMock,
   cancelHttpRequestMock,
 } = vi.hoisted(() => ({
   completeMock: vi.fn(),
   streamMock: vi.fn(),
-  performHttpRequestMock: vi.fn(),
+  performHttpRequestStreamMock: vi.fn(),
   cancelHttpRequestMock: vi.fn(),
 }));
 
@@ -23,7 +23,7 @@ vi.mock("./tauriBridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./tauriBridge")>();
   return {
     ...actual,
-    performHttpRequest: performHttpRequestMock,
+    performHttpRequestStream: performHttpRequestStreamMock,
     cancelHttpRequest: cancelHttpRequestMock,
   };
 });
@@ -90,13 +90,6 @@ describe("piAiBridge tauri runtime regressions", () => {
     const controller = new AbortController();
     controller.abort();
 
-    performHttpRequestMock.mockResolvedValue({
-      status: 200,
-      status_text: "OK",
-      url: "https://example.com/v1/chat/completions",
-      headers: [],
-      body: JSON.stringify({ ok: true }),
-    });
     cancelHttpRequestMock.mockResolvedValue(true);
 
     completeMock.mockImplementation(async (_model: unknown, _context: unknown, options?: { signal?: AbortSignal }) => {
@@ -119,7 +112,7 @@ describe("piAiBridge tauri runtime regressions", () => {
     const cancelledRequestId = cancelHttpRequestMock.mock.calls[0]?.[0];
     expect(typeof cancelledRequestId).toBe("string");
     expect(cancelledRequestId).toContain("pi-http-");
-    expect(performHttpRequestMock).not.toHaveBeenCalled();
+    expect(performHttpRequestStreamMock).not.toHaveBeenCalled();
   });
 
   it("uses piStream directly for piAiChatStream in Tauri runtime", async () => {
@@ -168,17 +161,27 @@ describe("piAiBridge tauri runtime regressions", () => {
 
     const nativeFetch = vi.fn(async () => new Response("ok", { status: 200 }));
     globalThis.fetch = nativeFetch as unknown as typeof fetch;
-    performHttpRequestMock.mockResolvedValue({
-      status: 200,
-      status_text: "OK",
-      url: "https://example.com/stream-check",
-      headers: [],
-      body: "ok",
+    performHttpRequestStreamMock.mockImplementation(async (
+      _params: unknown,
+      onEvent: (event: { type: string; [k: string]: unknown }) => void,
+    ) => {
+      onEvent({
+        type: "head",
+        status: 200,
+        statusText: "OK",
+        url: "https://example.com/stream-check",
+        headers: [],
+      });
+      onEvent({ type: "chunk", data: "ok" });
+      onEvent({ type: "end" });
     });
 
     const stream = {
       async *[Symbol.asyncIterator]() {
-        await fetch("https://example.com/stream-check");
+        const res = await fetch("https://example.com/stream-check");
+        // Drain the streamed body so the ReadableStream is fully consumed
+        // before we yield, matching how the OpenAI SDK reads SSE bodies.
+        await res.text();
         yield { type: "text_delta", delta: "chunk" };
       },
       result: vi.fn().mockResolvedValue(createAssistantMessage("chunk")),
@@ -192,11 +195,14 @@ describe("piAiBridge tauri runtime regressions", () => {
     expect(streamMock).toHaveBeenCalledTimes(1);
     expect(completeMock).not.toHaveBeenCalled();
     expect(nativeFetch).not.toHaveBeenCalledWith("https://example.com/stream-check");
-    expect(performHttpRequestMock).toHaveBeenCalledTimes(1);
-    expect(performHttpRequestMock).toHaveBeenCalledWith(expect.objectContaining({
-      method: "GET",
-      url: "https://example.com/stream-check",
-    }));
+    expect(performHttpRequestStreamMock).toHaveBeenCalledTimes(1);
+    expect(performHttpRequestStreamMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "GET",
+        url: "https://example.com/stream-check",
+      }),
+      expect.any(Function),
+    );
     expect(onChunk).toHaveBeenCalledWith("chunk");
   });
 });

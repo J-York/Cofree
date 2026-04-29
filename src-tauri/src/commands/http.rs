@@ -1,10 +1,69 @@
 use crate::config;
-use crate::domain::{HttpResponsePayload, ProxySettings};
+use crate::domain::ProxySettings;
 use futures_util::future::{AbortHandle, Abortable};
+use futures_util::StreamExt;
 use reqwest::header::ACCEPT;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use tauri::ipc::Channel;
+
+/// Event protocol for `perform_http_request_stream`. Sent from Rust → JS via
+/// a typed `Channel`. The JS side reconstructs a streaming `Response` from this
+/// sequence: exactly one `head`, zero-or-more `chunk`, then one `end` or `error`.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum HttpStreamEvent {
+    Head {
+        status: u16,
+        status_text: String,
+        url: String,
+        headers: Vec<(String, String)>,
+    },
+    Chunk {
+        data: String,
+    },
+    End,
+    Error {
+        message: String,
+    },
+}
+
+/// Splits an incoming byte stream at UTF-8 code-point boundaries so that each
+/// emitted `String` is valid UTF-8. Carries any incomplete trailing byte
+/// sequence into the next call. This matters because `bytes_stream()` chunks
+/// are aligned to TCP/HTTP framing, not UTF-8 boundaries.
+struct Utf8Splitter {
+    carry: Vec<u8>,
+}
+
+impl Utf8Splitter {
+    fn new() -> Self {
+        Self { carry: Vec::new() }
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> String {
+        self.carry.extend_from_slice(bytes);
+        let valid_up_to = match std::str::from_utf8(&self.carry) {
+            Ok(_) => self.carry.len(),
+            Err(e) => e.valid_up_to(),
+        };
+        if valid_up_to == 0 {
+            return String::new();
+        }
+        let drained: Vec<u8> = self.carry.drain(..valid_up_to).collect();
+        String::from_utf8(drained).unwrap_or_default()
+    }
+
+    fn finish(self) -> String {
+        if self.carry.is_empty() {
+            String::new()
+        } else {
+            String::from_utf8_lossy(&self.carry).into_owned()
+        }
+    }
+}
 
 const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 120;
 
@@ -217,17 +276,28 @@ pub async fn fetch_url(
     })
 }
 
+/// Streams an HTTP response back to JS as it arrives. Emits exactly one `head`
+/// event with status/url/headers, then one `chunk` event per UTF-8-safe slice
+/// from `response.bytes_stream()`, then one terminal `end` or `error`.
+///
+/// Replaces the prior buffered `perform_http_request` (which awaited the full
+/// body before returning) so SSE responses from LLM providers are surfaced to
+/// the JS-side `OpenAI`/`Anthropic` SDKs incrementally.
 #[tauri::command]
-pub async fn perform_http_request(
+pub async fn perform_http_request_stream(
     request_id: Option<String>,
     method: String,
     url: String,
     headers: Vec<(String, String)>,
     body: Option<String>,
     proxy: Option<ProxySettings>,
-) -> Result<HttpResponsePayload, String> {
+    on_event: Channel<HttpStreamEvent>,
+) -> Result<(), String> {
     let url_trimmed = url.trim();
     if url_trimmed.is_empty() {
+        let _ = on_event.send(HttpStreamEvent::Error {
+            message: "URL 不能为空".to_string(),
+        });
         return Err("URL 不能为空".to_string());
     }
 
@@ -238,10 +308,14 @@ pub async fn perform_http_request(
 
     let (abort_handle, abort_registration) = AbortHandle::new_pair();
     if let Some(active_request_id) = request_id.as_deref() {
-        register_http_abort_handle(active_request_id, abort_handle)?;
+        if let Err(e) = register_http_abort_handle(active_request_id, abort_handle) {
+            let _ = on_event.send(HttpStreamEvent::Error { message: e.clone() });
+            return Err(e);
+        }
     }
 
-    let request_task = async move {
+    let on_event_task = on_event.clone();
+    let task = async move {
         let parsed_method = reqwest::Method::from_bytes(method.trim().as_bytes())
             .map_err(|e| format!("HTTP 方法无效: {}", e))?;
         let client =
@@ -266,7 +340,7 @@ pub async fn perform_http_request(
         let status = response.status();
         let status_text = status.canonical_reason().unwrap_or("").to_string();
         let response_url = response.url().to_string();
-        let response_headers = response
+        let response_headers: Vec<(String, String)> = response
             .headers()
             .iter()
             .filter_map(|(name, value)| {
@@ -275,30 +349,59 @@ pub async fn perform_http_request(
                     .ok()
                     .map(|v| (name.as_str().to_string(), v.to_string()))
             })
-            .collect::<Vec<_>>();
-        let response_body = response
-            .text()
-            .await
-            .map_err(|e| format!("读取响应失败: {}", e))?;
+            .collect();
 
-        Ok(HttpResponsePayload {
+        let _ = on_event_task.send(HttpStreamEvent::Head {
             status: status.as_u16(),
             status_text,
             url: response_url,
             headers: response_headers,
-            body: response_body,
-        })
+        });
+
+        let mut byte_stream = response.bytes_stream();
+        let mut splitter = Utf8Splitter::new();
+        while let Some(chunk_result) = byte_stream.next().await {
+            match chunk_result {
+                Ok(bytes) => {
+                    let text = splitter.push(&bytes);
+                    if !text.is_empty() {
+                        let _ = on_event_task.send(HttpStreamEvent::Chunk { data: text });
+                    }
+                }
+                Err(e) => return Err(format!("读取响应失败: {}", e)),
+            }
+        }
+        let trailing = splitter.finish();
+        if !trailing.is_empty() {
+            let _ = on_event_task.send(HttpStreamEvent::Chunk { data: trailing });
+        }
+
+        Ok(())
     };
 
-    let result = Abortable::new(request_task, abort_registration).await;
+    let result = Abortable::new(task, abort_registration).await;
 
     if let Some(active_request_id) = request_id.as_deref() {
         let _ = remove_http_abort_handle(active_request_id)?;
     }
 
     match result {
-        Ok(response) => response,
-        Err(_) => Err("请求已取消".to_string()),
+        Ok(Ok(())) => {
+            let _ = on_event.send(HttpStreamEvent::End);
+            Ok(())
+        }
+        Ok(Err(msg)) => {
+            let _ = on_event.send(HttpStreamEvent::Error {
+                message: msg.clone(),
+            });
+            Err(msg)
+        }
+        Err(_) => {
+            let _ = on_event.send(HttpStreamEvent::Error {
+                message: "请求已取消".to_string(),
+            });
+            Err("请求已取消".to_string())
+        }
     }
 }
 

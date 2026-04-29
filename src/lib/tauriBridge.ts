@@ -3,7 +3,7 @@
  * 所有前端 → 后端调用统一通过本模块，便于测试 mock 和类型检查。
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AppHealth,
@@ -14,8 +14,6 @@ import type {
   FileEntry,
   GlobEntry,
   GrepResult,
-  HttpResponsePayload,
-
   PatchApplyResult,
   ProxySettings,
   ReadFileResult,
@@ -594,21 +592,45 @@ export function fetchUrl(params: {
   });
 }
 
-export function performHttpRequest(params: {
-  requestId?: string;
-  method: string;
-  url: string;
-  headers: Array<[string, string]>;
-  body?: string | null;
-  proxy?: ProxySettings;
-}): Promise<HttpResponsePayload> {
-  return invoke<HttpResponsePayload>("perform_http_request", {
+export type HttpStreamEvent =
+  | {
+      type: "head";
+      status: number;
+      statusText: string;
+      url: string;
+      headers: Array<[string, string]>;
+    }
+  | { type: "chunk"; data: string }
+  | { type: "end" }
+  | { type: "error"; message: string };
+
+/**
+ * Streaming HTTP bridge. The Rust side sends one `head` event with status &
+ * headers, then `chunk` events as bytes arrive from the response body, and
+ * finally one terminal `end` or `error`. The returned promise resolves when
+ * the Rust command finishes (after the terminal event has been dispatched).
+ */
+export function performHttpRequestStream(
+  params: {
+    requestId?: string;
+    method: string;
+    url: string;
+    headers: Array<[string, string]>;
+    body?: string | null;
+    proxy?: ProxySettings;
+  },
+  onEvent: (event: HttpStreamEvent) => void,
+): Promise<void> {
+  const channel = new Channel<HttpStreamEvent>();
+  channel.onmessage = onEvent;
+  return invoke<void>("perform_http_request_stream", {
     requestId: params.requestId,
     method: params.method,
     url: params.url,
     headers: params.headers,
     body: params.body,
     proxy: params.proxy,
+    onEvent: channel,
   });
 }
 
