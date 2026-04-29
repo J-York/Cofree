@@ -775,6 +775,24 @@ pub fn build_workspace_edit_patch(
     Ok(rewrite_edit_patch_paths(&raw_patch, &normalized_relative))
 }
 
+/// Truncate a grep match line to at most `max_bytes` UTF-8 bytes, walking back
+/// to the nearest char boundary so multi-byte characters (CJK, emoji, etc.)
+/// at the cut never produce an invalid slice. Appends `"..."` when truncated.
+///
+/// Plain `&line[..max_bytes]` panics whenever `max_bytes` lands inside a
+/// codepoint, which any workspace file containing long Chinese lines (e.g.
+/// debug-log JSON exports) reliably triggers.
+fn truncate_grep_match_line(line: &str, max_bytes: usize) -> String {
+    if line.len() <= max_bytes {
+        return line.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &line[..end])
+}
+
 #[tauri::command]
 pub fn grep_workspace_files(
     workspace_path: String,
@@ -839,11 +857,7 @@ pub fn grep_workspace_files(
             }
             if regex.is_match(line) {
                 let relative = to_workspace_relative_string(&workspace, file_path);
-                let trimmed_line = if line.len() > 500 {
-                    format!("{}...", &line[..500])
-                } else {
-                    line.to_string()
-                };
+                let trimmed_line = truncate_grep_match_line(line, 500);
                 matches.push(GrepMatch {
                     file: relative,
                     line: line_idx + 1,
@@ -2309,7 +2323,10 @@ pub fn delete_skill_directory(file_path: String, workspace_path: String) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::{build_workspace_edit_patch, extract_symbols, trim_string_to_tail};
+    use super::{
+        build_workspace_edit_patch, extract_symbols, trim_string_to_tail,
+        truncate_grep_match_line,
+    };
 
     fn names_kinds(content: &str, language: &str) -> Vec<(String, String)> {
         extract_symbols(content, language)
@@ -2474,5 +2491,43 @@ class Guarded {\n\
         trim_string_to_tail(&mut value, 4);
         assert_eq!(value, "ab");
         assert_eq!(value.len(), 2);
+    }
+
+    #[test]
+    fn truncate_grep_match_line_returns_short_lines_unchanged() {
+        let line = "fn main() { let x = 1; }";
+        let result = truncate_grep_match_line(line, 500);
+        assert_eq!(result, line);
+    }
+
+    #[test]
+    fn truncate_grep_match_line_walks_back_to_char_boundary_for_cjk() {
+        // Build a line whose byte 500 lands inside a multi-byte CJK codepoint.
+        // Each '程' is 3 bytes in UTF-8: 166 of them = 498 bytes, then byte 500
+        // sits inside the next '程'. Plain &line[..500] would panic here.
+        let mut line = String::new();
+        for _ in 0..200 {
+            line.push('程');
+        }
+        assert!(line.len() > 500);
+        assert!(!line.is_char_boundary(500));
+
+        let result = truncate_grep_match_line(&line, 500);
+        // Must not panic, must end with the suffix marker, and the prefix
+        // before "..." must be valid UTF-8 (implicit since we built a String).
+        assert!(result.ends_with("..."));
+        let prefix_bytes = result.len() - "...".len();
+        assert!(prefix_bytes <= 500);
+        assert!(prefix_bytes % 3 == 0); // every '程' is 3 bytes
+    }
+
+    #[test]
+    fn truncate_grep_match_line_handles_max_bytes_zero() {
+        let line = "abc";
+        // Edge case: don't divide by zero, don't panic, just produce "...".
+        let result = truncate_grep_match_line(line, 0);
+        // Short-circuits via `line.len() <= max_bytes`? No — len is 3 > 0.
+        // Walks back from 0; loop body never executes since `end > 0` is false.
+        assert_eq!(result, "...");
     }
 }
