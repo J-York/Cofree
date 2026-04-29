@@ -12,6 +12,7 @@ import { clearChatHistory, loadChatHistory } from "../../../../lib/chatHistorySt
 import type { ChatContextAttachment } from "../../../../lib/contextAttachments";
 import type { CategorizedError } from "../../../../lib/errorClassifier";
 import type { SkillEntry } from "../../../../lib/skillStore";
+import type { SnippetEntry } from "../../../../lib/snippetStore";
 import { migrateGlobalToWorkspace } from "../../../../lib/conversationMaintenance";
 import {
   createConversation,
@@ -72,6 +73,7 @@ interface UseConversationLifecycleOptions {
   setPrompt: Dispatch<SetStateAction<string>>;
   setComposerAttachments: Dispatch<SetStateAction<ChatContextAttachment[]>>;
   setSelectedSkills: Dispatch<SetStateAction<SkillEntry[]>>;
+  setSelectedSnippets: Dispatch<SetStateAction<SnippetEntry[]>>;
   clearMentionUi: () => void;
   requestThreadScrollToBottom: () => void;
   /** Chat view-state setters — driven by `applyChatViewState`. */
@@ -108,6 +110,7 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
     setPrompt,
     setComposerAttachments,
     setSelectedSkills,
+    setSelectedSnippets,
     clearMentionUi,
     requestThreadScrollToBottom,
     setIsStreaming,
@@ -391,6 +394,7 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
     setPrompt("");
     setComposerAttachments([]);
     setSelectedSkills([]);
+    setSelectedSnippets([]);
     clearMentionUi();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsPath]);
@@ -418,6 +422,7 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
     setConversations(loadConversationList(wsPath));
     setComposerAttachments([]);
     setSelectedSkills([]);
+    setSelectedSnippets([]);
     clearMentionUi();
   };
 
@@ -443,6 +448,7 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
     setPrompt("");
     setComposerAttachments([]);
     setSelectedSkills([]);
+    setSelectedSnippets([]);
     clearMentionUi();
 
     resetChatSessionState(
@@ -480,6 +486,7 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
     setPrompt("");
     setComposerAttachments([]);
     setSelectedSkills([]);
+    setSelectedSnippets([]);
     clearMentionUi();
 
     resetChatSessionState(
@@ -534,6 +541,7 @@ export function useConversationLifecycle(options: UseConversationLifecycleOption
           setPrompt("");
           setComposerAttachments([]);
           setSelectedSkills([]);
+          setSelectedSnippets([]);
           clearMentionUi();
 
           resetChatSessionState(

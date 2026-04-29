@@ -70,3 +70,11 @@ export {
   toggleSkill,
   setSkills,
 } from "./settingsStore/skills";
+
+export {
+  addSnippet,
+  updateSnippet,
+  deleteSnippet,
+  toggleSnippet,
+  setSnippets,
+} from "./settingsStore/snippets";

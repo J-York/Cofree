@@ -146,6 +146,35 @@
   font-size: 12px;
 }
 
+/* ── Snippet Pills ─────────────────────────────────── */
+.chat-snippet-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 10px;
+  border-radius: var(--r-full);
+  border: 1px solid color-mix(in srgb, var(--accent-emerald, #10b981) 40%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent-emerald, #10b981) 8%, var(--bg-surface));
+  color: var(--text-2);
+  box-shadow: none;
+}
+
+.chat-snippet-pill-prefix {
+  color: color-mix(in srgb, var(--accent-emerald, #10b981) 80%, var(--text-3));
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.chat-snippet-pill-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
 .chat-mention-menu {
   display: flex;
   flex-direction: column;

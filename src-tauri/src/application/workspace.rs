@@ -2321,6 +2321,66 @@ pub fn delete_skill_directory(file_path: String, workspace_path: String) -> Resu
     Err("只能删除位于 ~/.cofree/skills/ 或工作区 .cofree/skills/ 目录下的 Skill".to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Snippet management: write / delete files under ~/.cofree/snippets/
+// ---------------------------------------------------------------------------
+
+fn snippet_filename_from(name: &str) -> Result<String, AppError> {
+    let trimmed = name.trim().trim_end_matches(".md");
+    let safe: String = trimmed
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if safe.is_empty() {
+        return Err(AppError::validation(
+            "Snippet 文件名只能包含字母、数字、下划线、短横线",
+        ));
+    }
+    Ok(format!("{}.md", safe))
+}
+
+fn snippets_dir() -> Result<PathBuf, AppError> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| AppError::file("无法获取用户主目录"))?;
+    Ok(home.join(".cofree").join("snippets"))
+}
+
+#[tauri::command]
+pub fn write_snippet_file(file_name: String, content: String) -> Result<String, AppError> {
+    let safe_name = snippet_filename_from(&file_name)?;
+    let dir = snippets_dir()?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| AppError::file(format!("创建 Snippet 目录失败: {}", e)))?;
+    let path = dir.join(&safe_name);
+    fs::write(&path, content)
+        .map_err(|e| AppError::file(format!("写入 Snippet 文件失败: {}", e)))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn delete_snippet_file(file_name: String) -> Result<(), AppError> {
+    let safe_name = snippet_filename_from(&file_name)?;
+    let dir = snippets_dir()?;
+    let path = dir.join(&safe_name);
+    if !path.exists() {
+        return Ok(());
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| AppError::file(format!("无法解析 Snippet 路径: {}", e)))?;
+    let dir_canonical = dir
+        .canonicalize()
+        .map_err(|e| AppError::file(format!("无法解析 Snippet 目录: {}", e)))?;
+    if !canonical.starts_with(&dir_canonical) || canonical == dir_canonical {
+        return Err(AppError::validation(
+            "只能删除位于 ~/.cofree/snippets/ 目录下的 Snippet 文件",
+        ));
+    }
+    fs::remove_file(&canonical)
+        .map_err(|e| AppError::file(format!("删除 Snippet 文件失败: {}", e)))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

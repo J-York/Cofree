@@ -28,6 +28,7 @@ export interface RunChatCycleOptions {
   phase?: PlanningSessionPhase;
   existingPlan?: OrchestrationPlan | null;
   explicitSkillIds?: string[];
+  explicitSnippetIds?: string[];
 }
 
 export function resolveConversationModelSelection(

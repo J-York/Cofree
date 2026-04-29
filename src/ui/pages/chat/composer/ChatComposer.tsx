@@ -1,6 +1,7 @@
 import { useEffect, type ReactElement, type RefObject } from "react";
 import type { ChatContextAttachment } from "../../../../lib/contextAttachments";
 import type { SkillEntry } from "../../../../lib/skillStore";
+import type { SnippetEntry } from "../../../../lib/snippetStore";
 import { IconTrash } from "../../../components/Icons";
 import { ContextAttachmentPills, TokenUsageRing } from "../ChatPresentational";
 import type { ActiveMention, MentionSuggestion } from "../mentions";
@@ -13,6 +14,8 @@ export interface ChatComposerProps {
   onRemoveComposerAttachment: (attachmentId: string) => void;
   selectedSkills: SkillEntry[];
   onRemoveSelectedSkill: (skillId: string) => void;
+  selectedSnippets: SnippetEntry[];
+  onRemoveSelectedSnippet: (snippetId: string) => void;
   activeMention: ActiveMention | null;
   mentionSuggestions: MentionSuggestion[];
   mentionSelectionIndex: number;
@@ -50,6 +53,8 @@ export function ChatComposer({
   onRemoveComposerAttachment,
   selectedSkills,
   onRemoveSelectedSkill,
+  selectedSnippets,
+  onRemoveSelectedSnippet,
   activeMention,
   mentionSuggestions,
   mentionSelectionIndex,
@@ -112,7 +117,7 @@ export function ChatComposer({
           attachments={composerAttachments}
           onRemove={onRemoveComposerAttachment}
         />
-        {selectedSkills.length > 0 && (
+        {(selectedSkills.length > 0 || selectedSnippets.length > 0) && (
           <div className="chat-context-pills">
             {selectedSkills.map((skill) => (
               <span key={skill.id} className="chat-skill-pill">
@@ -124,6 +129,21 @@ export function ChatComposer({
                   onClick={() => onRemoveSelectedSkill(skill.id)}
                   aria-label={`移除 ${skill.name}`}
                   title={`移除 ${skill.name}`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            {selectedSnippets.map((snippet) => (
+              <span key={snippet.id} className="chat-snippet-pill">
+                <span className="chat-snippet-pill-prefix">📑</span>
+                <span className="chat-snippet-pill-label" title={snippet.description}>{snippet.name}</span>
+                <button
+                  type="button"
+                  className="chat-context-pill-remove"
+                  onClick={() => onRemoveSelectedSnippet(snippet.id)}
+                  aria-label={`移除 ${snippet.name}`}
+                  title={`移除 ${snippet.name}`}
                 >
                   ×
                 </button>
@@ -144,13 +164,20 @@ export function ChatComposer({
                 }}
               >
                 <span className="chat-mention-item-name">
-                  {suggestion.kind === "skill" ? "✦ " : ""}{suggestion.displayName}
+                  {suggestion.kind === "skill"
+                    ? "✦ "
+                    : suggestion.kind === "snippet"
+                      ? "📑 "
+                      : ""}
+                  {suggestion.displayName}
                   {suggestion.kind === "folder" ? "/" : ""}
                 </span>
                 <span className="chat-mention-item-path">
                   {suggestion.kind === "skill"
                     ? `Skill · ${suggestion.description ?? ""}`
-                    : `${suggestion.kind === "folder" ? "目录" : "文件"} · ${suggestion.relativePath}${suggestion.kind === "folder" ? "/" : ""}`
+                    : suggestion.kind === "snippet"
+                      ? `知识 · ${suggestion.description ?? ""}`
+                      : `${suggestion.kind === "folder" ? "目录" : "文件"} · ${suggestion.relativePath}${suggestion.kind === "folder" ? "/" : ""}`
                   }
                 </span>
               </button>
@@ -280,7 +307,10 @@ export function ChatComposer({
               disabled={
                 isStreaming ||
                 Boolean(executingActionId) ||
-                (!prompt.trim() && composerAttachments.length === 0 && selectedSkills.length === 0) ||
+                (!prompt.trim() &&
+                  composerAttachments.length === 0 &&
+                  selectedSkills.length === 0 &&
+                  selectedSnippets.length === 0) ||
                 chatBlocked
               }
               type="submit"

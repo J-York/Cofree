@@ -16,8 +16,9 @@ pub use app::{
 };
 pub use diagnostics::get_workspace_diagnostics;
 pub use fs::{
-    delete_skill_directory, get_home_dir, install_skill_from_zip, list_workspace_files,
-    read_absolute_file, read_workspace_file, scan_workspace_structure,
+    delete_skill_directory, delete_snippet_file, get_home_dir, install_skill_from_zip,
+    list_workspace_files, read_absolute_file, read_workspace_file, scan_workspace_structure,
+    write_snippet_file,
 };
 pub use git::{git_diff_workspace, git_status_workspace};
 pub use grep::{glob_workspace_files, grep_workspace_files};

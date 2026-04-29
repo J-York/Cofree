@@ -1,5 +1,6 @@
 import type { FileEntry, GlobEntry } from "../../../lib/tauriTypes";
 import type { SkillEntry } from "../../../lib/skillStore";
+import type { SnippetEntry } from "../../../lib/snippetStore";
 import {
   createFileContextAttachment,
   createFolderContextAttachment,
@@ -14,13 +15,14 @@ export interface ActiveMention {
 }
 
 export interface MentionSuggestion {
-  kind: ChatContextAttachmentKind | "skill";
+  kind: ChatContextAttachmentKind | "skill" | "snippet";
   relativePath: string;
   displayName: string;
   modified: number;
   size: number;
-  source: "search" | "recent" | "git" | "root" | "skill";
+  source: "search" | "recent" | "git" | "root" | "skill" | "snippet";
   skillId?: string;
+  snippetId?: string;
   description?: string;
   keywords?: string[];
 }
@@ -76,7 +78,7 @@ function scoreMentionMatch(
 ): number {
   const normalizedQuery = query.toLowerCase();
 
-  if (suggestion.kind === "skill") {
+  if (suggestion.kind === "skill" || suggestion.kind === "snippet") {
     if (normalizedQuery.length === 0) return 200;
     const name = suggestion.relativePath.toLowerCase();
     const desc = (suggestion.description ?? "").toLowerCase();
@@ -160,7 +162,9 @@ function dedupeMentionSuggestions(suggestions: MentionSuggestion[]): MentionSugg
     const key =
       suggestion.kind === "skill" && suggestion.skillId
         ? `skill:${suggestion.skillId}`
-        : `${suggestion.kind}:${normalizePath(suggestion.relativePath)}`;
+        : suggestion.kind === "snippet" && suggestion.snippetId
+          ? `snippet:${suggestion.snippetId}`
+          : `${suggestion.kind}:${normalizePath(suggestion.relativePath)}`;
     if (seen.has(key)) {
       continue;
     }
@@ -321,6 +325,34 @@ export function buildSkillMentionSuggestions(
     })
 }
 
+export function buildSnippetMentionSuggestions(
+  snippets: SnippetEntry[],
+  query: string,
+): MentionSuggestion[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  return snippets
+    .filter((snippet) => snippet.enabled)
+    .filter((snippet) => {
+      if (normalizedQuery.length === 0) return true;
+      const name = snippet.name.toLowerCase();
+      const desc = snippet.description.toLowerCase();
+      return name.includes(normalizedQuery) || desc.includes(normalizedQuery);
+    })
+    .map((snippet) => {
+      const sourceLabel = snippet.source === "global-file" ? "global" : "custom";
+      return {
+        kind: "snippet" as const,
+        relativePath: snippet.name,
+        displayName: `${snippet.name} (${sourceLabel})`,
+        modified: 0,
+        size: 0,
+        source: "snippet" as const,
+        snippetId: snippet.id,
+        description: snippet.description,
+      };
+    });
+}
+
 export function rankMentionSuggestions(
   query: string,
   suggestions: MentionSuggestion[],
@@ -358,12 +390,14 @@ export function buildDefaultMentionSuggestions(params: {
   gitSuggestions: MentionSuggestion[];
   rootDirectorySuggestions: MentionSuggestion[];
   skillSuggestions?: MentionSuggestion[];
+  snippetSuggestions?: MentionSuggestion[];
   signals?: MentionRankingSignals;
 }): MentionSuggestion[] {
   return rankMentionSuggestions(
     "",
     [
       ...(params.skillSuggestions ?? []),
+      ...(params.snippetSuggestions ?? []),
       ...params.recentSuggestions,
       ...params.gitSuggestions,
       ...params.rootDirectorySuggestions,
@@ -388,6 +422,7 @@ export function buildSubmittedPrompt(
   text: string,
   attachments: ChatContextAttachment[],
   hasSkills?: boolean,
+  hasSnippets?: boolean,
 ): string {
   const trimmed = text.trim();
   if (trimmed) {
@@ -398,6 +433,9 @@ export function buildSubmittedPrompt(
   }
   if (hasSkills) {
     return "请使用我选择的 Skills 协助我。";
+  }
+  if (hasSnippets) {
+    return "请基于我选中的知识片段协助我。";
   }
   return "";
 }

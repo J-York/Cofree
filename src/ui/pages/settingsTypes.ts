@@ -21,10 +21,17 @@ export interface SettingsPageProps {
   onClose?: () => void;
 }
 
-export type SettingsTab = "skills" | "model" | "tools" | "advanced" | "audit";
+export type SettingsTab =
+  | "skills"
+  | "snippets"
+  | "model"
+  | "tools"
+  | "advanced"
+  | "audit";
 
 export const SETTINGS_TABS: { id: Exclude<SettingsTab, "audit">; label: string }[] = [
   { id: "skills", label: "Skills" },
+  { id: "snippets", label: "知识" },
   { id: "model", label: "模型配置" },
   { id: "tools", label: "工具权限" },
   { id: "advanced", label: "高级" },

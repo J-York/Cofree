@@ -630,6 +630,7 @@ export async function runPlanningSession(
       input.restoredWorkingMemory,
       input.explicitSkillIds,
       input.onThinkingChunk,
+      input.explicitSnippetIds,
     );
 
     for (const record of loopResult.requestRecords) {

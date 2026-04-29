@@ -46,6 +46,9 @@ export interface ChatMessageRecord {
    * HITL continuation can re-inject the same skill context without depending
    * on transient UI state (selectedSkills). */
   explicitSkillIds?: string[];
+  /** Snippet IDs explicitly selected by the user for this message. Same
+   * persistence rationale as explicitSkillIds. */
+  explicitSnippetIds?: string[];
 }
 
 function normalizeRole(value: unknown): ChatMessageRecord["role"] | null {
@@ -116,6 +119,9 @@ export function normalizeChatMessages(value: unknown): ChatMessageRecord[] {
       assistantSpeaker,
       explicitSkillIds: Array.isArray(record.explicitSkillIds) && record.explicitSkillIds.every((id: unknown) => typeof id === "string")
         ? record.explicitSkillIds as string[]
+        : undefined,
+      explicitSnippetIds: Array.isArray(record.explicitSnippetIds) && record.explicitSnippetIds.every((id: unknown) => typeof id === "string")
+        ? record.explicitSnippetIds as string[]
         : undefined,
     });
   }

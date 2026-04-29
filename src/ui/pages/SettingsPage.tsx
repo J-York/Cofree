@@ -44,6 +44,7 @@ import {
 } from "./settingsTypes";
 import { useTheme, getThemeLabel, type ThemeMode } from "../../hooks/useTheme";
 import { SkillTab } from "./SkillTab";
+import { SnippetTab } from "./SnippetTab";
 import { AuditTab } from "./AuditTab";
 
 const SettingsModelTab = lazy(() =>
@@ -479,6 +480,10 @@ export function SettingsPage({
         <div className="settings-pane">
           {activeTab === "skills" && (
             <SkillTab draft={draft} setDraft={setDraft} />
+          )}
+
+          {activeTab === "snippets" && (
+            <SnippetTab draft={draft} setDraft={setDraft} />
           )}
 
           {activeTab === "model" && (

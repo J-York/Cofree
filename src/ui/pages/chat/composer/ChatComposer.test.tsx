@@ -31,6 +31,8 @@ function renderComposer(overrides: Partial<ChatComposerProps> = {}) {
     onRemoveComposerAttachment: vi.fn(),
     selectedSkills: [],
     onRemoveSelectedSkill: vi.fn(),
+    selectedSnippets: [],
+    onRemoveSelectedSnippet: vi.fn(),
     activeMention,
     mentionSuggestions,
     mentionSelectionIndex: 0,

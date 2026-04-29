@@ -43,6 +43,7 @@ const baseSettings: AppSettings = {
   vendors: [],
   managedModels: [],
   skills: [],
+  snippets: [],
 };
 
 describe("debug export helpers", () => {

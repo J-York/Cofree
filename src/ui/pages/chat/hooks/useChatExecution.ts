@@ -41,6 +41,7 @@ import type { WorkingMemorySnapshot } from "../../../../orchestrator/workingMemo
 import type { OrchestrationPlan } from "../../../../orchestrator/types";
 import type { SessionActions } from "../../../../lib/sessionContext";
 import type { SkillEntry } from "../../../../lib/skillStore";
+import type { SnippetEntry } from "../../../../lib/snippetStore";
 import {
   buildFailedLlmRequestLog,
   isLlmResponseFailureCategory,
@@ -72,6 +73,7 @@ interface UseChatExecutionOptions {
   prompt: string;
   composerAttachments: ChatContextAttachment[];
   selectedSkills: SkillEntry[];
+  selectedSnippets: SnippetEntry[];
   currentConversation: Conversation | null;
   activeConversationId: string | null;
   activeConversationIdRef: MutableRefObject<string | null>;
@@ -115,6 +117,7 @@ interface UseChatExecutionOptions {
     prompt: string,
     attachments: ChatContextAttachment[],
     hasSkills: boolean,
+    hasSnippets: boolean,
   ) => string;
 }
 
@@ -137,6 +140,7 @@ export function useChatExecution(options: UseChatExecutionOptions) {
     prompt,
     composerAttachments,
     selectedSkills,
+    selectedSnippets,
     currentConversation,
     activeConversationId,
     activeConversationIdRef,
@@ -250,9 +254,11 @@ export function useChatExecution(options: UseChatExecutionOptions) {
           return next;
         });
 
-        // Re-inject explicit skill IDs from the original message so HITL
-        // continuation preserves skill context without relying on UI state.
+        // Re-inject explicit skill / snippet IDs from the original message so
+        // HITL continuation preserves the same context without relying on UI
+        // state.
         const continuationSkillIds = targetMessage?.explicitSkillIds ?? undefined;
+        const continuationSnippetIds = targetMessage?.explicitSnippetIds ?? undefined;
 
         setTimeout(() => {
           void runChatCycle(decision.prompt, {
@@ -261,6 +267,7 @@ export function useChatExecution(options: UseChatExecutionOptions) {
             internalSystemNote: decision.internalSystemNote,
             existingPlan: plan,
             explicitSkillIds: continuationSkillIds,
+            explicitSnippetIds: continuationSnippetIds,
           }).catch((error) => {
             const msg = error instanceof Error ? error.message : "未知错误";
             setCategorizedError(classifyError(error));
@@ -345,6 +352,7 @@ export function useChatExecution(options: UseChatExecutionOptions) {
       plan: null,
       agentId: convBinding?.agentId ?? activeAgent.id,
       explicitSkillIds: runOptions.explicitSkillIds,
+      explicitSnippetIds: runOptions.explicitSnippetIds,
     };
 
     let localStreamBuffer = "";
@@ -630,6 +638,7 @@ export function useChatExecution(options: UseChatExecutionOptions) {
         },
         restoredWorkingMemory,
         explicitSkillIds: runOptions.explicitSkillIds,
+        explicitSnippetIds: runOptions.explicitSnippetIds,
       });
 
       if (localRafId !== null) {
@@ -919,9 +928,13 @@ export function useChatExecution(options: UseChatExecutionOptions) {
       prompt,
       attachments,
       selectedSkills.length > 0,
+      selectedSnippets.length > 0,
     );
     if (
-      (!text && attachments.length === 0 && selectedSkills.length === 0) ||
+      (!text &&
+        attachments.length === 0 &&
+        selectedSkills.length === 0 &&
+        selectedSnippets.length === 0) ||
       isStreaming
     )
       return;
@@ -932,19 +945,23 @@ export function useChatExecution(options: UseChatExecutionOptions) {
       selectedSkills.length > 0
         ? selectedSkills.map((s) => s.id)
         : undefined;
+    const explicitSnippetIds =
+      selectedSnippets.length > 0
+        ? selectedSnippets.map((s) => s.id)
+        : undefined;
     setPrompt("");
     setComposerAttachments([]);
-    // Deliberately do NOT clear selectedSkills — skill pills stay pinned to
-    // the conversation until the user removes them with the × button or
-    // switches conversations. Otherwise multi-turn flows (e.g. clarification
-    // rounds) lose the active skill after the first submit, and the model
-    // stops receiving the skill's full instructions.
+    // Deliberately do NOT clear selectedSkills / selectedSnippets — pills
+    // stay pinned to the conversation until the user removes them with the
+    // × button or switches conversations. Otherwise multi-turn flows (e.g.
+    // clarification rounds) lose the active context after the first submit.
     clearMentionUi();
 
     try {
       await runChatCycle(text, {
         contextAttachments: attachments,
         explicitSkillIds,
+        explicitSnippetIds,
       });
     } catch (error) {
       setPrompt(previousPrompt);
@@ -1017,7 +1034,10 @@ export function useChatExecution(options: UseChatExecutionOptions) {
    */
   const handleEditSubmit = async (
     messageId: string,
-    options: { explicitSkillIds?: string[] } = {},
+    options: {
+      explicitSkillIds?: string[];
+      explicitSnippetIds?: string[];
+    } = {},
   ): Promise<void> => {
     if (isStreaming) return;
     const target = messagesRef.current.find((m) => m.id === messageId);
@@ -1028,11 +1048,13 @@ export function useChatExecution(options: UseChatExecutionOptions) {
       prompt,
       attachments,
       selectedSkills.length > 0,
+      selectedSnippets.length > 0,
     );
     if (
       !text &&
       attachments.length === 0 &&
-      selectedSkills.length === 0
+      selectedSkills.length === 0 &&
+      selectedSnippets.length === 0
     ) {
       return;
     }
@@ -1065,6 +1087,11 @@ export function useChatExecution(options: UseChatExecutionOptions) {
         (selectedSkills.length > 0
           ? selectedSkills.map((s) => s.id)
           : undefined);
+      const explicitSnippetIds =
+        options.explicitSnippetIds ??
+        (selectedSnippets.length > 0
+          ? selectedSnippets.map((s) => s.id)
+          : undefined);
 
       setPrompt("");
       setComposerAttachments([]);
@@ -1073,6 +1100,7 @@ export function useChatExecution(options: UseChatExecutionOptions) {
       await runChatCycle(text, {
         contextAttachments: attachments,
         explicitSkillIds,
+        explicitSnippetIds,
       });
     } catch (error) {
       messagesRef.current = previousMessages;

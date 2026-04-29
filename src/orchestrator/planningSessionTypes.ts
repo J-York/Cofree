@@ -57,6 +57,7 @@ export interface RunPlanningSessionInput {
   onAskUserRequest?: (request: AskUserRequest) => void;
   restoredWorkingMemory?: WorkingMemorySnapshot;
   explicitSkillIds?: string[];
+  explicitSnippetIds?: string[];
 }
 
 export interface PlanningSessionResult {

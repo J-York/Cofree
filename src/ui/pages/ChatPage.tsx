@@ -62,6 +62,7 @@ import {
   buildMentionSearchPattern,
   buildRecentAttachmentSuggestions,
   buildSkillMentionSuggestions,
+  buildSnippetMentionSuggestions,
   buildSubmittedPrompt,
   createAttachmentFromSuggestion,
   findActiveMention,
@@ -71,6 +72,7 @@ import {
   type MentionSuggestion,
 } from "./chat/mentions";
 import { type SkillEntry } from "../../lib/skillStore";
+import { type SnippetEntry } from "../../lib/snippetStore";
 import type {
   LiveToolCall,
 } from "./chat/types";
@@ -78,6 +80,7 @@ import { isLlmResponseFailureCategory } from "./chat/chatPageHelpers";
 import { useChatStreaming } from "./chat/hooks/useChatStreaming";
 import { useApprovalQueue } from "./chat/hooks/useApprovalQueue";
 import { useSkillDiscovery } from "./chat/hooks/useSkillDiscovery";
+import { useSnippetDiscovery } from "./chat/hooks/useSnippetDiscovery";
 import { useMentionSuggestions } from "./chat/hooks/useMentionSuggestions";
 import { useThreadAutoScroll } from "./chat/hooks/useThreadAutoScroll";
 import { useConversationLifecycle } from "./chat/hooks/useConversationLifecycle";
@@ -122,6 +125,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   } = useMentionSuggestions(wsPath);
   const availableSkills = useSkillDiscovery(wsPath, settings.skills);
   const [selectedSkills, setSelectedSkills] = useState<SkillEntry[]>([]);
+  const availableSnippets = useSnippetDiscovery(settings.snippets);
+  const [selectedSnippets, setSelectedSnippets] = useState<SnippetEntry[]>([]);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [categorizedError, setCategorizedError] =
     useState<CategorizedError | null>(null);
@@ -333,6 +338,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     setPrompt,
     setComposerAttachments,
     setSelectedSkills,
+    setSelectedSnippets,
     clearMentionUi,
     requestThreadScrollToBottom,
     setIsStreaming,
@@ -510,6 +516,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     prompt,
     composerAttachments,
     selectedSkills,
+    selectedSnippets,
     currentConversation,
     activeConversationId,
     activeConversationIdRef,
@@ -633,15 +640,18 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     );
     if (mention.query.trim().length === 0) {
       const skillSuggestions = buildSkillMentionSuggestions(availableSkills, "");
+      const snippetSuggestions = buildSnippetMentionSuggestions(availableSnippets, "");
       const defaults = buildDefaultMentionSuggestions({
         recentSuggestions,
         gitSuggestions: gitMentionSuggestions,
         rootDirectorySuggestions,
         skillSuggestions,
+        snippetSuggestions,
         signals: rankingSignals,
       }).filter(
         (entry) =>
           !(entry.kind === "skill" && selectedSkills.some((s) => s.id === entry.skillId)) &&
+          !(entry.kind === "snippet" && selectedSnippets.some((s) => s.id === entry.snippetId)) &&
           !composerAttachments.some(
             (attachment) =>
               attachment.relativePath === entry.relativePath &&
@@ -676,10 +686,12 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
             entries,
           );
           const skillSuggestions = buildSkillMentionSuggestions(availableSkills, mention.query);
+          const snippetSuggestions = buildSnippetMentionSuggestions(availableSnippets, mention.query);
           const suggestions = rankMentionSuggestions(
             mention.query,
             [
               ...skillSuggestions,
+              ...snippetSuggestions,
               ...fileSuggestions,
               ...folderSuggestions,
               ...rootDirectorySuggestions,
@@ -690,6 +702,7 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
           ).filter(
             (entry) =>
               !(entry.kind === "skill" && selectedSkills.some((s) => s.id === entry.skillId)) &&
+              !(entry.kind === "snippet" && selectedSnippets.some((s) => s.id === entry.snippetId)) &&
               !composerAttachments.some(
                 (attachment) =>
                   attachment.relativePath === entry.relativePath &&
@@ -713,11 +726,13 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
   }, [
     activeMention,
     availableSkills,
+    availableSnippets,
     composerAttachments,
     gitMentionSuggestions,
     mentionIgnorePatterns,
     rootDirectorySuggestions,
     selectedSkills,
+    selectedSnippets,
     wsPath,
   ]);
 
@@ -847,6 +862,11 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
       if (skill && !selectedSkills.some((s) => s.id === skill.id)) {
         setSelectedSkills((prev) => [...prev, skill]);
       }
+    } else if (suggestion.kind === "snippet" && suggestion.snippetId) {
+      const snippet = availableSnippets.find((s) => s.id === suggestion.snippetId);
+      if (snippet && !selectedSnippets.some((s) => s.id === snippet.id)) {
+        setSelectedSnippets((prev) => [...prev, snippet]);
+      }
     } else {
       const attachment = createAttachmentFromSuggestion(suggestion);
       setComposerAttachments((prev) =>
@@ -876,6 +896,11 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
     textareaRef.current?.focus();
   };
 
+  const handleRemoveSelectedSnippet = (snippetId: string): void => {
+    setSelectedSnippets((prev) => prev.filter((s) => s.id !== snippetId));
+    textareaRef.current?.focus();
+  };
+
   const handleEditMessage = (messageId: string): void => {
     if (isStreaming) return;
     const target = messages.find((m) => m.id === messageId);
@@ -896,6 +921,15 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
       setSelectedSkills(restoredSkills);
     } else {
       setSelectedSkills([]);
+    }
+
+    if (target.explicitSnippetIds && target.explicitSnippetIds.length > 0) {
+      const restoredSnippets = target.explicitSnippetIds
+        .map((id) => availableSnippets.find((s) => s.id === id))
+        .filter((s): s is SnippetEntry => Boolean(s));
+      setSelectedSnippets(restoredSnippets);
+    } else {
+      setSelectedSnippets([]);
     }
 
     clearMentionUi();
@@ -1095,6 +1129,8 @@ export function ChatPage({ settings, activeAgent, isVisible, sidebarCollapsed }:
               onRemoveComposerAttachment={handleRemoveComposerAttachment}
               selectedSkills={selectedSkills}
               onRemoveSelectedSkill={handleRemoveSelectedSkill}
+              selectedSnippets={selectedSnippets}
+              onRemoveSelectedSnippet={handleRemoveSelectedSnippet}
               activeMention={activeMention}
               mentionSuggestions={mentionSuggestions}
               mentionSelectionIndex={mentionSelectionIndex}

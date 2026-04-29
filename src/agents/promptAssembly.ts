@@ -7,6 +7,8 @@
 import type { ResolvedAgentRuntime } from "./types";
 import type { ResolvedSkill, SkillManifestEntry } from "../lib/skillStore";
 import { buildSkillPromptFragment } from "../lib/skillStore";
+import type { ResolvedSnippet } from "../lib/snippetStore";
+import { buildSnippetPromptFragment } from "../lib/snippetStore";
 
 // ---------------------------------------------------------------------------
 // Rule Categories
@@ -130,12 +132,19 @@ function isWindowsHost(): boolean {
  *   entries have their full instructions injected; `available` entries are
  *   listed as a compact manifest so the LLM is always aware of what skills
  *   exist even when nothing matched.
+ * @param snippetResolution - Optional snippet resolution. `resolved` entries
+ *   are explicitly @-mentioned by the user and are appended verbatim. Snippets
+ *   never appear in a manifest — if the user did not select them, they stay
+ *   completely out of the prompt.
  */
 export function assembleSystemPrompt(
   runtime: ResolvedAgentRuntime,
   skillResolution?: {
     resolved: ReadonlyArray<ResolvedSkill>;
     available?: ReadonlyArray<SkillManifestEntry>;
+  },
+  snippetResolution?: {
+    resolved: ReadonlyArray<ResolvedSnippet>;
   },
 ): string {
   const rules = SYSTEM_RULE_BLOCKS.join("\n\n");
@@ -148,6 +157,13 @@ export function assembleSystemPrompt(
     );
     if (skillFragment) {
       parts.push(skillFragment);
+    }
+  }
+
+  if (snippetResolution && snippetResolution.resolved.length > 0) {
+    const snippetFragment = buildSnippetPromptFragment(snippetResolution.resolved);
+    if (snippetFragment) {
+      parts.push(snippetFragment);
     }
   }
 

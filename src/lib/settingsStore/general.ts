@@ -1,6 +1,7 @@
 import { migrateLegacyConversationBindings } from "../conversationMaintenance";
 import type { ModelSelection } from "../modelSelection";
 import type { SkillEntry } from "../skillStore";
+import type { SnippetEntry } from "../snippetStore";
 
 export const SETTINGS_STORAGE_KEY = "cofree.settings.v1";
 export const SETTINGS_STORAGE_KEY_V2 = "cofree.settings.v2";
@@ -128,6 +129,7 @@ export interface AppSettings {
   vendors: VendorConfig[];
   managedModels: ManagedModel[];
   skills: SkillEntry[];
+  snippets: SnippetEntry[];
 }
 
 type PersistedSettings = Omit<AppSettings, "apiKey"> & { apiKey?: string };
@@ -324,6 +326,7 @@ function createInitialSettings(): AppSettings {
     vendors: [defaults.vendor],
     managedModels: [defaults.model],
     skills: [],
+    snippets: [],
   };
 }
 
@@ -820,6 +823,28 @@ function normalizeSkillEntries(raw: unknown): SkillEntry[] {
     }));
 }
 
+function normalizeSnippetEntries(raw: unknown): SnippetEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (item): item is Record<string, unknown> =>
+        isRecord(item) && typeof item.id === "string",
+    )
+    .map((item) => ({
+      id: item.id as string,
+      name: typeof item.name === "string" ? item.name : "Snippet",
+      description: typeof item.description === "string" ? item.description : "",
+      body: typeof item.body === "string" ? item.body : "",
+      source:
+        item.source === "global-file" || item.source === "custom"
+          ? (item.source as SnippetEntry["source"])
+          : ("custom" as const),
+      enabled: item.enabled !== false,
+      filePath: typeof item.filePath === "string" ? item.filePath : undefined,
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : nowIso(),
+    }));
+}
+
 function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
   settings: AppSettings;
   legacyProfileSelections: Record<string, LegacyProfileSelection>;
@@ -912,6 +937,7 @@ function normalizeLoadedSettings(parsed: Partial<PersistedSettings>): {
   const finalSettings: AppSettings = {
     ...withLegacyModelMeta,
     skills: normalizeSkillEntries((parsed as Record<string, unknown>).skills),
+    snippets: normalizeSnippetEntries((parsed as Record<string, unknown>).snippets),
   };
 
   // Strip legacy custom-agent fields that may have been spread in from older

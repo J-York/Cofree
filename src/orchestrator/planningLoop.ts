@@ -86,6 +86,7 @@ import {
   type TodoPlanState,
 } from "./todoPlanState";
 import { resolveMatchedSkills } from "./skillMatching";
+import { resolveMatchedSnippets } from "./snippetMatching";
 import { assembleRuntimeContext, assembleSystemPrompt } from "../agents/promptAssembly";
 import type { ActionProposal } from "./types";
 
@@ -397,6 +398,7 @@ export async function runNativeToolCallingLoop(
   restoredWorkingMemory?: WorkingMemorySnapshot,
   explicitSkillIds?: string[],
   onThinkingChunk?: (delta: string) => void,
+  explicitSnippetIds?: string[],
 ): Promise<NativeToolLoopResult> {
   const activeTools = buildAgentToolDefs(runtime);
   const enabledToolNames = [...runtime.enabledTools, ...INTERNAL_TOOL_NAMES];
@@ -408,14 +410,21 @@ export async function runNativeToolCallingLoop(
         ...projectConfig.toolPermissions,
       } as ToolPermissions)
     : basePermissions;
-  const skillResolution = await resolveMatchedSkills(
-    settings,
-    projectConfig,
-    prompt,
-    focusedPaths,
-    explicitSkillIds,
+  const [skillResolution, snippetResolution] = await Promise.all([
+    resolveMatchedSkills(
+      settings,
+      projectConfig,
+      prompt,
+      focusedPaths,
+      explicitSkillIds,
+    ),
+    resolveMatchedSnippets(settings, explicitSnippetIds),
+  ]);
+  const agentSystemPrompt = assembleSystemPrompt(
+    runtime,
+    skillResolution,
+    snippetResolution,
   );
-  const agentSystemPrompt = assembleSystemPrompt(runtime, skillResolution);
   const effectiveRuntimeContext = assembleRuntimeContext(runtime, settings.workspacePath, INTERNAL_TOOL_NAMES);
   const requestedArtifactCount =
     phase === "default" ? estimateRequestedArtifactCount(prompt) : 0;
