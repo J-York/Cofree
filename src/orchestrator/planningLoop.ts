@@ -33,12 +33,10 @@ import {
   buildPatchPreflightRepairMessage,
   buildPseudoToolCallCompatibilityDiagnostic,
   buildPseudoToolCallRepairMessage,
-  buildReadOnlyTurnsWarningMessage,
   buildSameFileEditFailureMessage,
   buildSearchNotFoundRepairMessage,
   buildShellDialectRepairInstruction,
   buildToolNotFoundWarningMessage,
-  shouldForceReadOnlySummary,
   shouldRetryPseudoToolCall,
   shouldStopForConsecutiveFailures,
   shouldStopForToolNotFound,
@@ -90,7 +88,6 @@ import { resolveMatchedSnippets } from "./snippetMatching";
 import { assembleRuntimeContext, assembleSystemPrompt } from "../agents/promptAssembly";
 import type { ActionProposal } from "./types";
 
-const TOOL_LOOP_CHECKPOINT_TURNS = 50;
 const TOOL_LOOP_EFFICIENCY_WARNING_THRESHOLD = 40;
 const MAX_MULTI_ARTIFACT_REMINDER_ROUNDS = 2;
 const MAX_PROPOSED_ACTIONS_PER_BATCH = 5;
@@ -483,7 +480,6 @@ export async function runNativeToolCallingLoop(
   let searchNotFoundRepairRounds = 0;
   let pseudoToolCallRepairRounds = 0;
   const fileEditFailureTracker = new Map<string, number>();
-  let consecutiveReadOnlyTurns = 0;
   let toolChoiceOverride: "auto" | "none" | undefined;
   let lastWorkingMemoryFingerprint = "";
   const contextNotes = new ContextNoteBuffer();
@@ -544,20 +540,6 @@ export async function runNativeToolCallingLoop(
       console.warn(`[Loop] 达到绝对轮次上限 (${MAX_ABSOLUTE_TURNS})，强制终止`);
       return {
         assistantReply: `已达到工具调用轮次硬上限（${MAX_ABSOLUTE_TURNS} 轮），已自动终止。请检查任务复杂度或拆分为更小的子任务。`,
-        requestRecords,
-        proposedActions,
-        planState,
-        toolTrace,
-        assistantToolCalls: lastAssistantToolCalls,
-        loopMessages: captureLoopMessages(),
-        workingMemorySnapshot: currentWorkingMemorySnapshot(),
-      };
-    }
-
-    if (turn > 0 && turn % TOOL_LOOP_CHECKPOINT_TURNS === 0) {
-      console.log(`[Loop] 已运行 ${turn} 轮，到达检查点，暂停等待用户确认`);
-      return {
-        assistantReply: `已经持续调用了 ${turn} 轮工具，任务仍在进行中。如果需要继续，请回复「继续」。`,
         requestRecords,
         proposedActions,
         planState,
@@ -774,8 +756,28 @@ export async function runNativeToolCallingLoop(
       continue;
     }
 
+    if (
+      completion.finishReason === "length" &&
+      completion.toolCalls.length === 0 &&
+      completion.assistantMessage.content.trim()
+    ) {
+      console.warn(
+        `[Loop] Turn ${turn + 1}: 响应被 max_tokens 截断（仅有文本、无工具调用），不能作为最终回复，要求模型继续`,
+      );
+      contextNotes.push([
+        "系统提示：你的上一条文本回复在到达 max_tokens 时被截断，没有完整结束。",
+        "请基于已经写出的内容继续推进任务：要么直接发出下一个工具调用，要么用一两句话给出简洁的最终结论。",
+        "不要重复已经说过的内容，也不要再次输出长篇分析。",
+      ].join("\n"));
+      continue;
+    }
+
     if (completion.finishReason === "length" && completion.toolCalls.length > 0) {
       console.warn(`[Loop] Turn ${turn + 1}: 响应被截断但包含 ${completion.toolCalls.length} 个工具调用，继续处理已解析的调用`);
+      contextNotes.push([
+        "系统提示：上一轮回复因到达 max_tokens 被截断，最后一个工具调用的参数可能不完整。",
+        "执行结果如有异常，请缩小调用范围（例如分多次小补丁）后重试，避免单次工具参数过大。",
+      ].join("\n"));
     }
 
     if (!completion.toolCalls.length) {
@@ -1140,20 +1142,6 @@ export async function runNativeToolCallingLoop(
         knownFilesList,
         "请基于已有信息继续推进任务，而非重复读取。如需特定代码片段，请用 start_line/end_line 精确读取。",
       ].join("\n"));
-    }
-
-    const turnHasPropose = completion.toolCalls.some((toolCall) => toolCall.function.name.startsWith("propose_"));
-    if (!turnHasPropose && turnSuccessCount > 0) {
-      consecutiveReadOnlyTurns += 1;
-    } else {
-      consecutiveReadOnlyTurns = 0;
-    }
-
-    if (shouldForceReadOnlySummary(consecutiveReadOnlyTurns)) {
-      console.log(`[Loop] 连续 ${consecutiveReadOnlyTurns} 轮纯读取，强制要求总结`);
-      contextNotes.push(buildReadOnlyTurnsWarningMessage(consecutiveReadOnlyTurns));
-      toolChoiceOverride = "none";
-      consecutiveReadOnlyTurns = 0;
     }
 
     if (turnHasToolNotFound) {
