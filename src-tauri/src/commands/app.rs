@@ -143,8 +143,22 @@ pub fn append_action_audit_log(record_json: String) -> Result<(), String> {
     if let Ok(meta) = fs::metadata(&path) {
         if meta.len() > ACTION_AUDIT_LOG_MAX_BYTES {
             let backup = dir.join("audit.jsonl.1");
+            // remove_file failing with NotFound is the common case (no prior
+            // backup); other failures are not actionable here — rename below
+            // will fail with a clearer error if the path is still occupied.
             let _ = fs::remove_file(&backup);
-            let _ = fs::rename(&path, &backup);
+            // rename can legitimately fail (e.g., Windows holding the file
+            // handle from an external tail/viewer). When it does, we've
+            // already deleted the old backup, so emit a warning instead of
+            // letting the loss go silent. audit.jsonl itself is untouched.
+            if let Err(e) = fs::rename(&path, &backup) {
+                tracing::warn!(
+                    from = %path.display(),
+                    to = %backup.display(),
+                    error = %e,
+                    "audit log rotation: rename failed; previous backup is lost"
+                );
+            }
         }
     }
 
