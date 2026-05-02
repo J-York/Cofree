@@ -4,10 +4,22 @@ use crate::infrastructure::cofree_home_dir;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 /// 审计日志在被滚动到 .1 备份前的最大字节数。
 /// 单条审计记录通常 < 4KB，10MB 大约可容纳几千条；用户可定期清理或导出。
 const ACTION_AUDIT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Process-wide lock around the audit-log append flow. Tauri dispatches
+/// commands on a thread pool, so two `recordSensitiveActionAudit` calls can
+/// land in `append_action_audit_log` simultaneously. Without this lock the
+/// metadata-size check, rotation rename, and append-open would race against
+/// each other (TOCTOU on size, lost rotations when two threads both decide to
+/// rotate). Same pattern as `secure_store.rs` / `http.rs`.
+fn audit_log_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 #[tauri::command]
 pub fn healthcheck() -> AppHealth {
@@ -113,6 +125,15 @@ pub fn append_action_audit_log(record_json: String) -> Result<(), String> {
         serde_json::to_string(&parsed).map_err(|e| format!("serialize audit record: {}", e))?;
 
     let dir = cofree_home_dir().map_err(|e| e.to_string())?;
+
+    // Serialize the size-check → rotate → open → write window across all
+    // concurrent Tauri command invocations in this process. Acquired only
+    // once we have valid input to log; cheap parsing/path resolution above
+    // stays outside the critical section.
+    let _guard = audit_log_lock()
+        .lock()
+        .map_err(|_| "audit log lock poisoned".to_string())?;
+
     fs::create_dir_all(&dir)
         .map_err(|e| format!("create cofree home dir failed: {}", e))?;
     let path = dir.join("audit.jsonl");
@@ -132,9 +153,15 @@ pub fn append_action_audit_log(record_json: String) -> Result<(), String> {
         .append(true)
         .open(&path)
         .map_err(|e| format!("open audit log failed: {}", e))?;
-    file.write_all(line.as_bytes())
-        .map_err(|e| format!("write audit log failed: {}", e))?;
-    file.write_all(b"\n")
+    // Single write_all for the JSON record + newline. Two separate writes
+    // can interleave with another writer's bytes when O_APPEND is used (each
+    // write() syscall atomically seeks-and-writes, but the boundary between
+    // two writes is a window for someone else's record to land), producing
+    // malformed JSONL. One buffer = one syscall for records ≤ PIPE_BUF (4 KB
+    // on Linux/macOS) which is well above our typical record size.
+    let mut buf = line.into_bytes();
+    buf.push(b'\n');
+    file.write_all(&buf)
         .map_err(|e| format!("write audit log failed: {}", e))?;
     Ok(())
 }
