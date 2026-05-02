@@ -8,7 +8,6 @@ export const MAX_SEARCH_NOT_FOUND_REPAIR_ROUNDS = 2;
 export const MAX_PSEUDO_TOOL_CALL_REPAIR_ROUNDS = 5;
 export const MAX_TOOL_NOT_FOUND_STRIKES = 3;
 export const MAX_CONSECUTIVE_FAILURE_TURNS = 5;
-export const MAX_CONSECUTIVE_READ_ONLY_TURNS = 8;
 export const MAX_SAME_FILE_EDIT_FAILURES = 4;
 
 const PATCH_REPAIR_INSTRUCTION =
@@ -34,10 +33,6 @@ export function shouldRetryPseudoToolCall(rounds: number): boolean {
   return rounds < MAX_PSEUDO_TOOL_CALL_REPAIR_ROUNDS;
 }
 
-export function shouldForceReadOnlySummary(consecutiveReadOnlyTurns: number): boolean {
-  return consecutiveReadOnlyTurns >= MAX_CONSECUTIVE_READ_ONLY_TURNS;
-}
-
 export function shouldStopForToolNotFound(toolNotFoundStrikes: number): boolean {
   return toolNotFoundStrikes >= MAX_TOOL_NOT_FOUND_STRIKES;
 }
@@ -60,10 +55,6 @@ export function buildPseudoToolCallRepairMessage(enabledToolNames: string[]): st
 
 export function buildPseudoToolCallCompatibilityDiagnostic(protocolLabel: string): string {
   return `当前模型在 ${protocolLabel} 协议下连续输出伪工具调用。已停止自动继续。建议换用工具调用更稳定的模型。`;
-}
-
-export function buildReadOnlyTurnsWarningMessage(consecutiveReadOnlyTurns: number): string {
-  return `系统警告：已连续 ${consecutiveReadOnlyTurns} 轮只读取文件。请立即基于已有信息给出回答或提出动作。`;
 }
 
 export function buildToolNotFoundWarningMessage(
