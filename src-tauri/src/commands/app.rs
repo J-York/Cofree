@@ -1,7 +1,25 @@
 use crate::application;
 use crate::domain::{AppError, AppHealth, RecoveryResult, WorkspaceInfo};
+use crate::infrastructure::cofree_home_dir;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+
+/// 审计日志在被滚动到 .1 备份前的最大字节数。
+/// 单条审计记录通常 < 4KB，10MB 大约可容纳几千条；用户可定期清理或导出。
+const ACTION_AUDIT_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Process-wide lock around the audit-log append flow. Tauri dispatches
+/// commands on a thread pool, so two `recordSensitiveActionAudit` calls can
+/// land in `append_action_audit_log` simultaneously. Without this lock the
+/// metadata-size check, rotation rename, and append-open would race against
+/// each other (TOCTOU on size, lost rotations when two threads both decide to
+/// rotate). Same pattern as `secure_store.rs` / `http.rs`.
+fn audit_log_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 #[tauri::command]
 pub fn healthcheck() -> AppHealth {
@@ -81,6 +99,85 @@ pub fn load_latest_workflow_checkpoint(session_id: String) -> Result<RecoveryRes
 #[tauri::command]
 pub fn delete_workflow_checkpoints(session_prefix: String) -> Result<u64, AppError> {
     application::delete_workflow_checkpoints(session_prefix)
+}
+
+/// Append a single audit record (JSON object, encoded as a string by the
+/// frontend) to `~/.cofree/audit.jsonl`. The frontend's localStorage cache is
+/// kept as a UI mirror but the file is the source of truth — it survives
+/// browser-data clears, app reinstalls, and the localStorage 200-record cap.
+///
+/// The record is parsed once for validation, then re-serialized on a single
+/// line so the file remains valid JSONL even if the caller passed pretty-
+/// printed input.
+///
+/// When the file exceeds `ACTION_AUDIT_LOG_MAX_BYTES` it is rotated to
+/// `audit.jsonl.1` (overwriting any prior backup) before the new line is
+/// appended. We keep only one rotation generation — callers concerned about
+/// long-term retention should export to JSON/CSV via the existing settings UI.
+#[tauri::command]
+pub fn append_action_audit_log(record_json: String) -> Result<(), String> {
+    let parsed: serde_json::Value = serde_json::from_str(&record_json)
+        .map_err(|e| format!("invalid audit record json: {}", e))?;
+    if !parsed.is_object() {
+        return Err("audit record must be a JSON object".to_string());
+    }
+    let line =
+        serde_json::to_string(&parsed).map_err(|e| format!("serialize audit record: {}", e))?;
+
+    let dir = cofree_home_dir().map_err(|e| e.to_string())?;
+
+    // Serialize the size-check → rotate → open → write window across all
+    // concurrent Tauri command invocations in this process. Acquired only
+    // once we have valid input to log; cheap parsing/path resolution above
+    // stays outside the critical section.
+    let _guard = audit_log_lock()
+        .lock()
+        .map_err(|_| "audit log lock poisoned".to_string())?;
+
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("create cofree home dir failed: {}", e))?;
+    let path = dir.join("audit.jsonl");
+
+    // Rotate if oversized. We only keep one generation of backup; older
+    // history must be exported via the audit UI.
+    if let Ok(meta) = fs::metadata(&path) {
+        if meta.len() > ACTION_AUDIT_LOG_MAX_BYTES {
+            let backup = dir.join("audit.jsonl.1");
+            // remove_file failing with NotFound is the common case (no prior
+            // backup); other failures are not actionable here — rename below
+            // will fail with a clearer error if the path is still occupied.
+            let _ = fs::remove_file(&backup);
+            // rename can legitimately fail (e.g., Windows holding the file
+            // handle from an external tail/viewer). When it does, we've
+            // already deleted the old backup, so emit a warning instead of
+            // letting the loss go silent. audit.jsonl itself is untouched.
+            if let Err(e) = fs::rename(&path, &backup) {
+                tracing::warn!(
+                    from = %path.display(),
+                    to = %backup.display(),
+                    error = %e,
+                    "audit log rotation: rename failed; previous backup is lost"
+                );
+            }
+        }
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("open audit log failed: {}", e))?;
+    // Single write_all for the JSON record + newline. Two separate writes
+    // can interleave with another writer's bytes when O_APPEND is used (each
+    // write() syscall atomically seeks-and-writes, but the boundary between
+    // two writes is a window for someone else's record to land), producing
+    // malformed JSONL. One buffer = one syscall for records ≤ PIPE_BUF (4 KB
+    // on Linux/macOS) which is well above our typical record size.
+    let mut buf = line.into_bytes();
+    buf.push(b'\n');
+    file.write_all(&buf)
+        .map_err(|e| format!("write audit log failed: {}", e))?;
+    Ok(())
 }
 
 #[tauri::command]

@@ -14,7 +14,40 @@ import { redactSensitiveText, sanitizeForPersistence } from "./redaction";
 const AUDIT_LOG_STORAGE_KEY = "cofree.audit.llm.v1";
 const ACTION_AUDIT_LOG_STORAGE_KEY = "cofree.audit.actions.v1";
 const ERROR_AUDIT_LOG_STORAGE_KEY = "cofree.audit.errors.v1";
+/**
+ * Capacity of the in-localStorage UI cache. The on-disk JSONL file at
+ * ~/.cofree/audit.jsonl is the source of truth for sensitive-action history;
+ * localStorage just keeps recent rows around for fast UI rendering.
+ */
 const MAX_AUDIT_RECORDS = 200;
+
+function isTauriRuntime(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return "__TAURI_INTERNALS__" in window;
+}
+
+/**
+ * Best-effort append to the persistent audit log on disk. Failures are logged
+ * but never thrown — losing one row is preferable to breaking the action that
+ * triggered the audit. Only invoked inside Tauri; in browser dev mode the
+ * localStorage cache is the only sink.
+ */
+function appendActionAuditToDisk(record: SensitiveActionAuditRecord): void {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  // Lazy import keeps the Tauri API out of test/jsdom bundles.
+  void import("@tauri-apps/api/core")
+    .then(({ invoke }) =>
+      invoke("append_action_audit_log", { recordJson: JSON.stringify(record) }),
+    )
+    .catch((error) => {
+      // eslint-disable-next-line no-console
+      console.warn("append_action_audit_log failed", error);
+    });
+}
 
 export interface LLMAuditRecord {
   requestId: string;
@@ -221,6 +254,13 @@ export function recordSensitiveActionAudit(record: SensitiveActionAuditRecord): 
     details: (sanitizeForPersistence(record.details) as Record<string, unknown>) ?? {}
   };
 
+  // 1. Persistent on-disk JSONL — survives clearing browser data, app
+  //    reinstalls, and the localStorage cache cap. This is the audit source
+  //    of truth.
+  appendActionAuditToDisk(safeRecord);
+
+  // 2. localStorage UI cache — keeps the last N rows for fast rendering of
+  //    the audit panel without hitting disk.
   const next = [safeRecord, ...readSensitiveActionAuditRecords()].slice(0, MAX_AUDIT_RECORDS);
   window.localStorage.setItem(ACTION_AUDIT_LOG_STORAGE_KEY, JSON.stringify({ records: next }));
 }

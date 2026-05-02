@@ -9,7 +9,7 @@ use crate::infrastructure::{
 };
 use glob::glob as glob_match;
 use regex::Regex;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -19,17 +19,89 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 #[derive(Default)]
 pub struct ShellJobStore {
     jobs: Arc<Mutex<HashMap<String, Arc<ShellJobHandle>>>>,
     /// Retains the final result of completed/cancelled jobs so that
     /// check_shell_job can still report exit_code / stdout / stderr after the
-    /// active entry is removed.  Entries are written just before removal from
-    /// `jobs` and kept until the store is dropped.
-    completed: Arc<Mutex<HashMap<String, CompletedJobResult>>>,
+    /// active entry is removed. Bounded by SHELL_COMPLETED_JOBS_MAX (FIFO) and
+    /// SHELL_COMPLETED_JOB_TTL_SECS (lazy TTL on read/write).
+    completed: Arc<Mutex<CompletedJobStore>>,
+}
+
+#[derive(Default)]
+struct CompletedJobStore {
+    map: HashMap<String, CompletedJobResult>,
+    /// Insertion-order queue used to evict the oldest entry when over capacity.
+    order: VecDeque<String>,
+}
+
+impl CompletedJobStore {
+    fn insert(&mut self, job_id: String, mut entry: CompletedJobResult) {
+        if entry.completed_at_secs == 0 {
+            entry.completed_at_secs = now_unix_secs();
+        }
+        self.evict_expired(entry.completed_at_secs);
+
+        if self.map.insert(job_id.clone(), entry).is_some() {
+            // Replacing an existing entry — drop the old position so it doesn't
+            // count twice toward the cap.
+            if let Some(pos) = self.order.iter().position(|id| id == &job_id) {
+                self.order.remove(pos);
+            }
+        }
+        self.order.push_back(job_id);
+
+        while self.order.len() > config::SHELL_COMPLETED_JOBS_MAX {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn get(&mut self, job_id: &str) -> Option<CompletedJobResult> {
+        let now = now_unix_secs();
+        self.evict_expired(now);
+        self.map.get(job_id).cloned()
+    }
+
+    fn evict_expired(&mut self, now: u64) {
+        let ttl = config::SHELL_COMPLETED_JOB_TTL_SECS;
+        if ttl == 0 {
+            return;
+        }
+        // Entries are appended in order, so the front is always the oldest.
+        // Pop until we hit one that is still alive.
+        while let Some(front) = self.order.front() {
+            let alive = self
+                .map
+                .get(front)
+                .map(|entry| now.saturating_sub(entry.completed_at_secs) < ttl)
+                .unwrap_or(false);
+            if alive {
+                break;
+            }
+            let stale = self.order.pop_front();
+            if let Some(stale_id) = stale {
+                self.map.remove(&stale_id);
+            }
+        }
+    }
+}
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 struct ShellJobHandle {
@@ -46,6 +118,10 @@ pub struct CompletedJobResult {
     pub cancelled: bool,
     pub stdout: String,
     pub stderr: String,
+    /// Unix epoch seconds when the job finished. Set automatically by
+    /// CompletedJobStore::insert when zero.
+    #[serde(skip)]
+    pub completed_at_secs: u64,
 }
 
 struct ShellOutputCapture {
@@ -1187,6 +1263,7 @@ pub fn start_shell_command(
             cancelled,
             stdout: final_result.stdout,
             stderr: final_result.stderr,
+            completed_at_secs: now_unix_secs(),
         };
         if let Ok(mut guard) = completed_for_thread.lock() {
             guard.insert(job_id_for_thread.clone(), completed_entry);
@@ -1298,7 +1375,7 @@ pub fn cancel_shell_command(
         .lock()
         .map_err(|_| "shell job lock poisoned".to_string())?;
     if let Some(child) = child_guard.as_mut() {
-        child.kill().map_err(|e| format!("取消命令失败: {}", e))?;
+        terminate_child_tree(child);
         return Ok(true);
     }
 
@@ -1348,11 +1425,11 @@ pub fn check_shell_job(
 
     // Not in active registry — check the completed results store.
     let completed = {
-        let guard = jobs
+        let mut guard = jobs
             .completed
             .lock()
             .map_err(|_| "completed job store lock poisoned".to_string())?;
-        guard.get(&job_id_trimmed).cloned()
+        guard.get(&job_id_trimmed)
     };
 
     if let Some(result) = completed {
@@ -1378,7 +1455,8 @@ pub fn check_shell_job(
 }
 
 fn spawn_shell_child(workspace: &Path, shell_trimmed: &str) -> Result<Child, String> {
-    if cfg!(target_os = "windows") {
+    #[cfg(windows)]
+    {
         Command::new("powershell")
             .args(["-NoProfile", "-Command", shell_trimmed])
             .current_dir(workspace)
@@ -1391,8 +1469,11 @@ fn spawn_shell_child(workspace: &Path, shell_trimmed: &str) -> Result<Child, Str
             .env("CLICOLOR", "0")
             .spawn()
             .map_err(|e| format!("启动 powershell 失败: {}", e))
-    } else {
-        Command::new("sh")
+    }
+    #[cfg(unix)]
+    {
+        let mut command = Command::new("sh");
+        command
             .args(["-c", shell_trimmed])
             .current_dir(workspace)
             .stdin(Stdio::null())
@@ -1402,10 +1483,51 @@ fn spawn_shell_child(workspace: &Path, shell_trimmed: &str) -> Result<Child, Str
             .env("DEBIAN_FRONTEND", "noninteractive")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("PAGER", "cat")
-            .env("CLICOLOR", "0")
+            .env("CLICOLOR", "0");
+        // Put the child in a new process group whose PGID equals its PID, so
+        // cancel can signal the entire descendant tree via `kill -KILL -<pgid>`.
+        // Without this, child.kill() only reaches the immediate `sh` process and
+        // long-running grandchildren (node, vite, …) become orphans.
+        command.process_group(0);
+        command
             .spawn()
             .map_err(|e| format!("启动 sh 失败: {}", e))
     }
+}
+
+/// Best-effort recursive termination of a child process tree.
+///
+/// Unix: `kill -KILL -<pgid>` reaches every process spawned by the child since
+/// `spawn_shell_child` puts the child in its own process group.
+/// Windows: `taskkill /T /F /PID <pid>` walks the parent→child relationship
+/// recorded in the process snapshot and force-terminates each.
+///
+/// Always falls back to `child.kill()` so if the external tool is missing or
+/// fails for any reason the immediate child is still terminated.
+fn terminate_child_tree(child: &mut Child) {
+    let pid = child.id();
+
+    #[cfg(unix)]
+    {
+        // Negative PID signals the whole process group. SIGKILL because we
+        // already treat cancel as terminal — there's no chance for cleanup.
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{}", pid)])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    let _ = child.kill();
 }
 
 fn emit_shell_command_event(app: &AppHandle, event: ShellCommandEvent) {
@@ -1537,7 +1659,7 @@ fn collect_shell_command_result(
             Ok(None) => {
                 if timeout.is_some_and(|limit| started_at.elapsed() >= limit) {
                     timed_out = true;
-                    let _ = child.kill();
+                    terminate_child_tree(&mut child);
                     break child
                         .wait()
                         .map_err(|e| format!("终止超时命令失败: {}", e))?;
@@ -1641,7 +1763,7 @@ fn collect_shell_job_result(
                 Ok(None) => {
                     if timeout.is_some_and(|limit| started_at.elapsed() >= limit) {
                         timed_out = true;
-                        let _ = child.kill();
+                        terminate_child_tree(child);
                         Some(child.wait().map_err(|e| format!("终止超时命令失败: {}", e)))
                     } else {
                         None

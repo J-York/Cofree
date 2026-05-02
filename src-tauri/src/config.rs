@@ -35,6 +35,11 @@ pub const SHELL_TIMEOUT_DEFAULT_MS: u64 = 120_000;
 pub const SHELL_TIMEOUT_MIN_MS: u64 = 1_000;
 pub const SHELL_TIMEOUT_MAX_MS: u64 = 600_000;
 
+/// 已完成 shell job 在内存中保留的最大条数（超过则按 FIFO 淘汰最旧条目）。
+pub const SHELL_COMPLETED_JOBS_MAX: usize = 200;
+/// 已完成 shell job 的存活时间（秒）。超过此时长的条目被惰性清除。
+pub const SHELL_COMPLETED_JOB_TTL_SECS: u64 = 24 * 60 * 60;
+
 /// HTTP fetch 默认最大 body 大小（字节）
 pub const FETCH_DEFAULT_MAX_BYTES: usize = 512 * 1024;
 
