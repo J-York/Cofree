@@ -11,8 +11,9 @@ pub mod shell;
 pub mod snapshot;
 
 pub use app::{
-    delete_workflow_checkpoints, get_workspace_info, healthcheck, load_latest_workflow_checkpoint,
-    save_file_dialog, save_workflow_checkpoint, select_workspace_folder, validate_git_repo,
+    append_action_audit_log, delete_workflow_checkpoints, get_workspace_info, healthcheck,
+    load_latest_workflow_checkpoint, save_file_dialog, save_workflow_checkpoint,
+    select_workspace_folder, validate_git_repo,
 };
 pub use diagnostics::get_workspace_diagnostics;
 pub use fs::{
